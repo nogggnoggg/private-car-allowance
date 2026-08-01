@@ -8,6 +8,7 @@ import ChangePasswordPage from "./pages/ChangePasswordPage.js";
 import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
 import HomePage from "./pages/HomePage.js";
 import LoginPage from "./pages/LoginPage.js";
+import ParametersPage from "./pages/ParametersPage.js";
 
 export default function App(): React.ReactElement {
   return (
@@ -58,6 +59,16 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <AdminUsersPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-003a: parameter maintenance page — admin only */}
+          <Route
+            path="/admin/parameters"
+            element={
+              <RequireAuth>
+                <ParametersPage />
               </RequireAuth>
             }
           />
