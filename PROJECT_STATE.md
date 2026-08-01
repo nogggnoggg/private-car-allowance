@@ -1,6 +1,6 @@
 # PROJECT_STATE
 
-State: PLANNING
+State: ACTIVE
 Governance-Version: 2026-08-01.1
 Updated: 2026-08-01
 
@@ -18,17 +18,19 @@ Updated: 2026-08-01
 
 ## 目前 Phase
 
-- 無（等待 Human Gate：PRD／Phase 拆分審閱）。
-- Phase 拆分：PHASE-001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
+- PHASE-001 專案骨架與 CI 基礎（branch: phase-001，IN_PROGRESS）。
+- Phase 拆分審閱：已通過（人類批准，2026-08-01）。
+- 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
 
 ## Task 狀態
 
 - PLAN-001（PRD + Phase 拆分 + Architecture/Data Flow 草案）：DONE
-- SPEC-001（撰寫 docs/specs/PHASE-001.md 詳細 Spec）：PLANNED（待 Phase 拆分審閱通過）
+- SPEC-001（docs/specs/PHASE-001.md 詳細 Spec，spec-writer）：IN_PROGRESS
+- PHASE-001 T1~T6：PLANNED（待 SPEC-001 驗收）
 
 ## 阻塞
 
-- Human Gate 待決：PRD／Phase 拆分審閱（含 PHASE-003a 提前調整、High 風險 Task 標記）。
+- 無。
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
 
