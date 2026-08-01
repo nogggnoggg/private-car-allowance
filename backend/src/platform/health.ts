@@ -31,9 +31,11 @@ export async function healthPlugin(
       await options.dbProbe();
     } catch (err) {
       dbStatus = "down";
-      // Log the error for debugging but DO NOT include it in the response (AC-08)
+      // Log the error for debugging but DO NOT include message or stack (AC-08, SF-1).
+      // Only log the error class name — enough to classify the failure without
+      // risking credential leakage via err.message (e.g. connection strings).
       fastify.log.error(
-        { err: err instanceof Error ? err.message : "unknown error" },
+        { errName: err instanceof Error ? err.name : "UnknownError" },
         "Health check DB probe failed"
       );
     }

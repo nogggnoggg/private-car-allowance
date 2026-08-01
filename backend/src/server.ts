@@ -1,7 +1,8 @@
 /**
  * buildServer() — assembles the Fastify instance with plugins and routes.
- * Accepts options for test injection (databaseUrl, dbProbeOverride).
+ * Accepts options for test injection (databaseUrl, dbProbeOverride, logStream).
  */
+import type { Writable } from "node:stream";
 import Fastify from "fastify";
 import { LogController } from "fastify";
 import { getPrismaClient } from "./db/prisma.js";
@@ -17,15 +18,21 @@ export interface BuildServerOptions {
   dbProbeOverride?: DbProbe;
   /** pino log level; defaults to 'info' */
   logLevel?: string;
+  /**
+   * Optional writable stream to capture log output (for integration tests).
+   * When provided, pino writes JSON log lines to this stream instead of stdout.
+   */
+  logStream?: Writable;
 }
 
 export async function buildServer(
   options: BuildServerOptions = {}
 ): Promise<ReturnType<typeof Fastify>> {
   const logLevel = options.logLevel ?? process.env.LOG_LEVEL ?? "info";
+  const loggerOptions = buildLoggerOptions(logLevel);
 
   const fastify = Fastify({
-    logger: buildLoggerOptions(logLevel),
+    logger: options.logStream ? { ...loggerOptions, stream: options.logStream } : loggerOptions,
     // Use logController to set requestIdLogLabel without deprecation warning
     logController: new LogController({ requestIdLogLabel: "requestId" }),
   });

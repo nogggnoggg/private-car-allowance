@@ -14,6 +14,7 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AppError, type FieldError, buildErrorBody } from "./errors.js";
+import { sanitizeForLog } from "./log-sanitize.js";
 
 /** Generic message for 500 responses — must not leak internal details (AC-11, Spec 5.2) */
 const INTERNAL_ERROR_MESSAGE = "系統發生錯誤，請稍後再試";
@@ -61,7 +62,8 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
   // ── 404 handler ──────────────────────────────────────────────────────────
   fastify.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {
     const requestId = String(request.id);
-    request.log.warn({ requestId }, "Route not found");
+    // AR-3: omit { requestId } from log object — logController already injects it
+    request.log.warn("Route not found");
 
     return reply.status(404).send(buildErrorBody("NOT_FOUND", "找不到請求的資源。", requestId));
   });
@@ -72,7 +74,8 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
 
     // 1. Known application error (AppError)
     if (error instanceof AppError) {
-      request.log.info({ requestId, code: error.code }, `AppError: ${error.userMessage}`);
+      // AR-3: omit { requestId } from log object — logController already injects it
+      request.log.info({ code: error.code }, `AppError: ${error.userMessage}`);
       return reply
         .status(error.httpStatus)
         .send(buildErrorBody(error.code, error.userMessage, requestId, error.fields));
@@ -87,7 +90,8 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
     };
     if (fastifyError.validation !== undefined && Array.isArray(fastifyError.validation)) {
       const fields = extractFieldErrors(fastifyError.validation);
-      request.log.info({ requestId, fields }, "Fastify schema validation error");
+      // AR-3: omit { requestId } from log object — logController already injects it
+      request.log.info({ fields }, "Fastify schema validation error");
       return reply
         .status(400)
         .send(
@@ -96,8 +100,17 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
     }
 
     // 3. Unknown/unhandled exception → INTERNAL_ERROR
-    //    Log full error (with requestId) but only return generic message (AC-11, AC-12)
-    request.log.error({ requestId, err: error }, "Unhandled exception");
+    //    SF-1: log only sanitized name+message — no stack (stack repeats the message and
+    //    adds file paths; sanitizing multi-line stacks reliably is harder than a single
+    //    message string, and requestId is sufficient for correlation in a structured log).
+    //    AR-3: omit { requestId } from log object — logController already injects it.
+    request.log.error(
+      {
+        errName: error.name,
+        errMessage: sanitizeForLog(error.message),
+      },
+      "Unhandled exception"
+    );
     return reply
       .status(500)
       .send(buildErrorBody("INTERNAL_ERROR", INTERNAL_ERROR_MESSAGE, requestId));

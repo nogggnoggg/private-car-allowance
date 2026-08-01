@@ -33,11 +33,10 @@ Updated: 2026-08-01
 - PHASE-001-T4（Dockerfile×2 + compose + .env.example）：DONE（五步整合驗收通過；大總管複驗 health 200/SPA 200/資料持久化）
 - PHASE-001-T5（CI）：DONE（run 30693648259 全綠；gate 紅→綠驗證 run 30693595614 failure→revert 轉綠）
 - PHASE-001：REVIEW（reviewer 獨立審查中）
-- 待 Review 事項（reviewer 用）：
-  - health.ts 記錄 DB 探測 err.message 原文（理論外洩面，Prisma 實務不含憑證，評 Low）
-  - dotenv@17 對 stdout 印提示訊息（容器無 .env 不受影響）
-  - 日誌重複 requestId 鍵（transport 與手動各加一次，cosmetic）
-  - health「DB up」測試在本機無 DB 時 fail 而非 skip（CI 有 DB service 不受影響；skip guard 待改善）
+- PHASE-001-REVIEW（reviewer 獨立審查）：DONE。結果：無 Must Fix；SF-1（Should Fix）＝日誌可含連線字串/stack 敏感內容（health.ts 記 err.message 原文、error-handler 記完整 stack、pino redact 未覆蓋 err）；AR-2 dotenv stdout 提示（Accepted/Low）；AR-3 重複 requestId 鍵（Accepted/Low）；AR-4 無 DB 時測試為 **skip 非 fail**（更正先前記錄；Accepted/Low，CI 有 DB service 覆蓋）。14 條 AC：13 PASS、AC-12 PARTIAL（缺口即 SF-1）。
+- PHASE-001-T7（REPAIR：修 SF-1 + 順修 AR-3）：DONE（sanitizeForLog 純函式供全案沿用；500 不記 stack 只記 name+sanitized message；26 新測試；全套 53/53 綠，大總管重驗）
+- PHASE-001：等待 Human Gate（整合驗收）。Draft PR 已開。
+- Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
 
 ## 環境備註（後續 Task 必讀）
 
