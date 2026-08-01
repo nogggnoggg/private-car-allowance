@@ -11,11 +11,28 @@
  *   would fail these tests.
  *
  * This module is pure (zero IO) — no DB, no prisma. Mileage-rule blockers
- * (totalKm ≤ 0 / highwayKm < 0 / highwayKm > totalKm) are explicitly OUT of
- * scope for this Task (reserved for PHASE-004-T5) — no test here asserts
- * their absence as a permanent behavior (that would force T5 to delete a
- * governance-protected test).
+ * (totalKm ≤ 0 / highwayKm < 0 / highwayKm > totalKm) were originally OUT of
+ * scope for T3 (reserved for PHASE-004-T5) — the tests below this point
+ * (added by T5) exercise the now-merged mileage blockers.
+ *
+ * PHASE-004-T5 note (the ONE fixture change in this file — see Task
+ * Handoff for full justification): the shared `segment()` factory's
+ * `totalKm`/`highwayKm` defaults were `null` under T3 (that field was
+ * unconsumed then). Now that T5 wires `validateSegmentMileage` in,
+ * `totalKm: null` / `highwayKm: null` legitimately produce
+ * SEGMENT_TOTAL_KM_REQUIRED / SEGMENT_HIGHWAY_KM_REQUIRED blockers (per
+ * this Task's Packet spec). Leaving the old `null` defaults would silently
+ * break every pre-existing T3 test that relies on `segment()`'s default
+ * being "fully valid" (e.g. the very first test in this file: "fully valid
+ * input returns an empty array"), NOT because those tests' assertions were
+ * touched, but because the meaning of "fully valid" now legitimately
+ * includes mileage. The fix is to change the DEFAULT to an actually-valid
+ * mileage pair (`totalKm=10`, `highwayKm=5`) — every existing `it(...)`
+ * body and assertion below is byte-for-byte unchanged; only this shared
+ * fixture default moved from "unused placeholder" to "a valid value",
+ * which is what keeps every pre-existing assertion passing unmodified.
  */
+import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   type BlockerInput,
@@ -23,14 +40,19 @@ import {
   computeCompletionBlockers,
 } from "../../src/applications/completion-blockers.js";
 
+function decimal(value: string): Prisma.Decimal {
+  return new Prisma.Decimal(value);
+}
+
 function segment(overrides: Partial<BlockerSegmentInput> = {}): BlockerSegmentInput {
   return {
     id: "seg-1",
     sortOrder: 0,
     origin: "台北市政府",
     destination: "新竹科學園區",
-    totalKm: null,
-    highwayKm: null,
+    // T5: valid by default (totalKm>0, 0<=highwayKm<=totalKm) — see file-header note.
+    totalKm: decimal("10"),
+    highwayKm: decimal("5"),
     attachmentCount: 1,
     ...overrides,
   };
@@ -257,5 +279,131 @@ describe("computeCompletionBlockers — PHASE-004-T3", () => {
     const first = computeCompletionBlockers(input);
     const second = computeCompletionBlockers(input);
     expect(first).toEqual(second);
+  });
+
+  // ===========================================================================
+  // PHASE-004-T5 — 里程 blockers 併入（AC-14~18）
+  // ===========================================================================
+
+  describe("里程 blockers 併入（T5，AC-14~18）", () => {
+    it("totalKm=0 → SEGMENT_TOTAL_KM_INVALID 併入輸出", () => {
+      const seg = segment({ id: "s0", totalKm: decimal("0"), highwayKm: decimal("0") });
+      const blockers = computeCompletionBlockers(baseInput({ segments: [seg] }));
+      expect(blockers.some((b) => b.code === "SEGMENT_TOTAL_KM_INVALID")).toBe(true);
+    });
+
+    it("highwayKm > totalKm → SEGMENT_HIGHWAY_GT_TOTAL 併入輸出，帶正確 segmentId/segmentIndex", () => {
+      const seg = segment({
+        id: "s0",
+        sortOrder: 0,
+        totalKm: decimal("5"),
+        highwayKm: decimal("6"),
+      });
+      const blockers = computeCompletionBlockers(baseInput({ segments: [seg] }));
+      const b = blockers.find((x) => x.code === "SEGMENT_HIGHWAY_GT_TOTAL");
+      expect(b).toBeDefined();
+      expect(b?.segmentId).toBe("s0");
+      expect(b?.segmentIndex).toBe(0);
+    });
+
+    it("totalKm 與 highwayKm 皆有效（highwayKm==totalKm）→ 不含任何里程 blocker", () => {
+      const seg = segment({ totalKm: decimal("10.00"), highwayKm: decimal("10.00") });
+      const blockers = computeCompletionBlockers(baseInput({ segments: [seg] }));
+      expect(blockers.some((b) => b.code.startsWith("SEGMENT_TOTAL_KM"))).toBe(false);
+      expect(blockers.some((b) => b.code.startsWith("SEGMENT_HIGHWAY"))).toBe(false);
+    });
+
+    it("多重問題同時回全部：缺日期 + 某段里程無效（totalKm=0）+ 某段缺附件 → 全部 code 都出現", () => {
+      const blockers = computeCompletionBlockers(
+        baseInput({
+          tripDate: null,
+          segments: [
+            segment({
+              id: "s0",
+              sortOrder: 0,
+              totalKm: decimal("0"),
+              highwayKm: decimal("0"),
+              attachmentCount: 0,
+            }),
+          ],
+        })
+      );
+      const codes = blockers.map((b) => b.code);
+      expect(codes).toContain("TRIP_DATE_REQUIRED");
+      expect(codes).toContain("SEGMENT_TOTAL_KM_INVALID");
+      expect(codes).toContain("SEGMENT_ATTACHMENT_REQUIRED");
+    });
+
+    it("併入後段落內順序：SEGMENT_LOCATION_REQUIRED → 里程 blockers → SEGMENT_ATTACHMENT_REQUIRED", () => {
+      const seg = segment({
+        id: "s0",
+        sortOrder: 0,
+        origin: null,
+        totalKm: decimal("0"),
+        highwayKm: decimal("0"),
+        attachmentCount: 0,
+      });
+      const blockers = computeCompletionBlockers(baseInput({ segments: [seg] }));
+      const codes = blockers.map((b) => b.code);
+      const locationIdx = codes.indexOf("SEGMENT_LOCATION_REQUIRED");
+      const kmIdx = codes.indexOf("SEGMENT_TOTAL_KM_INVALID");
+      const attachmentIdx = codes.indexOf("SEGMENT_ATTACHMENT_REQUIRED");
+      expect(locationIdx).toBeGreaterThanOrEqual(0);
+      expect(kmIdx).toBeGreaterThan(locationIdx);
+      expect(attachmentIdx).toBeGreaterThan(kmIdx);
+    });
+
+    it("完整輸出順序穩定（多段、多類別問題混合）", () => {
+      const segs = [
+        segment({
+          id: "s0",
+          sortOrder: 0,
+          origin: null,
+          totalKm: decimal("0"),
+          highwayKm: decimal("0"),
+          attachmentCount: 0,
+        }),
+        segment({
+          id: "s1",
+          sortOrder: 1,
+          totalKm: decimal("10"),
+          highwayKm: decimal("11"),
+          attachmentCount: 1,
+        }),
+      ];
+      const blockers = computeCompletionBlockers(
+        baseInput({ tripDate: null, purpose: null, segments: segs, missingParameters: ["FUEL"] })
+      );
+      const codes = blockers.map((b) => b.code);
+      // Application-level blockers first, in fixed order; then per-segment
+      // blocks ordered by sortOrder, each internally ordered
+      // location → mileage → attachment.
+      expect(codes[0]).toBe("TRIP_DATE_REQUIRED");
+      expect(codes[1]).toBe("PURPOSE_REQUIRED");
+      expect(codes[2]).toBe("PARAMETER_NOT_AVAILABLE");
+      // segment s0 block: location required, then km invalid, then attachment required
+      const s0Codes = blockers.filter((b) => b.segmentId === "s0").map((b) => b.code);
+      expect(s0Codes).toEqual([
+        "SEGMENT_LOCATION_REQUIRED",
+        "SEGMENT_TOTAL_KM_INVALID",
+        "SEGMENT_ATTACHMENT_REQUIRED",
+      ]);
+      // segment s1 block: only highway-gt-total (totalKm/highwayKm both valid otherwise, attachment present)
+      const s1Codes = blockers.filter((b) => b.segmentId === "s1").map((b) => b.code);
+      expect(s1Codes).toEqual(["SEGMENT_HIGHWAY_GT_TOTAL"]);
+      // s0's block entirely precedes s1's block in the flat array
+      const lastS0Index = blockers.map((b) => b.segmentId).lastIndexOf("s0");
+      const firstS1Index = blockers.map((b) => b.segmentId).indexOf("s1");
+      expect(lastS0Index).toBeLessThan(firstS1Index);
+    });
+
+    it("calling twice with mileage-invalid input produces identical output (pure, deterministic)", () => {
+      const input = baseInput({
+        segments: [segment({ totalKm: decimal("0"), highwayKm: decimal("-1") })],
+      });
+      const first = computeCompletionBlockers(input);
+      const second = computeCompletionBlockers(input);
+      expect(first).toEqual(second);
+    });
   });
 });

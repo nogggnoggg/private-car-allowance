@@ -1,32 +1,36 @@
 /**
- * Completion blockers generator — PHASE-004-T3
+ * Completion blockers generator — PHASE-004-T3 + T5 (里程 blockers 併入)
  *
- * Spec §2 群組 A（AC-01~03/07）、D（AC-24）、G（AC-46）、§8.1 `BlockerDto`,
- * §11.1 完成項清單。Pure function, zero IO — no prisma client instance, no
- * env access, no DB/network/filesystem calls, same shape as
- * `application-state-machine.ts` (T2).
+ * Spec §2 群組 A（AC-01~03/07）、C（AC-14~18，T5 併入）、D（AC-24）、G
+ * （AC-46）、§8.1 `BlockerDto`, §11.1 完成項清單。Pure function, zero IO —
+ * no prisma client instance, no env access, no DB/network/filesystem calls,
+ * same shape as `application-state-machine.ts` (T2).
  *
  * Consumed by:
  *   - T3 差旅 GET/PUT DTO 建構（DRAFT 狀態的 `completionBlockers` 欄位）
  *   - T8 完成流程（`POST /applications/:id/complete` 之守門判斷）——本函式回傳
  *     的陣列非空即拒絕完成（AC-52：回傳全部未通過項，非只回第一項）
  *
- * Scope note (Packet 明文): 本 Task 只實作下列規則：
+ * Rules implemented directly in this module:
  *   TRIP_DATE_REQUIRED / PURPOSE_REQUIRED / SEGMENT_REQUIRED /
  *   SEGMENT_LOCATION_REQUIRED / SEGMENT_ATTACHMENT_REQUIRED /
  *   PARAMETER_NOT_AVAILABLE
- * 里程數值規則（totalKm ≤ 0、highwayKm < 0、highwayKm > totalKm）刻意不在本
- * Task 實作，留給 PHASE-004-T5 併入——見下方 TODO(PHASE-004-T5) 標記之擴充點。
- * `BlockerInput.segments[].totalKm`/`highwayKm` 欄位已預留，T5 不需要改動本
- * 函式簽章。
+ * Mileage business rules (SEGMENT_TOTAL_KM_REQUIRED/INVALID,
+ * SEGMENT_HIGHWAY_KM_REQUIRED/INVALID, SEGMENT_HIGHWAY_GT_TOTAL) are
+ * implemented in `trip-validation.ts`'s `validateSegmentMileage` (PHASE-004-T5)
+ * and merged in per-segment below (TODO(PHASE-004-T5) marker removed —
+ * this extension point is now complete).
  *
  * 輸出順序（Packet 明文要求，供 UI 與測試穩定依賴）：
  *   1. 申請層級（依序）：TRIP_DATE_REQUIRED → PURPOSE_REQUIRED →
  *      SEGMENT_REQUIRED → PARAMETER_NOT_AVAILABLE
- *   2. 段落層級：依 `sortOrder` 由小到大；同一段內先 origin 後 destination
- *      的 SEGMENT_LOCATION_REQUIRED，再 SEGMENT_ATTACHMENT_REQUIRED
- *      （之後 T5 的里程 blockers 併入時，亦依此段落順序插入同一段的區塊內）
+ *   2. 段落層級：依 `sortOrder` 由小到大；同一段內順序為
+ *      SEGMENT_LOCATION_REQUIRED（origin 後 destination）→ 里程 blockers
+ *      （T5，validateSegmentMileage 回傳順序）→ SEGMENT_ATTACHMENT_REQUIRED
  */
+
+import type { Prisma } from "@prisma/client";
+import { validateSegmentMileage } from "./trip-validation.js";
 
 /** 單一行程段的完成度判斷輸入。 */
 export interface BlockerSegmentInput {
@@ -34,10 +38,10 @@ export interface BlockerSegmentInput {
   sortOrder: number;
   origin: string | null;
   destination: string | null;
-  /** Prisma.Decimal | null — 本 Task 不消費此欄位；為 T5 里程規則預留（勿移除）。 */
-  totalKm: unknown | null;
-  /** Prisma.Decimal | null — 同上，T5 預留。 */
-  highwayKm: unknown | null;
+  /** T5：里程業務規則之輸入（Prisma.Decimal，草稿階段可為 null）。 */
+  totalKm: Prisma.Decimal | null;
+  /** T5：同上。 */
+  highwayKm: Prisma.Decimal | null;
   /** 該段目前 LINKED 附件數；T11 之前由呼叫端算出或給 0。 */
   attachmentCount: number;
 }
@@ -131,12 +135,17 @@ export function computeCompletionBlockers(input: BlockerInput): Blocker[] {
       });
     }
 
-    // TODO(PHASE-004-T5): 里程規則 blockers 於此併入
-    //   - totalKm ≤ 0（含 0 與負值）→ SEGMENT_TOTAL_KM_INVALID
-    //   - highwayKm < 0            → SEGMENT_HIGHWAY_KM_INVALID
-    //   - highwayKm > totalKm      → SEGMENT_HIGHWAY_GT_TOTAL
-    //   插入位置：同一段內，SEGMENT_LOCATION_REQUIRED 之後、
-    //   SEGMENT_ATTACHMENT_REQUIRED 之前，以維持「同段內問題集中呈現」的順序。
+    // T5：里程規則 blockers 併入（AC-14~18）。插入位置：同一段內，
+    // SEGMENT_LOCATION_REQUIRED 之後、SEGMENT_ATTACHMENT_REQUIRED 之前，
+    // 以維持「同段內問題集中呈現」的順序。
+    blockers.push(
+      ...validateSegmentMileage({
+        id: segment.id,
+        sortOrder: segmentIndex,
+        totalKm: segment.totalKm,
+        highwayKm: segment.highwayKm,
+      })
+    );
 
     if (segment.attachmentCount < 1) {
       blockers.push({

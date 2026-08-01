@@ -828,4 +828,141 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
       expect(body.error.code).toBe("VALIDATION_ERROR");
     });
   });
+
+  // ===========================================================================
+  // PHASE-004-T5 — segments[] 格式驗證接點（僅格式驗證，不做 diff/寫入，T4 之前）
+  // ===========================================================================
+
+  describe("PUT segments[] 格式驗證（T5：里程/地點格式；T4 之前 segments 內容仍被忽略）", () => {
+    it("segments[0].totalKm='12.345'（超過 2 位小數）→ 400 VALIDATION_ERROR，fields 含 segments[0].totalKm", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: {
+          segments: [
+            {
+              origin: "台北市政府",
+              destination: "新竹科學園區",
+              totalKm: "12.345",
+              highwayKm: "5",
+              attachmentIds: [],
+            },
+          ],
+        },
+      });
+      expect(resp.statusCode).toBe(400);
+      const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
+      expect(body.error.code).toBe("VALIDATION_ERROR");
+      expect((body.error.fields ?? []).some((f) => f.field === "segments[0].totalKm")).toBe(true);
+    });
+
+    it("origin 201 字 → 400 VALIDATION_ERROR，fields 含 segments[0].origin", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: {
+          segments: [
+            {
+              origin: "地".repeat(201),
+              destination: "新竹科學園區",
+              totalKm: "10",
+              highwayKm: "5",
+              attachmentIds: [],
+            },
+          ],
+        },
+      });
+      expect(resp.statusCode).toBe(400);
+      const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
+      expect(body.error.code).toBe("VALIDATION_ERROR");
+      expect((body.error.fields ?? []).some((f) => f.field === "segments[0].origin")).toBe(true);
+    });
+
+    it("合法 2 位小數里程 + 合法地點 → 不因格式被拒（200，內容不斷言，T4 尚未接 diff）", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: {
+          segments: [
+            {
+              origin: "台北市政府",
+              destination: "新竹科學園區",
+              totalKm: "12.35",
+              highwayKm: "5.00",
+              attachmentIds: [],
+            },
+          ],
+        },
+      });
+      expect(resp.statusCode).toBe(200);
+    });
+
+    it("多段中第 2 段格式不合法 → 400，fields 定位到 segments[1]", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: {
+          segments: [
+            {
+              origin: "台北市政府",
+              destination: "新竹科學園區",
+              totalKm: "10",
+              highwayKm: "5",
+              attachmentIds: [],
+            },
+            {
+              origin: "新竹科學園區",
+              destination: "台中市政府",
+              totalKm: "abc",
+              highwayKm: "5",
+              attachmentIds: [],
+            },
+          ],
+        },
+      });
+      expect(resp.statusCode).toBe(400);
+      const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
+      expect((body.error.fields ?? []).some((f) => f.field === "segments[1].totalKm")).toBe(true);
+    });
+
+    it("highwayKm 為負值（格式層允許通過，業務層留給 T8）→ 不因格式被拒（200）", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: {
+          segments: [
+            {
+              origin: "台北市政府",
+              destination: "新竹科學園區",
+              totalKm: "10",
+              highwayKm: "-1",
+              attachmentIds: [],
+            },
+          ],
+        },
+      });
+      expect(resp.statusCode).toBe(200);
+    });
+
+    it("沒有 segments 欄位 → 不受影響，PUT 仍 200（既有 T3 行為）", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: { purpose: "沒有 segments 欄位" },
+      });
+      expect(resp.statusCode).toBe(200);
+    });
+  });
 });

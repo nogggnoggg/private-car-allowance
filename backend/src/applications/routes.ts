@@ -34,6 +34,7 @@ import {
   toTravelApplicationDto,
   updateTravelDraft,
 } from "./travel-service.js";
+import { parseKmField, parseLocationField } from "./trip-validation.js";
 
 // ---------------------------------------------------------------------------
 // Plugin options
@@ -92,6 +93,50 @@ function parsePurposeField(value: unknown): FieldParseResult<string | null> {
     };
   }
   return { ok: true, value };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-004-T5: segments[] 格式驗證（僅格式；diff/寫入留給 T4，見下方
+// TODO(PHASE-004-T4)）。對每段的 totalKm/highwayKm/origin/destination 執行
+// 格式驗證（AC-19、D14(ii)）；三態語意比照 tripDate/purpose：欄位缺席=不驗證，
+// 存在（含 null）才驗證，維持與 SegmentInput 之 `?` 可選欄位一致的語意。
+// ---------------------------------------------------------------------------
+
+/** 驗證 PUT body 的 `segments[]` 格式；回傳所有欄位錯誤（非只回第一個）。 */
+function validateSegmentsFormat(segmentsRaw: unknown): FieldError[] {
+  const errors: FieldError[] = [];
+
+  if (!Array.isArray(segmentsRaw)) {
+    errors.push({ field: "segments", reason: "必須為陣列" });
+    return errors;
+  }
+
+  segmentsRaw.forEach((rawSegment, index) => {
+    if (rawSegment === null || typeof rawSegment !== "object" || Array.isArray(rawSegment)) {
+      errors.push({ field: `segments[${index}]`, reason: "必須為物件" });
+      return;
+    }
+    const seg = rawSegment as Record<string, unknown>;
+
+    if (Object.prototype.hasOwnProperty.call(seg, "origin")) {
+      const result = parseLocationField(seg.origin, `segments[${index}].origin`);
+      if (!result.ok) errors.push(result.error);
+    }
+    if (Object.prototype.hasOwnProperty.call(seg, "destination")) {
+      const result = parseLocationField(seg.destination, `segments[${index}].destination`);
+      if (!result.ok) errors.push(result.error);
+    }
+    if (Object.prototype.hasOwnProperty.call(seg, "totalKm")) {
+      const result = parseKmField(seg.totalKm, `segments[${index}].totalKm`);
+      if (!result.ok) errors.push(result.error);
+    }
+    if (Object.prototype.hasOwnProperty.call(seg, "highwayKm")) {
+      const result = parseKmField(seg.highwayKm, `segments[${index}].highwayKm`);
+      if (!result.ok) errors.push(result.error);
+    }
+  });
+
+  return errors;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +256,13 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         else patch.purpose = result.value;
       }
 
+      // PHASE-004-T5: segments[] 格式驗證接點（里程小數位/容量、地點長度）。
+      // 任一段格式不合格 → 併入 fieldErrors，與 tripDate/purpose 錯誤一起
+      // 回傳（AC-52 精神：回報全部欄位錯誤，非只回第一項）。
+      if (Object.prototype.hasOwnProperty.call(body, "segments")) {
+        fieldErrors.push(...validateSegmentsFormat(body.segments));
+      }
+
       if (fieldErrors.length > 0) {
         throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
       }
@@ -219,10 +271,11 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       // ownerId/createdById/status 一律忽略——本函式從未讀取這些 body 欄位，
       // 只讀取 tripDate/purpose，故天然滿足「忽略」語意。
       //
-      // TODO(PHASE-004-T4): segments diff 於此接入。本 Task 完全不處理
-      // body.segments（不論是否存在、內容為何，一律忽略），diff/新增/刪除/
-      // 排序留待 T4 實作，屆時將 body.segments 傳入 travel-service 的新
-      // 服務函式（例如 applySegmentDiff）。
+      // TODO(PHASE-004-T4): segments 的 diff／新增／刪除／排序／附件
+      // link/detach 於此接入。本 Task（T5）僅完成上方的格式驗證（未通過即
+      // 400，不會執行到這裡）；格式通過後 body.segments 目前仍完全被忽略
+      // （不寫入、不影響既有段落），T4 屆時將 body.segments 傳入
+      // travel-service 的新服務函式（例如 applySegmentDiff）。
 
       const updated = await updateTravelDraft(prisma, id, patch);
       const dto = await toTravelApplicationDto(prisma, updated);
