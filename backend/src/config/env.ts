@@ -40,6 +40,48 @@ const envSchema = z.object({
 export type AppConfig = z.infer<typeof envSchema>;
 
 /**
+ * Returns a parsed AppConfig, falling back to safe literal defaults when
+ * `parseEnv` throws (e.g. incomplete test environments that omit DATABASE_URL).
+ *
+ * Single source of truth for fallback values — replaces the three duplicated
+ * try/catch blocks in server.ts, auth/routes.ts, and attachment/routes.ts
+ * (PHASE-003-T9 remediation).
+ *
+ * Zero behaviour change guarantee:
+ *   - Fallback values match the literals previously maintained in each caller.
+ *   - ATTACHMENT_STORAGE_ROOT is read from `env` so server.ts storage-root
+ *     resolution continues to work correctly in non-production environments.
+ *   - Production fail-fast logic in server.ts is unaffected (it operates on
+ *     the resolved storageRoot AFTER this function returns).
+ *
+ * @param env - Raw env object (defaults to process.env).
+ * @returns Typed AppConfig — either fully validated or safe test defaults.
+ */
+export function getEnvOrTestDefaults(
+  env: Record<string, string | undefined> = process.env
+): AppConfig {
+  try {
+    return parseEnv(env);
+  } catch {
+    return {
+      DATABASE_URL: env.DATABASE_URL ?? "postgresql://localhost/test",
+      NODE_ENV: (env.NODE_ENV as "development" | "production" | "test") ?? "development",
+      PORT: 3000,
+      LOG_LEVEL: "info" as const,
+      STORAGE_PATH: "/data/storage",
+      SESSION_ABSOLUTE_TTL_HOURS: 8,
+      SESSION_COOKIE_NAME: "sid",
+      LOGIN_MAX_FAILURES: 5,
+      LOGIN_LOCK_MINUTES: 15,
+      ATTACHMENT_STORAGE_ROOT: env.ATTACHMENT_STORAGE_ROOT,
+      ATTACHMENT_MAX_BYTES: 10485760,
+      ATTACHMENT_TEMP_TTL_HOURS: 24,
+      ATTACHMENT_THUMBNAIL_MAX_PX: 512,
+    };
+  }
+}
+
+/**
  * Parses and validates environment variables.
  *
  * @param env - Raw env object (defaults to process.env).

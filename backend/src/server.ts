@@ -11,7 +11,7 @@ import { LogController } from "fastify";
 import { adminPlugin } from "./admin/routes.js";
 import { attachmentPlugin } from "./attachment/routes.js";
 import { authPlugin } from "./auth/routes.js";
-import { parseEnv } from "./config/env.js";
+import { getEnvOrTestDefaults } from "./config/env.js";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
 import { registerErrorHandlers } from "./platform/error-handler.js";
@@ -85,27 +85,7 @@ export async function buildServer(
   //   os.tmpdir()/<dynamic-subdir> with a warning log. This avoids breaking existing test suites
   //   that call buildServer() without a storageRoot option and without ATTACHMENT_STORAGE_ROOT set.
   //   The path is dynamic (os.tmpdir() + process id), NOT a hardcoded string (Spec §8, NFR-US-07).
-  let appEnv: ReturnType<typeof parseEnv>;
-  try {
-    appEnv = parseEnv(process.env);
-  } catch {
-    // During testing with partial env, use safe defaults for non-storage fields
-    appEnv = {
-      DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://localhost/test",
-      NODE_ENV: (process.env.NODE_ENV as "development" | "production" | "test") ?? "development",
-      PORT: 3000,
-      LOG_LEVEL: "info" as const,
-      STORAGE_PATH: "/data/storage",
-      SESSION_ABSOLUTE_TTL_HOURS: 8,
-      SESSION_COOKIE_NAME: "sid",
-      LOGIN_MAX_FAILURES: 5,
-      LOGIN_LOCK_MINUTES: 15,
-      ATTACHMENT_STORAGE_ROOT: process.env.ATTACHMENT_STORAGE_ROOT,
-      ATTACHMENT_MAX_BYTES: 10485760,
-      ATTACHMENT_TEMP_TTL_HOURS: 24,
-      ATTACHMENT_THUMBNAIL_MAX_PX: 512,
-    };
-  }
+  const appEnv = getEnvOrTestDefaults(process.env);
 
   const resolvedStorageRoot = options.storageRoot ?? appEnv.ATTACHMENT_STORAGE_ROOT;
 

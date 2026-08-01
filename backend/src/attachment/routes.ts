@@ -26,7 +26,7 @@ import type { AttachmentRefType, PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requireAuth, requirePasswordChanged } from "../auth/middleware.js";
-import { parseEnv } from "../config/env.js";
+import { getEnvOrTestDefaults } from "../config/env.js";
 import { AppError } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
 import { getAttachmentContent, getAttachmentThumbnail } from "./access-service.js";
@@ -43,32 +43,6 @@ interface AttachmentPluginOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Default env (mirrors auth/routes.ts fallback pattern for test isolation)
-// ---------------------------------------------------------------------------
-
-function getEnvConfig() {
-  try {
-    return parseEnv(process.env);
-  } catch {
-    return {
-      DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://localhost/test",
-      NODE_ENV: (process.env.NODE_ENV as "development" | "production" | "test") ?? "development",
-      PORT: 3000,
-      LOG_LEVEL: "info" as const,
-      STORAGE_PATH: "/data/storage",
-      SESSION_ABSOLUTE_TTL_HOURS: 8,
-      SESSION_COOKIE_NAME: "sid",
-      LOGIN_MAX_FAILURES: 5,
-      LOGIN_LOCK_MINUTES: 15,
-      ATTACHMENT_STORAGE_ROOT: undefined,
-      ATTACHMENT_MAX_BYTES: 10485760,
-      ATTACHMENT_TEMP_TTL_HOURS: 24,
-      ATTACHMENT_THUMBNAIL_MAX_PX: 512,
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Attachment plugin
 // ---------------------------------------------------------------------------
 
@@ -79,7 +53,7 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
   const { prisma, storage } = options;
 
   // Load env config for attachment limits
-  const env = getEnvConfig();
+  const env = getEnvOrTestDefaults(process.env);
   const maxBytes = env.ATTACHMENT_MAX_BYTES;
   const thumbnailMaxPx = env.ATTACHMENT_THUMBNAIL_MAX_PX;
 
