@@ -1,7 +1,7 @@
 # PHASE-003 — 附件基礎（storage 抽象、上傳、驗證、生命週期、授權存取）
 
 - Governance-Version: 2026-08-01.2
-- 狀態：ACTIVE（人類事前批准 2026-08-01：D1~D8 全數照建議定案；D5＝自寫格式偵測＋sharp 縮圖，build 不可行時回退前端縮放並記 Accepted Risk）
+- 狀態：COMPLETED（人類整合驗收通過並批准合併，2026-08-01；PR #3 → main 766abf8。21/21 AC PASS；Accepted Risk AR-A/B/C/D 見 PROJECT_STATE 與 Review 紀錄）
 - Task ID（產出本 Spec）：SPEC-003
 - 更新日期：2026-08-01
 - Base Commit：294386c（branch: phase-003）
