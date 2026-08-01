@@ -29,7 +29,8 @@ Updated: 2026-08-01
   - SPEC-003a：DONE（commit 740a88a，DRAFT）。
   - **Spec Gate：已通過**（2026-08-01，使用者全數批准 D1~D10 依建議定案，含金額語意 D3/D8）。定案摘要：D1 三表+泛型服務；D2 僅 effectiveFrom 隱含結束（不重疊＝生效日唯一）；D3 每公里單價 Decimal 4 位、顯示層四捨五入、007 末端一次取整；D4 服務層權威+`@@unique(effectiveFrom)`；D5 專屬 `PARAMETER_PERIOD_OVERLAP`(409)；D6 單一 `PARAMETER_VERSION_CREATED`+summary.parameterType；D7 推導值不持久化；D8 油資/ETC Decimal(10,4)、車價 Decimal(12,2)、年限/年里程 Int、單價 Decimal(_,4) 非浮點；D9 不提供撤銷端點；D10 全 requireAdmin。Spec 轉 ACTIVE。
   - Task Graph（依 PRD/§8）：T1 三類 ParameterVersion 模型+migration（Medium）→ T2 不重疊驗證+依日期查找引擎（High）→ T3 油資/ETC 建立+列表 API（High）→ T4 折舊建立+推導引擎（High）→ T5 稽核寫入複用 002（High）→ T6 前端維護頁（Medium）。
-  - 下一步：派 implementer T1。
+  - **T1（資料模型+migration）：DONE**（commit c89bfc8）。三表（Fuel/Etc/Depreciation ParameterVersion）+ migration 20260801153708 + 14 模型測試（Decimal 往返精度、@db.Date 日粒度、@@unique 鑑別力、Int、無 derived）。大總管重驗：同 DB 連跑兩輪 14/14；full regression 391/391；biome root 91 檔乾淨。scope 乾淨無夾帶。
+  - 下一步：派 implementer T2（不重疊+依日期查找引擎，純函式優先，High）。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
