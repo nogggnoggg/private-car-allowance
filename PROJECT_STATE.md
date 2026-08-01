@@ -31,7 +31,8 @@ Updated: 2026-08-01
 - PHASE-001-T6（錯誤協定 + error handler）：DONE（22 新測試；全套 27/27 綠，大總管重驗；lint 遺漏由大總管代修：format/organizeImports/1 處 non-null assertion）
 - PHASE-001-T3（React 前端 + /api/health + dev proxy）：DONE（3/3 測試綠；大總管重驗 build exit=0、dist 完整；implementer 回報的 0xC0000409 build crash 未重現）
 - PHASE-001-T4（Dockerfile×2 + compose + .env.example）：DONE（五步整合驗收通過；大總管複驗 health 200/SPA 200/資料持久化）
-- PHASE-001-T5（CI）：READY
+- PHASE-001-T5（CI）：DONE（run 30693648259 全綠；gate 紅→綠驗證 run 30693595614 failure→revert 轉綠）
+- PHASE-001：REVIEW（reviewer 獨立審查中）
 - 待 Review 事項（reviewer 用）：
   - health.ts 記錄 DB 探測 err.message 原文（理論外洩面，Prisma 實務不含憑證，評 Low）
   - dotenv@17 對 stdout 印提示訊息（容器無 .env 不受影響）
