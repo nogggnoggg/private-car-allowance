@@ -36,7 +36,8 @@ Updated: 2026-08-01
   - T3 Accepted Risk（Low，轉 Phase reviewer）：(a) `new Prisma.Decimal(priceNum)` 經 float 中介，建議改傳字串；(b) 空字串 unitPrice 會 coerce 為 0。皆非阻擋、DB Decimal(10,4) 收斂。
   - **T4（折舊建立+推導引擎，High 金額語意）：DONE**（commit 4b71fee）。deriveDepreciation 純函式（Prisma.Decimal ROUND_HALF_UP、非銀行家、非浮點；每年費用 2 位、每公里單價 4 位；≤0→{ok:false} 不 NaN/例外，AC-14）；POST/GET /parameters/depreciation（requireAdmin；服務層驗 >0 且整數 D8、逐欄錯誤 AC-05、無效不推導；不重疊+P2002→409）；derived 不持久化（D7）即算即回。25 unit（.5 邊界證 round-half-up）+26 整合。大總管重驗：兩輪 26/26、full 502/502、tsc 0、biome 99 檔乾淨。
   - **T4 待 reviewer 確認點（金額，Phase reviewer 必審）**：perKmUnitPrice 分子採「未先取整的每年費用」（round-late，減累積誤差），差異在第 4 位小數（如 10/3/3 → 1.1111 vs 1.1100）。大總管判定與 Spec §4.4「最終金額晚取整」哲學一致，暫予接受，Phase reviewer 正式複核；若使用者/reviewer 偏好另案為小改動。
-  - 下一步：派 implementer T5（參數異動稽核寫入，複用 002 AuditLog；擴充 AuditAction=PARAMETER_VERSION_CREATED（D6）+ migration；接 onCreated hook，High）。
+  - **T5（參數異動稽核，複用 002 AuditLog，High）：DONE**（commit e6d4c6c）。AuditAction+PARAMETER_VERSION_CREATED（D6）+ migration（ALTER TYPE ADD VALUE，乾淨套用）；三 POST handler 以 onCreated(tx,dto) 交易內寫稽核（原子性：稽核失敗→版本 rollback；被拒建立→不寫稽核）；summary{parameterType,...,effectiveFrom}、targetLabel `<TYPE>#<id>`、targetId null、actorId 來自管理員 session；密碼/token/secret 不入稽核。14 整合測試（AC-18/稽核安全無敏感鍵/原子性雙向/拒絕路徑不寫稽核）。大總管重驗：兩輪 14/14、full **516/516（0 skip）**、tsc 0、biome 100 檔乾淨。（implementer 回報「39 skipped」經查為其 DATABASE_URL 未帶入之誤，非回歸。）
+  - 下一步：派 implementer T6（前端三類參數維護頁：建立表單+版本列表+五態，Medium）→ 之後 Phase reviewer 獨立審查 → Mock UI 驗收 Gate。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
