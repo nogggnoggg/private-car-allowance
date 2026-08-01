@@ -141,6 +141,8 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
   const cookieName = env.SESSION_COOKIE_NAME;
   const ttlHours = env.SESSION_ABSOLUTE_TTL_HOURS;
   const isProduction = env.NODE_ENV === "production";
+  const maxFailures = env.LOGIN_MAX_FAILURES;
+  const lockMinutes = env.LOGIN_LOCK_MINUTES;
 
   // -------------------------------------------------------------------------
   // POST /auth/login
@@ -156,7 +158,14 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { loginName, password } = request.body as { loginName: string; password: string };
 
-      const result = await performLogin(prisma, loginName, password, ttlHours);
+      const result = await performLogin(
+        prisma,
+        loginName,
+        password,
+        ttlHours,
+        maxFailures,
+        lockMinutes
+      );
 
       const cookieOptions = buildCookieOptions(result.expiresAt, cookieName, isProduction);
 
