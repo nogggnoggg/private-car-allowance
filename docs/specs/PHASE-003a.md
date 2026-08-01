@@ -354,6 +354,7 @@ model DepreciationParameterVersion {
 
 ### 5.2 前端參數維護頁
 
+- **導覽入口（Gate 反饋 2026-08-01，人類批准）**：管理員首頁（HomePage）須提供進入本頁的導覽連結（比照既有「使用者管理」→ `/admin/users` 之管理員專屬連結模式），連結文字 zh-TW（如「補助參數維護」）指向 `/admin/parameters`；一般使用者不顯示此連結。
 - 受保護（管理員）頁，提供三類參數各自的：**建立表單**（依類型欄位）、**版本列表**（依生效日期，顯示各版本值；折舊列額外顯示 `derived` 每年費用與每公里單價）。
 - 五態（AC-20）：Loading（載入列表）、Empty（尚無版本，顯示建立入口）、Error（值域錯以 `fields` 標欄位、重疊錯顯示衝突版本、載入錯可重試）、Success（建立成功刷新列表 + 折舊即時顯示推導）、Permission denied（一般使用者 403 態）。
 - 用途：Mock Gate（表單/列表五態）與整合 Gate 端到端（管理員建立→被拒重疊→查得有效版本）標的。
@@ -519,6 +520,7 @@ TDD：每 Task 先寫會失敗的測試再實作；不得 skip/弱化換綠燈�
 | 日期 | 版本 | 變更 | 依據 |
 |---|---|---|---|
 | 2026-08-01 | DRAFT 建立 | 依 SPEC-003a Packet 建立 PHASE-003a 完整 Spec（§1~§12 + 決策點 D1~D10） | PRD 第 5 節 PHASE-003a（289–307 行）、userstory AD-US-11/12/13、BE-US-14、BE-US-19；PHASE-002 授權/稽核契約；PHASE-003 引用保護/弱關聯思路；ARCHITECTURE §3/§4.2/§4.8、DATA_FLOW §1/§2.7；PHASE-001 錯誤協定/sanitizeForLog |
+| 2026-08-01 | Gate 反饋修訂 | Mock UI/整合驗收 Gate **通過**（人類，leonchih）；人類提出導覽缺口：管理員首頁缺少進入參數維護頁的連結。依 Gate 反饋流程新增 §5.2 導覽入口需求（管理員首頁提供 `/admin/parameters` 連結，比照既有 `/admin/users` 模式）。由 implementer 以 TDD 實作、reviewer 輕量複審後合入。此為使用者可見行為之微增，不改既有 AC 語意。 | 使用者 Gate 反饋（2026-08-01，leonchih） |
 | 2026-08-01 | DRAFT→ACTIVE | 人類事前批准 Gate 通過：D1~D10 **全數依 spec-writer 建議定案**（D1 三表+泛型服務、D2 僅 effectiveFrom 隱含結束、**D3 每公里單價 Decimal 4 位小數保留、顯示層一般四捨五入、007 末端一次取整為整數**、D4 服務層權威+`@@unique(effectiveFrom)`、D5 專屬 `PARAMETER_PERIOD_OVERLAP`(409)、D6 單一 `PARAMETER_VERSION_CREATED`+summary.parameterType、D7 推導值不持久化、**D8 油資/ETC Decimal(10,4)・車價 Decimal(12,2)・年限/年里程 Int・單價 Decimal(_,4) 一律非浮點**、D9 本 Phase 不提供撤銷端點、D10 全 requireAdmin）。金額語意 D3/D8 經人類明確批准。轉 ACTIVE，開始 TDD。 | 使用者 Gate 批准（2026-08-01，leonchih） |
 
 > 狀態轉移：DRAFT →（人類事前批准 D1~D10，其中 D3/D8 為金額語意必批）→ ACTIVE → 實作（TDD）→ COMPLETED。

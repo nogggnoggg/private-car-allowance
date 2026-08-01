@@ -43,7 +43,10 @@ Updated: 2026-08-01
   - **PHASE-003a-REVIEW（reviewer 獨立審查）：DONE — APPROVE。無 Must Fix、無 Should Fix；20/20 AC PASS；D1~D10 忠實落地。** reviewer 實跑 55/55 引擎單元、逐條核對測試鑑別力（half-up 非 half-even、round-late 累積誤差、off-by-one/含當日、日粒度、原子性、稽核無敏感皆真鑑別）。**T4 round-late 分子明確 verdict＝可接受**（符合 Spec §4.4/CLAUDE.md 晚取整；PHASE-007 須以本 Phase 回傳之 4-dp perKmUnitPrice 為準）。Diff 乾淨無夾帶/debug/secret/個資。
   - Accepted Risk（Low，保留）：AR-3a-1 油資/ETC `new Prisma.Decimal(priceNum)` float 中介（實測 4-dp 域無失真；建議未來改傳字串）；AR-3a-2 空字串 unitPrice coerce 0（route 已擋，無暴露路徑）；AR-3a-3 Windows `npm run build` 0xC0000409 teardown 崩潰（dist 完整、Linux CI/compose 權威，環境 flake 不阻擋）。
   - 文件同步：派 spec-writer 補 ARCHITECTURE.md/DATA_FLOW.md（DRAFT）之 D2/D3/D6/D7 細節（reviewer 建議，非阻擋）。
-  - **Review 清零。下一步：Mock UI 驗收 Gate（需使用者）→ 整合驗收 Gate + PR #4 合併批准（需使用者）。**
+  - **Review 清零。**
+  - **Mock UI + 整合驗收 Gate：通過（人類 leonchih，2026-08-01）**——大總管於 compose 真實拓撲（frontend:8080 / backend / PG16，Windows workaround）起站、seed 合成管理員、全鏈路 smoke（登入→強制改密→建立 201→重疊 409+conflictVersion→折舊 derived 120000.00/6.0000 正確）；使用者親自操作 UI 驗收通過。
+  - **Gate 反饋（人類提出，走 Gate 反饋流程）**：管理員首頁缺少進入 /admin/parameters 的導覽連結。已依流程：①大總管改 Spec §5.2+§13 修訂（引用本次批准）→ ②派 implementer T7 以 TDD 加連結（比照既有 /admin/users）→ ③reviewer 輕量複審 → ④合入。
+  - 下一步：T7（首頁導覽連結）→ reviewer 輕量複審 → Draft PR #4 + 人類合併批准。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
