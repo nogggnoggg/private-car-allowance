@@ -6,6 +6,7 @@ import Fastify from "fastify";
 import { LogController } from "fastify";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
+import { registerErrorHandlers } from "./platform/error-handler.js";
 import { healthPlugin, makeDefaultDbProbe } from "./platform/health.js";
 import type { DbProbe } from "./platform/health.js";
 
@@ -37,6 +38,11 @@ export async function buildServer(
 
   // Register routes
   await fastify.register(healthPlugin, { dbProbe });
+
+  // Register unified error handlers (setErrorHandler + setNotFoundHandler)
+  // Must be called after routes are registered so Fastify's encapsulation
+  // does not prevent the handlers from seeing route errors.
+  registerErrorHandlers(fastify);
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {
