@@ -30,7 +30,9 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        # --engine-strict=false: @testing-library/jest-dom@7 declares engines.node>=22
+        # but is fully functional on Node 20; the declaration is overly conservative.
+        run: npm ci --engine-strict=false
 
       - name: Lint (Biome)
         run: npm run lint
@@ -82,7 +84,9 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        # --engine-strict=false: @testing-library/jest-dom@7 declares engines.node>=22
+        # but is fully functional on Node 20; the declaration is overly conservative.
+        run: npm ci --engine-strict=false
 
       - name: Backend build (prisma generate + tsc)
         run: npm run build --workspace=backend
