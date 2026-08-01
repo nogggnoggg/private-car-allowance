@@ -48,10 +48,11 @@
 
 ## 治理
 
-流程治理依 `/orchestrator`（Governance-Version 2026-08-01.1）；專案狀態見 `PROJECT_STATE.md`。
+流程治理依 `/orchestrator`（Governance-Version 2026-08-01.2）；專案狀態見 `PROJECT_STATE.md`。
 
-### 大總管行為限制（2026-08-01 使用者裁定，違規事件後補強）
+### 大總管行為限制（2026-08-01 使用者裁定；已固化為治理 2026-08-01.2 版）
 
-- 大總管（Orchestrator）**不得直接修改任何程式、測試、設定或資料檔**——含 lint 修復、格式化、測試修正等機械式工作，一律派 implementer；大總管僅編排、驗收、commit 經驗收的產出與維護治理文件（PROJECT_STATE、Spec 狀態欄、ADR 記錄）。
-- 任何行為變更（含 Human Gate 反饋的小變更）標準順序：**先 Spec 修訂（引用人類批准）→ 派 implementer TDD → reviewer 審查 → 合入**。變更規模不是豁免條件。
-- 未經 reviewer 審查的程式變更不得合入 main。
+- 大總管**零程式修改**（白名單僅：PROJECT_STATE、Spec 狀態欄/修訂紀錄、ADR、CHANGELOG、治理節）；其餘一律派 implementer——含 lint、格式化、單行修改，規模不是豁免條件。
+- Gate 反饋變更順序：**先 Spec 修訂（引用批准）→ implementer TDD（小修可走 Lite Packet）→ reviewer（可輕量）複審 → 合入**。
+- 未經 reviewer 審查的程式變更不得進 main；每次 commit 前逐檔核對 Handoff 來源，程式 commit 必含 Task ID。
+- Phase 開工第一步重讀治理禁令節（抗長 session 漂移）。
