@@ -40,6 +40,12 @@ import { LocalVolumeStorage } from "../../src/storage/index.js";
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
 
+// Per-process unique suffix for seed loginNames. Prevents cross-file/cross-fork
+// collisions when this file and another test file (e.g. middleware.test.ts)
+// evaluate module-level `Date.now()`-based seeds within the same millisecond
+// under vitest's default parallel `pool: forks` execution.
+const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
 // ---------------------------------------------------------------------------
 // Synthetic file helpers
 // ---------------------------------------------------------------------------
@@ -90,18 +96,18 @@ describeWithDb("PHASE-003-T6 — Lifecycle: link, detach, delete", () => {
   let storageRoot: string;
 
   // Owner user (regular)
-  const OWNER_LOGIN = `t6_owner_${Date.now()}`;
+  const OWNER_LOGIN = `t6_owner_${RUN_ID}`;
   const OWNER_PASSWORD = "OwnerPass99!";
   let ownerCookie: string;
   let ownerId: string;
 
   // Other regular user
-  const OTHER_LOGIN = `t6_other_${Date.now()}`;
+  const OTHER_LOGIN = `t6_other_${RUN_ID}`;
   const OTHER_PASSWORD = "OtherPass99!";
   let otherCookie: string;
 
   // Admin user
-  const ADMIN_LOGIN = `t6_admin_${Date.now()}`;
+  const ADMIN_LOGIN = `t6_admin_${RUN_ID}`;
   const ADMIN_PASSWORD = "AdminPass99!";
   let adminCookie: string;
 

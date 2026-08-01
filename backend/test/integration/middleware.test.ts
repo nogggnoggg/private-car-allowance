@@ -34,6 +34,12 @@ import { buildServer } from "../../src/server.js";
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
 
+// Per-process unique suffix for seed loginNames. Prevents cross-file/cross-fork
+// collisions when this file and another test file (e.g. phase3-lifecycle.test.ts)
+// evaluate module-level `Date.now()`-based seeds within the same millisecond
+// under vitest's default parallel `pool: forks` execution.
+const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -85,7 +91,7 @@ describeWithDb("requireAuth preHandler (AC-05/06/Spec-4.7)", () => {
   let app: FastifyInstance;
   let prisma: PrismaClient;
 
-  const USER_LOGIN = `t5_auth_${Date.now()}`;
+  const USER_LOGIN = `t5_auth_${RUN_ID}`;
   const USER_PASSWORD = "AuthTest99!";
 
   beforeAll(async () => {
@@ -210,7 +216,7 @@ describeWithDb("requireAuth preHandler (AC-05/06/Spec-4.7)", () => {
 
   it("Spec-4.7 double-check: session valid but user deactivated → 401 (isActive double-guard)", async () => {
     // Create a separate user to deactivate
-    const deactivatedLogin = `t5_deact_${Date.now()}`;
+    const deactivatedLogin = `t5_deact_${RUN_ID}`;
     const hash = await hashPassword(USER_PASSWORD);
     const deactUser = await prisma.user.create({
       data: {
@@ -262,8 +268,8 @@ describeWithDb("requirePasswordChanged preHandler (AC-04)", () => {
   let app: FastifyInstance;
   let prisma: PrismaClient;
 
-  const MUST_CHANGE_LOGIN = `t5_mcp_${Date.now()}`;
-  const NO_CHANGE_LOGIN = `t5_ncp_${Date.now()}`;
+  const MUST_CHANGE_LOGIN = `t5_mcp_${RUN_ID}`;
+  const NO_CHANGE_LOGIN = `t5_ncp_${RUN_ID}`;
   const PASSWORD = "MustChange99!";
 
   beforeAll(async () => {
@@ -372,7 +378,7 @@ describeWithDb("requirePasswordChanged preHandler (AC-04)", () => {
   it("AC-04: Spec 4.7.1 — requireAuth uses User live value (mustChangePassword), not session snapshot", async () => {
     // Simulate: user logs in with mustChangePassword=false, then admin sets it to true in DB.
     // requireAuth should reflect the LIVE user value, so next protected request → 403.
-    const liveValueLogin = `t5_live_${Date.now()}`;
+    const liveValueLogin = `t5_live_${RUN_ID}`;
     const hash = await hashPassword(PASSWORD);
     const liveUser = await prisma.user.create({
       data: {
@@ -430,8 +436,8 @@ describeWithDb("requireAdmin preHandler (AC-24)", () => {
   let app: FastifyInstance;
   let prisma: PrismaClient;
 
-  const ADMIN_LOGIN = `t6_admin_${Date.now()}`;
-  const USER_LOGIN = `t6_user_${Date.now()}`;
+  const ADMIN_LOGIN = `t6_admin_${RUN_ID}`;
+  const USER_LOGIN = `t6_user_${RUN_ID}`;
   const PASSWORD = "AdminTest99!";
 
   beforeAll(async () => {
@@ -550,7 +556,7 @@ describeWithDb("Spec 5.1 — /me and /auth/logout accessible during mustChangePa
   let app: FastifyInstance;
   let prisma: PrismaClient;
 
-  const FORCE_LOGIN = `t5_force_${Date.now()}`;
+  const FORCE_LOGIN = `t5_force_${RUN_ID}`;
   const PASSWORD = "ForceTest99!";
 
   beforeAll(async () => {
