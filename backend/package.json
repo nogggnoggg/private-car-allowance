@@ -13,6 +13,7 @@
     "prisma:generate": "prisma generate"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.2",
     "@prisma/client": "^5.22.0",
     "argon2": "^0.45.1",
     "dotenv": "^17.4.2",

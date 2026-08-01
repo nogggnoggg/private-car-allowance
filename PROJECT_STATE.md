@@ -38,8 +38,12 @@ Updated: 2026-08-01
 - PHASE-001：**DONE**。整合驗收通過、PR #1 經人類批准合併至 main（281b744，2026-08-01）。
 - SPEC-002：DONE。**D1~D11 全數人類批准（2026-08-01）**，Spec 轉 ACTIVE。
 - PHASE-002（認證與帳號管理，branch: phase-002）：IN_PROGRESS
-  - T1 資料模型（User/Session/AuditLog + migration）：READY
-  - T2~T11：PLANNED（順序 T1→T2→T3→T4→T5→T6→T7→T8→T9→T10→T11）
+  - T1 資料模型：DONE（62/62）
+  - T2 密碼雜湊（argon2id + 10k 弱密碼清單，大總管補足清單至 D6 規模）：DONE（87/87）
+  - T3 登入/Session/Cookie（22 新測試；統一 401 逐字驗證）：DONE（109/109，大總管複驗）
+  - T4 失敗鎖定：READY；T5~T11：PLANNED
+- 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
+- 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
 
 ## 環境備註（後續 Task 必讀）
