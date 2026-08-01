@@ -18,7 +18,9 @@ Updated: 2026-08-01
 
 ## 目前 Phase
 
-- PHASE-001 專案骨架與 CI 基礎（branch: phase-001，IN_PROGRESS）。
+- PHASE-003 附件基礎（branch: phase-003，IN_PROGRESS）。
+- 開工批准：使用者於 2026-08-01 批准「003 → 003a 依序執行」（照 PRD 編號；003a 待 003 完成後接續，無需再次開工批准，但其 Spec 仍需事前批准）。
+- Phase 開工重錨定：大總管已重讀治理 2026-08-01.2「大總管禁止事項」節並確認（2026-08-01）——零程式修改、白名單外一律派 implementer、未經 reviewer 審查不合入。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
 
@@ -52,7 +54,7 @@ Updated: 2026-08-01
 - 治理事件（2026-08-01）：使用者指出大總管兩項違規（直接實作未派工；行為變更未先改 Spec）。根因分析（規則明確度為主因、派工成本為中因、context 長度為放大器）經使用者確認；解方 S1~S5 經使用者批准並執行：治理升版 **2026-08-01.2**（大總管零程式修改白名單、Gate 反饋明文流程、Lite Packet／輕量複審通道、commit 前 Task ID 自檢、Phase 開工重錨定）。
 - S5 補救審查（reviewer 事後審 b76f44b、acbb327）：DONE — **APPROVE**。無 Must/Should Fix；測試鑑別力經反向驗證（拿掉修復後測試會紅）；231 測試（後端 199＋前端 32）無回歸。新增 Accepted Risk：AR-S5-1（Low）pino `*` 萬用路徑僅遮蔽單層巢狀，兩層以上不遞迴——防禦縱深已知邊界，正常程式不記 request body，記錄保留；AR-S5-2（觀察）PHASE-002 Spec 檔內版本戳仍為 .1，下次動該檔時一併更新。
 - 治理事件結案：違規已補救、規則已升版固化（2026-08-01.2）。
-- 【暫停維持】等使用者確認是否進入 PHASE-003/003a。
+- SPEC-003（docs/specs/PHASE-003.md 詳細 Spec）：IN_PROGRESS（spec-writer 派工中）。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
@@ -79,14 +81,14 @@ Updated: 2026-08-01
 
 ## Human Gate（待觸發）
 
-- 【當前】PRD／Phase 拆分審閱
-- 各 High 風險 Phase 事前批准（002/003/003a/004/006/007/008/009/010/011）
+- 【當前】SPEC-003 完成後的 PHASE-003 Spec 事前批准（High：附件權限/生命週期）
+- 003a Spec 事前批准（003 完成後）；其後各 High 風險 Phase 事前批准（004/006/007/008/009/010/011）
 - 各 Phase Mock UI 驗收、整合驗收
 - 正式合併與發布
 
 ## Base Commit
 
-- main @ 281b744（PHASE-001 合併後）；工作 branch：phase-002
+- main @ e5397c1（PHASE-002 合併＋治理事件結案後）；工作 branch：phase-003
 
 ## 備註
 
