@@ -94,6 +94,52 @@ model AuditLog {
 }
 
 // ---------------------------------------------------------------------------
+// PHASE-003a models
+// ---------------------------------------------------------------------------
+
+/// 油資每公里單價版本（FuelParameterVersion）。
+/// D1: 三表結構（型別安全）；D2: 僅 effectiveFrom（日粒度，隱含結束）；D8: unitPrice Decimal(10,4)。
+model FuelParameterVersion {
+  id            String   @id @default(cuid())
+  unitPrice     Decimal  @db.Decimal(10, 4) // 油資每公里單價，≥0；D8 精度
+  effectiveFrom DateTime @db.Date // 生效日（日粒度，含當日）；@db.Date 不含時間
+  createdById   String // 建立之管理員 id（稽核追溯；無外鍵，見 T1 Packet 說明）
+  createdAt     DateTime @default(now())
+
+  @@unique([effectiveFrom]) // D4 併發防線：同類同生效日唯一
+  @@index([effectiveFrom])
+}
+
+/// ETC 每公里單價版本（EtcParameterVersion）。
+/// 結構同 FuelParameterVersion；D8: unitPrice Decimal(10,4)。
+model EtcParameterVersion {
+  id            String   @id @default(cuid())
+  unitPrice     Decimal  @db.Decimal(10, 4) // ETC 每公里單價，≥0；D8 精度
+  effectiveFrom DateTime @db.Date
+  createdById   String
+  createdAt     DateTime @default(now())
+
+  @@unique([effectiveFrom]) // D4 併發防線
+  @@index([effectiveFrom])
+}
+
+/// 折舊參數版本（DepreciationParameterVersion）。
+/// D7: 派生值（每年費用/每公里單價）不持久化，即算即回；D8: vehiclePrice Decimal(12,2)、年限/年里程 Int。
+model DepreciationParameterVersion {
+  id                String   @id @default(cuid())
+  vehiclePrice      Decimal  @db.Decimal(12, 2) // 車價（新臺幣），>0；D8 精度
+  usefulLifeYears   Int // 折舊年限（年），>0；整數（D8）
+  estimatedAnnualKm Int // 預估年度行駛公里數，>0；整數（D8）
+  effectiveFrom     DateTime @db.Date
+  createdById       String
+  createdAt         DateTime @default(now())
+  // 注：每年折舊費用與每公里單價「不持久化」（D7），由推導引擎即算即回。
+
+  @@unique([effectiveFrom]) // D4 併發防線
+  @@index([effectiveFrom])
+}
+
+// ---------------------------------------------------------------------------
 // PHASE-003 enums
 // ---------------------------------------------------------------------------
 
