@@ -25,7 +25,10 @@ Updated: 2026-08-01
 ## 目前 Phase
 
 - **PHASE-003 DONE**：整合驗收通過、PR #3 經人類批准合併至 main（766abf8，2026-08-01）；Spec 轉 COMPLETED。
-- **PHASE-003a（補助參數維護，branch: phase-003a）：ACTIVE / IN_PROGRESS**（2026-08-01 使用者指令接續開工）。
+- **PHASE-003a（補助參數維護）：DONE**。整合驗收通過、PR #4 經人類批准合併至 main（94a87a8，2026-08-02）；Spec 轉 COMPLETED。CI 全綠（Lint/Typecheck/Frontend、Backend Build&Tests、Docker Build 皆 pass）。授權於 compose 真實環境實測：一般使用者 staff01 對所有 /parameters 端點（GET fuel/etc/depreciation、POST fuel/depreciation）皆 403；管理員專屬（後端 requireAdmin 為權威 + 前端首頁連結僅管理員可見 + 頁面 permission-denied 態）。
+- **【暫停】PHASE-003a 完成，等使用者指令進入下一階段**（PHASE-004 差旅核心；High，Spec 需事前批准 Gate）。
+
+### PHASE-003a 施工細節（已歸檔）
   - SPEC-003a：DONE（commit 740a88a，DRAFT）。
   - **Spec Gate：已通過**（2026-08-01，使用者全數批准 D1~D10 依建議定案，含金額語意 D3/D8）。定案摘要：D1 三表+泛型服務；D2 僅 effectiveFrom 隱含結束（不重疊＝生效日唯一）；D3 每公里單價 Decimal 4 位、顯示層四捨五入、007 末端一次取整；D4 服務層權威+`@@unique(effectiveFrom)`；D5 專屬 `PARAMETER_PERIOD_OVERLAP`(409)；D6 單一 `PARAMETER_VERSION_CREATED`+summary.parameterType；D7 推導值不持久化；D8 油資/ETC Decimal(10,4)、車價 Decimal(12,2)、年限/年里程 Int、單價 Decimal(_,4) 非浮點；D9 不提供撤銷端點；D10 全 requireAdmin。Spec 轉 ACTIVE。
   - Task Graph（依 PRD/§8）：T1 三類 ParameterVersion 模型+migration（Medium）→ T2 不重疊驗證+依日期查找引擎（High）→ T3 油資/ETC 建立+列表 API（High）→ T4 折舊建立+推導引擎（High）→ T5 稽核寫入複用 002（High）→ T6 前端維護頁（Medium）。
@@ -138,7 +141,7 @@ Updated: 2026-08-01
 
 ## Base Commit
 
-- main @ 766abf8（PHASE-003 合併後）；無作用中工作 branch（暫停中）
+- main @ 94a87a8（PHASE-003a 合併後，PR #4）；無作用中工作 branch（暫停中）
 
 ## 備註
 

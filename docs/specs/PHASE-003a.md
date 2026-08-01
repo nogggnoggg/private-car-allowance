@@ -1,7 +1,7 @@
 # PHASE-003a — 補助參數維護（油資 / ETC / 折舊，版本化不重疊）
 
 - Governance-Version: 2026-08-01.2
-- 狀態：**ACTIVE**（High 風險 Spec；第 13 節 D1~D10 決策點已於 2026-08-01 經人類事前批准，全數依建議定案，見 §13 修訂紀錄）
+- 狀態：**COMPLETED**（High 風險 Spec；D1~D10 事前批准並實作，Review APPROVE、20/20 AC、Mock UI+整合驗收通過；PR #4 經人類批准合併至 main @ 94a87a8，2026-08-02。見 §13 修訂紀錄）
 - Task ID（產出本 Spec）：SPEC-003a
 - 更新日期：2026-08-01
 - Phase ID：PHASE-003a
