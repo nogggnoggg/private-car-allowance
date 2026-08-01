@@ -46,7 +46,9 @@ Updated: 2026-08-01
   - **Review 清零。**
   - **Mock UI + 整合驗收 Gate：通過（人類 leonchih，2026-08-01）**——大總管於 compose 真實拓撲（frontend:8080 / backend / PG16，Windows workaround）起站、seed 合成管理員、全鏈路 smoke（登入→強制改密→建立 201→重疊 409+conflictVersion→折舊 derived 120000.00/6.0000 正確）；使用者親自操作 UI 驗收通過。
   - **Gate 反饋（人類提出，走 Gate 反饋流程）**：管理員首頁缺少進入 /admin/parameters 的導覽連結。已依流程：①大總管改 Spec §5.2+§13 修訂（引用本次批准）→ ②派 implementer T7 以 TDD 加連結（比照既有 /admin/users）→ ③reviewer 輕量複審 → ④合入。
-  - 下一步：T7（首頁導覽連結）→ reviewer 輕量複審 → Draft PR #4 + 人類合併批准。
+  - **T7（首頁導覽連結，Gate 反饋，Low）：DONE**（commit 4fa8336）。HomePage 加管理員專屬 `/admin/parameters` 連結（比照 /admin/users），5 測試（角色鑑別力：USER 不顯示；管理員可見+href；3 非回歸）。大總管重驗前端 64/64、tsc 0、biome 104 檔乾淨。
+  - **T7 reviewer 輕量複審：APPROVE**（無 Must/Should Fix；連結正確、角色鑑別力真、未弱化 RouteGuard 授權、無夾帶/secret/個資）。**Gate 反饋流程結案。**
+  - 下一步：Draft PR #4（整個 PHASE-003a）+ 人類合併批准。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
