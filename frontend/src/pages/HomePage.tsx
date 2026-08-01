@@ -29,6 +29,11 @@ export default function HomePage(): React.ReactElement {
               使用者管理
             </Link>
           )}
+          {user.role === "ADMIN" && (
+            <Link to="/admin/parameters" className="btn btn-secondary">
+              補助參數維護
+            </Link>
+          )}
           <Link to="/change-password" className="btn btn-secondary">
             變更密碼
           </Link>
