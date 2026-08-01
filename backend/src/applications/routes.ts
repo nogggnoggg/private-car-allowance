@@ -7,8 +7,12 @@
  *   PUT    /applications/travel/:id  → 200 { application: TravelApplicationDto }
  *   DELETE /applications/:id         → 200 { ok: true }
  *
+ * Endpoints implemented in PHASE-004-T7 (this Task's own addition):
+ *   POST   /applications/travel/preview → 200 { preview: TravelComputedDto }
+ *     stateless（AC-36：絕對不寫任何 DB 資料列，only reads via
+ *     resolveTravelParameters's findMany）; §8.2, §9「金額預覽（stateless）」.
+ *
  * Explicitly OUT of scope for this Task (see PHASE-004.md §2, Task Graph):
- *   POST /applications/travel/preview        (T6)
  *   POST /applications/:id/complete           (T8)
  *   GET  /applications                        (T9)
  *   POST /admin/users/:userId/applications/travel (T10)
@@ -16,20 +20,25 @@
  * Auth (§6.1 授權矩陣): requireAuth + requirePasswordChanged on every route
  * here; ownership is authorized purely from the DB-loaded `ownerId`
  * (`assertOwnershipOrAdmin`), never from any request-supplied identifier
- * (§6.2 資料隔離不變式 1 — BE-US-02 第三條 AC).
+ * (§6.2 資料隔離不變式 1 — BE-US-02 第三條 AC). `/applications/travel/preview`
+ * has NO data ownership (stateless, §6.1 授權矩陣表) — auth is still required
+ * (401/403 PASSWORD_CHANGE_REQUIRED) but there is no `assertOwnershipOrAdmin`
+ * call because there is no persisted resource to own.
  */
 
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { parseUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
+import { resolveTravelParameters } from "./travel-parameters.js";
 import type { SegmentPatch } from "./travel-service.js";
 import {
   createTravelDraft,
   deleteApplication,
+  formatTravelComputed,
   getApplicationForAuth,
   getTravelApplication,
   toTravelApplicationDto,
@@ -161,6 +170,61 @@ function parseSegmentsInput(segmentsRaw: unknown): ParsedSegmentsResult {
     }
 
     return parsed;
+  });
+
+  return { errors, segments };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-004-T7: /applications/travel/preview 專用 segments[] 格式驗證。
+//
+// §8.2 宣告的形狀較窄：`{ totalKm?, highwayKm? }[]`（無 id/origin/
+// destination/attachmentIds — 預覽不需要，因為預覽從不寫入任何段落）。
+// 沿用 T5 的 `parseKmField`（不重寫解析邏輯，Packet 明文要求）；三態語意
+// 同 PUT 的 segments[] 欄位：key 缺席或值為 undefined → 視為未提供，該段
+// totalKm/highwayKm 為 null（下游 `formatTravelComputed` 視 null 為 0 計算，
+// 符合 Packet「里程為 null 的段落：視為 0 計算」）。
+// ---------------------------------------------------------------------------
+
+interface ParsedPreviewSegment {
+  totalKm: Prisma.Decimal | null;
+  highwayKm: Prisma.Decimal | null;
+}
+
+interface ParsedPreviewSegmentsResult {
+  errors: FieldError[];
+  segments: ParsedPreviewSegment[];
+}
+
+function parsePreviewSegmentsInput(segmentsRaw: unknown): ParsedPreviewSegmentsResult {
+  const errors: FieldError[] = [];
+
+  if (!Array.isArray(segmentsRaw)) {
+    errors.push({ field: "segments", reason: "必須為陣列" });
+    return { errors, segments: [] };
+  }
+
+  const segments: ParsedPreviewSegment[] = segmentsRaw.map((rawSegment, index) => {
+    if (rawSegment === null || typeof rawSegment !== "object" || Array.isArray(rawSegment)) {
+      errors.push({ field: `segments[${index}]`, reason: "必須為物件" });
+      return { totalKm: null, highwayKm: null };
+    }
+    const seg = rawSegment as Record<string, unknown>;
+    let totalKm: ParsedPreviewSegment["totalKm"] = null;
+    let highwayKm: ParsedPreviewSegment["highwayKm"] = null;
+
+    if (Object.prototype.hasOwnProperty.call(seg, "totalKm") && seg.totalKm !== undefined) {
+      const result = parseKmField(seg.totalKm, `segments[${index}].totalKm`);
+      if (!result.ok) errors.push(result.error);
+      else totalKm = result.value;
+    }
+    if (Object.prototype.hasOwnProperty.call(seg, "highwayKm") && seg.highwayKm !== undefined) {
+      const result = parseKmField(seg.highwayKm, `segments[${index}].highwayKm`);
+      if (!result.ok) errors.push(result.error);
+      else highwayKm = result.value;
+    }
+
+    return { totalKm, highwayKm };
   });
 
   return { errors, segments };
@@ -314,6 +378,57 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       const updated = await updateTravelDraft(prisma, id, patch, parsedSegments);
       const dto = await toTravelApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/travel/preview (PHASE-004-T7)
+  // AC-31~36, AC-45~47（部分：呈現 parameterAvailable/missingParameters，
+  // 不擋任何請求 — 完成端點才擋，見 travel-parameters.ts assertParametersAvailable
+  // 供 T8 使用）, D6/D8, §9「金額預覽（stateless）」。
+  //
+  // Stateless：無資料擁有權判定（§6.1 授權矩陣「無資料擁有權（stateless）；
+  // 不回傳他人資料」）——不查詢/寫入任何 Application/TripSegment/Attachment
+  // 資料列（AC-36），只讀參數版本表（resolveTravelParameters 的 findMany）。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/travel/preview",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const fieldErrors: FieldError[] = [];
+
+      let tripDate: Date | null = null;
+      if (Object.prototype.hasOwnProperty.call(body, "tripDate") && body.tripDate !== undefined) {
+        const result = parseTripDateField(body.tripDate);
+        if (!result.ok) fieldErrors.push(result.error);
+        else tripDate = result.value;
+      }
+
+      const { errors: segmentErrors, segments: parsedSegments } = parsePreviewSegmentsInput(
+        body.segments
+      );
+      fieldErrors.push(...segmentErrors);
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      // 唯一的 DB 存取：讀取（AC-36 唯讀鑑別力）。
+      const resolved = await resolveTravelParameters(prisma, tripDate);
+
+      const preview = formatTravelComputed(
+        resolved,
+        parsedSegments.map((s, index) => ({
+          segmentId: null,
+          segmentIndex: index,
+          totalKm: s.totalKm,
+          highwayKm: s.highwayKm,
+        }))
+      );
+
+      return reply.status(200).send({ preview });
     }
   );
 

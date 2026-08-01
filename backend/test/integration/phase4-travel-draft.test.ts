@@ -19,7 +19,7 @@
  *     prefix; NEVER deleteMany({}) globally.
  *   - synthetic data only (虛構人名、地名、出差目的)
  */
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -1376,6 +1376,146 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
       expect(attRow.refType).toBeNull();
       expect(attRow.refId).toBeNull();
       expect(attRow.linkedAt).toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-004-T7 — computed/missingParameters 接進草稿 DTO（AC-46, D6, §8.1）
+  //
+  // 本區塊擁有自己的 FuelParameterVersion/EtcParameterVersion 生效日區段
+  // （2032 年），與本檔既有測試（2026/2030 年）及
+  // phase4-travel-preview.test.ts 專用的 2031 年區段皆不重疊，避免撞全域
+  // 唯一鍵 `@@unique([effectiveFrom])`（Packet 明文要求：本檔測試須使用不與
+  // 其他測試檔衝突的生效日；本檔自 T3 起既有測試皆未建立任何參數版本，故此
+  // 為本檔第一次、也是唯一一處建立 FuelParameterVersion/EtcParameterVersion
+  // 的地方）。cleanup 限定自建版本 id，不使用 deleteMany({})。
+  // ===========================================================================
+
+  describe("PHASE-004-T7 — computed/missingParameters", () => {
+    const PARAM_DATE = "2032-01-01"; // 本區塊專屬生效日：油資 6.0000 / ETC 3.0000
+    const BEFORE_PARAM_DATE = "2020-06-15"; // 早於 PARAM_DATE，故必然缺參數
+
+    let fuelVersionId: string;
+    let etcVersionId: string;
+
+    beforeAll(async () => {
+      if (!DB_URL) return;
+      const fuel = await prisma.fuelParameterVersion.create({
+        data: {
+          unitPrice: new Prisma.Decimal("6.0000"),
+          effectiveFrom: new Date(PARAM_DATE),
+          createdById: ownerId,
+        },
+      });
+      const etc = await prisma.etcParameterVersion.create({
+        data: {
+          unitPrice: new Prisma.Decimal("3.0000"),
+          effectiveFrom: new Date(PARAM_DATE),
+          createdById: ownerId,
+        },
+      });
+      fuelVersionId = fuel.id;
+      etcVersionId = etc.id;
+    });
+
+    afterAll(async () => {
+      if (!DB_URL) return;
+      if (fuelVersionId) {
+        await prisma.fuelParameterVersion.deleteMany({ where: { id: fuelVersionId } });
+      }
+      if (etcVersionId) {
+        await prisma.etcParameterVersion.deleteMany({ where: { id: etcVersionId } });
+      }
+    });
+
+    it("AC-46 缺參數仍可存草稿 → 200，completionBlockers 含 PARAMETER_NOT_AVAILABLE", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+        payload: { tripDate: BEFORE_PARAM_DATE, purpose: "缺參數測試" },
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{ application: { completionBlockers: { code: string }[] } }>();
+      expect(body.application.completionBlockers.map((b) => b.code)).toContain(
+        "PARAMETER_NOT_AVAILABLE"
+      );
+    });
+
+    it("參數齊備時草稿 computed 有值且金額正確（依實際建立之單價：油資6/ETC 3）", async () => {
+      const draft = await createOwnerDraft({});
+      await putSegments(
+        ownerCookie,
+        draft.id,
+        [{ origin: "甲地", destination: "乙地", totalKm: "10", highwayKm: "4", attachmentIds: [] }],
+        { tripDate: PARAM_DATE, purpose: "參數齊備測試" }
+      );
+
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{
+        application: {
+          computed: {
+            parameterAvailable: boolean;
+            missingParameters: string[];
+            segments: {
+              fuelAmount: string;
+              etcAmount: string;
+              rawAmount: string;
+              amount: number;
+            }[];
+            totalAmount: number;
+          } | null;
+        };
+      }>();
+      expect(body.application.computed).not.toBeNull();
+      const computed = body.application.computed as NonNullable<typeof body.application.computed>;
+      expect(computed.parameterAvailable).toBe(true);
+      expect(computed.missingParameters).toEqual([]);
+      expect(computed.segments[0].fuelAmount).toBe("60.0000"); // 10 × 6
+      expect(computed.segments[0].etcAmount).toBe("12.0000"); // 4 × 3
+      expect(computed.segments[0].rawAmount).toBe("72.0000");
+      expect(computed.segments[0].amount).toBe(72);
+      expect(computed.totalAmount).toBe(72);
+    });
+
+    it("D6 鑑別力：草稿 GET 回應（一般使用者與管理員皆同）不含單價欄位", async () => {
+      const draft = await createOwnerDraft({});
+      await putSegments(
+        ownerCookie,
+        draft.id,
+        [{ origin: "甲地", destination: "乙地", totalKm: "5", highwayKm: "1", attachmentIds: [] }],
+        { tripDate: PARAM_DATE, purpose: "D6 測試" }
+      );
+
+      for (const cookie of [ownerCookie, adminCookie]) {
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/travel/${draft.id}`,
+          headers: { cookie },
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = resp.json<Record<string, unknown>>();
+        const application = body.application as Record<string, unknown>;
+        const computed = application.computed as Record<string, unknown>;
+        expect(computed.fuelUnitPrice).toBeUndefined();
+        expect(computed.etcUnitPrice).toBeUndefined();
+        expect(computed.fuelParameterVersionId).toBeUndefined();
+        expect(computed.etcParameterVersionId).toBeUndefined();
+        const seg = (computed.segments as Record<string, unknown>[])[0];
+        expect(seg.fuelUnitPrice).toBeUndefined();
+        expect(seg.etcUnitPrice).toBeUndefined();
+        const raw = JSON.stringify(body);
+        expect(raw).not.toContain("fuelUnitPrice");
+        expect(raw).not.toContain("etcUnitPrice");
+        expect(raw).not.toContain("fuelParameterVersionId");
+        expect(raw).not.toContain("etcParameterVersionId");
+      }
     });
   });
 });

@@ -10,8 +10,6 @@
  * (T3 Packet §Required Context 4).
  *
  * Extension points left for later Tasks (Packet 明文要求，勿移除標記)：
- *   - TODO(PHASE-004-T7): computed（草稿即算預覽）與 missingParameters 於
- *     toTravelApplicationDto 接入
  *   - TODO(PHASE-004-T8): 完成快照（segment.snapshot / 頂層 snapshot）於
  *     toTravelApplicationDto 接入
  *   - TODO(PHASE-004-T11): segment.attachments（AttachmentDto[]）於
@@ -23,14 +21,30 @@
  * PHASE-004-T4（本次擴充）：`updateTravelDraft` 的 `segments` 整份 PUT diff
  * 語意（D15）+ 刪段連帶 detach（D16）+ `deleteApplication` 的 AC-05 補完，
  * 皆已接入，見下方個別函式的文件註解。
+ *
+ * PHASE-004-T7（本次擴充）：`computed`（草稿即算預覽）與
+ * `completionBlockers` 的 `missingParameters` 已接入 `toTravelApplicationDto`
+ * （見 `formatTravelComputed` 與呼叫端）。`TODO(PHASE-004-T7)` 標記已移除。
+ *
+ * D6 授權邊界（最高優先，Spec §17.1 D6(c)）：`TravelComputedDto` **刻意不含**
+ * `fuelUnitPrice`/`etcUnitPrice`/`fuelParameterVersionId`/`etcParameterVersionId`
+ * 欄位——不是「有欄位但留空」，是型別上根本不存在這些 key，從編譯期杜絕任何
+ * 程式路徑意外把單價寫進草稿/預覽回應。Spec §8.1 `TravelComputedDto` 上的
+ * `fuelUnitPrice?`/`etcUnitPrice?`（帶 `?`）僅表示「是否回傳見 D6」——D6(c)
+ * 定案為「草稿/預覽不含單價；已完成 snapshot 含單價」，故本 Phase 的
+ * `TravelComputedDto`（草稿/預覽專用）完全不宣告這兩個欄位；單價只會出現在
+ * T8 的 `TravelSnapshotDto`（已完成專用，讀快照非重算）。
  */
 
-import type { ApplicationStatus, Prisma, PrismaClient } from "@prisma/client";
+import type { ApplicationStatus, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { detachAttachmentsByRefTx } from "../attachment/lifecycle-service.js";
 import { formatUtcDate } from "../parameters/parameter-service.js";
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
+import { type CalcSegmentInput, calculateTravel } from "./travel-calculation.js";
+import { type ResolvedParameters, resolveTravelParameters } from "./travel-parameters.js";
 
 // ---------------------------------------------------------------------------
 // Date helpers (D9 primaryDate derivation)
@@ -461,11 +475,97 @@ export interface TravelApplicationDto {
   purpose: string | null;
   segments: TripSegmentDto[];
   completionBlockers: Blocker[];
-  computed: unknown | null; // TODO(PHASE-004-T7): TravelComputedDto
+  computed: TravelComputedDto | null; // DRAFT：即算預覽；COMPLETED：null（D8）
   snapshot: unknown | null; // TODO(PHASE-004-T8): TravelSnapshotDto
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// TravelComputedDto (§8.1) — PHASE-004-T7
+//
+// D6(c)：草稿/預覽 computed 不含單價 —— 型別上刻意不宣告 fuelUnitPrice /
+// etcUnitPrice / fuelParameterVersionId / etcParameterVersionId（見上方檔頭
+// 註解）。同一份計算函式（D8）供 toTravelApplicationDto（草稿讀取/儲存）與
+// POST /applications/travel/preview（routes.ts）共用。
+// ---------------------------------------------------------------------------
+
+export interface TravelComputedSegmentDto {
+  segmentId: string | null;
+  segmentIndex: number;
+  fuelAmount: string; // 取整前
+  etcAmount: string; // 取整前
+  rawAmount: string; // 取整前（油資+ETC）
+  amount: number; // 取整後（整數）
+}
+
+export interface TravelComputedDto {
+  parameterAvailable: boolean;
+  missingParameters: ("FUEL" | "ETC")[];
+  totalKm: string;
+  segments: TravelComputedSegmentDto[];
+  totalRawAmount: string;
+  totalAmount: number;
+}
+
+/** One normalized segment input for the shared computed-formatting step below. */
+export interface ComputedSegmentInput {
+  segmentId: string | null;
+  segmentIndex: number;
+  totalKm: Prisma.Decimal | null;
+  highwayKm: Prisma.Decimal | null;
+}
+
+/**
+ * Pure formatting/calculation step, given an ALREADY-resolved
+ * `ResolvedParameters` (caller does the one DB round-trip via
+ * `resolveTravelParameters`, see §10.2 perf note — do not re-resolve per
+ * caller). Reused by both `toTravelApplicationDto` (draft) and the
+ * `/applications/travel/preview` route (routes.ts) — this is the "同一組
+ * 計算函式" D8 requires.
+ *
+ * 缺參數時的呈現選擇（Packet §Done When 3 要求說明；本函式即為該實作點）：
+ * 缺少的那一類單價視為 0（`Prisma.Decimal(0)`），**不是**把整筆金額全部歸
+ * 零。理由：若出差日期只缺 ETC 版本（油資版本齊備），使用者填的總里程仍能
+ * 即時看到油資部分的正確試算金額，只有 ETC 部分顯示 0——這比「整筆一律顯示
+ * 0」更能準確反映「哪一部分尚未有計算依據」，且與 `missingParameters` 一起
+ * 呈現時語意一致（AC-46/47 只擋「完成」，不擋「預覽/草稿仍要盡量準確呈現」）。
+ * `parameterAvailable=false` 仍會回傳，前端可依此顯示提示文案而非直接採信
+ * 金額為最終值。里程為 null 的段落一律視為 0 計算（AC-31/32 精神：欄位有值
+ * 才有對應金額；草稿/預覽本就允許不完整資料）。
+ */
+export function formatTravelComputed(
+  resolved: ResolvedParameters,
+  segments: ReadonlyArray<ComputedSegmentInput>
+): TravelComputedDto {
+  const fuelUnitPrice = resolved.fuelUnitPrice ?? new Prisma.Decimal(0);
+  const etcUnitPrice = resolved.etcUnitPrice ?? new Prisma.Decimal(0);
+
+  const calcSegments: CalcSegmentInput[] = segments.map((s) => ({
+    segmentId: s.segmentId,
+    segmentIndex: s.segmentIndex,
+    totalKm: s.totalKm ?? new Prisma.Decimal(0),
+    highwayKm: s.highwayKm ?? new Prisma.Decimal(0),
+  }));
+
+  const result = calculateTravel({ segments: calcSegments, fuelUnitPrice, etcUnitPrice });
+
+  return {
+    parameterAvailable: resolved.missing.length === 0,
+    missingParameters: [...resolved.missing],
+    totalKm: result.totalKm.toFixed(2),
+    segments: result.segments.map((s) => ({
+      segmentId: s.segmentId,
+      segmentIndex: s.segmentIndex,
+      fuelAmount: s.fuelAmount.toFixed(4),
+      etcAmount: s.etcAmount.toFixed(4),
+      rawAmount: s.rawAmount.toFixed(4),
+      amount: s.amount,
+    })),
+    totalRawAmount: result.totalRawAmount.toFixed(4),
+    totalAmount: result.totalAmount,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -493,10 +593,19 @@ export async function toTravelApplicationDto(
     snapshot: null, // TODO(PHASE-004-T8)
   }));
 
+  // PHASE-004-T7: resolve parameters ONCE for DRAFT (§10.2 perf note — avoid
+  // a second findMany round-trip) and share the result between
+  // completionBlockers' missingParameters and the computed preview below.
+  // COMPLETED applications never resolve current parameters — computed=null
+  // and completionBlockers=[] (they read the immutable snapshot instead, T8).
+  const tripDate = application.travel?.tripDate ?? null;
+  const resolvedParameters =
+    application.status === "DRAFT" ? await resolveTravelParameters(prisma, tripDate) : null;
+
   const completionBlockers: Blocker[] =
-    application.status === "DRAFT"
+    application.status === "DRAFT" && resolvedParameters
       ? computeCompletionBlockers({
-          tripDate: application.travel?.tripDate ?? null,
+          tripDate,
           purpose: application.travel?.purpose ?? null,
           segments: segments.map((s) => ({
             id: s.id,
@@ -507,9 +616,21 @@ export async function toTravelApplicationDto(
             highwayKm: s.highwayKm,
             attachmentCount: counts.get(s.id) ?? 0,
           })),
-          missingParameters: [], // TODO(PHASE-004-T7): 依 tripDate 查參數版本後填入
+          missingParameters: resolvedParameters.missing,
         })
       : [];
+
+  const computed: TravelComputedDto | null = resolvedParameters
+    ? formatTravelComputed(
+        resolvedParameters,
+        segments.map((s) => ({
+          segmentId: s.id,
+          segmentIndex: s.sortOrder,
+          totalKm: s.totalKm,
+          highwayKm: s.highwayKm,
+        }))
+      )
+    : null;
 
   return {
     id: application.id,
@@ -520,11 +641,11 @@ export async function toTravelApplicationDto(
     createdById: application.createdById,
     createdByDisplayName: application.createdBy.displayName,
     onBehalf: application.createdById !== application.ownerId,
-    tripDate: application.travel?.tripDate ? formatUtcDate(application.travel.tripDate) : null,
+    tripDate: tripDate ? formatUtcDate(tripDate) : null,
     purpose: application.travel?.purpose ?? null,
     segments: segmentDtos,
     completionBlockers,
-    computed: null, // TODO(PHASE-004-T7)
+    computed,
     snapshot: null, // TODO(PHASE-004-T8)
     createdAt: application.createdAt.toISOString(),
     updatedAt: application.updatedAt.toISOString(),
