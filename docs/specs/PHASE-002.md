@@ -2,6 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：**ACTIVE**（D1~D11 全數經人類批准，2026-08-01；含 D9 初始管理員 seed 機制）
+- 修訂（2026-08-01，Mock/整合 Gate 人類反饋）：強制改密頁增加「登出」出口——忘記臨時密碼的使用者可登出後請管理員重設；同時解決同瀏覽器下 A 卡在改密頁導致 B 無法登入的問題。後端 `/auth/logout` 本就豁免 requirePasswordChanged（5.1），此為前端補齊；「阻擋進入其他系統頁面」的 FE-US-02 原意不變。
 - 更新日期：2026-08-01
 - Phase ID：PHASE-002
 - Base Commit：3e16155（branch: phase-001；PHASE-001 已整合驗收通過，PR #1 待合併；本 Phase 於 phase-002 branch 實作，由大總管 commit）

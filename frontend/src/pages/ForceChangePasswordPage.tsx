@@ -6,8 +6,13 @@ import { useAuth } from "../context/AuthContext.js";
 import type { ApiError } from "../types/api.js";
 
 export default function ForceChangePasswordPage(): React.ReactElement {
-  const { refreshAuth } = useAuth();
+  const { refreshAuth, logout } = useAuth();
   const navigate = useNavigate();
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login", { replace: true });
+  }
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -134,6 +139,18 @@ export default function ForceChangePasswordPage(): React.ReactElement {
             {loading ? "變更中…" : "確認變更密碼"}
           </button>
         </form>
+
+        <div className="auth-alt-action">
+          <p className="hint">忘記臨時密碼？請先登出，再請管理員重新設定一組臨時密碼。</p>
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loading}
+            className="btn btn-secondary"
+          >
+            登出
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -239,3 +239,69 @@ describe("ForceChangePasswordPage", () => {
     });
   });
 });
+
+describe("ForceChangePasswordPage — 登出出口（Gate 反饋 2026-08-01）", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderWithLoginRoute() {
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          user: {
+            id: "u2",
+            loginName: "user1",
+            displayName: "使用者一",
+            employeeNumber: null,
+            role: "USER",
+            isActive: true,
+            mustChangePassword: true,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    return render(
+      <MemoryRouter initialEntries={["/change-password-forced"]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/change-password-forced" element={<ForceChangePasswordPage />} />
+            <Route path="/login" element={<div>登入頁占位</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+  }
+
+  it("頁面提供「登出」出口（忘記臨時密碼時的離開路徑）", async () => {
+    renderWithLoginRoute();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /登出/ })).toBeInTheDocument();
+    });
+  });
+
+  it("點擊登出 → 呼叫 logout API 並導向登入頁", async () => {
+    renderWithLoginRoute();
+    const btn = await waitFor(() => screen.getByRole("button", { name: /登出/ }));
+
+    // Mock POST /api/auth/logout
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200 })
+    );
+
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      expect(screen.getByText("登入頁占位")).toBeInTheDocument();
+    });
+    const logoutCall = (fetch as Mock).mock.calls.find(
+      (c) => typeof c[0] === "string" && c[0].includes("/api/auth/logout")
+    );
+    expect(logoutCall).toBeTruthy();
+  });
+});
