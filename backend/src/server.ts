@@ -2,17 +2,22 @@
  * buildServer() — assembles the Fastify instance with plugins and routes.
  * Accepts options for test injection (databaseUrl, dbProbeOverride, logStream).
  */
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Writable } from "node:stream";
 import fastifyCookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { LogController } from "fastify";
 import { adminPlugin } from "./admin/routes.js";
+import { attachmentPlugin } from "./attachment/routes.js";
 import { authPlugin } from "./auth/routes.js";
+import { parseEnv } from "./config/env.js";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
 import { registerErrorHandlers } from "./platform/error-handler.js";
 import { healthPlugin, makeDefaultDbProbe } from "./platform/health.js";
 import type { DbProbe } from "./platform/health.js";
+import { LocalVolumeStorage } from "./storage/index.js";
 
 export interface BuildServerOptions {
   /** Postgres connection URL; if omitted, reads from DATABASE_URL env var */
@@ -26,6 +31,11 @@ export interface BuildServerOptions {
    * When provided, pino writes JSON log lines to this stream instead of stdout.
    */
   logStream?: Writable;
+  /**
+   * Override the storage root path (for integration tests).
+   * When provided, LocalVolumeStorage uses this path instead of ATTACHMENT_STORAGE_ROOT.
+   */
+  storageRoot?: string;
 }
 
 export async function buildServer(
@@ -63,6 +73,60 @@ export async function buildServer(
 
   // Register admin routes (GET/POST /admin/users, deactivate/activate/reset-password/delete)
   await fastify.register(adminPlugin, { prisma });
+
+  // Register attachment routes (POST /attachments — T3)
+  // Storage root resolution (Spec §8, NFR-US-07):
+  //   Priority: options.storageRoot (test injection) > env ATTACHMENT_STORAGE_ROOT (compose/Zeabur mount)
+  //
+  //   Production (NODE_ENV=production): ATTACHMENT_STORAGE_ROOT MUST be set; fail-fast on startup
+  //   so misconfiguration is caught immediately rather than silently writing into a non-persistent path.
+  //
+  //   Non-production (test / development): if ATTACHMENT_STORAGE_ROOT is absent, fall back to
+  //   os.tmpdir()/<dynamic-subdir> with a warning log. This avoids breaking existing test suites
+  //   that call buildServer() without a storageRoot option and without ATTACHMENT_STORAGE_ROOT set.
+  //   The path is dynamic (os.tmpdir() + process id), NOT a hardcoded string (Spec §8, NFR-US-07).
+  let appEnv: ReturnType<typeof parseEnv>;
+  try {
+    appEnv = parseEnv(process.env);
+  } catch {
+    // During testing with partial env, use safe defaults for non-storage fields
+    appEnv = {
+      DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://localhost/test",
+      NODE_ENV: (process.env.NODE_ENV as "development" | "production" | "test") ?? "development",
+      PORT: 3000,
+      LOG_LEVEL: "info" as const,
+      STORAGE_PATH: "/data/storage",
+      SESSION_ABSOLUTE_TTL_HOURS: 8,
+      SESSION_COOKIE_NAME: "sid",
+      LOGIN_MAX_FAILURES: 5,
+      LOGIN_LOCK_MINUTES: 15,
+      ATTACHMENT_STORAGE_ROOT: process.env.ATTACHMENT_STORAGE_ROOT,
+      ATTACHMENT_MAX_BYTES: 10485760,
+      ATTACHMENT_TEMP_TTL_HOURS: 24,
+      ATTACHMENT_THUMBNAIL_MAX_PX: 512,
+    };
+  }
+
+  const resolvedStorageRoot = options.storageRoot ?? appEnv.ATTACHMENT_STORAGE_ROOT;
+
+  let storageRoot: string;
+  if (resolvedStorageRoot) {
+    storageRoot = resolvedStorageRoot;
+  } else if (appEnv.NODE_ENV === "production") {
+    throw new Error(
+      "Server startup failed — ATTACHMENT_STORAGE_ROOT is not set. " +
+        "Provide the environment variable (volume mount path) for the persistent storage volume."
+    );
+  } else {
+    // Non-production fallback: dynamic temp path, not a hardcoded string (Spec §8)
+    storageRoot = path.join(os.tmpdir(), `att-storage-dev-${process.pid}`);
+    fastify.log.warn(
+      `ATTACHMENT_STORAGE_ROOT not set; using dynamic temp path for non-production: ${storageRoot.replace(os.tmpdir(), "<tmpdir>")}`
+    );
+  }
+
+  const storage = new LocalVolumeStorage(storageRoot);
+  await fastify.register(attachmentPlugin, { prisma, storage });
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {

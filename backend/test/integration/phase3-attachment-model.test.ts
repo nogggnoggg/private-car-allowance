@@ -21,6 +21,9 @@ describeWithDb("PHASE-003-T1 — Attachment model + AttachmentStatus/AttachmentR
   let prisma: any;
   let ownerUser: { id: string };
 
+  // Track attachment IDs created by this test suite for scoped cleanup
+  const createdAttachmentIds: string[] = [];
+
   beforeAll(async () => {
     if (!DB_URL) return;
     const { PrismaClient } = await import("@prisma/client");
@@ -41,8 +44,17 @@ describeWithDb("PHASE-003-T1 — Attachment model + AttachmentStatus/AttachmentR
 
   afterAll(async () => {
     if (prisma) {
-      // Clean up in dependency order
-      await prisma.attachment.deleteMany({});
+      // Scoped cleanup: only delete attachments created by this test suite
+      // (global deleteMany would wipe T3 integration test data if tests run concurrently)
+      if (createdAttachmentIds.length > 0) {
+        await prisma.attachment.deleteMany({
+          where: { id: { in: createdAttachmentIds } },
+        });
+      }
+      // Also clean up by uploaderId/ownerId as a safety net for direct prisma.create calls
+      await prisma.attachment.deleteMany({
+        where: { ownerId: ownerUser?.id },
+      });
       await prisma.user.deleteMany({ where: { loginName: "attach_owner_t1" } });
       await prisma.$disconnect();
     }

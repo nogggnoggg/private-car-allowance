@@ -6,14 +6,17 @@
  * AC-13: NOT_FOUND for unknown routes.
  */
 
-/** Error codes — base set for PHASE-001; extended in PHASE-002 (Spec 4.8). */
+/** Error codes — base set for PHASE-001; extended in PHASE-002 (Spec 4.8); extended in PHASE-003 (Spec 4.8). */
 export type ErrorCode =
   | "VALIDATION_ERROR" // 400 — field validation failure, with fields[]
   | "UNAUTHORIZED" // 401 — unauthenticated, session invalid, login failure (unified), wrong current password
   | "FORBIDDEN" // 403 — role insufficient (requireAdmin), data ownership mismatch
   | "PASSWORD_CHANGE_REQUIRED" // 403 — mustChangePassword session accessing non-change-password endpoints
   | "NOT_FOUND" // 404 — route or resource not found
+  | "UNSUPPORTED_MEDIA_TYPE" // 415 — actual file content is not JPEG/PNG/WebP (includes disguised extension, empty file, PDF, etc.)
+  | "PAYLOAD_TOO_LARGE" // 413 — single file exceeds size limit (ATTACHMENT_MAX_BYTES)
   | "CONFLICT" // 409 — loginName duplicate, delete blocked (has history), self-deactivate/delete
+  | "TOO_MANY_ATTACHMENTS" // 409 — attachment count reached container limit
   | "INTERNAL_ERROR" // 500 — unhandled/unexpected exception
   | "SERVICE_UNAVAILABLE"; // 503 — dependency unavailable (e.g. DB down)
 
