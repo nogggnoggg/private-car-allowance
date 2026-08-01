@@ -13,7 +13,7 @@ Updated: 2026-08-01
   - 治理強度：Standard；認證／授權／密碼／附件權限 Task 一律 High
   - 技術棧：React+Vite / Fastify+Prisma / PostgreSQL 16 / Playwright PDF（全 TypeScript）
   - Git：本機 git + GitHub 私有 repo `nogggnoggg/private-car-allowance`
-  - 部署方向：Zeabur（三容器分離）；本機 Docker Compose
+  - 部署方向：前端/後端/PostgreSQL 三服務全部署於 Zeabur（ADR-0001，2026-08-01 人類確認）；同源策略 nginx proxy /api；本機 Docker Compose 同構模擬
 - 已確認假設：A1 zh-TW、A2 storage 抽象層＋volume（無 S3）、A3 備份腳本＋Runbook、A4 Cookie Session、A5 repo 名稱
 
 ## 目前 Phase

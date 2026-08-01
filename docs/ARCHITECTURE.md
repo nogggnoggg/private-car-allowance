@@ -47,7 +47,9 @@
                    └──────────────┘  └────────────────────┘
 ```
 
+- 正式環境三服務（nginx 前端 / node 後端 / PostgreSQL）均部署於 Zeabur，DB 與附件使用 Zeabur 持久化 volume（ADR-0001，人類已確認）。
 - 前端、後端、資料庫分別為獨立容器，可分開建置與部署（NFR-US-01..04）。
+- 同源策略：瀏覽器僅面對前端網域，nginx 以 `/api` 反向代理至後端（Zeabur 私有網路）；Cookie Session 維持同源（SameSite=Lax），不引入 CORS（ADR-0001）。
 - 附件與正式 PDF 保存於後端外掛的持久化 volume，容器重建不遺失（NFR-US-07）；透過 storage 抽象層存取，未來替換儲存後端只改設定不改業務邏輯。
 - 本機以 Docker Compose 一次啟動三服務（NFR-US-06）；Zeabur 以三服務分離部署（NFR-US-01..05）。
 - Session 為 Cookie（HttpOnly / SameSite；正式 Secure）；正式環境 HTTPS（NFR-US-11）。
