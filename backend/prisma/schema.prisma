@@ -33,6 +33,7 @@ enum AuditAction {
   USER_ACTIVATED
   USER_PASSWORD_RESET
   USER_DELETED
+  PARAMETER_VERSION_CREATED
 }
 
 // ---------------------------------------------------------------------------

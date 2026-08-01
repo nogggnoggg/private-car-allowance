@@ -1,11 +1,13 @@
 /**
- * Parameters routes — PHASE-003a-T3
+ * Parameters routes — PHASE-003a-T3 / T5 (audit)
  *
  * Endpoints (backend routes; nginx strips /api prefix):
  *   POST /parameters/fuel         → 201 { version: FuelParameterDto }
  *   GET  /parameters/fuel         → 200 { versions: FuelParameterDto[] }
  *   POST /parameters/etc          → 201 { version: EtcParameterDto }
  *   GET  /parameters/etc          → 200 { versions: EtcParameterDto[] }
+ *   POST /parameters/depreciation → 201 { version: DepreciationParameterDto }
+ *   GET  /parameters/depreciation → 200 { versions: DepreciationParameterDto[] }
  *
  * Auth (all endpoints): requireAuth + requirePasswordChanged + requireAdmin
  *   (Spec §4.5 D10, AC-16/17/19)
@@ -16,10 +18,14 @@
  *
  * No-overlap: T2 engine + DB @@unique(effectiveFrom) concurrent defense (AC-07, D4)
  *
- * Out of scope here:
- *   - Audit write (T5 接入點: pass onCreated callback to service functions)
- *   - Depreciation endpoints (T4)
- *   - Front-end (T6)
+ * T5 audit: Each successful create writes one AuditLog row inside the same transaction
+ *   via onCreated callback (AC-18, D6: action=PARAMETER_VERSION_CREATED).
+ *   - actorId = request.currentUser.id
+ *   - action  = "PARAMETER_VERSION_CREATED"
+ *   - targetId = null (parameter versions are not User targets)
+ *   - targetLabel = "<TYPE>#<versionId>" (e.g. "FUEL#<id>")
+ *   - summary = { parameterType, ...parameterFields, effectiveFrom }
+ *   - Passwords/tokens/secrets NEVER in summary or targetLabel (CLAUDE.md / AC-27 principle)
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -34,6 +40,15 @@ import {
   listEtcVersions,
   listFuelVersions,
 } from "./parameter-service.js";
+
+// ---------------------------------------------------------------------------
+// Audit transaction client type (subset of PrismaClient, excludes tx-level methods)
+// ---------------------------------------------------------------------------
+
+type TxClient = Omit<
+  PrismaClient,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
+>;
 
 // ---------------------------------------------------------------------------
 // Request body validation schemas (Fastify/ajv — project convention)
@@ -123,11 +138,32 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
         ]);
       }
 
-      const version = await createFuelVersion(prisma, {
-        unitPrice: body.unitPrice,
-        effectiveFrom: body.effectiveFrom,
-        createdById: request.currentUser.id,
-      });
+      const actorId = request.currentUser.id;
+
+      const version = await createFuelVersion(
+        prisma,
+        {
+          unitPrice: body.unitPrice,
+          effectiveFrom: body.effectiveFrom,
+          createdById: actorId,
+        },
+        // T5 audit hook: write AuditLog inside same transaction (AC-18, D6)
+        async (tx: TxClient, dto) => {
+          await (tx as PrismaClient).auditLog.create({
+            data: {
+              action: "PARAMETER_VERSION_CREATED",
+              actorId,
+              targetId: null,
+              targetLabel: `FUEL#${dto.id}`,
+              summary: {
+                parameterType: "FUEL",
+                unitPrice: dto.unitPrice,
+                effectiveFrom: dto.effectiveFrom,
+              },
+            },
+          });
+        }
+      );
 
       return reply.status(201).send({ version });
     }
@@ -168,11 +204,32 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
         ]);
       }
 
-      const version = await createEtcVersion(prisma, {
-        unitPrice: body.unitPrice,
-        effectiveFrom: body.effectiveFrom,
-        createdById: request.currentUser.id,
-      });
+      const actorId = request.currentUser.id;
+
+      const version = await createEtcVersion(
+        prisma,
+        {
+          unitPrice: body.unitPrice,
+          effectiveFrom: body.effectiveFrom,
+          createdById: actorId,
+        },
+        // T5 audit hook: write AuditLog inside same transaction (AC-18, D6)
+        async (tx: TxClient, dto) => {
+          await (tx as PrismaClient).auditLog.create({
+            data: {
+              action: "PARAMETER_VERSION_CREATED",
+              actorId,
+              targetId: null,
+              targetLabel: `ETC#${dto.id}`,
+              summary: {
+                parameterType: "ETC",
+                unitPrice: dto.unitPrice,
+                effectiveFrom: dto.effectiveFrom,
+              },
+            },
+          });
+        }
+      );
 
       return reply.status(201).send({ version });
     }
@@ -241,13 +298,36 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
         throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
       }
 
-      const version = await createDepreciationVersion(prisma, {
-        vehiclePrice: body.vehiclePrice as number | string,
-        usefulLifeYears: body.usefulLifeYears as number,
-        estimatedAnnualKm: body.estimatedAnnualKm as number,
-        effectiveFrom: body.effectiveFrom,
-        createdById: request.currentUser.id,
-      });
+      const actorId = request.currentUser.id;
+
+      const version = await createDepreciationVersion(
+        prisma,
+        {
+          vehiclePrice: body.vehiclePrice as number | string,
+          usefulLifeYears: body.usefulLifeYears as number,
+          estimatedAnnualKm: body.estimatedAnnualKm as number,
+          effectiveFrom: body.effectiveFrom,
+          createdById: actorId,
+        },
+        // T5 audit hook: write AuditLog inside same transaction (AC-18, D6)
+        async (tx: TxClient, dto) => {
+          await (tx as PrismaClient).auditLog.create({
+            data: {
+              action: "PARAMETER_VERSION_CREATED",
+              actorId,
+              targetId: null,
+              targetLabel: `DEPRECIATION#${dto.id}`,
+              summary: {
+                parameterType: "DEPRECIATION",
+                vehiclePrice: dto.vehiclePrice,
+                usefulLifeYears: dto.usefulLifeYears,
+                estimatedAnnualKm: dto.estimatedAnnualKm,
+                effectiveFrom: dto.effectiveFrom,
+              },
+            },
+          });
+        }
+      );
 
       return reply.status(201).send({ version });
     }
