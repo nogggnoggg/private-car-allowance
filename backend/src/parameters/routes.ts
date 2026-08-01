@@ -27,8 +27,10 @@ import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest 
 import { requireAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { AppError } from "../platform/errors.js";
 import {
+  createDepreciationVersion,
   createEtcVersion,
   createFuelVersion,
+  listDepreciationVersions,
   listEtcVersions,
   listFuelVersions,
 } from "./parameter-service.js";
@@ -52,6 +54,25 @@ const createParameterBodySchema = {
   required: ["effectiveFrom"],
   properties: {
     unitPrice: {}, // accept any value — service validates type and range (AC-03)
+    effectiveFrom: { type: "string", minLength: 1 },
+  },
+  additionalProperties: false,
+} as const;
+
+/**
+ * Body schema for POST /parameters/depreciation.
+ * effectiveFrom is required.
+ * vehiclePrice, usefulLifeYears, estimatedAnnualKm are passed through without type coercion
+ * so the service layer can handle both string/number input and return proper field errors.
+ * additionalProperties:false prevents unexpected fields.
+ */
+const createDepreciationBodySchema = {
+  type: "object",
+  required: ["effectiveFrom"],
+  properties: {
+    vehiclePrice: {}, // accept any — service validates > 0 and Decimal (AC-05, D8)
+    usefulLifeYears: {}, // accept any — service validates > 0 and integer (AC-05, D8)
+    estimatedAnnualKm: {}, // accept any — service validates > 0 and integer (AC-05, D8)
     effectiveFrom: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
@@ -166,6 +187,81 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
     { preHandler: adminPreHandlers },
     async (_request: FastifyRequest, reply: FastifyReply) => {
       const versions = await listEtcVersions(prisma);
+      return reply.status(200).send({ versions });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /parameters/depreciation — create a depreciation parameter version
+  //   (AC-04/05/06/08/12/13/16/17)
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/parameters/depreciation",
+    {
+      preHandler: adminPreHandlers,
+      schema: { body: createDepreciationBodySchema },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = request.body as {
+        vehiclePrice?: number | string;
+        usefulLifeYears?: number;
+        estimatedAnnualKm?: number;
+        effectiveFrom: string;
+      };
+
+      // Required field presence checks — service handles type/range validation (AC-05)
+      const fieldErrors: { field: string; reason: string }[] = [];
+      if (
+        body.vehiclePrice === undefined ||
+        body.vehiclePrice === null ||
+        body.vehiclePrice === ""
+      ) {
+        fieldErrors.push({ field: "vehiclePrice", reason: "車價為必填且必須大於 0" });
+      }
+      if (
+        body.usefulLifeYears === undefined ||
+        body.usefulLifeYears === null ||
+        body.usefulLifeYears === ("" as unknown)
+      ) {
+        fieldErrors.push({ field: "usefulLifeYears", reason: "折舊年限為必填且必須大於 0" });
+      }
+      if (
+        body.estimatedAnnualKm === undefined ||
+        body.estimatedAnnualKm === null ||
+        body.estimatedAnnualKm === ("" as unknown)
+      ) {
+        fieldErrors.push({
+          field: "estimatedAnnualKm",
+          reason: "預估年度行駛公里數為必填且必須大於 0",
+        });
+      }
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const version = await createDepreciationVersion(prisma, {
+        vehiclePrice: body.vehiclePrice as number | string,
+        usefulLifeYears: body.usefulLifeYears as number,
+        estimatedAnnualKm: body.estimatedAnnualKm as number,
+        effectiveFrom: body.effectiveFrom,
+        createdById: request.currentUser.id,
+      });
+
+      return reply.status(201).send({ version });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /parameters/depreciation — list all depreciation parameter versions (AC-19)
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/parameters/depreciation",
+    { preHandler: adminPreHandlers },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      const versions = await listDepreciationVersions(prisma);
       return reply.status(200).send({ versions });
     }
   );
