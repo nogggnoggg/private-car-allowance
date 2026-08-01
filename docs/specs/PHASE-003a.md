@@ -1,7 +1,7 @@
 # PHASE-003a — 補助參數維護（油資 / ETC / 折舊，版本化不重疊）
 
 - Governance-Version: 2026-08-01.2
-- 狀態：**DRAFT**（本 Spec 為 High 風險。DRAFT 完成後需人類事前批准第 13 節 D1~D10 決策點，方可轉 ACTIVE 並實作）
+- 狀態：**ACTIVE**（High 風險 Spec；第 13 節 D1~D10 決策點已於 2026-08-01 經人類事前批准，全數依建議定案，見 §13 修訂紀錄）
 - Task ID（產出本 Spec）：SPEC-003a
 - 更新日期：2026-08-01
 - Phase ID：PHASE-003a
@@ -519,6 +519,7 @@ TDD：每 Task 先寫會失敗的測試再實作；不得 skip/弱化換綠燈�
 | 日期 | 版本 | 變更 | 依據 |
 |---|---|---|---|
 | 2026-08-01 | DRAFT 建立 | 依 SPEC-003a Packet 建立 PHASE-003a 完整 Spec（§1~§12 + 決策點 D1~D10） | PRD 第 5 節 PHASE-003a（289–307 行）、userstory AD-US-11/12/13、BE-US-14、BE-US-19；PHASE-002 授權/稽核契約；PHASE-003 引用保護/弱關聯思路；ARCHITECTURE §3/§4.2/§4.8、DATA_FLOW §1/§2.7；PHASE-001 錯誤協定/sanitizeForLog |
+| 2026-08-01 | DRAFT→ACTIVE | 人類事前批准 Gate 通過：D1~D10 **全數依 spec-writer 建議定案**（D1 三表+泛型服務、D2 僅 effectiveFrom 隱含結束、**D3 每公里單價 Decimal 4 位小數保留、顯示層一般四捨五入、007 末端一次取整為整數**、D4 服務層權威+`@@unique(effectiveFrom)`、D5 專屬 `PARAMETER_PERIOD_OVERLAP`(409)、D6 單一 `PARAMETER_VERSION_CREATED`+summary.parameterType、D7 推導值不持久化、**D8 油資/ETC Decimal(10,4)・車價 Decimal(12,2)・年限/年里程 Int・單價 Decimal(_,4) 一律非浮點**、D9 本 Phase 不提供撤銷端點、D10 全 requireAdmin）。金額語意 D3/D8 經人類明確批准。轉 ACTIVE，開始 TDD。 | 使用者 Gate 批准（2026-08-01，leonchih） |
 
 > 狀態轉移：DRAFT →（人類事前批准 D1~D10，其中 D3/D8 為金額語意必批）→ ACTIVE → 實作（TDD）→ COMPLETED。
 > 補充（治理 2026-08-01.2）：本 Spec 屬 High 風險文件，定義 High 風險行為（影響金額之受引用參數）。Gate 中人類提出之任何變更，須先由 spec-writer/大總管完成本 Spec 修訂（引用該批准與日期）後方可實作。
