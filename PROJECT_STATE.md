@@ -62,6 +62,8 @@ Updated: 2026-08-01
 - PHASE-003-T2（Storage 介面 + LocalVolumeStorage + env）：DONE（131dec4；key 白名單主防護 + 含入次防護；大總管重驗兩輪 15/15、全 repo biome/tsc）。範圍偏差已驗收接受：env 一次補齊 Spec §8 四變數；auth/routes.ts fallback 物件補欄位（AppConfig 型別連鎖，5 行機械性）——AR-4 死碼 fallback 清理需求再+1。
 - PHASE-003-T2R（REPAIR：.gitignore `storage/`→`/storage/` 根錨定）：DONE（4ea8836）。根因：PHASE-001 未錨定模式誤傷 backend/src/storage 原始碼；T2 commit 未 push 前發現，add -f + amend 保持 atomic。
 - PHASE-003-T3（上傳與驗證，High）：DONE（5cf04d8）。首輪驗收退回兩項：server.ts 寫死 `/tmp/att-storage` fallback（違反 Spec §8 無寫死/NFR-US-07）→ 改 production fail-fast + 非 production 動態 tmpdir；§9.2 補償刪除測試缺失 → 補 6 個 stub 測試（DB 失敗/縮圖 put 失敗/驗證失敗三情境）。sharp 0.35.3 採用成功（無需 approve-scripts）；+51 測試（303 總）。大總管重驗兩輪 18/18、biome/tsc、AC-02 測試名實抽查。
+- PHASE-003-T4（數量限制引擎，Medium）：DONE（5ec770e；純 canLink + refType/refId 計數；邊界定案 limit≤0 一律拒；+22 測試（325 總），大總管重驗兩輪 20/20）。T6 注意：countLinkedAttachments 無鎖，link 流程需交易包裹防 TOCTOU（implementer 已自標）。
+- PHASE-003-T5（授權存取端點，High）：IN_PROGRESS（implementer 派工中）。
 - Phase 整合驗收待辦：Docker 容器 build 需驗證 sharp 之 libvips runtime（node:20-slim）；Zeabur/compose 必設 ATTACHMENT_STORAGE_ROOT（production 現會 fail-fast）。
 - 待 Review 事項（PHASE-003 reviewer 用）：LocalVolumeStorage 內部同步 fs（readFileSync/writeFileSync）於 async 介面下阻塞 event loop——功能過 AC，效能/慣例問題請 reviewer 權衡（10MB 上限內風險有限，改 fs/promises 非破壞性）；AppConfig 防禦性 try/catch fallback 字面量已擴散至第三處（env→auth/routes→server.ts），AR-4 清理升級為應處理項。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
