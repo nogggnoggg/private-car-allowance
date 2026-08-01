@@ -8,9 +8,9 @@ import {
   apiLinkAttachment,
   toFrontendUrl,
 } from "../api/attachments.js";
-import type { ApiError } from "../types/api.js";
 import AttachmentUploader from "../components/AttachmentUploader.js";
 import { useAuth } from "../context/AuthContext.js";
+import type { ApiError } from "../types/api.js";
 
 const DEFAULT_REF_TYPE: AttachmentRefType = "TRIP_SEGMENT";
 const DEFAULT_REF_ID = "demo-1";

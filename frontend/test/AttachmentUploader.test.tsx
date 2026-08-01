@@ -3,9 +3,9 @@ import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
-import { AuthProvider } from "../src/context/AuthContext.js";
-import AttachmentUploader from "../src/components/AttachmentUploader.js";
 import type { AttachmentDto } from "../src/api/attachments.js";
+import AttachmentUploader from "../src/components/AttachmentUploader.js";
+import { AuthProvider } from "../src/context/AuthContext.js";
 
 // Helper: create a synthetic File with given size and type
 function makeFile(name: string, size: number, type: string): File {
@@ -115,7 +115,8 @@ describe("AttachmentUploader", () => {
 
     // fetch should only have been called for /api/me, NOT for upload
     const uploadCalls = (fetch as Mock).mock.calls.filter(
-      (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("/api/attachments")
+      (call: unknown[]) =>
+        typeof call[0] === "string" && (call[0] as string).includes("/api/attachments")
     );
     expect(uploadCalls).toHaveLength(0);
   });
@@ -139,7 +140,8 @@ describe("AttachmentUploader", () => {
     });
 
     const uploadCalls = (fetch as Mock).mock.calls.filter(
-      (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("/api/attachments")
+      (call: unknown[]) =>
+        typeof call[0] === "string" && (call[0] as string).includes("/api/attachments")
     );
     expect(uploadCalls).toHaveLength(0);
   });
@@ -180,14 +182,15 @@ describe("AttachmentUploader", () => {
     const validFile = makeFile("photo.jpg", 1024, "image/jpeg");
 
     // Mock upload to hang
-    (fetch as Mock).mockImplementationOnce(
-      (url: string) => {
-        if ((url as string).endsWith("/api/attachments") || (url as string).includes("/api/attachments")) {
-          return new Promise(() => {});
-        }
-        return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    (fetch as Mock).mockImplementationOnce((url: string) => {
+      if (
+        (url as string).endsWith("/api/attachments") ||
+        (url as string).includes("/api/attachments")
+      ) {
+        return new Promise(() => {});
       }
-    );
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    });
 
     fireEvent.change(input, { target: { files: [validFile] } });
 
@@ -234,7 +237,9 @@ describe("AttachmentUploader", () => {
     fireEvent.change(input, { target: { files: [validLookingFile] } });
 
     await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/格式不支援|UNSUPPORTED_MEDIA_TYPE|檔案內容/);
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /格式不支援|UNSUPPORTED_MEDIA_TYPE|檔案內容/
+      );
     });
 
     // No thumbnail should appear
