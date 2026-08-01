@@ -1,7 +1,7 @@
 # PHASE-002 Spec — 認證與帳號管理
 
 - Governance-Version: 2026-08-01.1
-- 狀態：**DRAFT**（含 High 風險 Task；人類事前批准後由大總管轉 ACTIVE 方可實作）
+- 狀態：**ACTIVE**（D1~D11 全數經人類批准，2026-08-01；含 D9 初始管理員 seed 機制）
 - 更新日期：2026-08-01
 - Phase ID：PHASE-002
 - Base Commit：3e16155（branch: phase-001；PHASE-001 已整合驗收通過，PR #1 待合併；本 Phase 於 phase-002 branch 實作，由大總管 commit）
