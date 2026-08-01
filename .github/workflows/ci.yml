@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - phase-001
+      - main
+  pull_request:
+    branches:
+      - phase-001
+      - main
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────
+  # Job 1: lint + typecheck + frontend tests + frontend build
+  # No database required.
+  # ────────────────────────────────────────────────────────────────────
+  lint-typecheck-frontend:
+    name: Lint / Typecheck / Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        # --engine-strict=false: @testing-library/jest-dom@7 declares engines.node>=22
+        # but is fully functional on Node 20; the declaration is overly conservative.
+        run: npm ci --engine-strict=false
+
+      - name: Lint (Biome)
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Frontend tests (Vitest / jsdom)
+        run: npm run test --workspace=frontend
+
+      - name: Frontend build (Vite)
+        run: npm run build --workspace=frontend
+
+  # ────────────────────────────────────────────────────────────────────
+  # Job 2: backend build + backend tests (unit + integration)
+  # Requires Postgres service container for integration tests.
+  # ────────────────────────────────────────────────────────────────────
+  backend:
+    name: Backend Build & Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_test
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        # --engine-strict=false: @testing-library/jest-dom@7 declares engines.node>=22
+        # but is fully functional on Node 20; the declaration is overly conservative.
+        run: npm ci --engine-strict=false
+
+      - name: Backend build (prisma generate + tsc)
+        run: npm run build --workspace=backend
+
+      - name: Run Prisma migrations
+        working-directory: backend
+        run: npm run migrate:deploy
+
+      - name: Backend tests (unit + integration)
+        run: npm run test --workspace=backend
+
+  # ────────────────────────────────────────────────────────────────────
+  # Job 3: docker build
+  # Validates both Dockerfiles can be built.
+  # BuildKit is available by default on ubuntu-latest (Linux).
+  # ────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        run: docker build -f backend/Dockerfile -t backend:ci .
+
+      - name: Build frontend image
+        run: docker build -f frontend/Dockerfile -t frontend:ci .
