@@ -5,7 +5,10 @@
   "engines": {
     "node": ">=20"
   },
-  "workspaces": ["frontend", "backend"],
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
     "lint": "biome check .",
     "format": "biome format --write .",
@@ -16,6 +19,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
+    "@playwright/test": "^1.62.1",
     "typescript": "^5.5.4"
   },
   "allowScripts": {
