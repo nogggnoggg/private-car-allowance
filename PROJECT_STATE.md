@@ -18,7 +18,9 @@ Updated: 2026-08-01
 
 ## 目前 Phase
 
-- PHASE-001 專案骨架與 CI 基礎（branch: phase-001，IN_PROGRESS）。
+- PHASE-003 附件基礎（branch: phase-003，IN_PROGRESS）。
+- 開工批准：使用者於 2026-08-01 批准「003 → 003a 依序執行」（照 PRD 編號；003a 待 003 完成後接續，無需再次開工批准，但其 Spec 仍需事前批准）。
+- Phase 開工重錨定：大總管已重讀治理 2026-08-01.2「大總管禁止事項」節並確認（2026-08-01）——零程式修改、白名單外一律派 implementer、未經 reviewer 審查不合入。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
 
@@ -52,7 +54,28 @@ Updated: 2026-08-01
 - 治理事件（2026-08-01）：使用者指出大總管兩項違規（直接實作未派工；行為變更未先改 Spec）。根因分析（規則明確度為主因、派工成本為中因、context 長度為放大器）經使用者確認；解方 S1~S5 經使用者批准並執行：治理升版 **2026-08-01.2**（大總管零程式修改白名單、Gate 反饋明文流程、Lite Packet／輕量複審通道、commit 前 Task ID 自檢、Phase 開工重錨定）。
 - S5 補救審查（reviewer 事後審 b76f44b、acbb327）：DONE — **APPROVE**。無 Must/Should Fix；測試鑑別力經反向驗證（拿掉修復後測試會紅）；231 測試（後端 199＋前端 32）無回歸。新增 Accepted Risk：AR-S5-1（Low）pino `*` 萬用路徑僅遮蔽單層巢狀，兩層以上不遞迴——防禦縱深已知邊界，正常程式不記 request body，記錄保留；AR-S5-2（觀察）PHASE-002 Spec 檔內版本戳仍為 .1，下次動該檔時一併更新。
 - 治理事件結案：違規已補救、規則已升版固化（2026-08-01.2）。
-- 【暫停維持】等使用者確認是否進入 PHASE-003/003a。
+- SPEC-003（docs/specs/PHASE-003.md 詳細 Spec）：DONE（commit 4c0ce84；驗收時發現 §4.6 與 D8 文字矛盾，已由 spec-writer 修正）。
+- PHASE-003 Spec Gate：**已通過**（2026-08-01）——D1~D8 全數照建議批准；D5＝自寫 magic-byte 偵測＋sharp 縮圖（build 不可行則回退前端縮放並記 Accepted Risk）。Spec 轉 ACTIVE。
+- PHASE-003-T1（Attachment 資料模型 + migration，Medium）：DONE（199ffdd；乾淨 DB 3 migration 套用成功，大總管重驗 lint/tsc/測試）。
+- PHASE-003-T1R（REPAIR：測試隔離）：DONE（d08ee5e）。根因：T1 新增 Attachment→User FK(RESTRICT) 引爆 phase2-models.test.ts 的全域 user.deleteMany（平行執行相撞→清理靜默失敗→殘留資料）。修復：清理限定自建 loginName + beforeAll 自癒；大總管於髒 DB 連跑兩輪 209/209 全綠驗證。implementer 首輪回報 14/14 綠屬執行順序運氣，未發現此問題——**驗收紀律追加：資料模型類 Task 驗收一律同 DB 連跑兩輪**。
+- 測試隔離備註（後續 Task Packet 必含）：新測試檔清理一律限定自建資料，禁用全域 deleteMany；phase3-attachment-model.test.ts 現有全域 attachment.deleteMany({}) 目前安全（Attachment 為葉節點且僅該檔建立附件），但 T3/T5/T6 新測試檔開始建附件後即成地雷，屆時一併改為範圍清理。
+- PHASE-003-T2（Storage 介面 + LocalVolumeStorage + env）：DONE（131dec4；key 白名單主防護 + 含入次防護；大總管重驗兩輪 15/15、全 repo biome/tsc）。範圍偏差已驗收接受：env 一次補齊 Spec §8 四變數；auth/routes.ts fallback 物件補欄位（AppConfig 型別連鎖，5 行機械性）——AR-4 死碼 fallback 清理需求再+1。
+- PHASE-003-T2R（REPAIR：.gitignore `storage/`→`/storage/` 根錨定）：DONE（4ea8836）。根因：PHASE-001 未錨定模式誤傷 backend/src/storage 原始碼；T2 commit 未 push 前發現，add -f + amend 保持 atomic。
+- PHASE-003-T3（上傳與驗證，High）：DONE（5cf04d8）。首輪驗收退回兩項：server.ts 寫死 `/tmp/att-storage` fallback（違反 Spec §8 無寫死/NFR-US-07）→ 改 production fail-fast + 非 production 動態 tmpdir；§9.2 補償刪除測試缺失 → 補 6 個 stub 測試（DB 失敗/縮圖 put 失敗/驗證失敗三情境）。sharp 0.35.3 採用成功（無需 approve-scripts）；+51 測試（303 總）。大總管重驗兩輪 18/18、biome/tsc、AC-02 測試名實抽查。
+- PHASE-003-T4（數量限制引擎，Medium）：DONE（5ec770e；純 canLink + refType/refId 計數；邊界定案 limit≤0 一律拒；+22 測試（325 總），大總管重驗兩輪 20/20）。T6 注意：countLinkedAttachments 無鎖，link 流程需交易包裹防 TOCTOU（implementer 已自標）。
+- PHASE-003-T5（授權存取端點，High）：DONE（aca1663；權限矩陣 18 整合測試；D5 縮圖回退原圖、D6 403、D8 不掛 requirePasswordChanged 皆落地；檔案遺失定案 404+log；大總管重驗兩輪 21/21、343 測試）。
+- PHASE-003-T6（生命週期，High）：DONE（193b626）。首輪驗收退回：$transaction 預設 READ COMMITTED 不防 TOCTOU、註解誤稱有序列化保證 → 改 SERIALIZABLE + P2034 重試（≤3），真併發服務層測試修復前重現 bug（雙成功）、修復後 5 輪迭代恰一成一敗（紅轉綠證明）。定案記錄：TEMP 刪除＝實刪（DB 先、storage 次佳努力）；detach TTL 基準＝createdAt 更新為當下（語意「最後成為 TEMP 時間」）；containerState 本 Phase 由請求注入預設 draft——**PHASE-004 起必須改由申請服務層注入真實狀態，不得沿用客戶端注入**（已為 reviewer/後續 Spec 標記）。+34 測試（377 總）；大總管重驗兩輪 24/24。
+- PHASE-003-T7（前端上傳/預覽/刪除 + 宿主頁，Medium）：DONE（6034332）。中途正確觸發 Stop（@playwright/test 從未安裝——PHASE-002 的 E2E 為大總管 compose 整合驗證，非 Playwright 套件）；大總管裁定 Playwright 屬 Profile 已確認測試棧，授權安裝（root devDependency ^1.62.1，無需 allowScripts）。E2E 4/4 於 dev 拓撲實跑綠（AC-19/20/21）；前端 40 測試、tsc 乾淨。toFrontendUrl() 慣例（backend DTO 路徑→前端加 /api 前綴）需寫入 PHASE-004 Packet。
+- PHASE-003-T8（compose 附件 volume 接線 + 容器 build 驗證，Medium）：DONE（2978e5f）。Task Graph 補遺（Spec §8 接線在 T2/T3/T7 均被禁動 Docker，無人負責——Task Graph 設計教訓記錄）。成果：compose 四 env 接線（root 預設 /data/storage/attachments，D4 前綴隔離）；**sharp 0.35.3 於 node:20-slim 容器實證通過（@img prebuilt 自帶 libvips 8.18.3，無需 apt）**；named volume root 權限問題以 gosu 特權下降 entrypoint 解決（root 初始化目錄→gosu appuser 跑應用）；compose 全流程驗證：登入→上傳→縮圖非 null→未登入 401→**重啟後位元組一致（持久化）**；**D7 確認**：frontend nginx 僅 / 與 /api/ 兩個 location，storage volume 未掛前端容器，無靜態直出。
+- PHASE-003-T7R（REPAIR：T7 三檔 + root package.json biome lint/format）：DONE（245d15f；純 safe fix，repo root 0 error）。
+- PHASE-003-REVIEW（reviewer 獨立審查）：DONE。**無 Must Fix；21/21 AC PASS**；測試鑑別力抽查通過（magic-byte 偽裝、補償刪除、TOCTOU 真併發皆具鑑別力）；D7 nginx 複核乾淨。Should Fix 兩項：**S-1** AppConfig fallback 字面量第三處擴散（→T9 Lite 修復+輕量複審）；**S-2** Docker sharp/gosu 容器驗證需大總管代跑複驗（T8 已驗過一輪，Gate 前由大總管獨立重驗）。Accepted Risk 四項記錄：AR-A log 內嵌 storage key（Low，合規，建議後續剝離）；AR-B 同步 fs（Low）；AR-C 無 DB fail/skip 疑慮經查為 describe.skip 且非本 Phase 檔（範圍外）；AR-D containerState 請求注入（本 Phase Spec 明文允許、無真實鎖定資產）——**PHASE-004 前置約束：containerState 必須改由申請服務層依狀態機注入，route 移除/忽略 client 參數**。
+- 驗收紀律修正（大總管自查）：先前 lint 驗收誤在 backend/ 目錄執行，未掃前端/e2e——**自 T7R 起一律 repo root `npx biome check .` 全掃**。
+- PHASE-003-T9（Review S-1 修復：fallback 收斂 getEnvOrTestDefaults）：DONE（d03973e）；reviewer 輕量複審 **APPROVE**（單一真相來源、零行為變更逐項核對、無夾帶）。
+- S-2 複驗（大總管親跑，2026-08-01）：**通過**——compose build/up healthy；sharp 於容器產縮圖（thumbnailKey 非 null、126B≠原圖 173B）；未登入 401；重啟後 SHA 一致。S-2 關閉，sharp 回退條款備而未用。
+- **PHASE-003 全部 Task 完成（T1~T9 + T1R/T2R/T7R），Review 清零（無 Must Fix、S-1 已修復複審、S-2 已複驗），等待人類整合驗收 Gate 與 PR #3 合併批准。**
+- 待 Review 事項追加：change-password「bogus token」與 health「200」兩測試於無 DB 環境 fail 而非 skip（describeWithDb 防護不完整；有 DB 時 377 全綠，功能無虞，reviewer 酌定是否列修）。
+- Phase 整合驗收待辦：Docker 容器 build 需驗證 sharp 之 libvips runtime（node:20-slim）；Zeabur/compose 必設 ATTACHMENT_STORAGE_ROOT（production 現會 fail-fast）。
+- 待 Review 事項（PHASE-003 reviewer 用）：LocalVolumeStorage 內部同步 fs（readFileSync/writeFileSync）於 async 介面下阻塞 event loop——功能過 AC，效能/慣例問題請 reviewer 權衡（10MB 上限內風險有限，改 fs/promises 非破壞性）；AppConfig 防禦性 try/catch fallback 字面量已擴散至第三處（env→auth/routes→server.ts），AR-4 清理升級為應處理項；T5 檔案遺失 error log 之 errMsg 內嵌 storage key（T2 拋錯訊息含 key，sanitizeForLog 不濾）——判定合規（§9.4 禁的是絕對路徑/位元組），請 reviewer 二次確認是否要求剝離。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
@@ -79,14 +102,14 @@ Updated: 2026-08-01
 
 ## Human Gate（待觸發）
 
-- 【當前】PRD／Phase 拆分審閱
-- 各 High 風險 Phase 事前批准（002/003/003a/004/006/007/008/009/010/011）
+- 【當前】PHASE-003 整合驗收 + PR #3 合併批准（全 Task 完成、Review 清零後觸發）
+- 003a Spec 事前批准（003 完成後）；其後各 High 風險 Phase 事前批准（004/006/007/008/009/010/011）
 - 各 Phase Mock UI 驗收、整合驗收
 - 正式合併與發布
 
 ## Base Commit
 
-- main @ 281b744（PHASE-001 合併後）；工作 branch：phase-002
+- main @ e5397c1（PHASE-002 合併＋治理事件結案後）；工作 branch：phase-003
 
 ## 備註
 

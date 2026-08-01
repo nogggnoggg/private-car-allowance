@@ -32,8 +32,11 @@ FROM node:20-slim AS runtime
 WORKDIR /app
 
 # Install openssl — required by Prisma schema engine for migrate deploy
+# Install gosu — used by docker-entrypoint.sh to drop root to appuser after
+#   initialising the storage volume directory (D4, Spec §8; volume mounted after
+#   image layers so mkdir must run at startup as root, not in a RUN layer).
 # node:20-slim is Debian-based (bookworm); openssl satisfies libssl dependency
-RUN apt-get update -y && apt-get install -y openssl --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y openssl gosu --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
 # Create non-root group and user for security, with a proper home directory
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /home/appuser -m appuser
@@ -58,10 +61,15 @@ COPY --from=builder /app/backend/package.json ./backend/package.json
 COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Set ownership to non-root user
+# Set ownership to non-root user for application files
 RUN chown -R appuser:appgroup /app /home/appuser
 
-USER appuser
+# NOTE: USER appuser is intentionally NOT set here.
+# docker-entrypoint.sh runs as root so it can:
+#   1. mkdir -p the storage volume sub-directory (volume mount is root-owned at startup)
+#   2. chown it to appuser
+#   3. exec gosu appuser to drop privileges before starting node
+# The application process itself runs as appuser (see docker-entrypoint.sh).
 
 WORKDIR /app/backend
 

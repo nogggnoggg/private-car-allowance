@@ -1,0 +1,454 @@
+/**
+ * Attachment lifecycle service — PHASE-003-T6
+ *
+ * Implements the core lifecycle transitions per Spec §4.5/§5.1/§13-T6:
+ *   - linkAttachment: TEMP → LINKED (with ownership check, container-state check, count limit)
+ *   - deleteAttachment: LINKED → TEMP (detach) or TEMP → delete from DB+storage
+ *   - isEligibleForCleanup: pure function for PHASE-011 cleanup scheduling
+ *   - assertContainerMutable: throws FORBIDDEN if containerState === 'completed'
+ *   - HasReferenceQuery: interface contract for PHASE-011 reference query injection
+ *
+ * Definitive decisions recorded in Handoff:
+ *
+ * D2/TTL-base: When a LINKED attachment is detached (DELETE), its status reverts to TEMP
+ *   and `createdAt` is updated to the current time. This makes `createdAt` serve as
+ *   "the time this attachment last became TEMP", which is the TTL base per Spec §4.5:
+ *   "TTL 以最後一次成為 TEMP 的時間起算". The schema comment (createdAt = 'TEMP TTL 基準')
+ *   is satisfied without adding a new column (schema frozen).
+ *
+ * TEMP DELETE semantics (§5.1): A TEMP attachment (no container) is physically deleted —
+ *   DB record removed + storage files deleted. Spec §5.1 DELETE says "解除關聯/標記可清理";
+ *   for TEMP with no ref, there is nothing to detach, and immediate deletion is the correct
+ *   semantic (avoids orphan accumulation). This is consistent with §4.4 "補償語意" and the
+ *   cleanup intent described in §4.5. DB deletion happens FIRST; storage deletion second.
+ *   Rationale: DB is the source of truth — removing the record first ensures no subsequent
+ *   request can access the file; if storage deletion fails, the file becomes orphaned but
+ *   is unreachable (acceptable risk; PHASE-011 cleanup can sweep orphaned keys).
+ *
+ * TOCTOU prevention in linkAttachment (remediation round, definitive):
+ *   The count→check→update is wrapped in:
+ *     prisma.$transaction(fn, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
+ *   SERIALIZABLE isolation prevents phantom reads in Postgres: if two concurrent transactions
+ *   both count the same (refType, refId) container, Postgres detects the conflict at commit
+ *   time and aborts one with a serialization failure (Prisma error code P2034).
+ *
+ *   The aborted transaction is retried up to LINK_MAX_RETRIES=3 times. On each retry the
+ *   entire count→check→update block re-executes; if the retried transaction then sees
+ *   count >= limit it throws TOO_MANY_ATTACHMENTS correctly. After 3 exhausted retries the
+ *   error is re-raised as-is (P2034 surfaced as TOO_MANY_ATTACHMENTS since the limit is
+ *   necessarily met by then, or as-is if something else caused it).
+ *
+ *   Advisory lock alternative (pg_advisory_xact_lock) was considered but rejected:
+ *   it requires raw SQL via prisma.$queryRaw and adds complexity. SERIALIZABLE is the
+ *   standard Postgres mechanism, sufficient for this low-contention (per-container) workload.
+ *
+ * Already-LINKED rejection: If an attachment is already LINKED and a second link is
+ *   attempted, a 409 CONFLICT is returned. This is separate from TOO_MANY_ATTACHMENTS.
+ *
+ * containerState default: 'draft' — mutability allowed. Body/query param `containerState`
+ *   overrides this. In PHASE-004+, the real container state will be injected from the
+ *   application service layer.
+ *
+ * HasReferenceQuery interface: Defined here as the contract for PHASE-011 to implement
+ *   real reference lookups (draft/completed/report/audit). Not implemented in this Phase
+ *   because the reference source tables (TravelApplication etc.) do not exist yet.
+ */
+
+import { Prisma } from "@prisma/client";
+import type { AttachmentRefType, AttachmentStatus, PrismaClient } from "@prisma/client";
+import { type CurrentUser, assertOwnershipOrAdmin } from "../auth/middleware.js";
+import { AppError } from "../platform/errors.js";
+import type { Storage } from "../storage/index.js";
+import { canLink, countLinkedAttachments } from "./attachment-limit-engine.js";
+
+// ---------------------------------------------------------------------------
+// Container state type
+// ---------------------------------------------------------------------------
+
+export type ContainerState = "draft" | "completed";
+
+// ---------------------------------------------------------------------------
+// HasReferenceQuery — interface contract for PHASE-011
+// ---------------------------------------------------------------------------
+
+/**
+ * Interface for querying whether an attachment is referenced by any live entity.
+ *
+ * This is the contract that PHASE-011 (cleanup scheduler) must implement.
+ * In this Phase, reference source tables do not yet exist, so no real implementation
+ * is provided. The cleanup scheduler will inject a concrete implementation that
+ * queries all known reference sources:
+ *   - Draft TravelApplication (PHASE-004)
+ *   - Completed TravelApplication (PHASE-004)
+ *   - MaintenanceApplication (PHASE-006)
+ *   - DepreciationApplication (PHASE-007)
+ *   - Report/Audit entries (PHASE-008/PHASE-009)
+ *
+ * Usage (PHASE-011):
+ *   const hasRef: HasReferenceQuery = {
+ *     hasReference: async (attachmentId) => {
+ *       const count = await prisma.tripSegment.count({ where: { attachmentId } });
+ *       return count > 0;
+ *     }
+ *   };
+ *   const eligible = isEligibleForCleanup(att, new Date(), await hasRef.hasReference(att.id), ttlHours);
+ */
+export interface HasReferenceQuery {
+  /**
+   * Returns true if the given attachment is currently referenced by any live entity
+   * (draft, completed application, report, or audit record). Returns false if the
+   * attachment has no known references and is safe to consider for cleanup.
+   *
+   * @param attachmentId - The attachment's id
+   */
+  hasReference(attachmentId: string): Promise<boolean>;
+}
+
+// ---------------------------------------------------------------------------
+// assertContainerMutable — AC-16 guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Assert that the container is in a mutable state (not completed).
+ *
+ * Throws AppError FORBIDDEN (403) if containerState === 'completed'.
+ * Passes silently for 'draft'.
+ *
+ * Spec §4.5 / AC-16: "已完成申請不得刪除/替換附件" — the container state is injected
+ * by the caller; the real state comes from PHASE-004+ application service.
+ * In this Phase, callers pass containerState via request body or query string.
+ *
+ * @param containerState - 'draft' | 'completed'
+ */
+export function assertContainerMutable(containerState: ContainerState): void {
+  if (containerState === "completed") {
+    throw new AppError("FORBIDDEN", 403, "已完成的申請不得修改或刪除附件");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// isEligibleForCleanup — pure function (AC-17/18, §4.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Determine whether an attachment is eligible for cleanup (deletion by PHASE-011 scheduler).
+ *
+ * Pure function — no DB or I/O access. All inputs are provided by the caller.
+ * The cleanup scheduler (PHASE-011) is responsible for calling this function with
+ * the real hasReference value obtained via HasReferenceQuery.
+ *
+ * Rules (AC-17/18):
+ *   - LINKED attachments → always false (protected by their container)
+ *   - hasReference=true → always false (referenced by draft/completed/report/audit)
+ *   - TEMP, !hasReference, elapsed > TTL → true (eligible)
+ *   - TEMP, !hasReference, elapsed <= TTL → false (not yet expired)
+ *
+ * TTL comparison: strictly greater than (not >=). A file at exactly 24h is NOT eligible.
+ *
+ * @param attachment  - The attachment record (must have id, status, createdAt)
+ * @param now         - Current time (injected for testability)
+ * @param hasReference - Whether any live entity references this attachment
+ * @param ttlHours    - TTL threshold in hours (from env ATTACHMENT_TEMP_TTL_HOURS)
+ */
+export function isEligibleForCleanup(
+  attachment: { id: string; status: string; createdAt: Date },
+  now: Date,
+  hasReference: boolean,
+  ttlHours: number
+): boolean {
+  // LINKED attachments are never eligible — their container protects them
+  if (attachment.status === "LINKED") {
+    return false;
+  }
+
+  // Referenced attachments are never eligible (AC-17)
+  if (hasReference) {
+    return false;
+  }
+
+  // TEMP, no reference: check TTL (strictly greater than)
+  const elapsedMs = now.getTime() - attachment.createdAt.getTime();
+  const ttlMs = ttlHours * 60 * 60 * 1000;
+
+  return elapsedMs > ttlMs;
+}
+
+// ---------------------------------------------------------------------------
+// AttachmentDto shape (for route responses)
+// ---------------------------------------------------------------------------
+
+export interface AttachmentDto {
+  id: string;
+  status: string;
+  mimeType: string;
+  byteSize: number;
+  originalFilename: string;
+  refType: string | null;
+  refId: string | null;
+  previewUrl: string;
+  downloadUrl: string;
+}
+
+function toDto(attachment: {
+  id: string;
+  status: AttachmentStatus;
+  mimeType: string;
+  byteSize: number;
+  originalFilename: string;
+  refType: AttachmentRefType | null;
+  refId: string | null;
+}): AttachmentDto {
+  return {
+    id: attachment.id,
+    status: attachment.status,
+    mimeType: attachment.mimeType,
+    byteSize: attachment.byteSize,
+    originalFilename: attachment.originalFilename,
+    refType: attachment.refType,
+    refId: attachment.refId,
+    previewUrl: `/attachments/${attachment.id}/thumbnail`,
+    downloadUrl: `/attachments/${attachment.id}/content`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// linkAttachment — TEMP → LINKED (AC-14, AC-10, AC-12, AC-16)
+// ---------------------------------------------------------------------------
+
+export interface LinkAttachmentInput {
+  attachmentId: string;
+  refType: AttachmentRefType;
+  refId: string;
+  /** Max attachments for this container; provided by the caller (AC-12) */
+  limit: number;
+  /** Container state injected by caller; 'draft' allows mutation, 'completed' blocks it (D2/AC-16) */
+  containerState: ContainerState;
+  /** Authenticated user performing the action */
+  actor: CurrentUser;
+}
+
+/**
+ * Maximum retry attempts for serialization failures (Prisma P2034) in linkAttachment.
+ * Each retry re-runs the entire count→check→update block inside a fresh SERIALIZABLE tx.
+ */
+const LINK_MAX_RETRIES = 3;
+
+/**
+ * Link a TEMP attachment to a container (draft state).
+ *
+ * Spec §5.1 service layer signature:
+ *   linkAttachment(prisma, { attachmentId, refType, refId, limit, containerState, actor })
+ *
+ * Sequence:
+ *   1. Load attachment from DB (404 if not found)
+ *   2. assertOwnershipOrAdmin(actor, attachment.ownerId) — 403 if not owner/admin
+ *   3. assertContainerMutable(containerState) — 403 if completed
+ *   4. Check status === 'TEMP' — 409 CONFLICT if already LINKED
+ *   5. SERIALIZABLE transaction with retry (up to LINK_MAX_RETRIES=3):
+ *      a. count existing LINKED for (refType, refId)
+ *      b. canLink(count, limit) → reject 409 TOO_MANY_ATTACHMENTS if over limit
+ *      c. update attachment to LINKED with refType/refId/linkedAt
+ *      On Prisma P2034 (serialization failure): retry the entire count→check→update block.
+ *      Retries exhausted → current error is re-raised.
+ *
+ * TOCTOU mechanism: SERIALIZABLE isolation prevents phantom reads. Two concurrent
+ * transactions counting the same container will have one aborted by Postgres at commit
+ * time (P2034). The retried transaction then sees the committed count and correctly
+ * rejects with TOO_MANY_ATTACHMENTS.
+ *
+ * @returns AttachmentDto with status=LINKED
+ */
+export async function linkAttachment(
+  prisma: PrismaClient,
+  input: LinkAttachmentInput
+): Promise<AttachmentDto> {
+  const { attachmentId, refType, refId, limit, containerState, actor } = input;
+
+  // Step 1: Load attachment
+  const attachment = await prisma.attachment.findUnique({
+    where: { id: attachmentId },
+  });
+  if (!attachment) {
+    throw new AppError("NOT_FOUND", 404, "找不到附件");
+  }
+
+  // Step 2: Ownership check (authorization based on DB ownerId, not request params)
+  assertOwnershipOrAdmin(actor, attachment.ownerId);
+
+  // Step 3: Container state check (AC-16)
+  assertContainerMutable(containerState);
+
+  // Step 4: Status check — only TEMP can be linked
+  if (attachment.status !== "TEMP") {
+    throw new AppError("CONFLICT", 409, "附件已關聯，無法重複關聯");
+  }
+
+  // Step 5: SERIALIZABLE transaction with retry on P2034 (serialization failure)
+  // SERIALIZABLE prevents phantom reads: concurrent count() calls on the same container
+  // will conflict at commit; Postgres aborts one with a serialization error (P2034).
+  // Retry re-runs the entire count→check→update under a fresh SERIALIZABLE transaction.
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= LINK_MAX_RETRIES; attempt++) {
+    try {
+      const updated = await prisma.$transaction(
+        async (tx) => {
+          // Count existing LINKED attachments for this container (within transaction)
+          const currentCount = await countLinkedAttachments(
+            tx as unknown as PrismaClient,
+            refType,
+            refId
+          );
+
+          // Check limit (AC-10)
+          if (!canLink(currentCount, limit)) {
+            throw new AppError("TOO_MANY_ATTACHMENTS", 409, "附件數量已達上限");
+          }
+
+          // Update to LINKED
+          return tx.attachment.update({
+            where: { id: attachmentId },
+            data: {
+              status: "LINKED",
+              refType,
+              refId,
+              linkedAt: new Date(),
+            },
+          });
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        }
+      );
+      return toDto(updated);
+    } catch (err) {
+      lastError = err;
+
+      // Re-throw immediately for any non-serialization error (AppError, unknown errors)
+      if (err instanceof AppError) {
+        throw err;
+      }
+
+      // P2034 = Prisma serialization failure — retry eligible
+      const isPrismaSerializationError =
+        err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
+
+      if (!isPrismaSerializationError) {
+        // Not a serialization failure — do not retry
+        throw err;
+      }
+
+      // Serialization failure: retry if we have attempts remaining
+      if (attempt >= LINK_MAX_RETRIES) {
+        // Retries exhausted — surface as TOO_MANY_ATTACHMENTS (the limit was reached
+        // by a concurrent winner; the retried tx would also see count >= limit)
+        throw new AppError("TOO_MANY_ATTACHMENTS", 409, "附件數量已達上限（並發衝突後重試耗盡）");
+      }
+      // else: loop continues to next retry attempt
+    }
+  }
+
+  // Should be unreachable (loop always either returns or throws), but TypeScript needs this
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// deleteAttachment — detach (LINKED → TEMP) or physical delete (TEMP → gone)
+// ---------------------------------------------------------------------------
+
+export interface DeleteAttachmentInput {
+  attachmentId: string;
+  /** Container state injected by caller; 'completed' blocks deletion (AC-16) */
+  containerState: ContainerState;
+  /** Authenticated user performing the action */
+  actor: CurrentUser;
+}
+
+/**
+ * Delete an attachment:
+ *   - If LINKED (and container is draft): detach → status back to TEMP
+ *     * refType/refId/linkedAt cleared
+ *     * createdAt updated to now (TTL base reset per §4.5/D2 definition)
+ *   - If TEMP: physically delete DB record + storage files (original + thumbnail)
+ *   - If container is completed: 403 FORBIDDEN (AC-16)
+ *
+ * TEMP DELETE semantics (Packet §3 note, §5.1):
+ *   For TEMP attachments, DELETE performs physical removal rather than just
+ *   "marking as eligible for cleanup". Rationale: the attachment has no container
+ *   reference, so immediate deletion is the correct semantic per §4.5 TEMP lifecycle
+ *   and avoids orphan accumulation. DB record is removed first (source-of-truth);
+ *   storage deletion is attempted second (best-effort, failure logged not re-thrown).
+ *
+ * Storage deletion order (failure handling):
+ *   1. DB record deleted FIRST — prevents any future access attempt
+ *   2. storage.delete(storageKey) — original file
+ *   3. storage.delete(thumbnailKey) if exists — thumbnail
+ *   If storage.delete fails: file is orphaned but unreachable; error is logged.
+ *   PHASE-011 can sweep orphaned storage keys.
+ *
+ * TTL base reset on detach (D2/§4.5):
+ *   createdAt is set to new Date() on detach. This makes createdAt mean
+ *   "the time this attachment last became TEMP", which is the TTL base.
+ *   The column comment in the schema says "上傳時間（暫存 TTL 基準）" — after detach,
+ *   this is reinterpreted as "last-became-TEMP time". No schema change needed.
+ *
+ * @returns { ok: true }
+ */
+export async function deleteAttachment(
+  prisma: PrismaClient,
+  storage: Storage,
+  input: DeleteAttachmentInput
+): Promise<{ ok: true }> {
+  const { attachmentId, containerState, actor } = input;
+
+  // Load attachment
+  const attachment = await prisma.attachment.findUnique({
+    where: { id: attachmentId },
+  });
+  if (!attachment) {
+    throw new AppError("NOT_FOUND", 404, "找不到附件");
+  }
+
+  // Ownership check
+  assertOwnershipOrAdmin(actor, attachment.ownerId);
+
+  // Container state check (AC-16) — blocks delete if container is completed
+  assertContainerMutable(containerState);
+
+  if (attachment.status === "LINKED") {
+    // Detach: revert to TEMP, clear ref fields, reset createdAt as TTL base (D2/§4.5)
+    await prisma.attachment.update({
+      where: { id: attachmentId },
+      data: {
+        status: "TEMP",
+        refType: null,
+        refId: null,
+        linkedAt: null,
+        // Reset createdAt to now — this is the "last became TEMP" time, serving as TTL base.
+        // Spec §4.5: "TTL 以最後一次成為 TEMP 的時間起算"
+        // We use createdAt (schema frozen, no new columns) to store this semantic.
+        createdAt: new Date(),
+      },
+    });
+  } else {
+    // TEMP attachment: physical delete
+    // DB first (source of truth), then storage (best-effort)
+    const { storageKey, thumbnailKey } = attachment;
+
+    await prisma.attachment.delete({ where: { id: attachmentId } });
+
+    // Storage cleanup (best-effort — orphan is unreachable if DB record is gone)
+    const keysToDelete = [storageKey, thumbnailKey].filter(
+      (k): k is string => typeof k === "string" && k.length > 0
+    );
+    for (const key of keysToDelete) {
+      try {
+        await storage.delete(key);
+      } catch {
+        // Orphan file: not exposed to user; PHASE-011 can clean up unreachable keys.
+        // Intentionally not re-throwing (compensatory best-effort per §4.4 pattern).
+      }
+    }
+  }
+
+  return { ok: true };
+}

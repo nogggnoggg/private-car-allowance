@@ -3,6 +3,7 @@ import { Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import { RedirectIfAuthenticated, RequireAuth } from "./components/RouteGuard.js";
 import { AuthProvider } from "./context/AuthContext.js";
 import AdminUsersPage from "./pages/AdminUsersPage.js";
+import AttachmentsDemoPage from "./pages/AttachmentsDemoPage.js";
 import ChangePasswordPage from "./pages/ChangePasswordPage.js";
 import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
 import HomePage from "./pages/HomePage.js";
@@ -57,6 +58,16 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <AdminUsersPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-003 Gate: attachment integration verification page */}
+          <Route
+            path="/attachments-demo"
+            element={
+              <RequireAuth>
+                <AttachmentsDemoPage />
               </RequireAuth>
             }
           />

@@ -53,9 +53,11 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  sessions          Session[]
-  auditLogsAsActor  AuditLog[] @relation("AuditActor")
-  auditLogsAsTarget AuditLog[] @relation("AuditTarget")
+  sessions               Session[]
+  auditLogsAsActor       AuditLog[]   @relation("AuditActor")
+  auditLogsAsTarget      AuditLog[]   @relation("AuditTarget")
+  attachmentsAsUploader  Attachment[] @relation("AttachmentUploader")
+  attachmentsAsOwner     Attachment[] @relation("AttachmentOwner")
 
   @@index([loginName])
 }
@@ -88,5 +90,61 @@ model AuditLog {
 
   @@index([actorId])
   @@index([targetId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-003 enums
+// ---------------------------------------------------------------------------
+
+/// Attachment lifecycle state. LOCKED is not a persistent enum value —
+/// immutability is determined by the owning container's completion status (D2).
+enum AttachmentStatus {
+  TEMP   // Uploaded but not yet associated with any application
+  LINKED // Associated with a draft container
+}
+
+/// Weak-reference type for the owning container (D1: no FK to non-existent tables).
+/// Concrete tables are created in PHASE-004/006/007.
+enum AttachmentRefType {
+  TRIP_SEGMENT // Travel trip segment (PHASE-004)
+  MAINTENANCE  // Maintenance application (PHASE-006)
+  DEPRECIATION // Depreciation application (PHASE-007)
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-003 models
+// ---------------------------------------------------------------------------
+
+/// Attachment — general-purpose file attachment model, shared by all application types.
+/// Spec §3.1 (PHASE-003). storageKey uses system-generated keys; no user input in paths.
+model Attachment {
+  id     String           @id @default(cuid())
+  status AttachmentStatus @default(TEMP)
+
+  // Storage references (storage abstraction layer keys — not absolute container paths)
+  storageKey       String  @unique // Original file key in storage
+  thumbnailKey     String? // Thumbnail key (set after successful thumbnail generation)
+  mimeType         String // Detected MIME type: image/jpeg | image/png | image/webp
+  byteSize         Int // Actual byte count
+  originalFilename String // User-provided filename for display only; never used in path
+
+  // Uploader and owner (authorization basis; D3: ownerId=uploaderId in this Phase)
+  uploaderId String // User who performed the upload (may be admin acting on behalf)
+  uploader   User   @relation("AttachmentUploader", fields: [uploaderId], references: [id])
+  ownerId    String // Data owner (authorization checks use this; immutable after creation)
+  owner      User   @relation("AttachmentOwner", fields: [ownerId], references: [id])
+
+  // Weak reference to owning container (D1: no FK — target tables do not exist yet)
+  refType AttachmentRefType? // Container type; required when status=LINKED
+  refId   String? // Container id (e.g. TripSegment id); required when status=LINKED
+
+  createdAt DateTime  @default(now()) // Upload time (TEMP TTL baseline)
+  linkedAt  DateTime? // Time when status transitioned to LINKED
+  updatedAt DateTime  @updatedAt
+
+  @@index([ownerId])
+  @@index([status])
+  @@index([refType, refId])
   @@index([createdAt])
 }

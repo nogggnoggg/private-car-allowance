@@ -17,8 +17,8 @@ playwright-report/
 test-results/
 
 # Runtime data (local dev)
-uploads/
-storage/
+/uploads/
+/storage/
 *.pdf.tmp
 
 # Logs
