@@ -3,8 +3,8 @@
  *
  * Routes:
  *   POST /auth/login   — AC-01/02/03/28 (no auth required)
- *   POST /auth/logout  — AC-07 (requireAuth)
- *   GET  /me           — AC-05/06 (requireAuth)
+ *   POST /auth/logout  — AC-07 (requireAuth, NO requirePasswordChanged per Spec 5.1)
+ *   GET  /me           — AC-05/06 (requireAuth, NO requirePasswordChanged per Spec 5.1)
  *
  * Cookie handling (Spec 4.3 / AC-28):
  *   - Name: SESSION_COOKIE_NAME (default "sid")
@@ -16,14 +16,18 @@
  *   - Raw token from Cookie → SHA-256 → DB lookup
  *   - revokedAt IS NULL AND expiresAt > now AND user.isActive
  *   - 401 UNAUTHORIZED for any invalid/expired/revoked session
+ *
+ * T5/T6: requireAuth preHandler now sourced from middleware.ts.
+ * /me and /auth/logout intentionally use requireAuth only (NOT requirePasswordChanged)
+ * per Spec 5.1 — mustChangePassword users must still be able to logout and view their info.
  */
 
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { parseEnv } from "../config/env.js";
-import { AppError } from "../platform/errors.js";
 import { performLogin } from "./login.js";
-import { revokeSession, toUserDto, validateSession } from "./session.js";
+import { requireAuth } from "./middleware.js";
+import { revokeSession, toUserDto } from "./session.js";
 
 // ---------------------------------------------------------------------------
 // Cookie helpers
@@ -55,40 +59,6 @@ function buildClearCookieOptions(isProduction: boolean) {
     secure: isProduction,
     maxAge: 0,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Session validation helper (shared between logout and GET /me)
-// ---------------------------------------------------------------------------
-
-/**
- * Extract and validate the session from the request Cookie.
- * Returns { session, user } if valid.
- * Throws AppError(UNAUTHORIZED, 401) if missing/invalid/expired.
- *
- * This is the core of what T5 (requireAuth middleware) will also use.
- * Exported for reuse by T5.
- */
-export async function requireValidSession(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  prisma: PrismaClient,
-  cookieName: string
-): Promise<ReturnType<typeof validateSession> extends Promise<infer T> ? NonNullable<T> : never> {
-  // @fastify/cookie parses cookies into request.cookies
-  const rawToken = (request.cookies as Record<string, string | undefined>)[cookieName];
-  if (!rawToken) {
-    throw new AppError("UNAUTHORIZED", 401, "未登入或 Session 已失效");
-  }
-
-  const result = await validateSession(prisma, rawToken);
-  if (!result) {
-    // Clear the stale cookie (AC-06: "並清除該 Cookie")
-    reply.clearCookie(cookieName, { path: "/" });
-    throw new AppError("UNAUTHORIZED", 401, "未登入或 Session 已失效");
-  }
-
-  return result as NonNullable<Awaited<ReturnType<typeof validateSession>>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,52 +149,54 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
   );
 
   // -------------------------------------------------------------------------
-  // POST /auth/logout (requireAuth inline)
+  // POST /auth/logout (requireAuth — NO requirePasswordChanged per Spec 5.1)
+  // mustChangePassword users must be able to logout
   // -------------------------------------------------------------------------
 
-  fastify.post("/auth/logout", async (request: FastifyRequest, reply: FastifyReply) => {
-    // Validate session (inline requireAuth for T3; T5 will extract middleware)
-    const rawToken = (request.cookies as Record<string, string | undefined>)[cookieName];
-    if (!rawToken) {
-      throw new AppError("UNAUTHORIZED", 401, "未登入或 Session 已失效");
+  fastify.post(
+    "/auth/logout",
+    { preHandler: [requireAuth(prisma)] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // Extract raw token for session revocation
+      // At this point requireAuth has already validated the session and set request.currentUser
+      const rawToken = (request.cookies as Record<string, string | undefined>)[cookieName];
+
+      // Delete the session (AC-07: logout makes token unusable)
+      // rawToken is guaranteed to exist here because requireAuth passed
+      if (rawToken) {
+        await revokeSession(prisma, rawToken);
+      }
+
+      // Clear the cookie
+      reply.clearCookie(cookieName, buildClearCookieOptions(isProduction));
+
+      return reply.status(200).send({ ok: true });
     }
-
-    const sessionResult = await validateSession(prisma, rawToken);
-    if (!sessionResult) {
-      reply.clearCookie(cookieName, { path: "/" });
-      throw new AppError("UNAUTHORIZED", 401, "未登入或 Session 已失效");
-    }
-
-    // Delete the session (AC-07: logout makes token unusable)
-    await revokeSession(prisma, rawToken);
-
-    // Clear the cookie
-    reply.clearCookie(cookieName, buildClearCookieOptions(isProduction));
-
-    return reply.status(200).send({ ok: true });
-  });
+  );
 
   // -------------------------------------------------------------------------
-  // GET /me (requireAuth inline)
+  // GET /me (requireAuth — NO requirePasswordChanged per Spec 5.1)
+  // mustChangePassword users must be able to view their own info
   // -------------------------------------------------------------------------
 
-  fastify.get("/me", async (request: FastifyRequest, reply: FastifyReply) => {
-    // Validate session (inline requireAuth for T3)
-    const rawToken = (request.cookies as Record<string, string | undefined>)[cookieName];
-    if (!rawToken) {
-      throw new AppError("UNAUTHORIZED", 401, "未登入或 Session 已失效");
+  fastify.get(
+    "/me",
+    { preHandler: [requireAuth(prisma)] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // request.currentUser is guaranteed to be set by requireAuth preHandler
+      // Re-fetch the full user for the DTO (currentUser has minimal fields)
+      const user = await prisma.user.findUnique({
+        where: { id: request.currentUser.id },
+      });
+
+      if (!user) {
+        // This shouldn't happen (requireAuth validated), but handle defensively
+        throw new Error("User not found after authentication");
+      }
+
+      return reply.status(200).send({
+        user: toUserDto(user),
+      });
     }
-
-    const sessionResult = await validateSession(prisma, rawToken);
-    if (!sessionResult) {
-      reply.clearCookie(cookieName, { path: "/" });
-      throw new AppError("UNAUTHORIZED", 401, "未登入或 Session 已失效");
-    }
-
-    const { user } = sessionResult;
-
-    return reply.status(200).send({
-      user: toUserDto(user),
-    });
-  });
+  );
 };
