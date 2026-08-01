@@ -29,8 +29,9 @@ Updated: 2026-08-01
 - PHASE-001-T1（monorepo 骨架 + lint/TS 工具鏈）：DONE（workspace 工具改裁 npm，見 Spec 3.1 修訂）
 - PHASE-001-T2（Fastify/health/Prisma/env）：DONE（9/9 測試通過，大總管獨立重跑驗證；Prisma 定版 5.22 因 v7 schema 語法不相容，屬實作細節）
 - PHASE-001-T6（錯誤協定 + error handler）：DONE（22 新測試；全套 27/27 綠，大總管重驗；lint 遺漏由大總管代修：format/organizeImports/1 處 non-null assertion）
-- PHASE-001-T3（React 前端 + /api/health + dev proxy）：READY
-- PHASE-001 T4→T5：PLANNED
+- PHASE-001-T3（React 前端 + /api/health + dev proxy）：DONE（3/3 測試綠；大總管重驗 build exit=0、dist 完整；implementer 回報的 0xC0000409 build crash 未重現）
+- PHASE-001-T4（Dockerfile×2 + compose + .env.example）：READY
+- PHASE-001-T5（CI）：PLANNED
 - 待 Review 事項（reviewer 用）：
   - health.ts 記錄 DB 探測 err.message 原文（理論外洩面，Prisma 實務不含憑證，評 Low）
   - dotenv@17 對 stdout 印提示訊息（容器無 .env 不受影響）
