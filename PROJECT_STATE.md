@@ -56,7 +56,9 @@ Updated: 2026-08-01
 - 治理事件結案：違規已補救、規則已升版固化（2026-08-01.2）。
 - SPEC-003（docs/specs/PHASE-003.md 詳細 Spec）：DONE（commit 4c0ce84；驗收時發現 §4.6 與 D8 文字矛盾，已由 spec-writer 修正）。
 - PHASE-003 Spec Gate：**已通過**（2026-08-01）——D1~D8 全數照建議批准；D5＝自寫 magic-byte 偵測＋sharp 縮圖（build 不可行則回退前端縮放並記 Accepted Risk）。Spec 轉 ACTIVE。
-- PHASE-003-T1（Attachment 資料模型 + migration，Medium）：IN_PROGRESS（implementer 派工中）。
+- PHASE-003-T1（Attachment 資料模型 + migration，Medium）：DONE（199ffdd；乾淨 DB 3 migration 套用成功，大總管重驗 lint/tsc/測試）。
+- PHASE-003-T1R（REPAIR：測試隔離）：DONE（d08ee5e）。根因：T1 新增 Attachment→User FK(RESTRICT) 引爆 phase2-models.test.ts 的全域 user.deleteMany（平行執行相撞→清理靜默失敗→殘留資料）。修復：清理限定自建 loginName + beforeAll 自癒；大總管於髒 DB 連跑兩輪 209/209 全綠驗證。implementer 首輪回報 14/14 綠屬執行順序運氣，未發現此問題——**驗收紀律追加：資料模型類 Task 驗收一律同 DB 連跑兩輪**。
+- 測試隔離備註（後續 Task Packet 必含）：新測試檔清理一律限定自建資料，禁用全域 deleteMany；phase3-attachment-model.test.ts 現有全域 attachment.deleteMany({}) 目前安全（Attachment 為葉節點且僅該檔建立附件），但 T3/T5/T6 新測試檔開始建附件後即成地雷，屆時一併改為範圍清理。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
