@@ -4,6 +4,12 @@ State: ACTIVE
 Governance-Version: 2026-08-01.2
 Updated: 2026-08-01
 
+> **PHASE-003a 開工記錄（2026-08-01，使用者指令接續）**
+> - §15 rule 0 重錨定完成：大總管零程式修改（白名單＝PROJECT_STATE／Spec 狀態欄・修訂／ADR／CHANGELOG／治理節）；003a 為 High 風險，Spec 需事前批准 Gate 才進實作；commit 前逐檔核對 Handoff、程式 commit 必含 Task ID。
+> - 工作區清理：刪除根目錄殘留測試產物 `-w`（PHASE-003-T8 curl 誤產的合成登入 JSON，經使用者批准刪除）。
+> - branch：phase-003a（自 main @ 93411cc 切出）。
+> - 下一步：派 spec-writer 產出 docs/specs/PHASE-003a.md（DRAFT）→ 大總管驗收 → 事前批准 Gate。
+
 ## 目前狀態
 
 - Preflight 完成，Project Execution Profile 已由使用者確認（2026-08-01）。
