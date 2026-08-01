@@ -2,7 +2,15 @@
 
 State: ACTIVE
 Governance-Version: 2026-08-01.2
-Updated: 2026-08-01
+Updated: 2026-08-02
+
+> **PHASE-004 開工記錄（2026-08-02）**
+> - §15「大總管禁止事項」重錨定完成：本 Phase 大總管零程式修改；白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節。所有程式（含 lint、單行修改）一律派 implementer。
+> - branch：`phase-004`（自 main @ 6041af4 切出）。
+> - **Spec Gate 授權變更（使用者 leonchih 2026-08-02 明示）**：「spec 寫好後直接進入實作，這次的 session 的 spec 不用 approval」。大總管據此代行裁定 D1~D18 並完整記錄理由於 `docs/specs/PHASE-004.md` §17.1，供使用者事後逐項複核。
+> - **合併進 main 未在授權範圍內**，仍為人類批准事項（不可逆），大總管不代決。
+> - D18 為唯一未採 spec-writer 建議者：**維持單一 PHASE-004**（不拆 004a/004b），改以 Phase 內期中 reviewer 檢查點取得同等品質效益，避免變更 PRD 結構與產生兩次人類合併批准。
+> - 大總管代定項（供使用者事後調整）：D14(ii) 出差目的 ≤500 字／地點 ≤200 字；D18 Phase 結構。
 
 > **PHASE-003a 開工記錄（2026-08-01，使用者指令接續）**
 > - §15 rule 0 重錨定完成：大總管零程式修改（白名單＝PROJECT_STATE／Spec 狀態欄・修訂／ADR／CHANGELOG／治理節）；003a 為 High 風險，Spec 需事前批准 Gate 才進實作；commit 前逐檔核對 Handoff、程式 commit 必含 Task ID。
@@ -26,7 +34,38 @@ Updated: 2026-08-01
 
 - **PHASE-003 DONE**：整合驗收通過、PR #3 經人類批准合併至 main（766abf8，2026-08-01）；Spec 轉 COMPLETED。
 - **PHASE-003a（補助參數維護）：DONE**。整合驗收通過、PR #4 經人類批准合併至 main（94a87a8，2026-08-02）；Spec 轉 COMPLETED。CI 全綠（Lint/Typecheck/Frontend、Backend Build&Tests、Docker Build 皆 pass）。授權於 compose 真實環境實測：一般使用者 staff01 對所有 /parameters 端點（GET fuel/etc/depreciation、POST fuel/depreciation）皆 403；管理員專屬（後端 requireAdmin 為權威 + 前端首頁連結僅管理員可見 + 頁面 permission-denied 態）。
-- **【暫停】PHASE-003a 完成，等使用者指令進入下一階段**（PHASE-004 差旅核心；High，Spec 需事前批准 Gate）。
+- **PHASE-004（差旅申請，垂直核心；branch: phase-004）：IN_PROGRESS**。Spec `docs/specs/PHASE-004.md` 為 **ACTIVE**（93 條 AC、15 Task、D1~D18 已定案）。
+
+### PHASE-004 Task 進度
+
+| Task | 內容 | Risk | 狀態 | Commit |
+|---|---|---|---|---|
+| SPEC-004 | Phase Spec + Gate 定案 D1~D18 | — | DONE | ec3c681 |
+| T1 | Application/TravelApplication/TripSegment 模型 + migration | Medium | DONE | b3cd569 |
+| R1 | REPAIR：既有測試種子帳號跨檔撞名競態 | Low | DONE | dafcd21 |
+| T2 | 申請狀態機純函式 + 可變性守門 | High | DONE | 9a786eb |
+| T3 | 草稿 CRUD + completionBlockers + 授權隔離 | High | DONE | cf381f2 |
+| T5 | 里程與地點驗證純函式（提前於 T4） | Medium | DONE | 9ce6f6b |
+| T4 | 段落 diff + sortOrder 重寫 + 刪段 detach | High | DONE | 789cf49 |
+| T6 | 差旅計算引擎純函式（金額語意核心） | High | DONE | a94fc65 |
+| T7 | 參數套用 + 缺參數處理 + 預覽端點 | High | DONE | 558cdda |
+| T11 | 附件整合 + **AR-D 閉環** + 代上傳 ownerId | High | IN_PROGRESS | — |
+| T8 | 完成流程 + 快照 + 附件鎖定 | High | 待辦 | — |
+| T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | 待辦 | — |
+| — | **期中 reviewer 檢查點**（後端核心） | — | 待辦 | — |
+| T9 | 綜合紀錄查詢（分頁/篩選/授權隔離） | High | 待辦 | — |
+| T10 | 管理員代操作 | High | 待辦 | — |
+| T12 | 代操作稽核 | High | 待辦 | — |
+| T13 | 前端列表/表單/預覽/附件/響應式（**含 E2E 遷移**） | Medium | 待辦 | — |
+| T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | 待辦 | — |
+
+- 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
+- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ **754（T7）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
+- **驗收紀律事件（T6）**：implementer 回報之「全套回歸」係在未設 `DATABASE_URL` 下執行（55 skipped），非有效證據；大總管重跑後才確認。**後續 Packet 一律要求 Handoff 標明 passed/failed/skipped 三個數字且 skipped 必須為 0。**
+- **T11 Stop 事件（implementer 正確觸發）**：D12 移除公開 `POST /attachments/:id/link` 會使 `phase3-lifecycle.test.ts` 20 個測試中 16 處必然失敗，而該檔同時列為不得修改。大總管裁定**逐條遷移不得刪除**，寫入 Spec §17 修訂紀錄（commit c5fc3cb）後恢復執行。
+- **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
+
+### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
 
 ### PHASE-003a 施工細節（已歸檔）
   - SPEC-003a：DONE（commit 740a88a，DRAFT）。
@@ -141,7 +180,15 @@ Updated: 2026-08-01
 
 ## Base Commit
 
-- main @ 94a87a8（PHASE-003a 合併後，PR #4）；無作用中工作 branch（暫停中）
+- main @ 94a87a8（PHASE-003a 合併後，PR #4）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）
+
+## Human Gate（PHASE-004）
+
+- Spec 事前批准 Gate：**已由使用者於 2026-08-02 授權大總管代行**（本 session 限定），定案記錄於 Spec §17.1
+- Mock UI 驗收 Gate：待 T13/T14 完成後觸發（**尚未觸發**）
+- 整合驗收 Gate：待全 Task 完成 + reviewer 清零後觸發（**尚未觸發**）
+- **PR 合併批准：保留為人類決策，未授權大總管代行**
 
 ## 備註
 
