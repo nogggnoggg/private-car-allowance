@@ -27,8 +27,10 @@ Updated: 2026-08-01
 - PLAN-001（PRD + Phase 拆分 + Architecture/Data Flow 草案）：DONE
 - SPEC-001（docs/specs/PHASE-001.md 詳細 Spec）：DONE（commit 8e41e28）
 - PHASE-001-T1（monorepo 骨架 + lint/TS 工具鏈）：DONE（workspace 工具改裁 npm，見 Spec 3.1 修訂）
-- PHASE-001 T2（Fastify/health/Prisma/env）：READY
-- PHASE-001 T6→T3→T4→T5：PLANNED
+- PHASE-001-T2（Fastify/health/Prisma/env）：DONE（9/9 測試通過，大總管獨立重跑驗證；Prisma 定版 5.22 因 v7 schema 語法不相容，屬實作細節）
+- PHASE-001-T6（錯誤協定 + error handler）：READY
+- PHASE-001 T3→T4→T5：PLANNED
+- 待 Review 事項（reviewer 用）：health.ts 對 DB 探測失敗記錄 err.message 原文，理論上 driver 訊息可能含連線資訊（Prisma 實務不含憑證，評 Low）；dotenv@17 對 stdout 印提示訊息（容器內無 .env 不受影響）
 
 ## 環境備註（後續 Task 必讀）
 

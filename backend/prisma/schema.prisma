@@ -1,0 +1,18 @@
+// Prisma schema — datasource + generator + minimal HealthProbe model
+// See PHASE-001 Spec §7 for migration strategy
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// Minimal model used only to verify migration mechanism and data persistence (AC-04).
+/// Not a business model — see PHASE-001 Spec §7.
+model HealthProbe {
+  id        Int      @id @default(autoincrement())
+  checkedAt DateTime @default(now())
+}
