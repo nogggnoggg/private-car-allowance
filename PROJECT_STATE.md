@@ -70,6 +70,9 @@ Updated: 2026-08-01
 - PHASE-003-T7R（REPAIR：T7 三檔 + root package.json biome lint/format）：DONE（245d15f；純 safe fix，repo root 0 error）。
 - PHASE-003-REVIEW（reviewer 獨立審查）：DONE。**無 Must Fix；21/21 AC PASS**；測試鑑別力抽查通過（magic-byte 偽裝、補償刪除、TOCTOU 真併發皆具鑑別力）；D7 nginx 複核乾淨。Should Fix 兩項：**S-1** AppConfig fallback 字面量第三處擴散（→T9 Lite 修復+輕量複審）；**S-2** Docker sharp/gosu 容器驗證需大總管代跑複驗（T8 已驗過一輪，Gate 前由大總管獨立重驗）。Accepted Risk 四項記錄：AR-A log 內嵌 storage key（Low，合規，建議後續剝離）；AR-B 同步 fs（Low）；AR-C 無 DB fail/skip 疑慮經查為 describe.skip 且非本 Phase 檔（範圍外）；AR-D containerState 請求注入（本 Phase Spec 明文允許、無真實鎖定資產）——**PHASE-004 前置約束：containerState 必須改由申請服務層依狀態機注入，route 移除/忽略 client 參數**。
 - 驗收紀律修正（大總管自查）：先前 lint 驗收誤在 backend/ 目錄執行，未掃前端/e2e——**自 T7R 起一律 repo root `npx biome check .` 全掃**。
+- PHASE-003-T9（Review S-1 修復：fallback 收斂 getEnvOrTestDefaults）：DONE（d03973e）；reviewer 輕量複審 **APPROVE**（單一真相來源、零行為變更逐項核對、無夾帶）。
+- S-2 複驗（大總管親跑，2026-08-01）：**通過**——compose build/up healthy；sharp 於容器產縮圖（thumbnailKey 非 null、126B≠原圖 173B）；未登入 401；重啟後 SHA 一致。S-2 關閉，sharp 回退條款備而未用。
+- **PHASE-003 全部 Task 完成（T1~T9 + T1R/T2R/T7R），Review 清零（無 Must Fix、S-1 已修復複審、S-2 已複驗），等待人類整合驗收 Gate 與 PR #3 合併批准。**
 - 待 Review 事項追加：change-password「bogus token」與 health「200」兩測試於無 DB 環境 fail 而非 skip（describeWithDb 防護不完整；有 DB 時 377 全綠，功能無虞，reviewer 酌定是否列修）。
 - Phase 整合驗收待辦：Docker 容器 build 需驗證 sharp 之 libvips runtime（node:20-slim）；Zeabur/compose 必設 ATTACHMENT_STORAGE_ROOT（production 現會 fail-fast）。
 - 待 Review 事項（PHASE-003 reviewer 用）：LocalVolumeStorage 內部同步 fs（readFileSync/writeFileSync）於 async 介面下阻塞 event loop——功能過 AC，效能/慣例問題請 reviewer 權衡（10MB 上限內風險有限，改 fs/promises 非破壞性）；AppConfig 防禦性 try/catch fallback 字面量已擴散至第三處（env→auth/routes→server.ts），AR-4 清理升級為應處理項；T5 檔案遺失 error log 之 errMsg 內嵌 storage key（T2 拋錯訊息含 key，sanitizeForLog 不濾）——判定合規（§9.4 禁的是絕對路徑/位元組），請 reviewer 二次確認是否要求剝離。
@@ -99,7 +102,7 @@ Updated: 2026-08-01
 
 ## Human Gate（待觸發）
 
-- 【當前】PHASE-003 Mock UI／整合驗收（T7 完成後）
+- 【當前】PHASE-003 整合驗收 + PR #3 合併批准（全 Task 完成、Review 清零後觸發）
 - 003a Spec 事前批准（003 完成後）；其後各 High 風險 Phase 事前批准（004/006/007/008/009/010/011）
 - 各 Phase Mock UI 驗收、整合驗收
 - 正式合併與發布
