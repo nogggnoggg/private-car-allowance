@@ -32,7 +32,9 @@ Updated: 2026-08-01
   - **T1（資料模型+migration）：DONE**（commit c89bfc8）。三表（Fuel/Etc/Depreciation ParameterVersion）+ migration 20260801153708 + 14 模型測試（Decimal 往返精度、@db.Date 日粒度、@@unique 鑑別力、Int、無 derived）。大總管重驗：同 DB 連跑兩輪 14/14；full regression 391/391；biome root 91 檔乾淨。scope 乾淨無夾帶。
   - **T2（不重疊+依日期查找引擎，High）：DONE**（commit 18db844）。純函式 checkNoOverlap / findEffectiveVersion（原生 Date UTC 日粒度，無新依賴）；30 單元測試含 datetime 與 off-by-one 鑑別力、相鄰次日、未來版不污染、亂序輸入；反向驗證自證。大總管重驗：unit 183/183、tsc 0、biome root 93 檔乾淨。scope 乾淨。
   - T2 New Risk（轉交 T3/T4）：服務層 create 前須把「該類**全部**現有版本」傳入 checkNoOverlap（勿先過濾），DB `@@unique` 為 D4 最後防線。
-  - 下一步：派 implementer T3（油資/ETC 建立+列表 API，複用 002 授權，High；稽核留 T5）。
+  - **T3（油資/ETC 建立+列表 API，High）：DONE**（commit 4385dfc）。POST/GET /parameters/fuel|etc；全掛 requireAuth+requirePasswordChanged+requireAdmin；服務層值域驗證（unitPrice≥0、嚴格 YYYY-MM-DD 含日曆有效性）；不重疊經 T2 引擎（交易內撈全部同類）+ DB `@@unique` P2002 併發防線→皆轉 409 `PARAMETER_PERIOD_OVERLAP`+details.conflictVersion（D5）；DTO unitPrice 為 Decimal 字串（D8）。共用 errors.ts/error-handler.ts 新增碼＋可選 details（向後相容）。服務層備 onCreated 交易內 hook 供 T5 稽核。30 整合測試（權限矩陣/驗證/重疊/相鄰/精度/併發）。大總管重驗：同 DB 兩輪 30/30、full 451/451、tsc 0、biome 96 檔乾淨。
+  - T3 Accepted Risk（Low，轉 Phase reviewer）：(a) `new Prisma.Decimal(priceNum)` 經 float 中介，建議改傳字串；(b) 空字串 unitPrice 會 coerce 為 0。皆非阻擋、DB Decimal(10,4) 收斂。
+  - 下一步：派 implementer T4（折舊建立+每年費用/每公里單價推導引擎，High；稽核留 T5）。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
