@@ -14,6 +14,7 @@ import { authPlugin } from "./auth/routes.js";
 import { getEnvOrTestDefaults } from "./config/env.js";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
+import { parametersPlugin } from "./parameters/routes.js";
 import { registerErrorHandlers } from "./platform/error-handler.js";
 import { healthPlugin, makeDefaultDbProbe } from "./platform/health.js";
 import type { DbProbe } from "./platform/health.js";
@@ -73,6 +74,9 @@ export async function buildServer(
 
   // Register admin routes (GET/POST /admin/users, deactivate/activate/reset-password/delete)
   await fastify.register(adminPlugin, { prisma });
+
+  // Register parameters routes (POST/GET /parameters/fuel, /parameters/etc — PHASE-003a-T3)
+  await fastify.register(parametersPlugin, { prisma });
 
   // Register attachment routes (POST /attachments — T3)
   // Storage root resolution (Spec §8, NFR-US-07):

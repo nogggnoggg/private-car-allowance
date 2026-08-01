@@ -6,7 +6,7 @@
  * AC-13: NOT_FOUND for unknown routes.
  */
 
-/** Error codes — base set for PHASE-001; extended in PHASE-002 (Spec 4.8); extended in PHASE-003 (Spec 4.8). */
+/** Error codes — base set for PHASE-001; extended in PHASE-002 (Spec 4.8); extended in PHASE-003 (Spec 4.8); extended in PHASE-003a (Spec §4.8). */
 export type ErrorCode =
   | "VALIDATION_ERROR" // 400 — field validation failure, with fields[]
   | "UNAUTHORIZED" // 401 — unauthenticated, session invalid, login failure (unified), wrong current password
@@ -17,6 +17,7 @@ export type ErrorCode =
   | "PAYLOAD_TOO_LARGE" // 413 — single file exceeds size limit (ATTACHMENT_MAX_BYTES)
   | "CONFLICT" // 409 — loginName duplicate, delete blocked (has history), self-deactivate/delete
   | "TOO_MANY_ATTACHMENTS" // 409 — attachment count reached container limit
+  | "PARAMETER_PERIOD_OVERLAP" // 409 — new parameter version overlaps with an existing version (PHASE-003a §4.8 D5); body includes details.conflictVersion
   | "INTERNAL_ERROR" // 500 — unhandled/unexpected exception
   | "SERVICE_UNAVAILABLE"; // 503 — dependency unavailable (e.g. DB down)
 
@@ -39,14 +40,28 @@ export class AppError extends Error {
   readonly userMessage: string;
   /** Only present for VALIDATION_ERROR */
   readonly fields?: FieldError[];
+  /**
+   * Optional structured details for specific error codes.
+   * Used by PARAMETER_PERIOD_OVERLAP (PHASE-003a §4.8) to carry
+   * conflictVersion: { id, effectiveFrom } without leaking DB internals.
+   * MUST NOT contain any stack traces, DB details, or internal paths.
+   */
+  readonly details?: Record<string, unknown>;
 
-  constructor(code: ErrorCode, httpStatus: number, message: string, fields?: FieldError[]) {
+  constructor(
+    code: ErrorCode,
+    httpStatus: number,
+    message: string,
+    fields?: FieldError[],
+    details?: Record<string, unknown>
+  ) {
     super(message);
     this.name = "AppError";
     this.code = code;
     this.httpStatus = httpStatus;
     this.userMessage = message;
     this.fields = fields;
+    this.details = details;
   }
 }
 
@@ -57,6 +72,8 @@ export interface ErrorResponseBody {
     message: string;
     requestId: string;
     fields?: FieldError[];
+    /** Optional structured details; present for PARAMETER_PERIOD_OVERLAP (PHASE-003a §4.8) */
+    details?: Record<string, unknown>;
   };
 }
 
@@ -65,7 +82,8 @@ export function buildErrorBody(
   code: string,
   message: string,
   requestId: string,
-  fields?: FieldError[]
+  fields?: FieldError[],
+  details?: Record<string, unknown>
 ): ErrorResponseBody {
   const body: ErrorResponseBody = {
     error: {
@@ -77,6 +95,10 @@ export function buildErrorBody(
   // fields only appears for VALIDATION_ERROR (Spec 5.2)
   if (fields !== undefined && fields.length > 0) {
     body.error.fields = fields;
+  }
+  // details only appears for codes that carry structured extra info (e.g. PARAMETER_PERIOD_OVERLAP)
+  if (details !== undefined) {
+    body.error.details = details;
   }
   return body;
 }
