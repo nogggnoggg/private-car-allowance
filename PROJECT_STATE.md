@@ -54,7 +54,9 @@ Updated: 2026-08-01
 - 治理事件（2026-08-01）：使用者指出大總管兩項違規（直接實作未派工；行為變更未先改 Spec）。根因分析（規則明確度為主因、派工成本為中因、context 長度為放大器）經使用者確認；解方 S1~S5 經使用者批准並執行：治理升版 **2026-08-01.2**（大總管零程式修改白名單、Gate 反饋明文流程、Lite Packet／輕量複審通道、commit 前 Task ID 自檢、Phase 開工重錨定）。
 - S5 補救審查（reviewer 事後審 b76f44b、acbb327）：DONE — **APPROVE**。無 Must/Should Fix；測試鑑別力經反向驗證（拿掉修復後測試會紅）；231 測試（後端 199＋前端 32）無回歸。新增 Accepted Risk：AR-S5-1（Low）pino `*` 萬用路徑僅遮蔽單層巢狀，兩層以上不遞迴——防禦縱深已知邊界，正常程式不記 request body，記錄保留；AR-S5-2（觀察）PHASE-002 Spec 檔內版本戳仍為 .1，下次動該檔時一併更新。
 - 治理事件結案：違規已補救、規則已升版固化（2026-08-01.2）。
-- SPEC-003（docs/specs/PHASE-003.md 詳細 Spec）：IN_PROGRESS（spec-writer 派工中）。
+- SPEC-003（docs/specs/PHASE-003.md 詳細 Spec）：DONE（commit 4c0ce84；驗收時發現 §4.6 與 D8 文字矛盾，已由 spec-writer 修正）。
+- PHASE-003 Spec Gate：**已通過**（2026-08-01）——D1~D8 全數照建議批准；D5＝自寫 magic-byte 偵測＋sharp 縮圖（build 不可行則回退前端縮放並記 Accepted Risk）。Spec 轉 ACTIVE。
+- PHASE-003-T1（Attachment 資料模型 + migration，Medium）：IN_PROGRESS（implementer 派工中）。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
@@ -81,7 +83,7 @@ Updated: 2026-08-01
 
 ## Human Gate（待觸發）
 
-- 【當前】SPEC-003 完成後的 PHASE-003 Spec 事前批准（High：附件權限/生命週期）
+- 【當前】PHASE-003 Mock UI／整合驗收（T7 完成後）
 - 003a Spec 事前批准（003 完成後）；其後各 High 風險 Phase 事前批准（004/006/007/008/009/010/011）
 - 各 Phase Mock UI 驗收、整合驗收
 - 正式合併與發布

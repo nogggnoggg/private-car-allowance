@@ -1,7 +1,7 @@
 # PHASE-003 — 附件基礎（storage 抽象、上傳、驗證、生命週期、授權存取）
 
 - Governance-Version: 2026-08-01.2
-- 狀態：DRAFT
+- 狀態：ACTIVE（人類事前批准 2026-08-01：D1~D8 全數照建議定案；D5＝自寫格式偵測＋sharp 縮圖，build 不可行時回退前端縮放並記 Accepted Risk）
 - Task ID（產出本 Spec）：SPEC-003
 - 更新日期：2026-08-01
 - Base Commit：294386c（branch: phase-003）
@@ -547,5 +547,6 @@ PHASE-002（authz/audit/session）  PHASE-001（env/error/sanitizeForLog）
 |---|---|---|---|
 | 2026-08-01 | DRAFT 建立 | 依 SPEC-003 Packet 建立 PHASE-003 完整 Spec | PRD 第 5 節 PHASE-003、userstory BE-US-23/24/25、NFR-US-07/10、FE-US-11/21；PHASE-002 授權/稽核契約 |
 | 2026-08-01 | 文字澄清 | §4.6 存取內容端點更正為僅掛 `requireAuth`，消除與 §5.1／D8 之矛盾 | SPEC-003 驗收反饋（§11.1 不改變含義之文字澄清） |
+| 2026-08-01 | DRAFT→ACTIVE | 人類事前批准：D1（弱關聯）、D2（容器狀態權威＋detach 重算 TTL）、D3（本 Phase 不接代上傳）、D4（共用 volume 根、前綴隔離）、D5（偵測自寫＋sharp 縮圖附回退）、D6（403）、D7（volume 不經 nginx 直出）、D8（存取端點不掛 requirePasswordChanged）全數照建議定案 | 使用者批准（2026-08-01，Spec Gate） |
 
 > 狀態轉移：DRAFT →（人類事前批准 D1~D8）→ ACTIVE → 實作 → COMPLETED。
