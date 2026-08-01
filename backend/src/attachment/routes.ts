@@ -27,6 +27,7 @@ import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest 
 import { requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { parseEnv } from "../config/env.js";
 import type { Storage } from "../storage/index.js";
+import { getAttachmentContent, getAttachmentThumbnail } from "./access-service.js";
 import { processUpload } from "./upload-service.js";
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,76 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
       });
 
       return reply.status(201).send({ attachment: result });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /attachments/:id/content
+  // Returns original file bytes for the attachment.
+  // Spec §5.1 / Done-When T5:
+  //   - requireAuth only (D8: no requirePasswordChanged)
+  //   - Authorization: DB ownerId via assertOwnershipOrAdmin (D6: 403 FORBIDDEN)
+  //   - 404 if id not found; 403 if non-owner non-admin; 401 if unauthenticated
+  //   - Content-Disposition: inline (AC-06)
+  //   - storageKey must NOT appear in error responses (§9.4)
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/attachments/:id/content",
+    {
+      preHandler: [requireAuth(prisma)],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const currentUser = request.currentUser;
+
+      const log = {
+        error: (obj: Record<string, unknown>, msg: string) => request.log.error(obj, msg),
+      };
+
+      const { bytes, mimeType } = await getAttachmentContent(prisma, storage, id, currentUser, log);
+
+      return reply
+        .status(200)
+        .header("Content-Type", mimeType)
+        .header("Content-Disposition", "inline")
+        .send(bytes);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /attachments/:id/thumbnail
+  // Returns thumbnail bytes; falls back to original if thumbnailKey=null (D5).
+  // Spec §5.1 / Done-When T5:
+  //   Same auth rules as /content.
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/attachments/:id/thumbnail",
+    {
+      preHandler: [requireAuth(prisma)],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const currentUser = request.currentUser;
+
+      const log = {
+        error: (obj: Record<string, unknown>, msg: string) => request.log.error(obj, msg),
+      };
+
+      const { bytes, mimeType } = await getAttachmentThumbnail(
+        prisma,
+        storage,
+        id,
+        currentUser,
+        log
+      );
+
+      return reply
+        .status(200)
+        .header("Content-Type", mimeType)
+        .header("Content-Disposition", "inline")
+        .send(bytes);
     }
   );
 };
