@@ -22,12 +22,15 @@
  */
 
 import multipart from "@fastify/multipart";
-import type { PrismaClient } from "@prisma/client";
+import type { AttachmentRefType, PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
 import { requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { parseEnv } from "../config/env.js";
+import { AppError } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
 import { getAttachmentContent, getAttachmentThumbnail } from "./access-service.js";
+import { type ContainerState, deleteAttachment, linkAttachment } from "./lifecycle-service.js";
 import { processUpload } from "./upload-service.js";
 
 // ---------------------------------------------------------------------------
@@ -181,6 +184,115 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
         .header("Content-Type", mimeType)
         .header("Content-Disposition", "inline")
         .send(bytes);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /attachments/:id/link
+  // Link a TEMP attachment to a container (draft state).
+  //
+  // Spec §5.1 / Done-When T6:
+  //   - requireAuth + requirePasswordChanged
+  //   - Body: { refType, refId, limit, containerState? } (zod validated)
+  //   - containerState defaults to 'draft'; callers (PHASE-004+) will inject the
+  //     real container state. 'completed' → 403 FORBIDDEN (AC-16).
+  //   - Authorization: DB ownerId via assertOwnershipOrAdmin (in service layer)
+  //   - TOCTOU prevention: count→check→update in prisma.$transaction
+  //   - 400 VALIDATION_ERROR if missing required fields
+  //   - 403 FORBIDDEN if non-owner, non-admin, or completed container
+  //   - 404 NOT_FOUND if attachment does not exist
+  //   - 409 TOO_MANY_ATTACHMENTS if count >= limit
+  //   - 409 CONFLICT if attachment is already LINKED
+  //
+  // containerState source (Spec §2 AC-16 "可注入的容器狀態測試"):
+  //   This Phase provides containerState via the request body (optional, defaults
+  //   to 'draft'). PHASE-004+ will inject real container state from the application
+  //   service layer, bypassing this route parameter and calling the service directly.
+  // -------------------------------------------------------------------------
+
+  // Zod schema for link body
+  const linkBodySchema = z.object({
+    refType: z.enum(["TRIP_SEGMENT", "MAINTENANCE", "DEPRECIATION"]),
+    refId: z.string().min(1),
+    limit: z.number().int().positive(),
+    containerState: z.enum(["draft", "completed"]).optional().default("draft"),
+  });
+
+  fastify.post(
+    "/attachments/:id/link",
+    {
+      preHandler: [requireAuth(prisma), requirePasswordChanged],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const actor = request.currentUser;
+
+      // Validate body
+      const parseResult = linkBodySchema.safeParse(request.body);
+      if (!parseResult.success) {
+        const issues = parseResult.error.issues;
+        const fields = issues.map((e) => ({
+          field: e.path.join(".") || "body",
+          reason: e.message,
+        }));
+        throw new AppError("VALIDATION_ERROR", 400, "請求資料驗證失敗", fields);
+      }
+
+      const { refType, refId, limit, containerState } = parseResult.data;
+
+      const dto = await linkAttachment(prisma, {
+        attachmentId: id,
+        refType: refType as AttachmentRefType,
+        refId,
+        limit,
+        containerState: containerState as ContainerState,
+        actor,
+      });
+
+      return reply.status(200).send({ attachment: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /attachments/:id
+  // Delete or detach an attachment.
+  //
+  // Spec §5.1 / Done-When T6:
+  //   - requireAuth + requirePasswordChanged
+  //   - LINKED → detach (status → TEMP, ref cleared, createdAt reset as TTL base)
+  //   - TEMP → physical delete (DB record + storage files)
+  //   - containerState: optional query param or body param (defaults to 'draft')
+  //     'completed' → 403 FORBIDDEN (AC-16)
+  //   - 200 { ok: true } on success
+  //   - 403 FORBIDDEN if non-owner, non-admin, or completed container
+  //   - 404 NOT_FOUND if attachment does not exist
+  //
+  // containerState query param example: DELETE /attachments/:id?containerState=completed
+  // -------------------------------------------------------------------------
+
+  fastify.delete(
+    "/attachments/:id",
+    {
+      preHandler: [requireAuth(prisma), requirePasswordChanged],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const actor = request.currentUser;
+
+      // containerState can come from query string (for test injection per Spec §2/AC-16)
+      // Default to 'draft' (mutable) when not provided.
+      const query = request.query as Record<string, string | undefined>;
+      const rawContainerState = query.containerState;
+      const containerState: ContainerState =
+        rawContainerState === "completed" ? "completed" : "draft";
+
+      const result = await deleteAttachment(prisma, storage, {
+        attachmentId: id,
+        containerState,
+        actor,
+      });
+
+      return reply.status(200).send(result);
     }
   );
 };
