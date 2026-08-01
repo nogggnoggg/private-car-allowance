@@ -30,8 +30,8 @@ Updated: 2026-08-01
 - PHASE-001-T2（Fastify/health/Prisma/env）：DONE（9/9 測試通過，大總管獨立重跑驗證；Prisma 定版 5.22 因 v7 schema 語法不相容，屬實作細節）
 - PHASE-001-T6（錯誤協定 + error handler）：DONE（22 新測試；全套 27/27 綠，大總管重驗；lint 遺漏由大總管代修：format/organizeImports/1 處 non-null assertion）
 - PHASE-001-T3（React 前端 + /api/health + dev proxy）：DONE（3/3 測試綠；大總管重驗 build exit=0、dist 完整；implementer 回報的 0xC0000409 build crash 未重現）
-- PHASE-001-T4（Dockerfile×2 + compose + .env.example）：READY
-- PHASE-001-T5（CI）：PLANNED
+- PHASE-001-T4（Dockerfile×2 + compose + .env.example）：DONE（五步整合驗收通過；大總管複驗 health 200/SPA 200/資料持久化）
+- PHASE-001-T5（CI）：READY
 - 待 Review 事項（reviewer 用）：
   - health.ts 記錄 DB 探測 err.message 原文（理論外洩面，Prisma 實務不含憑證，評 Low）
   - dotenv@17 對 stdout 印提示訊息（容器無 .env 不受影響）
@@ -43,6 +43,9 @@ Updated: 2026-08-01
 - 本機為 Windows 11、Node 25、npm 11；**pnpm 在中文路徑會崩潰，已裁示全案改用 npm workspaces**。
 - npm 11 會封鎖新依賴的 postinstall scripts：新增含 postinstall 的依賴後需 `npm approve-scripts` 並確認 `package.json` 的 `allowScripts`。
 - 容器與 CI 鎖 Node 20 LTS；本機 Node 25 僅開發用。
+- **本機 Docker 指令必帶 workaround**（中文路徑）：`DOCKER_BUILDKIT=0 docker compose -p oilexpense <cmd>`——BuildKit 對非 ASCII 路徑會失敗、專案名稱需以 -p 指定。CI/Linux 不受影響。
+- npm workspaces 不會把 prisma/@prisma/client hoist 到根 node_modules；backend Dockerfile 需同時複製根與 backend 兩層 node_modules（已實作，未來加後端依賴時維持此模式）。
+- node:20-slim 需 apt 安裝 openssl 供 Prisma 使用（已寫入 Dockerfile）。
 
 ## 阻塞
 
