@@ -1,7 +1,7 @@
 # PHASE-001 Spec — 專案骨架與 CI 基礎
 
 - Governance-Version: 2026-08-01.1
-- 狀態：ACTIVE
+- 狀態：COMPLETED（整合驗收通過 2026-08-01；T1~T7 全數完成，獨立 Review 清零）
 - 更新日期：2026-08-01
 - Phase ID：PHASE-001
 - Base Commit：f59649f（branch: phase-001）
