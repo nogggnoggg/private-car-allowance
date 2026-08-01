@@ -25,6 +25,14 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       STORAGE_PATH: ${STORAGE_PATH:-/data/storage}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Attachment storage root (Spec §8, NFR-US-07, D4 prefix isolation).
+      # Maps to a sub-path under the storage named volume so the same volume
+      # root can later host the PDF prefix (PHASE-008) without mount collision.
+      # Falls back to /data/storage/attachments if not set in .env.
+      ATTACHMENT_STORAGE_ROOT: ${ATTACHMENT_STORAGE_ROOT:-/data/storage/attachments}
+      ATTACHMENT_MAX_BYTES: ${ATTACHMENT_MAX_BYTES:-10485760}
+      ATTACHMENT_TEMP_TTL_HOURS: ${ATTACHMENT_TEMP_TTL_HOURS:-24}
+      ATTACHMENT_THUMBNAIL_MAX_PX: ${ATTACHMENT_THUMBNAIL_MAX_PX:-512}
     volumes:
       - storage:${STORAGE_PATH:-/data/storage}
     depends_on:
