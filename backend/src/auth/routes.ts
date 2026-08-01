@@ -127,6 +127,11 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
       SESSION_COOKIE_NAME: "sid",
       LOGIN_MAX_FAILURES: 5,
       LOGIN_LOCK_MINUTES: 15,
+      // PHASE-003-T2 defaults
+      ATTACHMENT_STORAGE_ROOT: undefined,
+      ATTACHMENT_MAX_BYTES: 10485760,
+      ATTACHMENT_TEMP_TTL_HOURS: 24,
+      ATTACHMENT_THUMBNAIL_MAX_PX: 512,
     };
   }
 

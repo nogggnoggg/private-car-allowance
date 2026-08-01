@@ -7,6 +7,12 @@
  *   SESSION_COOKIE_NAME        — Cookie name (default "sid")
  *   LOGIN_MAX_FAILURES         — Consecutive failures before lockout (default 5)
  *   LOGIN_LOCK_MINUTES         — Lockout duration in minutes (default 15)
+ *
+ * PHASE-003-T2 additions (Spec §8):
+ *   ATTACHMENT_STORAGE_ROOT    — Local volume root path for attachment files (no default; required in prod)
+ *   ATTACHMENT_MAX_BYTES       — Single-file size limit in bytes (default 10 MiB)
+ *   ATTACHMENT_TEMP_TTL_HOURS  — Temp attachment cleanup threshold in hours (default 24)
+ *   ATTACHMENT_THUMBNAIL_MAX_PX — Thumbnail long-side pixel limit if sharp is used (default 512)
  */
 import { z } from "zod";
 
@@ -22,6 +28,13 @@ const envSchema = z.object({
   // PHASE-002: Login lockout configuration (Spec §8, AC-14/15/16, used by T4)
   LOGIN_MAX_FAILURES: z.coerce.number().int().positive().default(5),
   LOGIN_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
+  // PHASE-003-T2: Attachment storage configuration (Spec §8)
+  // Optional with no default: callers must provide or use a test-specific path.
+  // In production/compose, this is set by the volume mount env var.
+  ATTACHMENT_STORAGE_ROOT: z.string().optional(),
+  ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(10485760), // 10 MiB
+  ATTACHMENT_TEMP_TTL_HOURS: z.coerce.number().int().positive().default(24),
+  ATTACHMENT_THUMBNAIL_MAX_PX: z.coerce.number().int().positive().default(512),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
