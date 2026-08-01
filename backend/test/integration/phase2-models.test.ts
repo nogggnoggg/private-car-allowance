@@ -21,6 +21,18 @@ describeWithDb("PHASE-002 data models — User / Session / AuditLog", () => {
   // biome-ignore lint/suspicious/noExplicitAny: dynamic import for test isolation
   let prisma: any;
 
+  // The set of loginNames exclusively owned by this test file.
+  const OWN_LOGIN_NAMES = [
+    "testuser01",
+    "testuser02",
+    "duplicate_user",
+    "session_user",
+    "token_unique_user",
+    "cascade_user",
+    "audit_actor",
+    "audit_target",
+  ];
+
   beforeAll(async () => {
     if (!DB_URL) return;
     const { PrismaClient } = await import("@prisma/client");
@@ -28,14 +40,45 @@ describeWithDb("PHASE-002 data models — User / Session / AuditLog", () => {
       datasources: { db: { url: DB_URL } },
     });
     await prisma.$connect();
+
+    // Self-healing: remove any residual rows from previous failed runs
+    // so that unique-key constraints don't fire during this run.
+    const residualUsers = await prisma.user.findMany({
+      where: { loginName: { in: OWN_LOGIN_NAMES } },
+      select: { id: true },
+    });
+    const residualIds = residualUsers.map((u: { id: string }) => u.id);
+    if (residualIds.length > 0) {
+      await prisma.auditLog.deleteMany({
+        where: {
+          OR: [{ actorId: { in: residualIds } }, { targetId: { in: residualIds } }],
+        },
+      });
+      await prisma.session.deleteMany({ where: { userId: { in: residualIds } } });
+      await prisma.user.deleteMany({ where: { loginName: { in: OWN_LOGIN_NAMES } } });
+    }
   });
 
   afterAll(async () => {
-    // Clean up in reverse dependency order
+    // Clean up only the rows created by this file (scoped by loginName).
+    // Global deleteMany is intentionally avoided: Attachment records in other
+    // test files reference User rows via FK ON DELETE RESTRICT and would block
+    // a blanket user.deleteMany(), causing cascading failures across parallel runs.
     if (prisma) {
-      await prisma.auditLog.deleteMany({});
-      await prisma.session.deleteMany({});
-      await prisma.user.deleteMany({});
+      const ownUsers = await prisma.user.findMany({
+        where: { loginName: { in: OWN_LOGIN_NAMES } },
+        select: { id: true },
+      });
+      const ownIds = ownUsers.map((u: { id: string }) => u.id);
+      if (ownIds.length > 0) {
+        await prisma.auditLog.deleteMany({
+          where: {
+            OR: [{ actorId: { in: ownIds } }, { targetId: { in: ownIds } }],
+          },
+        });
+        await prisma.session.deleteMany({ where: { userId: { in: ownIds } } });
+        await prisma.user.deleteMany({ where: { loginName: { in: OWN_LOGIN_NAMES } } });
+      }
       await prisma.$disconnect();
     }
   });
