@@ -1,5 +1,6 @@
 // Prisma schema — datasource + generator + minimal HealthProbe model
 // See PHASE-001 Spec §7 for migration strategy
+// PHASE-002: User / Session / AuditLog added per §3 (model layer finalized)
 
 datasource db {
   provider = "postgresql"
@@ -15,4 +16,77 @@ generator client {
 model HealthProbe {
   id        Int      @id @default(autoincrement())
   checkedAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-002 enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum AuditAction {
+  USER_CREATED
+  USER_DEACTIVATED
+  USER_ACTIVATED
+  USER_PASSWORD_RESET
+  USER_DELETED
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-002 models
+// ---------------------------------------------------------------------------
+
+model User {
+  id                 String    @id @default(cuid())
+  loginName          String    @unique // 登入帳號，唯一
+  displayName        String // 顯示姓名
+  employeeNumber     String? // 員工編號，可空
+  passwordHash       String // 僅存不可逆雜湊（argon2id 編碼字串，含參數+salt）
+  role               Role      @default(USER)
+  isActive           Boolean   @default(true) // 啟用/停用
+  mustChangePassword Boolean   @default(true) // 首次登入/重設後強制改密旗標
+  failedLoginCount   Int       @default(0) // 連續登入失敗計數
+  lockedUntil        DateTime? // 鎖定至（null=未鎖定；未來時間=鎖定中）
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sessions          Session[]
+  auditLogsAsActor  AuditLog[] @relation("AuditActor")
+  auditLogsAsTarget AuditLog[] @relation("AuditTarget")
+
+  @@index([loginName])
+}
+
+model Session {
+  id                 String    @id @default(cuid()) // 內部主鍵
+  sessionToken       String    @unique // 高熵隨機 token（見 4.3；存雜湊，見下）
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt          DateTime  @default(now())
+  expiresAt          DateTime // 絕對到期
+  lastSeenAt         DateTime  @default(now()) // 滑動更新用
+  revokedAt          DateTime? // 失效標記（登出/停用/重設密碼即設）
+  mustChangePassword Boolean   @default(false) // 建立時快照使用者強制改密狀態（見 4.7.1）
+
+  @@index([userId])
+  @@index([sessionToken])
+}
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  action      AuditAction
+  actorId     String // 操作者（管理員）
+  actor       User        @relation("AuditActor", fields: [actorId], references: [id])
+  targetId    String? // 受影響使用者（刪除後可能為 null）
+  target      User?       @relation("AuditTarget", fields: [targetId], references: [id])
+  targetLabel String // 受影響資料可讀摘要（如 loginName 快照），供刪除後仍可辨識
+  summary     Json? // 前後重要欄位摘要（絕不含密碼；見 4.7）
+  createdAt   DateTime    @default(now())
+
+  @@index([actorId])
+  @@index([targetId])
+  @@index([createdAt])
 }

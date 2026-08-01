@@ -1,42 +1,77 @@
-import { useEffect, useState } from "react";
 import type React from "react";
-import { type HealthResult, fetchHealth } from "./api/health.js";
+import { Route, BrowserRouter as Router, Routes } from "react-router-dom";
+import { RedirectIfAuthenticated, RequireAuth } from "./components/RouteGuard.js";
+import { AuthProvider } from "./context/AuthContext.js";
+import AdminUsersPage from "./pages/AdminUsersPage.js";
+import ChangePasswordPage from "./pages/ChangePasswordPage.js";
+import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
+import HomePage from "./pages/HomePage.js";
+import LoginPage from "./pages/LoginPage.js";
 
 export default function App(): React.ReactElement {
-  const [health, setHealth] = useState<HealthResult | null>(null);
-
-  useEffect(() => {
-    fetchHealth()
-      .then(setHealth)
-      .catch(() => {
-        setHealth({ kind: "unreachable" });
-      });
-  }, []);
-
   return (
-    <div>
-      <h1>油資管理系統</h1>
-      <HealthDisplay health={health} />
-    </div>
-  );
-}
+    <Router>
+      <AuthProvider>
+        <Routes>
+          {/* Public: redirect to home if already logged in */}
+          <Route
+            path="/login"
+            element={
+              <RedirectIfAuthenticated>
+                <LoginPage />
+              </RedirectIfAuthenticated>
+            }
+          />
 
-function HealthDisplay({ health }: { health: HealthResult | null }): React.ReactElement {
-  if (health === null) {
-    return <p>檢查中…</p>;
-  }
+          {/* Force change password — requires auth but not blocked by mustChangePassword */}
+          <Route
+            path="/change-password-forced"
+            element={
+              <RequireAuth>
+                <ForceChangePasswordPage />
+              </RequireAuth>
+            }
+          />
 
-  if (health.kind === "unreachable") {
-    return <p>無法連線至後端</p>;
-  }
+          {/* Protected routes */}
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <HomePage />
+              </RequireAuth>
+            }
+          />
 
-  const backendStatus = "後端：正常";
-  const dbStatus = health.data.checks.db === "up" ? "資料庫：連線正常" : "資料庫：無法連線";
+          <Route
+            path="/change-password"
+            element={
+              <RequireAuth>
+                <ChangePasswordPage />
+              </RequireAuth>
+            }
+          />
 
-  return (
-    <div>
-      <p>{backendStatus}</p>
-      <p>{dbStatus}</p>
-    </div>
+          <Route
+            path="/admin/users"
+            element={
+              <RequireAuth>
+                <AdminUsersPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* Fallback: redirect to home */}
+          <Route
+            path="*"
+            element={
+              <RequireAuth>
+                <HomePage />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </AuthProvider>
+    </Router>
   );
 }

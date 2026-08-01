@@ -1,8 +1,15 @@
+/**
+ * App 整合路由測試：驗證路由守衛在各 auth 狀態下的行為。
+ * 原 /api/health 顯示測試已由 api/health.ts 本身的邏輯覆蓋；
+ * App.tsx 在 PHASE-002 改為路由骨架。
+ */
 import { render, screen, waitFor } from "@testing-library/react";
+import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import App from "../src/App.js";
 
-describe("App — /api/health 狀態顯示", () => {
+describe("App — 路由守衛", () => {
   beforeEach(() => {
     vi.spyOn(globalThis, "fetch");
   });
@@ -11,10 +18,10 @@ describe("App — /api/health 狀態顯示", () => {
     vi.restoreAllMocks();
   });
 
-  it("當 fetch 回 {status:ok, checks:{db:up}} → 顯示「資料庫：連線正常」", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      new Response(JSON.stringify({ status: "ok", checks: { db: "up" } }), {
-        status: 200,
+  it("未登入（/api/me → 401）→ 顯示登入頁", async () => {
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: "UNAUTHORIZED", message: "未登入" } }), {
+        status: 401,
         headers: { "Content-Type": "application/json" },
       })
     );
@@ -22,34 +29,57 @@ describe("App — /api/health 狀態顯示", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/後端：正常/)).toBeInTheDocument();
-      expect(screen.getByText(/資料庫：連線正常/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^登入$/ })).toBeInTheDocument();
     });
   });
 
-  it("當 fetch 回 503 {status:error, checks:{db:down}} → 顯示「資料庫：無法連線」", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      new Response(JSON.stringify({ status: "error", checks: { db: "down" } }), {
-        status: 503,
-        headers: { "Content-Type": "application/json" },
-      })
+  it("已登入（/api/me → 200，mustChangePassword=false）→ 顯示首頁", async () => {
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          user: {
+            id: "u1",
+            loginName: "admin",
+            displayName: "管理員",
+            employeeNumber: null,
+            role: "ADMIN",
+            isActive: true,
+            mustChangePassword: false,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
     );
 
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/後端：正常/)).toBeInTheDocument();
-      expect(screen.getByText(/資料庫：無法連線/)).toBeInTheDocument();
+      expect(screen.getByText(/我的私車補助紀錄/)).toBeInTheDocument();
     });
   });
 
-  it("當 fetch 拒絕（reject）→ 顯示「無法連線至後端」", async () => {
-    vi.mocked(fetch).mockRejectedValueOnce(new Error("Network error"));
+  it("已登入但 mustChangePassword=true → 顯示強制改密頁", async () => {
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          user: {
+            id: "u2",
+            loginName: "user1",
+            displayName: "使用者一",
+            employeeNumber: null,
+            role: "USER",
+            isActive: true,
+            mustChangePassword: true,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
 
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/無法連線至後端/)).toBeInTheDocument();
+      expect(screen.getByText(/首次登入請變更密碼/)).toBeInTheDocument();
     });
   });
 });

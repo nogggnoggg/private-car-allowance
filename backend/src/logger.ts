@@ -13,10 +13,19 @@ export const pinoRedactPaths = [
   "cookie",
   "set-cookie",
   "password",
+  "newPassword",
+  "currentPassword",
+  "temporaryPassword",
   "DATABASE_URL",
   "req.headers.authorization",
   "req.headers.cookie",
   'res.headers["set-cookie"]',
+  // Wildcard paths so nested objects (e.g. an accidentally-logged request
+  // body) are covered too — AC-27 promises these fields never reach logs.
+  "*.password",
+  "*.newPassword",
+  "*.currentPassword",
+  "*.temporaryPassword",
 ];
 
 /**

@@ -1,6 +1,12 @@
 /**
  * Environment variable schema validation using zod.
  * AC-09: Missing/invalid env vars cause startup failure listing names (not values).
+ *
+ * PHASE-002 additions (Spec §8):
+ *   SESSION_ABSOLUTE_TTL_HOURS — Session absolute expiry in hours (default 8)
+ *   SESSION_COOKIE_NAME        — Cookie name (default "sid")
+ *   LOGIN_MAX_FAILURES         — Consecutive failures before lockout (default 5)
+ *   LOGIN_LOCK_MINUTES         — Lockout duration in minutes (default 15)
  */
 import { z } from "zod";
 
@@ -10,6 +16,12 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
   STORAGE_PATH: z.string().default("/data/storage"),
+  // PHASE-002: Session configuration (Spec §8)
+  SESSION_ABSOLUTE_TTL_HOURS: z.coerce.number().int().positive().default(8),
+  SESSION_COOKIE_NAME: z.string().default("sid"),
+  // PHASE-002: Login lockout configuration (Spec §8, AC-14/15/16, used by T4)
+  LOGIN_MAX_FAILURES: z.coerce.number().int().positive().default(5),
+  LOGIN_LOCK_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

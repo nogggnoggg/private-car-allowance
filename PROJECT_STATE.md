@@ -35,8 +35,22 @@ Updated: 2026-08-01
 - PHASE-001：REVIEW（reviewer 獨立審查中）
 - PHASE-001-REVIEW（reviewer 獨立審查）：DONE。結果：無 Must Fix；SF-1（Should Fix）＝日誌可含連線字串/stack 敏感內容（health.ts 記 err.message 原文、error-handler 記完整 stack、pino redact 未覆蓋 err）；AR-2 dotenv stdout 提示（Accepted/Low）；AR-3 重複 requestId 鍵（Accepted/Low）；AR-4 無 DB 時測試為 **skip 非 fail**（更正先前記錄；Accepted/Low，CI 有 DB service 覆蓋）。14 條 AC：13 PASS、AC-12 PARTIAL（缺口即 SF-1）。
 - PHASE-001-T7（REPAIR：修 SF-1 + 順修 AR-3）：DONE（sanitizeForLog 純函式供全案沿用；500 不記 stack 只記 name+sanitized message；26 新測試；全套 53/53 綠，大總管重驗）
-- PHASE-001：**整合驗收通過**（人類驗收，2026-08-01）。PR #1 已標 ready，等待人類批准合併 main。
-- SPEC-002（PHASE-002 詳細 Spec，spec-writer）：IN_PROGRESS
+- PHASE-001：**DONE**。整合驗收通過、PR #1 經人類批准合併至 main（281b744，2026-08-01）。
+- SPEC-002：DONE。**D1~D11 全數人類批准（2026-08-01）**，Spec 轉 ACTIVE。
+- PHASE-002（認證與帳號管理，branch: phase-002）：IN_PROGRESS
+  - T1 資料模型：DONE（62/62）
+  - T2 密碼雜湊（argon2id + 10k 弱密碼清單，大總管補足清單至 D6 規模）：DONE（87/87）
+  - T3 登入/Session/Cookie（22 新測試；統一 401 逐字驗證）：DONE（109/109，大總管複驗）
+  - T4 失敗鎖定：DONE（122/122；大總管修 1 個 race 型 flaky 斷言）
+  - T5+T6 授權中介層（requireAuth/requirePasswordChanged/requireAdmin/assertOwnershipOrAdmin）：DONE（140/140）
+  - T7+T8 改密流程（/me/password 共用端點，D10 驗證）：DONE（161/161）
+  - T9+T10 管理員帳號管理＋稽核＋seed:admin：DONE（197/197，大總管複驗）
+  - T11 前端頁面：DONE（30 前端測試；E2E 由大總管於 compose 正式拓撲實跑通過）
+- PHASE-002-REVIEW：DONE。29 AC＝27 PASS + 2 PARTIAL（皆已處置）；D1~D11 忠實落地；無 Must Fix。SF-1（pino redact 欄位不齊，AC-27 防護網缺口）已由大總管修復（logger 增補 4 欄位＋萬用巢狀路徑＋2 測試）；AR-6（多餘 @types/react-router-dom）已移除。
+- PHASE-002 Accepted Risk（Low，記錄保留）：AR-1 production Secure cookie 無自動化測試；AR-2 弱密碼清單對 ≥10 字元密碼有效覆蓋 208 筆（短密碼由長度規則先擋）；AR-3 session 撤銷用硬刪（Spec 允許）；AR-4 auth plugin parseEnv 防禦性 fallback 為死碼（建議後續清理）；AR-5 seed:admin TOCTOU（部署一次性情境可接受）；AR-7 wrong-password 路徑 ~1ms DB write 時間差（可忽略）。
+- PHASE-002：等待 Human Gate（Mock UI + 整合驗收合併執行）。
+- 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
+- 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
 
 ## 環境備註（後續 Task 必讀）
@@ -68,7 +82,7 @@ Updated: 2026-08-01
 
 ## Base Commit
 
-- main @ 734e03a（本次 commit 後更新）
+- main @ 281b744（PHASE-001 合併後）；工作 branch：phase-002
 
 ## 備註
 

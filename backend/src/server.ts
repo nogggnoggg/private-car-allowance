@@ -3,8 +3,11 @@
  * Accepts options for test injection (databaseUrl, dbProbeOverride, logStream).
  */
 import type { Writable } from "node:stream";
+import fastifyCookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { LogController } from "fastify";
+import { adminPlugin } from "./admin/routes.js";
+import { authPlugin } from "./auth/routes.js";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
 import { registerErrorHandlers } from "./platform/error-handler.js";
@@ -43,13 +46,23 @@ export async function buildServer(
   // Determine DB probe (allow override for tests)
   const dbProbe: DbProbe = options.dbProbeOverride ?? makeDefaultDbProbe(prisma);
 
+  // Register unified error handlers FIRST so they apply to all child scopes.
+  // In Fastify 5, setErrorHandler/setNotFoundHandler on root must be registered
+  // before plugin scopes to ensure inheritance.
+  registerErrorHandlers(fastify);
+
+  // Register @fastify/cookie (required for session cookie handling — Spec 4.3 / AC-28)
+  // Must be registered before any route that reads/writes cookies.
+  await fastify.register(fastifyCookie);
+
   // Register routes
   await fastify.register(healthPlugin, { dbProbe });
 
-  // Register unified error handlers (setErrorHandler + setNotFoundHandler)
-  // Must be called after routes are registered so Fastify's encapsulation
-  // does not prevent the handlers from seeing route errors.
-  registerErrorHandlers(fastify);
+  // Register auth routes (POST /auth/login, POST /auth/logout, GET /me)
+  await fastify.register(authPlugin, { prisma });
+
+  // Register admin routes (GET/POST /admin/users, deactivate/activate/reset-password/delete)
+  await fastify.register(adminPlugin, { prisma });
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {
