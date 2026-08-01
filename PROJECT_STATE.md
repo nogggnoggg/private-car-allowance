@@ -39,7 +39,11 @@ Updated: 2026-08-01
   - **T5（參數異動稽核，複用 002 AuditLog，High）：DONE**（commit e6d4c6c）。AuditAction+PARAMETER_VERSION_CREATED（D6）+ migration（ALTER TYPE ADD VALUE，乾淨套用）；三 POST handler 以 onCreated(tx,dto) 交易內寫稽核（原子性：稽核失敗→版本 rollback；被拒建立→不寫稽核）；summary{parameterType,...,effectiveFrom}、targetLabel `<TYPE>#<id>`、targetId null、actorId 來自管理員 session；密碼/token/secret 不入稽核。14 整合測試（AC-18/稽核安全無敏感鍵/原子性雙向/拒絕路徑不寫稽核）。大總管重驗：兩輪 14/14、full **516/516（0 skip）**、tsc 0、biome 100 檔乾淨。（implementer 回報「39 skipped」經查為其 DATABASE_URL 未帶入之誤，非回歸。）
   - **T6（前端參數維護頁，Medium）：DONE**（commit 0029d5d）。ParametersPage /admin/parameters（管理員專屬）三類建立表單+版本列表+五態（AC-20）；折舊 derived 直接顯示後端回傳（前端不自算，後端權威）；api/parameters.ts `/api` 前綴+credentials 複用 parseApiResponse；重疊錯讀 error.details.conflictVersion；防重複提交；zh-TW；aria-describedby。19 頁面測試（五態×三類+derived+防重複），前端 59/59、tsc 0、biome 103 檔乾淨。scope 純前端。
   - **T6 Known Issue（環境，Accepted）**：`npm run build` 於本機 Windows 觸發 0xC0000409（STATUS_STACK_BUFFER_OVERRUN）**於寫出完整 dist 後**的 node 程序 teardown 崩潰（PHASE-001-T3 前例）；tsc exit 0、vite 55 modules transformed、dist（bundle+css+index.html 互相引用）經大總管驗證完整；**Windows-local only，Linux CI/compose build 不受影響**（整合 Gate 於 compose 真實拓撲為權威 build 檢查）。
-  - **PHASE-003a 全部 Task 完成（T1~T6）。下一步：派 reviewer 獨立 Code Review → Mock UI 驗收 Gate（需使用者）→ 整合驗收 Gate + PR 合併批准（需使用者）。**
+  - **PHASE-003a 全部 Task 完成（T1~T6）。**
+  - **PHASE-003a-REVIEW（reviewer 獨立審查）：DONE — APPROVE。無 Must Fix、無 Should Fix；20/20 AC PASS；D1~D10 忠實落地。** reviewer 實跑 55/55 引擎單元、逐條核對測試鑑別力（half-up 非 half-even、round-late 累積誤差、off-by-one/含當日、日粒度、原子性、稽核無敏感皆真鑑別）。**T4 round-late 分子明確 verdict＝可接受**（符合 Spec §4.4/CLAUDE.md 晚取整；PHASE-007 須以本 Phase 回傳之 4-dp perKmUnitPrice 為準）。Diff 乾淨無夾帶/debug/secret/個資。
+  - Accepted Risk（Low，保留）：AR-3a-1 油資/ETC `new Prisma.Decimal(priceNum)` float 中介（實測 4-dp 域無失真；建議未來改傳字串）；AR-3a-2 空字串 unitPrice coerce 0（route 已擋，無暴露路徑）；AR-3a-3 Windows `npm run build` 0xC0000409 teardown 崩潰（dist 完整、Linux CI/compose 權威，環境 flake 不阻擋）。
+  - 文件同步：派 spec-writer 補 ARCHITECTURE.md/DATA_FLOW.md（DRAFT）之 D2/D3/D6/D7 細節（reviewer 建議，非阻擋）。
+  - **Review 清零。下一步：Mock UI 驗收 Gate（需使用者）→ 整合驗收 Gate + PR #4 合併批准（需使用者）。**
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
