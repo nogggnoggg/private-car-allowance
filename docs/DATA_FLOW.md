@@ -46,7 +46,7 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 | Attachment | 檔案參照(volume 路徑)、格式、大小、暫存/關聯狀態、所屬申請/項目、上傳時間 | 生命週期核心 |
 | Report | 報表編號(TRV/MNT/DEP+月內唯一)、產生時間、所屬申請版本 | 已完成才有；冪等 |
 | PdfFile | volume 檔案參照、安全檔名 | 保存不可變內容 |
-| Fuel/Etc/DepreciationParameterVersion | 參數值、生效日期(有效期間不重疊) | 版本化、被引用不可覆寫 |
+| Fuel/Etc/DepreciationParameterVersion | 參數值、生效日期 `effectiveFrom`（日粒度，含當日；有效期間不重疊，結束由下一版隱含界定，PHASE-003a D2 方案 A） | 版本化、被引用不可覆寫；折舊每年費用/每公里單價為 derived 不持久化（D7），即算即回 |
 | AuditLog | 操作者、擁有人、時間、操作類型、受影響資料、前後摘要 | 不含密碼 |
 
 ### 1.2 關鍵不變式
@@ -175,6 +175,21 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
   → 折舊：推導每年費用(車價÷年限)與每公里單價(每年費用÷預估年里程)
   → 保存新版本【稽核】記修改者/前後重要設定摘要(不涉密碼)
   → 已被歷史申請引用之版本內容不得覆寫；歷史金額由快照保證不變
+```
+
+PHASE-003a 落地細節（已實作事實）：
+
+- 三類 `ParameterVersion` 之 `effectiveFrom` 為**日粒度**（`@db.Date`，含當日）；有效期間結束為「同類下一版生效日前一日」隱含推導，不重疊退化為同類 `effectiveFrom` 唯一（D2 方案 A）。
+- 折舊 derived（每年費用 / 每公里單價）**不持久化**（D7），依推導引擎即算即回。
+- **引用保護以「只增不改」保證**：本 Phase 不提供改/刪版本端點，覆寫版本內容之路徑天然不存在。提供引用偵測介面契約 `parameterHasReferences(type, versionId): boolean`；本 Phase 引用來源（已完成申請快照）尚不存在，故**本 Phase 回傳 false**。真實引用判斷與「歷史金額不變」回歸於 PHASE-004/007（以申請完成快照為權威）。
+
+錯誤流（PHASE-003a）：
+
+```
+  → 有效期間重疊 → 拒絕 PARAMETER_PERIOD_OVERLAP (409)
+        + error.details.conflictVersion（衝突版本識別與生效日期，供前端定位）（D5）
+  → 併發同一 effectiveFrom（兩管理員同時建立）→ 由 DB @@unique(effectiveFrom) 捕捉
+        → 轉為同一 PARAMETER_PERIOD_OVERLAP (409) 碼（不外洩 DB 錯誤原文）（D4）
 ```
 
 ### 2.8 統計查詢（區間 / 年度公務里程）
