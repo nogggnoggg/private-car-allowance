@@ -59,6 +59,9 @@ Updated: 2026-08-01
 - PHASE-003-T1（Attachment 資料模型 + migration，Medium）：DONE（199ffdd；乾淨 DB 3 migration 套用成功，大總管重驗 lint/tsc/測試）。
 - PHASE-003-T1R（REPAIR：測試隔離）：DONE（d08ee5e）。根因：T1 新增 Attachment→User FK(RESTRICT) 引爆 phase2-models.test.ts 的全域 user.deleteMany（平行執行相撞→清理靜默失敗→殘留資料）。修復：清理限定自建 loginName + beforeAll 自癒；大總管於髒 DB 連跑兩輪 209/209 全綠驗證。implementer 首輪回報 14/14 綠屬執行順序運氣，未發現此問題——**驗收紀律追加：資料模型類 Task 驗收一律同 DB 連跑兩輪**。
 - 測試隔離備註（後續 Task Packet 必含）：新測試檔清理一律限定自建資料，禁用全域 deleteMany；phase3-attachment-model.test.ts 現有全域 attachment.deleteMany({}) 目前安全（Attachment 為葉節點且僅該檔建立附件），但 T3/T5/T6 新測試檔開始建附件後即成地雷，屆時一併改為範圍清理。
+- PHASE-003-T2（Storage 介面 + LocalVolumeStorage + env）：DONE（131dec4；key 白名單主防護 + 含入次防護；大總管重驗兩輪 15/15、全 repo biome/tsc）。範圍偏差已驗收接受：env 一次補齊 Spec §8 四變數；auth/routes.ts fallback 物件補欄位（AppConfig 型別連鎖，5 行機械性）——AR-4 死碼 fallback 清理需求再+1。
+- PHASE-003-T2R（REPAIR：.gitignore `storage/`→`/storage/` 根錨定）：DONE（4ea8836）。根因：PHASE-001 未錨定模式誤傷 backend/src/storage 原始碼；T2 commit 未 push 前發現，add -f + amend 保持 atomic。
+- 待 Review 事項（PHASE-003 reviewer 用）：LocalVolumeStorage 內部同步 fs（readFileSync/writeFileSync）於 async 介面下阻塞 event loop——功能過 AC，效能/慣例問題請 reviewer 權衡（10MB 上限內風險有限，改 fs/promises 非破壞性）。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
