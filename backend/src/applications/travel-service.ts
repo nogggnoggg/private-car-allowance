@@ -10,20 +10,27 @@
  * (T3 Packet §Required Context 4).
  *
  * Extension points left for later Tasks (Packet 明文要求，勿移除標記)：
- *   - TODO(PHASE-004-T4): segments diff（新增/更新/刪除/排序）於 updateTravelDraft 接入
  *   - TODO(PHASE-004-T7): computed（草稿即算預覽）與 missingParameters 於
  *     toTravelApplicationDto 接入
  *   - TODO(PHASE-004-T8): 完成快照（segment.snapshot / 頂層 snapshot）於
  *     toTravelApplicationDto 接入
  *   - TODO(PHASE-004-T11): segment.attachments（AttachmentDto[]）於
  *     toTravelApplicationDto 接入；目前僅正確計算 attachmentCount 供
- *     completionBlockers 使用，不回傳完整附件物件
+ *     completionBlockers 使用，不回傳完整附件物件；`attachmentIds` 於
+ *     `SegmentInput` 中依然完全被忽略（T11 之範圍，見 PHASE-004-T4 Packet
+ *     「明確不在本 Task 範圍」）
+ *
+ * PHASE-004-T4（本次擴充）：`updateTravelDraft` 的 `segments` 整份 PUT diff
+ * 語意（D15）+ 刪段連帶 detach（D16）+ `deleteApplication` 的 AC-05 補完，
+ * 皆已接入，見下方個別函式的文件註解。
  */
 
 import type { ApplicationStatus, Prisma, PrismaClient } from "@prisma/client";
+import { detachAttachmentsByRefTx } from "../attachment/lifecycle-service.js";
 import { formatUtcDate } from "../parameters/parameter-service.js";
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
+import { computeSegmentDiff } from "./segment-diff.js";
 
 // ---------------------------------------------------------------------------
 // Date helpers (D9 primaryDate derivation)
@@ -178,41 +185,186 @@ export interface UpdateTravelDraftPatch {
   purpose?: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// segments diff — PHASE-004-T4 (AC-08~13, D15, D16)
+// ---------------------------------------------------------------------------
+
+/**
+ * One `segments[]` entry from the `PUT` body, ALREADY format-validated and
+ * parsed by `routes.ts` (`totalKm`/`highwayKm` as `Prisma.Decimal`,
+ * `origin`/`destination` as plain strings) — this module never re-parses
+ * raw request values (Packet: 複用 T5 `parseKmField`/`parseLocationField`,
+ * 不重寫解析).
+ *
+ * Per-field three-state semantics, mirroring `UpdateTravelDraftPatch`'s
+ * tripDate/purpose convention (§8.2 「`tripDate`/`purpose` 的三態」, extended
+ * here to each segment field since `SegmentInput`'s fields are declared the
+ * same optional-nullable shape `field?: T | null`):
+ *   - key absent from the object     = 不變（UPDATE 保留既有值；CREATE 視為
+ *     null，因新段沒有「既有值」可保留）
+ *   - key present with value `null`  = 清空
+ *   - key present with a value       = 設定
+ * Presence is tested via `Object.prototype.hasOwnProperty`, exactly like
+ * `updateTravelDraft`'s own patch handling above.
+ *
+ * `attachmentIds` is intentionally NOT part of this type — T11's scope
+ * (Packet §Done When 3 「明確不在本 Task 範圍」).
+ */
+export interface SegmentPatch {
+  id?: string;
+  origin?: string | null;
+  destination?: string | null;
+  totalKm?: Prisma.Decimal | null;
+  highwayKm?: Prisma.Decimal | null;
+}
+
+function hasKey(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+interface ExistingSegmentRow {
+  id: string;
+  origin: string | null;
+  destination: string | null;
+  totalKm: Prisma.Decimal | null;
+  highwayKm: Prisma.Decimal | null;
+}
+
+/** Resolve one field's next value under the three-state rule described above. */
+function resolveSegmentField<K extends keyof SegmentPatch>(
+  patch: SegmentPatch,
+  key: K,
+  previous: ExistingSegmentRow[K & keyof ExistingSegmentRow] | null
+): SegmentPatch[K] extends undefined ? never : NonNullable<SegmentPatch[K]> | null {
+  if (hasKey(patch, key)) {
+    return (patch[key] ?? null) as never;
+  }
+  return (previous ?? null) as never;
+}
+
+/**
+ * `tripDate`/`purpose`/`patch` 三態語意（同上一段函式）；`segments` 欄位缺席
+ * = 段落完全不變（三態，維持 T3 既有 array-level 語意）；`segments: []` =
+ * 刪光所有段落（AC-12）。
+ *
+ * 單一 `prisma.$transaction` 內完成（D15/D16、Packet Done When 3）：
+ *   1. 讀取現有段落（含欄位值，供 UPDATE 三態合併與 detach 用 id 清單）
+ *   2. `computeSegmentDiff`（純函式；未知/他人 segment id 或重複 id → 拋
+ *      `AppError`，交易自動 rollback，PUT 完全不落地 — 見下方 routes.ts
+ *      call site 對 403/404 選擇的說明）
+ *   3. 刪除 `toDeleteIds` 段落
+ *   4. 對 `toDeleteIds` 呼叫 `detachAttachmentsByRefTx`（同交易內，D16：
+ *      只做 DB、不做 storage IO）
+ *   5. 更新 `toUpdate`（欄位三態合併 + `sortOrder`）
+ *   6. 建立 `toCreate`（欄位 + `sortOrder`）
+ *   7. 更新 `tripDate`/`purpose`/`primaryDate`
+ * 任一步驟失敗 → Prisma 自動 rollback 整個交易，含步驟 3/4 的刪除與 detach
+ * （交易原子性 — Packet Done When 3「交易任一步失敗 → 全部不落地（含
+ * detach）」）。
+ */
 export async function updateTravelDraft(
   prisma: PrismaClient,
   id: string,
-  patch: UpdateTravelDraftPatch
+  patch: UpdateTravelDraftPatch,
+  segments?: ReadonlyArray<SegmentPatch>
 ): Promise<TravelApplicationRecord> {
-  const existing = await prisma.application.findUniqueOrThrow({
-    where: { id },
-    select: { createdAt: true, travel: { select: { tripDate: true, purpose: true } } },
-  });
-
-  const nextTripDate = Object.prototype.hasOwnProperty.call(patch, "tripDate")
-    ? (patch.tripDate ?? null)
-    : (existing.travel?.tripDate ?? null);
-  const nextPurpose = Object.prototype.hasOwnProperty.call(patch, "purpose")
-    ? (patch.purpose ?? null)
-    : (existing.travel?.purpose ?? null);
-
-  const primaryDate = derivePrimaryDate(nextTripDate, existing.createdAt);
-
-  // TODO(PHASE-004-T4): segments diff（以 id 對齊：更新既有段／新增無 id 段／
-  // 刪除未出現段並 detach 其 LINKED 附件）於此接入；本 Task 的 PUT 完全不處理
-  // request body 的 `segments` 欄位（型別上容許存在，內容一律忽略）。
-
-  return prisma.application.update({
-    where: { id },
-    data: {
-      primaryDate,
-      travel: {
-        update: {
-          tripDate: nextTripDate,
-          purpose: nextPurpose,
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.application.findUniqueOrThrow({
+      where: { id },
+      select: {
+        createdAt: true,
+        travel: {
+          select: {
+            tripDate: true,
+            purpose: true,
+            segments: {
+              select: {
+                id: true,
+                origin: true,
+                destination: true,
+                totalKm: true,
+                highwayKm: true,
+              },
+            },
+          },
         },
       },
-    },
-    include: travelApplicationInclude,
+    });
+
+    const nextTripDate = hasKey(patch, "tripDate")
+      ? (patch.tripDate ?? null)
+      : (existing.travel?.tripDate ?? null);
+    const nextPurpose = hasKey(patch, "purpose")
+      ? (patch.purpose ?? null)
+      : (existing.travel?.purpose ?? null);
+
+    const primaryDate = derivePrimaryDate(nextTripDate, existing.createdAt);
+
+    if (segments !== undefined) {
+      const existingSegments: ExistingSegmentRow[] = existing.travel?.segments ?? [];
+      const existingById = new Map(existingSegments.map((s) => [s.id, s]));
+
+      // Step 2: pure diff — id 對齊 + sortOrder 重寫（0..n-1）+ 未知/重複 id
+      // 拒絕（AppError → 交易 rollback）。
+      const diff = computeSegmentDiff<SegmentPatch>({
+        existing: existingSegments.map((s) => ({ id: s.id })),
+        submitted: segments,
+      });
+
+      // Step 3+4: 刪除 + detach（同交易；D16 只做 DB，不做 storage IO）。
+      if (diff.toDeleteIds.length > 0) {
+        await detachAttachmentsByRefTx(tx, "TRIP_SEGMENT", diff.toDeleteIds);
+        await tx.tripSegment.deleteMany({ where: { id: { in: diff.toDeleteIds } } });
+      }
+
+      // Step 5: 更新既有段（欄位三態合併 + sortOrder 重寫）。
+      for (const u of diff.toUpdate) {
+        const previous = existingById.get(u.id);
+        await tx.tripSegment.update({
+          where: { id: u.id },
+          data: {
+            sortOrder: u.sortOrder,
+            origin: resolveSegmentField(u.data, "origin", previous?.origin ?? null),
+            destination: resolveSegmentField(u.data, "destination", previous?.destination ?? null),
+            totalKm: resolveSegmentField(u.data, "totalKm", previous?.totalKm ?? null),
+            highwayKm: resolveSegmentField(u.data, "highwayKm", previous?.highwayKm ?? null),
+          },
+        });
+      }
+
+      // Step 6: 新增段（缺席欄位 = null，因新段無既有值可保留）。
+      if (diff.toCreate.length > 0) {
+        await tx.tripSegment.createMany({
+          data: diff.toCreate.map((c) => ({
+            travelApplicationId: id,
+            sortOrder: c.sortOrder,
+            origin: c.data.origin ?? null,
+            destination: c.data.destination ?? null,
+            totalKm: c.data.totalKm ?? null,
+            highwayKm: c.data.highwayKm ?? null,
+          })),
+        });
+      }
+    }
+
+    // Step 7: tripDate/purpose/primaryDate（沿用既有邏輯）。
+    await tx.application.update({
+      where: { id },
+      data: {
+        primaryDate,
+        travel: {
+          update: {
+            tripDate: nextTripDate,
+            purpose: nextPurpose,
+          },
+        },
+      },
+    });
+
+    return tx.application.findUniqueOrThrow({
+      where: { id },
+      include: travelApplicationInclude,
+    });
   });
 }
 
@@ -222,14 +374,36 @@ export async function updateTravelDraft(
 
 /**
  * Deletes an Application row. DB-level Cascade removes TravelApplication and
- * TripSegment rows (schema §7.1). Attachment detach-on-cascade-delete (AC-05:
- * LINKED→TEMP for segment attachments) is NOT handled here — this Task's
- * scope only covers 0-segment drafts in its own tests (T11 owns the
- * attachment detach-on-segment-delete wiring); deleting a draft with zero
- * segments has no attachments to detach.
+ * TripSegment rows (schema §7.1) — but Cascade does NOT clear
+ * `Attachment.refId` (it is a weak reference, no FK, by design — D1/D11-b),
+ * so any `LINKED` attachment belonging to one of this application's
+ * segments would otherwise become an orphan pointing at a row that no
+ * longer exists. PHASE-004-T4 (AC-05 補完): detach those attachments FIRST,
+ * in the SAME transaction that deletes the Application row, so a detach
+ * failure rolls back the deletion too (and vice versa).
+ *
+ * `TripSegment.travelApplicationId` IS `Application.id` (schema §7.1:
+ * `TravelApplication.applicationId` is both its own `@id` and the FK target
+ * for `TripSegment.travelApplicationId`), so segments can be looked up
+ * directly by `id` without an extra join through `TravelApplication`.
+ * Non-TRAVEL applications (no `TripSegment` rows can reference their id)
+ * simply yield an empty `segments` array here — safe no-op.
  */
 export async function deleteApplication(prisma: PrismaClient, id: string): Promise<void> {
-  await prisma.application.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    const segments = await tx.tripSegment.findMany({
+      where: { travelApplicationId: id },
+      select: { id: true },
+    });
+    if (segments.length > 0) {
+      await detachAttachmentsByRefTx(
+        tx,
+        "TRIP_SEGMENT",
+        segments.map((s) => s.id)
+      );
+    }
+    await tx.application.delete({ where: { id } });
+  });
 }
 
 // ---------------------------------------------------------------------------

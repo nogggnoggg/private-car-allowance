@@ -26,6 +26,7 @@ import { parseUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
+import type { SegmentPatch } from "./travel-service.js";
 import {
   createTravelDraft,
   deleteApplication,
@@ -96,47 +97,73 @@ function parsePurposeField(value: unknown): FieldParseResult<string | null> {
 }
 
 // ---------------------------------------------------------------------------
-// PHASE-004-T5: segments[] 格式驗證（僅格式；diff/寫入留給 T4，見下方
-// TODO(PHASE-004-T4)）。對每段的 totalKm/highwayKm/origin/destination 執行
-// 格式驗證（AC-19、D14(ii)）；三態語意比照 tripDate/purpose：欄位缺席=不驗證，
-// 存在（含 null）才驗證，維持與 SegmentInput 之 `?` 可選欄位一致的語意。
+// PHASE-004-T4/T5: segments[] 格式驗證 + 解析。
+//
+// T5 只驗證格式（丟棄解析結果）；T4 擴充為「驗證且回傳已解析的值」，供
+// updateTravelDraft 的整份 PUT diff（D15）使用 —— 解析邏輯本身完全不變
+// （仍是 T5 的 parseKmField/parseLocationField，未重寫），只是現在把
+// parseXxxField 回傳的 `.value` 保留下來，不再只看 `.ok`。
+//
+// 三態語意（比照 tripDate/purpose，§8.2 「PUT 語意（D15）」延伸至各段欄位）：
+// 欄位缺席於物件上 = 不解析、也不寫入回傳物件的對應 key（travel-service.ts
+// 據此判斷「不變」）；欄位存在（含 null）= 解析並寫入 key。
+// `attachmentIds` 完全不在此處理——T11 範圍（Packet 明文）。
 // ---------------------------------------------------------------------------
 
-/** 驗證 PUT body 的 `segments[]` 格式；回傳所有欄位錯誤（非只回第一個）。 */
-function validateSegmentsFormat(segmentsRaw: unknown): FieldError[] {
+interface ParsedSegmentsResult {
+  errors: FieldError[];
+  segments: SegmentPatch[];
+}
+
+/** 解析並驗證 PUT body 的 `segments[]`；回傳所有欄位錯誤（非只回第一個）+ 已解析的段落陣列。 */
+function parseSegmentsInput(segmentsRaw: unknown): ParsedSegmentsResult {
   const errors: FieldError[] = [];
 
   if (!Array.isArray(segmentsRaw)) {
     errors.push({ field: "segments", reason: "必須為陣列" });
-    return errors;
+    return { errors, segments: [] };
   }
 
-  segmentsRaw.forEach((rawSegment, index) => {
+  const segments: SegmentPatch[] = segmentsRaw.map((rawSegment, index) => {
     if (rawSegment === null || typeof rawSegment !== "object" || Array.isArray(rawSegment)) {
       errors.push({ field: `segments[${index}]`, reason: "必須為物件" });
-      return;
+      return {};
     }
     const seg = rawSegment as Record<string, unknown>;
+    const parsed: SegmentPatch = {};
 
+    if (Object.prototype.hasOwnProperty.call(seg, "id")) {
+      if (typeof seg.id !== "string" || seg.id.length === 0) {
+        errors.push({ field: `segments[${index}].id`, reason: "必須為非空字串" });
+      } else {
+        parsed.id = seg.id;
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(seg, "origin")) {
       const result = parseLocationField(seg.origin, `segments[${index}].origin`);
       if (!result.ok) errors.push(result.error);
+      else parsed.origin = result.value;
     }
     if (Object.prototype.hasOwnProperty.call(seg, "destination")) {
       const result = parseLocationField(seg.destination, `segments[${index}].destination`);
       if (!result.ok) errors.push(result.error);
+      else parsed.destination = result.value;
     }
     if (Object.prototype.hasOwnProperty.call(seg, "totalKm")) {
       const result = parseKmField(seg.totalKm, `segments[${index}].totalKm`);
       if (!result.ok) errors.push(result.error);
+      else parsed.totalKm = result.value;
     }
     if (Object.prototype.hasOwnProperty.call(seg, "highwayKm")) {
       const result = parseKmField(seg.highwayKm, `segments[${index}].highwayKm`);
       if (!result.ok) errors.push(result.error);
+      else parsed.highwayKm = result.value;
     }
+
+    return parsed;
   });
 
-  return errors;
+  return { errors, segments };
 }
 
 // ---------------------------------------------------------------------------
@@ -256,11 +283,16 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         else patch.purpose = result.value;
       }
 
-      // PHASE-004-T5: segments[] 格式驗證接點（里程小數位/容量、地點長度）。
-      // 任一段格式不合格 → 併入 fieldErrors，與 tripDate/purpose 錯誤一起
-      // 回傳（AC-52 精神：回報全部欄位錯誤，非只回第一項）。
+      // PHASE-004-T4/T5: segments[] 格式驗證 + 解析（里程小數位/容量、地點
+      // 長度、id 型別）。任一段格式不合格 → 併入 fieldErrors，與
+      // tripDate/purpose 錯誤一起回傳（AC-52 精神：回報全部欄位錯誤，非只回
+      // 第一項）。`segments` 欄位缺席 = array-level 三態「不變」，`parsedSegments`
+      // 維持 `undefined`（updateTravelDraft 的既有三態語意，T3 起即如此）。
+      let parsedSegments: SegmentPatch[] | undefined;
       if (Object.prototype.hasOwnProperty.call(body, "segments")) {
-        fieldErrors.push(...validateSegmentsFormat(body.segments));
+        const result = parseSegmentsInput(body.segments);
+        fieldErrors.push(...result.errors);
+        parsedSegments = result.segments;
       }
 
       if (fieldErrors.length > 0) {
@@ -269,15 +301,17 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       // AC-35（PUT 部分）: 任何金額欄位（totalAmount/amount/fuelAmount 等）與
       // ownerId/createdById/status 一律忽略——本函式從未讀取這些 body 欄位，
-      // 只讀取 tripDate/purpose，故天然滿足「忽略」語意。
+      // 只讀取 tripDate/purpose/segments，故天然滿足「忽略」語意。
       //
-      // TODO(PHASE-004-T4): segments 的 diff／新增／刪除／排序／附件
-      // link/detach 於此接入。本 Task（T5）僅完成上方的格式驗證（未通過即
-      // 400，不會執行到這裡）；格式通過後 body.segments 目前仍完全被忽略
-      // （不寫入、不影響既有段落），T4 屆時將 body.segments 傳入
-      // travel-service 的新服務函式（例如 applySegmentDiff）。
-
-      const updated = await updateTravelDraft(prisma, id, patch);
+      // segments 的整份 diff（新增/更新/刪除/排序重寫）+ 刪段連帶 detach
+      // （D15/D16）皆於 updateTravelDraft 內單一交易完成（PHASE-004-T4）。
+      // 「不屬於此申請的 segment id」→ computeSegmentDiff 拋出
+      // AppError("FORBIDDEN", 403, ...)，交易 rollback，此處不特別 catch，
+      // 讓錯誤原樣傳給全域 error-handler（與 §6.2 資料隔離不變式 4「他人
+      // 資源一律 403，不因資源存在與否洩漏」一致 —— 見 segment-diff.ts 文件
+      // 註解的完整理由）。附件關聯（attachmentIds → link，3/段上限）為
+      // T11 範圍，本 Task 完全不處理。
+      const updated = await updateTravelDraft(prisma, id, patch, parsedSegments);
       const dto = await toTravelApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
     }

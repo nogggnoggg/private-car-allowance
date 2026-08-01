@@ -62,6 +62,17 @@ import type { Storage } from "../storage/index.js";
 import { canLink, countLinkedAttachments } from "./attachment-limit-engine.js";
 
 // ---------------------------------------------------------------------------
+// PrismaTxLike — PHASE-004-T4: accepts either a plain PrismaClient or a
+// transaction client (`prisma.$transaction(async (tx) => ...)`'s `tx`
+// param), so callers running inside a caller-owned transaction (e.g.
+// travel-service.ts's updateTravelDraft/deleteApplication) can pass `tx`
+// straight through without any cast. No new dependency — `Prisma` is
+// already imported above.
+// ---------------------------------------------------------------------------
+
+export type PrismaTxLike = PrismaClient | Prisma.TransactionClient;
+
+// ---------------------------------------------------------------------------
 // Container state type
 // ---------------------------------------------------------------------------
 
@@ -352,6 +363,74 @@ export async function linkAttachment(
 }
 
 // ---------------------------------------------------------------------------
+// Shared detach field-set — PHASE-004-T4 single source of truth
+// ---------------------------------------------------------------------------
+
+/**
+ * The exact set of column changes a "detach" (LINKED → TEMP) applies,
+ * regardless of which caller triggers it. Factored out so `deleteAttachment`
+ * (single attachment, by id) and `detachAttachmentsByRefTx` (bulk, by
+ * refType+refId) are guaranteed to write IDENTICAL field values — this is
+ * the "單一真相" the PHASE-004-T4 Packet requires, without changing
+ * `deleteAttachment`'s per-id cardinality (a bulk refId-based update would
+ * incorrectly detach OTHER attachments sharing the same container, e.g. two
+ * sibling screenshots on the same TripSegment — not what a single
+ * `DELETE /attachments/:id` should do).
+ *
+ * `createdAt` reset = TTL base restart (D2/§4.5, D16): after detach,
+ * `createdAt` means "the time this attachment last became TEMP".
+ */
+function detachFieldSet(now: Date) {
+  return {
+    status: "TEMP" as const,
+    refType: null,
+    refId: null,
+    linkedAt: null,
+    createdAt: now,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// detachAttachmentsByRefTx — PHASE-004-T4 (D16): bulk detach within a
+// caller-owned transaction, DB-only (no storage IO — D16 explicitly forbids
+// storage IO inside an application-service transaction).
+// ---------------------------------------------------------------------------
+
+/**
+ * Detach ALL currently-`LINKED` attachments referencing any of `refIds`
+ * under `refType`: LINKED → TEMP, clear refType/refId/linkedAt, reset
+ * createdAt to `now` (TTL base — same field-set as `deleteAttachment`'s
+ * detach branch, see `detachFieldSet`).
+ *
+ * Intended caller: `travel-service.ts`, invoked with the deleted
+ * `TripSegment` ids inside the SAME `prisma.$transaction` that deletes those
+ * segments (PHASE-004 Spec §8.2 D15/D16, §9 Data Flow step ①②).
+ *
+ * Only touches rows with `status = 'LINKED'` — already-TEMP rows have no ref
+ * to clear (invariant: TEMP attachments always have refType/refId = null),
+ * so filtering avoids a no-op write on rows that don't need it.
+ *
+ * `tx` is deliberately `PrismaTxLike` (not just `Prisma.TransactionClient`)
+ * so this can also be called with a plain `PrismaClient` outside of an
+ * explicit transaction (a single `updateMany` is already atomic on its own).
+ *
+ * @returns number of attachments actually detached (rows affected).
+ */
+export async function detachAttachmentsByRefTx(
+  tx: PrismaTxLike,
+  refType: AttachmentRefType,
+  refIds: string[]
+): Promise<number> {
+  if (refIds.length === 0) return 0;
+
+  const result = await tx.attachment.updateMany({
+    where: { refType, refId: { in: refIds }, status: "LINKED" },
+    data: detachFieldSet(new Date()),
+  });
+  return result.count;
+}
+
+// ---------------------------------------------------------------------------
 // deleteAttachment — detach (LINKED → TEMP) or physical delete (TEMP → gone)
 // ---------------------------------------------------------------------------
 
@@ -415,19 +494,15 @@ export async function deleteAttachment(
   assertContainerMutable(containerState);
 
   if (attachment.status === "LINKED") {
-    // Detach: revert to TEMP, clear ref fields, reset createdAt as TTL base (D2/§4.5)
+    // Detach: revert to TEMP, clear ref fields, reset createdAt as TTL base
+    // (D2/§4.5). PHASE-004-T4: field values now come from the single shared
+    // `detachFieldSet` helper — also used by `detachAttachmentsByRefTx` —
+    // so both detach paths are provably identical (see that function's
+    // doc comment for why this stays a per-id `update`, not a refId-based
+    // `updateMany`).
     await prisma.attachment.update({
       where: { id: attachmentId },
-      data: {
-        status: "TEMP",
-        refType: null,
-        refId: null,
-        linkedAt: null,
-        // Reset createdAt to now — this is the "last became TEMP" time, serving as TTL base.
-        // Spec §4.5: "TTL 以最後一次成為 TEMP 的時間起算"
-        // We use createdAt (schema frozen, no new columns) to store this semantic.
-        createdAt: new Date(),
-      },
+      data: detachFieldSet(new Date()),
     });
   } else {
     // TEMP attachment: physical delete

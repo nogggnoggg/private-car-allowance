@@ -88,6 +88,38 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
     return id;
   }
 
+  // PHASE-004-T4: track directly-created (prisma) Attachment rows for scoped
+  // cleanup — these are NOT reachable via createdApplicationIds because
+  // Attachment→TripSegment is a weak reference (no FK, D1/D11-b); deleting
+  // the Application does not cascade-delete Attachment rows.
+  const createdAttachmentIds: string[] = [];
+
+  /**
+   * PHASE-004-T4: create a synthetic `LINKED` attachment directly via prisma
+   * (Packet §Done When 5 AC-11 明文：「測試中直接以 prisma 建 Attachment 並
+   * 設 refType='TRIP_SEGMENT'、refId=段id、status='LINKED'」) — bypasses the
+   * real upload/link pipeline (PHASE-003, out of this Task's scope) since
+   * only the detach-on-segment-delete DB effect is under test here.
+   */
+  async function createLinkedAttachment(segmentId: string, forOwnerId: string) {
+    const att = await prisma.attachment.create({
+      data: {
+        status: "LINKED",
+        storageKey: `p4t4-synthetic-${RUN_ID}-${Math.random().toString(36).slice(2)}`,
+        mimeType: "image/jpeg",
+        byteSize: 123,
+        originalFilename: "synthetic.jpg",
+        uploaderId: forOwnerId,
+        ownerId: forOwnerId,
+        refType: "TRIP_SEGMENT",
+        refId: segmentId,
+        linkedAt: new Date(),
+      },
+    });
+    createdAttachmentIds.push(att.id);
+    return att;
+  }
+
   async function createDraft(cookie: string, payload: Record<string, unknown> = {}) {
     const resp = await app.inject({
       method: "POST",
@@ -104,6 +136,29 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
     const body = resp.json<{ application: { id: string } }>();
     track(body.application.id);
     return body.application as Record<string, unknown> & { id: string };
+  }
+
+  // PHASE-004-T4: PUT helper carrying only `segments[]` (plus optional extra
+  // top-level fields, e.g. tripDate/purpose) — used by the new multi-segment
+  // tests below.
+  async function putSegments(
+    cookie: string,
+    id: string,
+    segments: Record<string, unknown>[],
+    extra: Record<string, unknown> = {}
+  ) {
+    return app.inject({
+      method: "PUT",
+      url: `/applications/travel/${id}`,
+      headers: { cookie },
+      payload: { segments, ...extra },
+    });
+  }
+
+  /** Lint-friendly alternative to `x.find(...)!` (biome noNonNullAssertion). */
+  function mustFind<T>(value: T | undefined, message: string): T {
+    if (value === undefined) throw new Error(message);
+    return value;
   }
 
   beforeAll(async () => {
@@ -171,6 +226,12 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
   afterAll(async () => {
     if (app) await app.close();
     if (prisma) {
+      // PHASE-004-T4: scoped cleanup of directly-created synthetic Attachment
+      // rows (see createLinkedAttachment above) — must run before/independent
+      // of application cleanup since there is no FK between them.
+      if (createdAttachmentIds.length > 0) {
+        await prisma.attachment.deleteMany({ where: { id: { in: createdAttachmentIds } } });
+      }
       if (createdApplicationIds.length > 0) {
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
@@ -963,6 +1024,358 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
         payload: { purpose: "沒有 segments 欄位" },
       });
       expect(resp.statusCode).toBe(200);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-004-T4 — 多段行程：整份 PUT diff / sortOrder 重寫 / 刪段 detach
+  // AC-08~13、AC-05 補完、交易原子性、「不屬於此申請的 segment id」處置
+  // ===========================================================================
+
+  describe("PHASE-004-T4 — 多段行程（AC-08~13, D15/D16）", () => {
+    it("AC-08 新增行程段（無 id）→ 建立新 TripSegment，回傳其 id 與 sortOrder", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await putSegments(ownerCookie, draft.id, [
+        {
+          origin: "台北車站",
+          destination: "新竹車站",
+          totalKm: "60",
+          highwayKm: "50",
+          attachmentIds: [],
+        },
+      ]);
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{ application: { segments: { id: string; sortOrder: number }[] } }>();
+      expect(body.application.segments).toHaveLength(1);
+      expect(typeof body.application.segments[0].id).toBe("string");
+      expect(body.application.segments[0].id.length).toBeGreaterThan(0);
+      expect(body.application.segments[0].sortOrder).toBe(0);
+    });
+
+    it("AC-09 每段四欄位可存可讀；草稿階段四欄位皆可為空", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await putSegments(ownerCookie, draft.id, [
+        {
+          origin: "台北車站",
+          destination: "新竹車站",
+          totalKm: "60.5",
+          highwayKm: "50.25",
+          attachmentIds: [],
+        },
+        { attachmentIds: [] }, // 四欄位全部缺席 → 新段視為 null（皆可為空）
+      ]);
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{
+        application: {
+          segments: {
+            origin: string | null;
+            destination: string | null;
+            totalKm: string | null;
+            highwayKm: string | null;
+          }[];
+        };
+      }>();
+      expect(body.application.segments).toHaveLength(2);
+      const [seg1, seg2] = body.application.segments;
+      expect(seg1.origin).toBe("台北車站");
+      expect(seg1.destination).toBe("新竹車站");
+      expect(seg1.totalKm).toBe("60.50");
+      expect(seg1.highwayKm).toBe("50.25");
+      expect(seg2.origin).toBeNull();
+      expect(seg2.destination).toBeNull();
+      expect(seg2.totalKm).toBeNull();
+      expect(seg2.highwayKm).toBeNull();
+    });
+
+    it("AC-10 排序持久化鑑別力：存 [A,B] → 改存 [B,A] → 重新 GET 順序為 [B,A]", async () => {
+      const draft = await createOwnerDraft({});
+      const first = await putSegments(ownerCookie, draft.id, [
+        { origin: "A", destination: "A-to", totalKm: "10", highwayKm: "0", attachmentIds: [] },
+        { origin: "B", destination: "B-to", totalKm: "20", highwayKm: "0", attachmentIds: [] },
+      ]);
+      expect(first.statusCode).toBe(200);
+      const firstSegs = first.json<{
+        application: { segments: { id: string; origin: string }[] };
+      }>().application.segments;
+      const segA = mustFind(
+        firstSegs.find((s) => s.origin === "A"),
+        "segment A not found"
+      );
+      const segB = mustFind(
+        firstSegs.find((s) => s.origin === "B"),
+        "segment B not found"
+      );
+
+      const second = await putSegments(ownerCookie, draft.id, [{ id: segB.id }, { id: segA.id }]);
+      expect(second.statusCode).toBe(200);
+
+      const getResp = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+      });
+      const getBody = getResp.json<{
+        application: { segments: { id: string; origin: string; sortOrder: number }[] };
+      }>();
+      expect(getBody.application.segments.map((s) => s.origin)).toEqual(["B", "A"]);
+      expect(getBody.application.segments.map((s) => s.sortOrder)).toEqual([0, 1]);
+    });
+
+    it("AC-11 刪除行程段連帶移除未鎖定附件關聯：2 張 LINKED 附件變 TEMP、ref 欄位清空、createdAt 重置", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "X", destination: "Y", totalKm: "5", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segmentId = createResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      const att1 = await createLinkedAttachment(segmentId, ownerId);
+      const att2 = await createLinkedAttachment(segmentId, ownerId);
+      const originalCreatedAt1 = att1.createdAt.getTime();
+      const originalCreatedAt2 = att2.createdAt.getTime();
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const deleteResp = await putSegments(ownerCookie, draft.id, []); // 不再包含該段
+      expect(deleteResp.statusCode).toBe(200);
+      const afterBody = deleteResp.json<{ application: { segments: unknown[] } }>();
+      expect(afterBody.application.segments).toEqual([]);
+
+      const rows = await prisma.attachment.findMany({ where: { id: { in: [att1.id, att2.id] } } });
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.status).toBe("TEMP");
+        expect(row.refType).toBeNull();
+        expect(row.refId).toBeNull();
+        expect(row.linkedAt).toBeNull();
+      }
+      const row1 = mustFind(
+        rows.find((r) => r.id === att1.id),
+        "attachment row 1 not found"
+      );
+      const row2 = mustFind(
+        rows.find((r) => r.id === att2.id),
+        "attachment row 2 not found"
+      );
+      expect(row1.createdAt.getTime()).toBeGreaterThan(originalCreatedAt1);
+      expect(row2.createdAt.getTime()).toBeGreaterThan(originalCreatedAt2);
+
+      // 重新載入草稿不再顯示該段與其附件
+      const getResp = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(getResp.json<{ application: { segments: unknown[] } }>().application.segments).toEqual(
+        []
+      );
+    });
+
+    it("AC-12 刪到 0 段可儲存（200）", async () => {
+      const draft = await createOwnerDraft({});
+      await putSegments(ownerCookie, draft.id, [
+        { origin: "A", destination: "B", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const resp = await putSegments(ownerCookie, draft.id, []);
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{ application: { segments: unknown[] } }>();
+      expect(body.application.segments).toEqual([]);
+    });
+
+    it("AC-13 整份儲存以 id 對齊（端到端）：existing=[S1,S2,S3], submitted=[{id:S2},{新},{id:S1}] → S2=0/新段=1/S1=2、S3 刪除並 detach", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "S1", destination: "S1-to", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+        { origin: "S2", destination: "S2-to", totalKm: "2", highwayKm: "0", attachmentIds: [] },
+        { origin: "S3", destination: "S3-to", totalKm: "3", highwayKm: "0", attachmentIds: [] },
+      ]);
+      expect(createResp.statusCode).toBe(200);
+      const segs = createResp.json<{
+        application: { segments: { id: string; origin: string }[] };
+      }>().application.segments;
+      const s1 = mustFind(
+        segs.find((s) => s.origin === "S1"),
+        "segment S1 not found"
+      );
+      const s2 = mustFind(
+        segs.find((s) => s.origin === "S2"),
+        "segment S2 not found"
+      );
+      const s3 = mustFind(
+        segs.find((s) => s.origin === "S3"),
+        "segment S3 not found"
+      );
+
+      const att = await createLinkedAttachment(s3.id, ownerId);
+
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: s2.id },
+        { origin: "NEW", destination: "NEW-to", totalKm: "9", highwayKm: "0", attachmentIds: [] },
+        { id: s1.id },
+      ]);
+      expect(resp.statusCode).toBe(200);
+      const after = resp.json<{
+        application: { segments: { id: string; origin: string; sortOrder: number }[] };
+      }>().application.segments;
+      expect(after).toHaveLength(3);
+      expect(after.find((s) => s.id === s2.id)?.sortOrder).toBe(0);
+      expect(after.find((s) => s.origin === "NEW")?.sortOrder).toBe(1);
+      expect(after.find((s) => s.id === s1.id)?.sortOrder).toBe(2);
+      expect(after.some((s) => s.id === s3.id)).toBe(false);
+
+      const attRow = await prisma.attachment.findUniqueOrThrow({ where: { id: att.id } });
+      expect(attRow.status).toBe("TEMP");
+      expect(attRow.refId).toBeNull();
+    });
+
+    it("交易原子性鑑別力：submitted 後段夾帶不屬於此申請的 segment id → 全部 rollback，既有段落與附件完全未變", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        {
+          origin: "Keep-1",
+          destination: "Keep-1-to",
+          totalKm: "1",
+          highwayKm: "0",
+          attachmentIds: [],
+        },
+        {
+          origin: "Keep-2",
+          destination: "Keep-2-to",
+          totalKm: "2",
+          highwayKm: "0",
+          attachmentIds: [],
+        },
+      ]);
+      const segs = createResp.json<{
+        application: { segments: { id: string; origin: string }[] };
+      }>().application.segments;
+      const keep1 = mustFind(
+        segs.find((s) => s.origin === "Keep-1"),
+        "segment Keep-1 not found"
+      );
+      const keep2 = mustFind(
+        segs.find((s) => s.origin === "Keep-2"),
+        "segment Keep-2 not found"
+      );
+      const att = await createLinkedAttachment(keep2.id, ownerId);
+
+      // 另建一筆申請取得一個真實存在、但不屬於本申請的 segment id。
+      const otherDraft = await createOwnerDraft({});
+      const otherSegResp = await putSegments(ownerCookie, otherDraft.id, [
+        {
+          origin: "Other",
+          destination: "Other-to",
+          totalKm: "1",
+          highwayKm: "0",
+          attachmentIds: [],
+        },
+      ]);
+      const foreignSegmentId = otherSegResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      // 提交：keep1 合法更新在前；foreignSegmentId 在後；且完全不含 keep2 —
+      // 若無交易保護，keep2 會先被判定「未出現於 submitted」而被刪除+detach，
+      // 才會在陣列後段的 foreignSegmentId 踩到拒絕。
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: keep1.id },
+        { id: foreignSegmentId },
+      ]);
+      expect(resp.statusCode).toBe(403);
+
+      const segmentsAfter = await prisma.tripSegment.findMany({
+        where: { travelApplicationId: draft.id },
+      });
+      expect(segmentsAfter).toHaveLength(2);
+      expect(segmentsAfter.some((s) => s.id === keep2.id)).toBe(true);
+
+      const attRow = await prisma.attachment.findUniqueOrThrow({ where: { id: att.id } });
+      expect(attRow.status).toBe("LINKED");
+      expect(attRow.refId).toBe(keep2.id);
+    });
+
+    it("不屬於此申請的 segment id（存在於他人自己另一筆申請）→ 403 FORBIDDEN，DB 未變", async () => {
+      const draft = await createOwnerDraft({});
+      const otherDraft = await createOwnerDraft({});
+      const otherSegResp = await putSegments(ownerCookie, otherDraft.id, [
+        {
+          origin: "Other",
+          destination: "Other-to",
+          totalKm: "1",
+          highwayKm: "0",
+          attachmentIds: [],
+        },
+      ]);
+      const foreignSegmentId = otherSegResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      const resp = await putSegments(ownerCookie, draft.id, [{ id: foreignSegmentId }]);
+      expect(resp.statusCode).toBe(403);
+      const body = resp.json<{ error: { code: string } }>();
+      expect(body.error.code).toBe("FORBIDDEN");
+
+      const segmentsAfter = await prisma.tripSegment.findMany({
+        where: { travelApplicationId: draft.id },
+      });
+      expect(segmentsAfter).toHaveLength(0);
+    });
+
+    it("完全不存在的 segment id（非任何申請所屬）→ 亦 403", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: "totally-nonexistent-segment-id" },
+      ]);
+      expect(resp.statusCode).toBe(403);
+    });
+
+    it("重複的 segment id 於同一次提交中 → 400 VALIDATION_ERROR，DB 未變", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "Dup", destination: "Dup-to", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segId = createResp.json<{ application: { segments: { id: string }[] } }>().application
+        .segments[0].id;
+
+      const resp = await putSegments(ownerCookie, draft.id, [{ id: segId }, { id: segId }]);
+      expect(resp.statusCode).toBe(400);
+      const body = resp.json<{ error: { code: string } }>();
+      expect(body.error.code).toBe("VALIDATION_ERROR");
+
+      const segmentsAfter = await prisma.tripSegment.findMany({
+        where: { travelApplicationId: draft.id },
+      });
+      expect(segmentsAfter).toHaveLength(1);
+      expect(segmentsAfter[0].sortOrder).toBe(0);
+    });
+
+    it("AC-05 補完：DELETE 草稿含段落與 LINKED 附件 → 附件變 TEMP 且 ref 欄位清空", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        {
+          origin: "Del-1",
+          destination: "Del-1-to",
+          totalKm: "1",
+          highwayKm: "0",
+          attachmentIds: [],
+        },
+      ]);
+      const segmentId = createResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+      const att = await createLinkedAttachment(segmentId, ownerId);
+
+      const delResp = await app.inject({
+        method: "DELETE",
+        url: `/applications/${draft.id}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(delResp.statusCode).toBe(200);
+      const idx = createdApplicationIds.indexOf(draft.id);
+      if (idx >= 0) createdApplicationIds.splice(idx, 1);
+
+      const attRow = await prisma.attachment.findUniqueOrThrow({ where: { id: att.id } });
+      expect(attRow.status).toBe("TEMP");
+      expect(attRow.refType).toBeNull();
+      expect(attRow.refId).toBeNull();
+      expect(attRow.linkedAt).toBeNull();
     });
   });
 });
