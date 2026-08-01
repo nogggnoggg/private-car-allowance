@@ -50,8 +50,9 @@ Updated: 2026-08-01
 - PHASE-002 Accepted Risk（Low，記錄保留）：AR-1 production Secure cookie 無自動化測試；AR-2 弱密碼清單對 ≥10 字元密碼有效覆蓋 208 筆（短密碼由長度規則先擋）；AR-3 session 撤銷用硬刪（Spec 允許）；AR-4 auth plugin parseEnv 防禦性 fallback 為死碼（建議後續清理）；AR-5 seed:admin TOCTOU（部署一次性情境可接受）；AR-7 wrong-password 路徑 ~1ms DB write 時間差（可忽略）。
 - PHASE-002：**DONE**。Mock/整合驗收通過（人類，2026-08-01，含 Gate 反饋修正：強制改密頁登出出口）；PR #2 經人類批准合併至 main（e0e2d14）。
 - 治理事件（2026-08-01）：使用者指出大總管兩項違規（直接實作未派工；行為變更未先改 Spec）。根因分析（規則明確度為主因、派工成本為中因、context 長度為放大器）經使用者確認；解方 S1~S5 經使用者批准並執行：治理升版 **2026-08-01.2**（大總管零程式修改白名單、Gate 反饋明文流程、Lite Packet／輕量複審通道、commit 前 Task ID 自檢、Phase 開工重錨定）。
-- S5 補救審查（reviewer 事後審 main 上未經審查的 b76f44b、acbb327）：IN_PROGRESS
-- 【暫停維持】S5 完成後仍暫停，等使用者確認是否進入 PHASE-003/003a。
+- S5 補救審查（reviewer 事後審 b76f44b、acbb327）：DONE — **APPROVE**。無 Must/Should Fix；測試鑑別力經反向驗證（拿掉修復後測試會紅）；231 測試（後端 199＋前端 32）無回歸。新增 Accepted Risk：AR-S5-1（Low）pino `*` 萬用路徑僅遮蔽單層巢狀，兩層以上不遞迴——防禦縱深已知邊界，正常程式不記 request body，記錄保留；AR-S5-2（觀察）PHASE-002 Spec 檔內版本戳仍為 .1，下次動該檔時一併更新。
+- 治理事件結案：違規已補救、規則已升版固化（2026-08-01.2）。
+- 【暫停維持】等使用者確認是否進入 PHASE-003/003a。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
