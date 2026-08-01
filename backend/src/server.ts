@@ -9,6 +9,7 @@ import fastifyCookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { LogController } from "fastify";
 import { adminPlugin } from "./admin/routes.js";
+import { applicationsPlugin } from "./applications/routes.js";
 import { attachmentPlugin } from "./attachment/routes.js";
 import { authPlugin } from "./auth/routes.js";
 import { getEnvOrTestDefaults } from "./config/env.js";
@@ -111,6 +112,9 @@ export async function buildServer(
 
   const storage = new LocalVolumeStorage(storageRoot);
   await fastify.register(attachmentPlugin, { prisma, storage });
+
+  // Register applications routes (差旅草稿 CRUD — PHASE-004-T3)
+  await fastify.register(applicationsPlugin, { prisma });
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {
