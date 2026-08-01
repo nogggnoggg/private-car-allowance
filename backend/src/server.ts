@@ -6,6 +6,7 @@ import type { Writable } from "node:stream";
 import fastifyCookie from "@fastify/cookie";
 import Fastify from "fastify";
 import { LogController } from "fastify";
+import { adminPlugin } from "./admin/routes.js";
 import { authPlugin } from "./auth/routes.js";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
@@ -59,6 +60,9 @@ export async function buildServer(
 
   // Register auth routes (POST /auth/login, POST /auth/logout, GET /me)
   await fastify.register(authPlugin, { prisma });
+
+  // Register admin routes (GET/POST /admin/users, deactivate/activate/reset-password/delete)
+  await fastify.register(adminPlugin, { prisma });
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {

@@ -41,7 +41,11 @@ Updated: 2026-08-01
   - T1 資料模型：DONE（62/62）
   - T2 密碼雜湊（argon2id + 10k 弱密碼清單，大總管補足清單至 D6 規模）：DONE（87/87）
   - T3 登入/Session/Cookie（22 新測試；統一 401 逐字驗證）：DONE（109/109，大總管複驗）
-  - T4 失敗鎖定：READY；T5~T11：PLANNED
+  - T4 失敗鎖定：DONE（122/122；大總管修 1 個 race 型 flaky 斷言）
+  - T5+T6 授權中介層（requireAuth/requirePasswordChanged/requireAdmin/assertOwnershipOrAdmin）：DONE（140/140）
+  - T7+T8 改密流程（/me/password 共用端點，D10 驗證）：DONE（161/161）
+  - T9+T10 管理員帳號管理＋稽核＋seed:admin：DONE（197/197，大總管複驗）
+  - T11 前端頁面：READY（後端全部端點就緒）
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）
