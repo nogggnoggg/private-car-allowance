@@ -25,8 +25,16 @@ Updated: 2026-08-01
 ## Task 狀態
 
 - PLAN-001（PRD + Phase 拆分 + Architecture/Data Flow 草案）：DONE
-- SPEC-001（docs/specs/PHASE-001.md 詳細 Spec，spec-writer）：IN_PROGRESS
-- PHASE-001 T1~T6：PLANNED（待 SPEC-001 驗收）
+- SPEC-001（docs/specs/PHASE-001.md 詳細 Spec）：DONE（commit 8e41e28）
+- PHASE-001-T1（monorepo 骨架 + lint/TS 工具鏈）：DONE（workspace 工具改裁 npm，見 Spec 3.1 修訂）
+- PHASE-001 T2（Fastify/health/Prisma/env）：READY
+- PHASE-001 T6→T3→T4→T5：PLANNED
+
+## 環境備註（後續 Task 必讀）
+
+- 本機為 Windows 11、Node 25、npm 11；**pnpm 在中文路徑會崩潰，已裁示全案改用 npm workspaces**。
+- npm 11 會封鎖新依賴的 postinstall scripts：新增含 postinstall 的依賴後需 `npm approve-scripts` 並確認 `package.json` 的 `allowScripts`。
+- 容器與 CI 鎖 Node 20 LTS；本機 Node 25 僅開發用。
 
 ## 阻塞
 

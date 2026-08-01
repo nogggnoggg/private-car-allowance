@@ -121,9 +121,13 @@ Phase 結束驗收：人類可在本機 `docker compose up` 啟動三服務，�
 
 ## 3. 專案結構定案
 
-### 3.1 Workspace 工具定案：**pnpm workspace**
+### 3.1 Workspace 工具定案：**npm workspaces**（2026-08-01 修訂）
 
-**定案：採用 pnpm（`pnpm-workspace.yaml`）作為 monorepo 管理工具。Node 版本鎖定 `20 LTS`（`.nvmrc` = `20`，`engines.node >=20 <21`）。pnpm 版本經 `packageManager` 欄位鎖定（例 `pnpm@9`）。**
+> **修訂紀錄（大總管裁示，依 12.2 開放事項 2）**：原定案 pnpm 於 T1 實作時發現在本開發機的中文路徑（`油資`）下 `pnpm install` 必然崩潰（exit C0000409，pnpm 9.15.9 + Windows 11 非管理員）。經實測 npm workspaces 於同路徑完全正常，且 12.2.2 明列此為可替換內部決策，故**定案改為 npm workspaces**（根 `package.json` 之 `workspaces` 欄位 + `package-lock.json`）。聚合 scripts 使用 `npm run <script> --workspaces --if-present`。CI 與 Docker（Linux 環境）同步使用 npm。不影響任何 AC。
+>
+> 另：本機 Node 為 25.x，`engines.node` 放寬為 `>=20`；容器與 CI 仍鎖 Node 20 LTS。
+
+原 pnpm 定案（已作廢，保留供追溯）：採用 pnpm（`pnpm-workspace.yaml`）作為 monorepo 管理工具。Node 版本鎖定 `20 LTS`（`.nvmrc` = `20`，`engines.node >=20 <21`）。pnpm 版本經 `packageManager` 欄位鎖定（例 `pnpm@9`）。
 
 理由：
 - pnpm workspace 對 monorepo 的依賴隔離（非扁平 `node_modules`）較嚴謹，避免幽靈依賴，利於前後端獨立建置與獨立 Docker context。
