@@ -4,6 +4,12 @@ State: ACTIVE
 Governance-Version: 2026-08-01.2
 Updated: 2026-08-01
 
+> **PHASE-003a 開工記錄（2026-08-01，使用者指令接續）**
+> - §15 rule 0 重錨定完成：大總管零程式修改（白名單＝PROJECT_STATE／Spec 狀態欄・修訂／ADR／CHANGELOG／治理節）；003a 為 High 風險，Spec 需事前批准 Gate 才進實作；commit 前逐檔核對 Handoff、程式 commit 必含 Task ID。
+> - 工作區清理：刪除根目錄殘留測試產物 `-w`（PHASE-003-T8 curl 誤產的合成登入 JSON，經使用者批准刪除）。
+> - branch：phase-003a（自 main @ 93411cc 切出）。
+> - 下一步：派 spec-writer 產出 docs/specs/PHASE-003a.md（DRAFT）→ 大總管驗收 → 事前批准 Gate。
+
 ## 目前狀態
 
 - Preflight 完成，Project Execution Profile 已由使用者確認（2026-08-01）。
@@ -19,7 +25,30 @@ Updated: 2026-08-01
 ## 目前 Phase
 
 - **PHASE-003 DONE**：整合驗收通過、PR #3 經人類批准合併至 main（766abf8，2026-08-01）；Spec 轉 COMPLETED。
-- **【暫停】使用者裁示：等其指令才進入下一階段**（PHASE-003a 開工資格已批准（2026-08-01「003→003a」），但接續需使用者明確指令；003a Spec 屆時仍需事前批准 Gate）。
+- **PHASE-003a（補助參數維護，branch: phase-003a）：ACTIVE / IN_PROGRESS**（2026-08-01 使用者指令接續開工）。
+  - SPEC-003a：DONE（commit 740a88a，DRAFT）。
+  - **Spec Gate：已通過**（2026-08-01，使用者全數批准 D1~D10 依建議定案，含金額語意 D3/D8）。定案摘要：D1 三表+泛型服務；D2 僅 effectiveFrom 隱含結束（不重疊＝生效日唯一）；D3 每公里單價 Decimal 4 位、顯示層四捨五入、007 末端一次取整；D4 服務層權威+`@@unique(effectiveFrom)`；D5 專屬 `PARAMETER_PERIOD_OVERLAP`(409)；D6 單一 `PARAMETER_VERSION_CREATED`+summary.parameterType；D7 推導值不持久化；D8 油資/ETC Decimal(10,4)、車價 Decimal(12,2)、年限/年里程 Int、單價 Decimal(_,4) 非浮點；D9 不提供撤銷端點；D10 全 requireAdmin。Spec 轉 ACTIVE。
+  - Task Graph（依 PRD/§8）：T1 三類 ParameterVersion 模型+migration（Medium）→ T2 不重疊驗證+依日期查找引擎（High）→ T3 油資/ETC 建立+列表 API（High）→ T4 折舊建立+推導引擎（High）→ T5 稽核寫入複用 002（High）→ T6 前端維護頁（Medium）。
+  - **T1（資料模型+migration）：DONE**（commit c89bfc8）。三表（Fuel/Etc/Depreciation ParameterVersion）+ migration 20260801153708 + 14 模型測試（Decimal 往返精度、@db.Date 日粒度、@@unique 鑑別力、Int、無 derived）。大總管重驗：同 DB 連跑兩輪 14/14；full regression 391/391；biome root 91 檔乾淨。scope 乾淨無夾帶。
+  - **T2（不重疊+依日期查找引擎，High）：DONE**（commit 18db844）。純函式 checkNoOverlap / findEffectiveVersion（原生 Date UTC 日粒度，無新依賴）；30 單元測試含 datetime 與 off-by-one 鑑別力、相鄰次日、未來版不污染、亂序輸入；反向驗證自證。大總管重驗：unit 183/183、tsc 0、biome root 93 檔乾淨。scope 乾淨。
+  - T2 New Risk（轉交 T3/T4）：服務層 create 前須把「該類**全部**現有版本」傳入 checkNoOverlap（勿先過濾），DB `@@unique` 為 D4 最後防線。
+  - **T3（油資/ETC 建立+列表 API，High）：DONE**（commit 4385dfc）。POST/GET /parameters/fuel|etc；全掛 requireAuth+requirePasswordChanged+requireAdmin；服務層值域驗證（unitPrice≥0、嚴格 YYYY-MM-DD 含日曆有效性）；不重疊經 T2 引擎（交易內撈全部同類）+ DB `@@unique` P2002 併發防線→皆轉 409 `PARAMETER_PERIOD_OVERLAP`+details.conflictVersion（D5）；DTO unitPrice 為 Decimal 字串（D8）。共用 errors.ts/error-handler.ts 新增碼＋可選 details（向後相容）。服務層備 onCreated 交易內 hook 供 T5 稽核。30 整合測試（權限矩陣/驗證/重疊/相鄰/精度/併發）。大總管重驗：同 DB 兩輪 30/30、full 451/451、tsc 0、biome 96 檔乾淨。
+  - T3 Accepted Risk（Low，轉 Phase reviewer）：(a) `new Prisma.Decimal(priceNum)` 經 float 中介，建議改傳字串；(b) 空字串 unitPrice 會 coerce 為 0。皆非阻擋、DB Decimal(10,4) 收斂。
+  - **T4（折舊建立+推導引擎，High 金額語意）：DONE**（commit 4b71fee）。deriveDepreciation 純函式（Prisma.Decimal ROUND_HALF_UP、非銀行家、非浮點；每年費用 2 位、每公里單價 4 位；≤0→{ok:false} 不 NaN/例外，AC-14）；POST/GET /parameters/depreciation（requireAdmin；服務層驗 >0 且整數 D8、逐欄錯誤 AC-05、無效不推導；不重疊+P2002→409）；derived 不持久化（D7）即算即回。25 unit（.5 邊界證 round-half-up）+26 整合。大總管重驗：兩輪 26/26、full 502/502、tsc 0、biome 99 檔乾淨。
+  - **T4 待 reviewer 確認點（金額，Phase reviewer 必審）**：perKmUnitPrice 分子採「未先取整的每年費用」（round-late，減累積誤差），差異在第 4 位小數（如 10/3/3 → 1.1111 vs 1.1100）。大總管判定與 Spec §4.4「最終金額晚取整」哲學一致，暫予接受，Phase reviewer 正式複核；若使用者/reviewer 偏好另案為小改動。
+  - **T5（參數異動稽核，複用 002 AuditLog，High）：DONE**（commit e6d4c6c）。AuditAction+PARAMETER_VERSION_CREATED（D6）+ migration（ALTER TYPE ADD VALUE，乾淨套用）；三 POST handler 以 onCreated(tx,dto) 交易內寫稽核（原子性：稽核失敗→版本 rollback；被拒建立→不寫稽核）；summary{parameterType,...,effectiveFrom}、targetLabel `<TYPE>#<id>`、targetId null、actorId 來自管理員 session；密碼/token/secret 不入稽核。14 整合測試（AC-18/稽核安全無敏感鍵/原子性雙向/拒絕路徑不寫稽核）。大總管重驗：兩輪 14/14、full **516/516（0 skip）**、tsc 0、biome 100 檔乾淨。（implementer 回報「39 skipped」經查為其 DATABASE_URL 未帶入之誤，非回歸。）
+  - **T6（前端參數維護頁，Medium）：DONE**（commit 0029d5d）。ParametersPage /admin/parameters（管理員專屬）三類建立表單+版本列表+五態（AC-20）；折舊 derived 直接顯示後端回傳（前端不自算，後端權威）；api/parameters.ts `/api` 前綴+credentials 複用 parseApiResponse；重疊錯讀 error.details.conflictVersion；防重複提交；zh-TW；aria-describedby。19 頁面測試（五態×三類+derived+防重複），前端 59/59、tsc 0、biome 103 檔乾淨。scope 純前端。
+  - **T6 Known Issue（環境，Accepted）**：`npm run build` 於本機 Windows 觸發 0xC0000409（STATUS_STACK_BUFFER_OVERRUN）**於寫出完整 dist 後**的 node 程序 teardown 崩潰（PHASE-001-T3 前例）；tsc exit 0、vite 55 modules transformed、dist（bundle+css+index.html 互相引用）經大總管驗證完整；**Windows-local only，Linux CI/compose build 不受影響**（整合 Gate 於 compose 真實拓撲為權威 build 檢查）。
+  - **PHASE-003a 全部 Task 完成（T1~T6）。**
+  - **PHASE-003a-REVIEW（reviewer 獨立審查）：DONE — APPROVE。無 Must Fix、無 Should Fix；20/20 AC PASS；D1~D10 忠實落地。** reviewer 實跑 55/55 引擎單元、逐條核對測試鑑別力（half-up 非 half-even、round-late 累積誤差、off-by-one/含當日、日粒度、原子性、稽核無敏感皆真鑑別）。**T4 round-late 分子明確 verdict＝可接受**（符合 Spec §4.4/CLAUDE.md 晚取整；PHASE-007 須以本 Phase 回傳之 4-dp perKmUnitPrice 為準）。Diff 乾淨無夾帶/debug/secret/個資。
+  - Accepted Risk（Low，保留）：AR-3a-1 油資/ETC `new Prisma.Decimal(priceNum)` float 中介（實測 4-dp 域無失真；建議未來改傳字串）；AR-3a-2 空字串 unitPrice coerce 0（route 已擋，無暴露路徑）；AR-3a-3 Windows `npm run build` 0xC0000409 teardown 崩潰（dist 完整、Linux CI/compose 權威，環境 flake 不阻擋）。
+  - 文件同步：派 spec-writer 補 ARCHITECTURE.md/DATA_FLOW.md（DRAFT）之 D2/D3/D6/D7 細節（reviewer 建議，非阻擋）。
+  - **Review 清零。**
+  - **Mock UI + 整合驗收 Gate：通過（人類 leonchih，2026-08-01）**——大總管於 compose 真實拓撲（frontend:8080 / backend / PG16，Windows workaround）起站、seed 合成管理員、全鏈路 smoke（登入→強制改密→建立 201→重疊 409+conflictVersion→折舊 derived 120000.00/6.0000 正確）；使用者親自操作 UI 驗收通過。
+  - **Gate 反饋（人類提出，走 Gate 反饋流程）**：管理員首頁缺少進入 /admin/parameters 的導覽連結。已依流程：①大總管改 Spec §5.2+§13 修訂（引用本次批准）→ ②派 implementer T7 以 TDD 加連結（比照既有 /admin/users）→ ③reviewer 輕量複審 → ④合入。
+  - **T7（首頁導覽連結，Gate 反饋，Low）：DONE**（commit 4fa8336）。HomePage 加管理員專屬 `/admin/parameters` 連結（比照 /admin/users），5 測試（角色鑑別力：USER 不顯示；管理員可見+href；3 非回歸）。大總管重驗前端 64/64、tsc 0、biome 104 檔乾淨。
+  - **T7 reviewer 輕量複審：APPROVE**（無 Must/Should Fix；連結正確、角色鑑別力真、未弱化 RouteGuard 授權、無夾帶/secret/個資）。**Gate 反饋流程結案。**
+  - 下一步：Draft PR #4（整個 PHASE-003a）+ 人類合併批准。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。

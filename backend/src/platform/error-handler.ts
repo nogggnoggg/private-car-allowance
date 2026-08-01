@@ -78,7 +78,9 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
       request.log.info({ code: error.code }, `AppError: ${error.userMessage}`);
       return reply
         .status(error.httpStatus)
-        .send(buildErrorBody(error.code, error.userMessage, requestId, error.fields));
+        .send(
+          buildErrorBody(error.code, error.userMessage, requestId, error.fields, error.details)
+        );
     }
 
     // 2. Fastify validation error (ajv schema validation)

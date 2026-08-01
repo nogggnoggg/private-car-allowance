@@ -2,6 +2,35 @@
 
 export type Role = "USER" | "ADMIN";
 
+// ---- PHASE-003a parameter types ----
+
+export interface FuelParameterDto {
+  id: string;
+  unitPrice: string; // Decimal as string (D8)
+  effectiveFrom: string; // YYYY-MM-DD
+  createdAt: string;
+}
+
+export interface EtcParameterDto {
+  id: string;
+  unitPrice: string;
+  effectiveFrom: string;
+  createdAt: string;
+}
+
+export interface DepreciationParameterDto {
+  id: string;
+  vehiclePrice: string; // Decimal as string
+  usefulLifeYears: number;
+  estimatedAnnualKm: number;
+  effectiveFrom: string;
+  createdAt: string;
+  derived: {
+    annualDepreciation: string;
+    perKmUnitPrice: string;
+  };
+}
+
 export interface UserDto {
   id: string;
   loginName: string;
@@ -17,6 +46,8 @@ export interface ApiError {
   message: string;
   requestId?: string;
   fields?: Array<{ field: string; reason: string }>;
+  /** Extra details for specific error codes, e.g. PARAMETER_PERIOD_OVERLAP → details.conflictVersion */
+  details?: Record<string, unknown>;
 }
 
 export interface ApiErrorResponse {
