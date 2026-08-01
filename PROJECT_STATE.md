@@ -34,7 +34,9 @@ Updated: 2026-08-01
   - T2 New Risk（轉交 T3/T4）：服務層 create 前須把「該類**全部**現有版本」傳入 checkNoOverlap（勿先過濾），DB `@@unique` 為 D4 最後防線。
   - **T3（油資/ETC 建立+列表 API，High）：DONE**（commit 4385dfc）。POST/GET /parameters/fuel|etc；全掛 requireAuth+requirePasswordChanged+requireAdmin；服務層值域驗證（unitPrice≥0、嚴格 YYYY-MM-DD 含日曆有效性）；不重疊經 T2 引擎（交易內撈全部同類）+ DB `@@unique` P2002 併發防線→皆轉 409 `PARAMETER_PERIOD_OVERLAP`+details.conflictVersion（D5）；DTO unitPrice 為 Decimal 字串（D8）。共用 errors.ts/error-handler.ts 新增碼＋可選 details（向後相容）。服務層備 onCreated 交易內 hook 供 T5 稽核。30 整合測試（權限矩陣/驗證/重疊/相鄰/精度/併發）。大總管重驗：同 DB 兩輪 30/30、full 451/451、tsc 0、biome 96 檔乾淨。
   - T3 Accepted Risk（Low，轉 Phase reviewer）：(a) `new Prisma.Decimal(priceNum)` 經 float 中介，建議改傳字串；(b) 空字串 unitPrice 會 coerce 為 0。皆非阻擋、DB Decimal(10,4) 收斂。
-  - 下一步：派 implementer T4（折舊建立+每年費用/每公里單價推導引擎，High；稽核留 T5）。
+  - **T4（折舊建立+推導引擎，High 金額語意）：DONE**（commit 4b71fee）。deriveDepreciation 純函式（Prisma.Decimal ROUND_HALF_UP、非銀行家、非浮點；每年費用 2 位、每公里單價 4 位；≤0→{ok:false} 不 NaN/例外，AC-14）；POST/GET /parameters/depreciation（requireAdmin；服務層驗 >0 且整數 D8、逐欄錯誤 AC-05、無效不推導；不重疊+P2002→409）；derived 不持久化（D7）即算即回。25 unit（.5 邊界證 round-half-up）+26 整合。大總管重驗：兩輪 26/26、full 502/502、tsc 0、biome 99 檔乾淨。
+  - **T4 待 reviewer 確認點（金額，Phase reviewer 必審）**：perKmUnitPrice 分子採「未先取整的每年費用」（round-late，減累積誤差），差異在第 4 位小數（如 10/3/3 → 1.1111 vs 1.1100）。大總管判定與 Spec §4.4「最終金額晚取整」哲學一致，暫予接受，Phase reviewer 正式複核；若使用者/reviewer 偏好另案為小改動。
+  - 下一步：派 implementer T5（參數異動稽核寫入，複用 002 AuditLog；擴充 AuditAction=PARAMETER_VERSION_CREATED（D6）+ migration；接 onCreated hook，High）。
 - PHASE-004 前置約束（承 PHASE-003 Review AR-D）：containerState 必須由申請服務層依狀態機注入，route 移除/忽略 client 參數；差旅附件上限 3/段 由 PHASE-004 套用；toFrontendUrl() 慣例寫入 PHASE-004 Packet。
 - Phase 拆分審閱：已通過（人類批准，2026-08-01）。
 - 全案順序：001 骨架/CI → 002 認證帳號 → 003 附件基礎 ∥ 003a 補助參數 → 004 差旅（核心）→ 005 區間統計 → 006 保養 → 007 折舊 → 008 報表/PDF → 009 修正版/作廢 → 010 稽核 → 011 部署硬化與備份。詳見 docs/PRD.md 第 5 節。
