@@ -45,7 +45,10 @@ Updated: 2026-08-01
   - T5+T6 授權中介層（requireAuth/requirePasswordChanged/requireAdmin/assertOwnershipOrAdmin）：DONE（140/140）
   - T7+T8 改密流程（/me/password 共用端點，D10 驗證）：DONE（161/161）
   - T9+T10 管理員帳號管理＋稽核＋seed:admin：DONE（197/197，大總管複驗）
-  - T11 前端頁面：READY（後端全部端點就緒）
+  - T11 前端頁面：DONE（30 前端測試；E2E 由大總管於 compose 正式拓撲實跑通過）
+- PHASE-002-REVIEW：DONE。29 AC＝27 PASS + 2 PARTIAL（皆已處置）；D1~D11 忠實落地；無 Must Fix。SF-1（pino redact 欄位不齊，AC-27 防護網缺口）已由大總管修復（logger 增補 4 欄位＋萬用巢狀路徑＋2 測試）；AR-6（多餘 @types/react-router-dom）已移除。
+- PHASE-002 Accepted Risk（Low，記錄保留）：AR-1 production Secure cookie 無自動化測試；AR-2 弱密碼清單對 ≥10 字元密碼有效覆蓋 208 筆（短密碼由長度規則先擋）；AR-3 session 撤銷用硬刪（Spec 允許）；AR-4 auth plugin parseEnv 防禦性 fallback 為死碼（建議後續清理）；AR-5 seed:admin TOCTOU（部署一次性情境可接受）；AR-7 wrong-password 路徑 ~1ms DB write 時間差（可忽略）。
+- PHASE-002：等待 Human Gate（Mock UI + 整合驗收合併執行）。
 - 派工紀律備註：implementer 兩度（T6、T3）聲稱 lint 通過但實況有 error——後續 Packet 一律要求貼上 biome check 實際輸出；大總管驗收必自跑 lint。
 - 待 Review 事項（Phase 結束 reviewer 用）：auth routes 內 parseEnv 防禦性 try/catch（implementer 自承不應複製的模式）；revokeAllUserSessions 用硬刪除而非 revokedAt 軟刪（Spec 允許，稽核性差異）；production Secure cookie 屬性無自動化測試（條件式程式碼，Low）
 - Accepted Risk（已記錄）：AR-2 dotenv stdout 提示（Low）；AR-4 無 DB 時 integration 測試 skip（Low，CI 有 DB service 覆蓋）；sanitizeForLog scheme 清單需隨新連線字串型態擴充（記入後續 Phase 注意事項）

@@ -197,3 +197,53 @@ describe("AR-3: no duplicate requestId key in log entries", () => {
     }
   });
 });
+
+// PHASE-002 review SF-1: pino redact must cover all password-carrying field
+// names promised by AC-27, at top level and nested (wildcard paths).
+describe("SF-1 (PHASE-002): redact covers password/newPassword/currentPassword/temporaryPassword", () => {
+  async function logAndCapture(payload: Record<string, unknown>): Promise<string> {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk, _enc, cb) {
+        lines.push(String(chunk));
+        cb();
+      },
+    });
+    const app: FastifyInstance = await buildServer({
+      databaseUrl: "postgresql://user:pass@localhost:5432/unused",
+      logStream: stream,
+    });
+    app.log.info(payload, "redact probe");
+    await app.close();
+    return lines.join("\n");
+  }
+
+  it("redacts all four fields at top level", async () => {
+    const out = await logAndCapture({
+      password: "TOP-SECRET-1",
+      newPassword: "TOP-SECRET-2",
+      currentPassword: "TOP-SECRET-3",
+      temporaryPassword: "TOP-SECRET-4",
+    });
+    expect(out).not.toContain("TOP-SECRET-1");
+    expect(out).not.toContain("TOP-SECRET-2");
+    expect(out).not.toContain("TOP-SECRET-3");
+    expect(out).not.toContain("TOP-SECRET-4");
+    expect(out).toContain("[REDACTED]");
+  });
+
+  it("redacts all four fields nested one level (e.g. accidentally logged body)", async () => {
+    const out = await logAndCapture({
+      body: {
+        password: "NEST-SECRET-1",
+        newPassword: "NEST-SECRET-2",
+        currentPassword: "NEST-SECRET-3",
+        temporaryPassword: "NEST-SECRET-4",
+      },
+    });
+    expect(out).not.toContain("NEST-SECRET-1");
+    expect(out).not.toContain("NEST-SECRET-2");
+    expect(out).not.toContain("NEST-SECRET-3");
+    expect(out).not.toContain("NEST-SECRET-4");
+  });
+});
