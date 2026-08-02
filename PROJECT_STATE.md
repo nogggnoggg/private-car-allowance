@@ -64,10 +64,15 @@ Updated: 2026-08-02
 | T12 | 代操作稽核（含 migration、T12F teardown） | High | DONE | 2ffdad3 |
 | T13 | 前端列表/表單/預覽/附件/響應式（**含 E2E 遷移**） | Medium | DONE | 527d5aa |
 | T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | DONE | 9388cfa |
-| — | **Phase 終審 reviewer**（含 R3~R6 修復複審） | — | 待辦 | — |
+| — | **Phase 終審 reviewer**（含 R3~R6 修復複審） | — | DONE | REQUEST_CHANGES（0 Must / 4 Should） |
+| — | S-1 D6 授權邊界（使用者裁定：承認擴張） | — | DONE | 15b7fec |
+| R8 | **REPAIR（Must Fix）**：完成申請對真實使用者 500 | High | DONE | e685403 |
+| R7 | REPAIR：終審 S-2 LIKE 跳脫 + S-3 補 E2E 情境（含 R8F） | Medium | DONE | a09ca5f |
+| — | S-4 Spec 文字校正（阻擋 Spec 轉 COMPLETED） | — | 待辦 | — |
+| — | reviewer 輕量複審（R7/R8） | — | 待辦 | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
-- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ **871（T12）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
+- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ 871（T12）→ 877（R7）→ **879（R8）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
 - **驗收紀律事件（T6）**：implementer 回報之「全套回歸」係在未設 `DATABASE_URL` 下執行（55 skipped），非有效證據；大總管重跑後才確認。**後續 Packet 一律要求 Handoff 標明 passed/failed/skipped 三個數字且 skipped 必須為 0。**
 - **T11 Stop 事件（implementer 正確觸發）**：D12 移除公開 `POST /attachments/:id/link` 會使 `phase3-lifecycle.test.ts` 20 個測試中 16 處必然失敗，而該檔同時列為不得修改。大總管裁定**逐條遷移不得刪除**，寫入 Spec §17 修訂紀錄（commit c5fc3cb）後恢復執行。
 - **B-30 併發事件（T11 → T11R → T11R2，2026-08-02）**：T11 交付後大總管 13 輪重跑發現 B-30 併發測試約 **23% 失敗**（`expected [200,200] to deeply equal [200,409]`，即每段 3 張上限被突破），三個修復回合（T11 一次、T11R 兩次：advisory lock 提前、SERIALIZABLE→READ COMMITTED、原子單一 UPDATE）**全部未關閉**；implementer 於第三回合正確觸發 Stop（§28 三回合上限）。**大總管診斷結論：目標框錯**——B-30 測試打的是整份取代式 `PUT`，兩個併發請求各自宣告的都是合法的 3 張（恰為上限），依 D15 語意「兩者皆成功、最終 3 張」才是正確；原 PHASE-003 測試 race 的是增量式 link 打到 `limit=1` 容器，T11 依 §17 C1 逐條遷移換端點後**斷言未同步修正**。另查得真實缺陷：`computeAttachmentDeltas` 的 baseline 在**交易外**（`prisma` 而非 `tx`）計算，併發時雙方 baseline 皆為前態、各自只 link 不 detach → 最終 4 張。**處置**：Spec §17 新增 **D19**（使用者 leonchih 2026-08-02 批准「最後寫入者贏」＋裁定回退兩次失敗嘗試）→ T11R2 回退 + baseline 移入交易內 + 斷言依 D19 修正 + 新增 AC-22 鑑別力測試 → 大總管 **14 輪重跑（13 輪 779 全綠，B-30 零失敗）**。
@@ -98,7 +103,15 @@ Updated: 2026-08-02
 - ~~**Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點~~ → **已於 T13 關閉（`527d5aa`）**。原情境依賴的「關聯」按鈕與「已關聯附件清單」UI 在 T11/D12 即被移除，於原檔已無等價操作可測；遷移至 `e2e/travel-application.spec.ts` 之真實差旅流程（上傳 → 儲存草稿 → **重新載入驗證真實持久化** → 刪除 → 儲存 → 重新載入驗證不再顯示），**覆蓋更強**（原情境的「reload 不顯示」係因 demo 頁從未持久化任何狀態）。原檔留指向註解，其餘 AC-19/20 三條原封未動。**E2E 由大總管親自實跑驗證關閉**。
 - **T13 意外發現並修正之真實 bug**：同時註冊 `/applications/travel/new`（靜態）與 `/applications/travel/:id`（動態）時，React Router 優先匹配靜態片段，使 `useParams().id` 在 `/new` 下為 `undefined`，「建立草稿」分支永遠進不去——會在生產環境實際發生。改為單一 `:id` route，讓 `"new"` 成為參數值。
 - **T14 實作偏離（已記錄於 Spec §17，commit `0fb4b84`）**：(a) 新增 `/admin/applications` 路由（無 `:userId`，供「未選使用者」可達狀態；重用既有 `GET /admin/users`，未新增後端 API）；(b)「申請紀錄」按鈕而非姓名可點。兩項皆未改 AC／API contract／Scope，依 §11.2 記錄而非 §11.3 批准。
-- **E2E 現況**：**7 條全綠**（attachments-demo 3 + travel-application 2 + admin-applications 2），T13 與 T14 兩次皆由大總管親自實跑驗證，非採信 Handoff。E2E 仍未進 CI（整合 Gate 手動執行）。
+- **Phase 終審 reviewer：DONE — REQUEST_CHANGES**（**0 Must Fix**、4 Should Fix、6 Accepted Risk）。核心工程品質評為高；**期中六項 findings 逐項複審確認全數真正關閉且未引入新問題**；R3 之 `maxForks` 判定經 reviewer 獨立評估**正確**（並做反事實檢驗：強制回 16 forks 跑 3 輪全綠）。四條基準線（871／102／142／7）reviewer 全部獨立實跑重現。AC 追溯 **92 PASS / 1 PARTIAL（AC-64）/ 0 FAIL**。
+  - **S-1（D6 授權邊界結構性失效）**：D6(c)「草稿／預覽不含單價」型別層忠實落地，但 `fuelAmount = totalKm × 單價` 且 `totalKm` 使用者可控 → **送 `totalKm=1` 即得單價**，任意日期可還原整份參數版本歷史。專案自身測試即為佐證（`phase4-travel-preview.test.ts:255` 以一般使用者斷言 `fuelAmount === "5.0000"`）。**Gate 當初否決的 D6(b) 後果實際成立。使用者裁定：承認邊界擴張、記入 Spec §17（`15b7fec`），不改程式**；並警示 PHASE-007/008 不得再以「一般使用者不知道單價」為安全前提。
+  - **S-2 → R7（`a09ca5f`）**、**S-3 → R7**、**S-4 → 待派 spec-writer（阻擋 Spec 轉 COMPLETED）**。
+- **Must Fix（終審後發現，R8 `e685403`）——「完成申請」對真實使用者從來沒能用過**：`apiCompleteApplication` 設 `Content-Type: application/json` 卻不送 body，Fastify 預設 parser 於 wire level（早於所有 preHandler）拒絕 → **500**。AC-49~54 自 T13 交付以來對真實使用者完全不可用，而它是本 Phase 唯一的不可逆操作。**871 條整合測試全部盲**——`app.inject({payload:undefined})` 不設該 header，走不同路徑。由 R7 撰寫 E2E 情境 1 時在真實瀏覽器下發現，implementer 正確觸發 Stop。稽核發現此為 systemic 弱點：**全部 7 個無 body mutation 端點在 wire level 皆會 500**，但前端呼叫端目前全部正確未宣告該 header（零現存風險）。防線放在**呼叫端**（`frontend/test/api-no-body-mutations.test.ts` 8 條結構性斷言）。
+  - **大總管 Packet 錯誤（自陳，第二次）**：R8 Packet 之 Done When #2 要求「後端整合測試斷言不是 500」，在不改 `backend/src` 的前提下**對任何無 body 端點皆不可達成**——防線被我預設在後端，但這一類缺陷的源頭在呼叫端。implementer 的替代方案位置更正確、覆蓋更廣，折衷已接受。
+  - **追蹤事項**：後端對畸形 wire-level 請求回 500 而非 4xx（無 exploit、零觸發呼叫端），另案評估。
+- **R8F（大總管授權之單一常數修改）**：`e2e/travel-application.spec.ts` 之 `SUCCESS_TRIP_DATE` 由固定日曆日期改為相對今日動態計算。原值於今日已落在 AC-60/D9(iii) 預設回溯窗外，**產品行為正確、是測試日期過期**。implementer 正確診斷且未為轉綠而動 Forbidden 檔案。
+- **E2E 現況**：**11 條全綠**（attachments-demo 3 + travel-application 4 + admin-applications 3 + data-isolation 1），**由大總管親自實跑驗證**。Spec §11.4 五個情境已全數落地。
+- **舊 E2E 現況（歷史）**：**7 條全綠**（attachments-demo 3 + travel-application 2 + admin-applications 2），T13 與 T14 兩次皆由大總管親自實跑驗證，非採信 Handoff。E2E 仍未進 CI（整合 Gate 手動執行）。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
 
@@ -216,7 +229,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **9388cfa**（PHASE-004-T14，全 Task 完成）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **a09ca5f**（PHASE-004-R7）
 
 ## Human Gate（PHASE-004）
 
