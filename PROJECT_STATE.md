@@ -62,8 +62,9 @@ Updated: 2026-08-02
 | T10 | 管理員代操作 | High | DONE | e9d28db |
 | R6 | REPAIR：測試清理之 SQL LIKE 萬用字元前綴碰撞 | Medium | DONE | ae0b5f8 |
 | T12 | 代操作稽核（含 migration、T12F teardown） | High | DONE | 2ffdad3 |
-| T13 | 前端列表/表單/預覽/附件/響應式（**含 E2E 遷移**） | Medium | 待辦 | — |
-| T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | 待辦 | — |
+| T13 | 前端列表/表單/預覽/附件/響應式（**含 E2E 遷移**） | Medium | DONE | 527d5aa |
+| T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | DONE | 9388cfa |
+| — | **Phase 終審 reviewer**（含 R3~R6 修復複審） | — | 待辦 | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
 - 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ **871（T12）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
@@ -94,7 +95,10 @@ Updated: 2026-08-02
 - **測試隔離事故 #6（R6，2026-08-02）——SQL LIKE 萬用字元前綴碰撞**：`phase4-application-model.test.ts` 之清理用 Prisma `{ loginName: { startsWith: "p4t1_" } }`，編譯為 `LIKE 'p4t1_%'`，而 SQL LIKE 中未跳脫的 `_` 是**任一單一字元萬用字元**，故也比對到 `p4t10_*`（T10 檔）與 `p4t12_*`（T12 檔）——`_` 吸收了多出來的數字。實際危害不只 FK 違反：以除錯埋點捕捉到它 **靜默刪除其他測試檔正在使用的使用者**，同一次執行中 `phase4-admin-on-behalf.test.ts` 隨即失敗；`afterAll` 再次清理時與他檔併發交易搶鎖產生 40P01 deadlock。修法：字面片段作寬鬆 SQL 邊界 + 真正的 JS `startsWith` 精確篩選 + 先刪名下所有 Application 再刪使用者 + fixture 加 `RUN_ID`。**大總管原假設（陳年殘留）被 implementer 以直接證據推翻**（建立 `p4t10_zzztest` 後 `startsWith: "p4t1_"` 確實比對到它）。
 - **R6 掃描結論（追蹤事項）**：(a) 萬用字元碰撞逐對核對其餘 9 個前綴，**無第二組**（結構上不存在）；(b) **9 個測試檔共有次要缺口**——`afterAll` 只刪追蹤陣列內的 id 後即廣泛刪使用者、且無 `beforeAll` self-heal。正常紅/綠不會壞（vitest 斷言失敗仍跑 `afterAll`），但**行程級中斷**（人工中止／OOM／CI 逾時砍程序）留下的殘留會在下次執行爆同樣 FK。已於 `phase4-travel-draft.test.ts` 注入模擬殘留實際重現（72/72 個別測試全過但 Test File 判定 FAIL）。受影響檔案清單見 commit `ae0b5f8`。**建議 Gate 前統一補上 self-heal**。
 - **追蹤事項（交 Phase 終審 reviewer 裁定）**：`application-query.ts:290` 之關鍵字查詢使用 Prisma `contains`（LIKE 家族）且輸入為使用者可控——關鍵字含 `%` 或 `_` 時被當作萬用字元（查 `%` 會回全部）。查詢已限定 `ownerId`，**無跨使用者外洩風險**，屬 AC-64「部分比對」語意之邊界瑕疵。**production 程式全庫無任何 Prisma `startsWith` 使用**，R6 的萬用字元陷阱僅存在於測試層。
-- **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
+- ~~**Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點~~ → **已於 T13 關閉（`527d5aa`）**。原情境依賴的「關聯」按鈕與「已關聯附件清單」UI 在 T11/D12 即被移除，於原檔已無等價操作可測；遷移至 `e2e/travel-application.spec.ts` 之真實差旅流程（上傳 → 儲存草稿 → **重新載入驗證真實持久化** → 刪除 → 儲存 → 重新載入驗證不再顯示），**覆蓋更強**（原情境的「reload 不顯示」係因 demo 頁從未持久化任何狀態）。原檔留指向註解，其餘 AC-19/20 三條原封未動。**E2E 由大總管親自實跑驗證關閉**。
+- **T13 意外發現並修正之真實 bug**：同時註冊 `/applications/travel/new`（靜態）與 `/applications/travel/:id`（動態）時，React Router 優先匹配靜態片段，使 `useParams().id` 在 `/new` 下為 `undefined`，「建立草稿」分支永遠進不去——會在生產環境實際發生。改為單一 `:id` route，讓 `"new"` 成為參數值。
+- **T14 實作偏離（已記錄於 Spec §17，commit `0fb4b84`）**：(a) 新增 `/admin/applications` 路由（無 `:userId`，供「未選使用者」可達狀態；重用既有 `GET /admin/users`，未新增後端 API）；(b)「申請紀錄」按鈕而非姓名可點。兩項皆未改 AC／API contract／Scope，依 §11.2 記錄而非 §11.3 批准。
+- **E2E 現況**：**7 條全綠**（attachments-demo 3 + travel-application 2 + admin-applications 2），T13 與 T14 兩次皆由大總管親自實跑驗證，非採信 Handoff。E2E 仍未進 CI（整合 Gate 手動執行）。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
 
@@ -212,7 +216,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **2ffdad3**（PHASE-004-T12）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **9388cfa**（PHASE-004-T14，全 Task 完成）
 
 ## Human Gate（PHASE-004）
 
