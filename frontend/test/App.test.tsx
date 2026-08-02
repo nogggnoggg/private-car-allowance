@@ -50,6 +50,29 @@ describe("App — 路由守衛", () => {
         { status: 200, headers: { "Content-Type": "application/json" } }
       )
     );
+    // PHASE-004-T13: HomePage now renders <ApplicationListSection />, which
+    // fires GET /api/applications on mount — queue a deterministic empty
+    // response so this pre-existing assertion (unmodified) doesn't depend on
+    // a real network call.
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [],
+          page: 1,
+          pageSize: 20,
+          total: 0,
+          appliedFilters: {
+            dateFrom: "2025-01-01",
+            dateTo: null,
+            type: null,
+            status: null,
+            keyword: null,
+            ownerId: "u1",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
 
     render(<App />);
 

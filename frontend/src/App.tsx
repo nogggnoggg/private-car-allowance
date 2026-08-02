@@ -9,6 +9,7 @@ import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
 import HomePage from "./pages/HomePage.js";
 import LoginPage from "./pages/LoginPage.js";
 import ParametersPage from "./pages/ParametersPage.js";
+import TravelApplicationPage from "./pages/TravelApplicationPage.js";
 
 export default function App(): React.ReactElement {
   return (
@@ -59,6 +60,22 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <AdminUsersPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-004-T13: 差旅草稿建立／編輯／已完成檢視。
+              單一路由涵蓋 §8.4 的兩條路由項——「/applications/travel/new」與
+              「/applications/travel/:id」——因為 React Router 對靜態片段的比對
+              優先於動態參數，若額外註冊一條無 :id 的靜態
+              "/applications/travel/new" route，該路由底下 useParams().id 會是
+              undefined 而非 "new"，導致 TravelApplicationPage 判斷不到「建立
+              草稿」分支。保留單一 :id 路由，讓 "new" 本身成為 id 參數值。 */}
+          <Route
+            path="/applications/travel/:id"
+            element={
+              <RequireAuth>
+                <TravelApplicationPage />
               </RequireAuth>
             }
           />
