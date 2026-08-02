@@ -17,6 +17,9 @@ Updated: 2026-08-02
 > - 現況勘查（大總管）：backend 47 測試檔、27 檔共 60 處 `new PrismaClient()` 直讀同一 `DATABASE_URL`；`vitest.config.ts` maxForks=cores/2 為容量緩解非根治；A-1 實測一般開發機 41% 背景負載即有 ~21% 異常率。
 > - branch：`infra-001`（自 main @ 29f3472 切出）。流程：spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
 > - §15 重錨定：大總管零程式修改；本回合含 vitest/CI/migration 接線變更，全數派 implementer。
+> - **SPEC-INFRA-001：DONE**（`docs/specs/INFRA-001.md`，758 行，26 AC + D1~D8 全附實測證據——spec-writer 以可逆探針實測 `?schema=` 行為/migration 供裝 2.37s/enum schema 本地性，並自 vitest 2.1.9 與 tinypool 原始碼確認 `VITEST_POOL_ID` 槽位語意）。關鍵補強 **D4 per-file TRUNCATE**：`isolate:true` 下槽位跨檔重用，單靠 per-worker schema 不足。
+> - **Spec Gate 通過（人類 leonchih，2026-08-03）：D1~D8 全數照建議批准**，Spec 轉 ACTIVE。大總管驗收發現之兩處瑕疵（Governance-Version 誤植、32/31 檔數不一致）已於同回合代修並記入 §17。
+> - Task Graph：T1 隔離核心 → T2 per-file 清空+鑑別力 → T3 十四輪量測+CI 證據（全 Medium，不觸 auth/seed-admin）。
 
 > **UI-FIX-001 開工記錄（2026-08-02，使用者 Gate 後反饋）**
 > - 使用者回報參數維護頁「歷史版本」表格欄位黏連難辨識（`.param-table` 無 CSS 定義，PHASE-003a T6 遺漏）。四項修正經使用者批准（①補樣式 ②數值欄靠右 ③折舊表 .table-scroll ④建立時間統一 YYYY-MM-DD），已寫入 PHASE-003a Spec §13 修訂列。
