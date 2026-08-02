@@ -71,6 +71,8 @@ Updated: 2026-08-02
 | — | S-4 Spec 文字校正（阻擋 Spec 轉 COMPLETED） | — | 待辦 | — |
 | — | reviewer 輕量複審（R7/R8/S-4） | — | DONE | **APPROVE**（0 Must / 0 Should） |
 | — | **整合驗收 Gate（人類 leonchih）** | — | **通過（2026-08-02）** | compose 真實拓撲 |
+| R9 | REPAIR：seed:admin 於 production 映像失效（Gate 發現） | High | DONE | 69eeb16 |
+| — | R9 輕量複審 | — | DONE | **APPROVE** |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
 - 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ 871（T12）→ 877（R7）→ **879（R8）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
@@ -119,6 +121,16 @@ Updated: 2026-08-02
 - **其餘 Accepted Risk（reviewer 輕量複審，批次追蹤）**：AR-2 B-23 第 6 條測試標題宣稱涵蓋「跳脫字元本身」但內容全程無反斜線（實作正確，惟若日後移除 `\` 字元類別無測試會紅）；AR-3 前端無 body mutation 防線為人工維護的 7 函式清單，新增者不會自動納入；AR-5 `travel-service.ts:362` 註解描述的是**舊版 Spec**（`attachmentIds` 已於 `a85e6f3` 改為可選）。
 - **整合驗收 Gate：通過（人類 leonchih，2026-08-02）**。大總管於 **compose 真實拓撲**（frontend:8080 nginx / backend / PG16 全新 volume，Windows `DOCKER_BUILDKIT=0 -p oilexpense` workaround）建置環境：7 個 migration 乾淨套用、合成管理員 + 兩名一般使用者、油資 5.0000／ETC 2.0000 參數版本、DB 起始為 0 申請 0 附件。使用者親自完成八項檢核**全數通過**：①金額語意（12.5/4.3 + 8/0 → 各段 71 與 40、**整筆 111**、總里程 20.5 高速不重複加；儲存／重整／完成後金額一致）②完成後全面凍結 ③快照不變性（事後新增更早生效日、單價 9.9999 之版本，金額仍 111）④授權隔離（B 直連 A 的 URL 被拒且不洩漏）⑤代操作 owner/creator 分離 ⑥管理員不可代完成（D17）⑦每段附件上限 3 ⑧響應式 375px。
 - **Gate 過程中大總管之疏失（自陳）**：交付檢核清單時**從未實際開啟過畫面**，係依 Spec 與程式碼推導，漏掉「里程欄位須先按『新增行程段』才出現」這一步，使用者因此卡住並回報。後續改為先以瀏覽器實際查看再給操作指引。
+- **PHASE-004-R9（Gate 發現之部署缺陷）：DONE**（`69eeb16`，使用者批准「現在修、併入本 PR」）。`npm run seed:admin`（PHASE-002 §13.1-1 所載、建立首個管理員的官方方式）在 production 映像中回 `ERR_MODULE_NOT_FOUND`——script 指向 `tsx src/...` 而 runtime stage 刻意不複製 `src/`。**只有真實映像才會暴露**：本機與 CI 的 Backend job 皆直接跑 checkout，879 條測試全綠也看不見。與 R8 同類（測試層級選擇造成的盲區）。修法比照既有 `start`/`dev` 配對：`seed:admin` → `node dist/...`、新增 `seed:admin:dev` → `tsx src/...`，文件所載指令名不變。防線：CI `docker-build` job 末端新增一步，於剛 build 的 `backend:ci` 映像中實跑該指令並斷言三事。
+- **R9 輕量複審：DONE — APPROVE**（0 Must / 0 Should、5 Accepted Risk）。reviewer 以**零寫入的等價實證**證明防線會紅：新增的 `seed:admin:dev` 其值與修復前的 `seed:admin` **逐字元相同**，故在同一顆真實映像上執行即為原缺陷的忠實重現（`run seed:admin` → 綠；`run seed:admin:dev` → `ERR_MODULE_NOT_FOUND` → 紅）。
+  - **reviewer 更正 implementer 未點明之處**：三個斷言中 **A3（exit≠1）對本缺陷零鑑別力**（pre-fix 亦為 exit 1），防線的鑑別力**全在 A2「未達參數檢查輸出」**。**若日後有人「簡化」掉 A2，防線即失效。**
+  - **防線比註解宣稱更強**：能印出參數檢查訊息代表整張靜態 ESM import 圖（含 `@prisma/client`、`argon2` 原生綁定）皆在映像內解析成功，實質亦守住「runtime 映像缺 native module」類缺陷。
+  - reviewer 另查證：`backend:ci` 走 classic daemon builder 路徑（非 buildx container driver）故映像可取得；全庫 `seed:admin` 無受損呼叫方；YAML 實解析確認新步驟僅 `name`/`run` 兩鍵、無 `continue-on-error`、未改既有步驟；未傳任何 env 故無憑證進 CI log。
+- **A-1（`maxForks = cores/2`）裁定：維持 Accepted Risk，附升級條件**。R9 期間 implementer 回報 3 條 503 flake，查明為其驗證容器與 Gate compose 同時佔用 CPU；大總管停掉 compose 後 5 輪全綠 879，證實非回歸。**此為 A-1 在真實負載下首次現形**。reviewer 裁定不升級，理由：失效方向為 **false-red 不可能 false-green**（重試耗盡表現為 503→紅，結構上不可能掩蓋缺陷）；且完全落在 `vitest.config.ts` 已白紙黑字揭露的邊界內。**升級條件（必須追蹤）**：若該類 503 出現在 **GitHub Actions 的 `backend` job**（無競爭者、`maxForks` 為 2）或**確認無負載的主機**上重現，即代表「容量餘裕」假說被證偽，須重開為阻擋項並走 per-worker schema 隔離。
+- **相鄰觀察（後續 Phase 監控議題，非本 PR 處理）**：同一組重試預算（6 次／退避上限 200ms）存在於 production 路徑，真實 production DB 高負載時使用者端會看到 503 `SERVICE_UNAVAILABLE`。屬設計上誠實的失敗模式，宜於後續 Phase 以告警覆蓋。
+- **治理疏漏（大總管自陳，第四次）**：**PHASE-004 全程未開 Draft PR、branch 亦從未 push**，違反 CLAUDE.md 與治理 §26「一個 Phase 一個 branch + Draft PR」。由 R9 reviewer 於 `gh pr list` 查證時發現（僅 #1~#4，皆已合併）。實務影響：R9 新增的 44 行 CI 防線**從未在真實 GitHub Actions 執行過**（本地觸發分支限 `phase-001`/`main`）。經使用者 2026-08-02 批准後補上。**教訓與前三次 Packet 事實錯誤同源：流程細節靠記憶而非檢核。**
+- **R9 其餘 Accepted Risk（批次追蹤）**：AR-b 防線未做端到端 seed（可於 `docker-build` job 加 postgres service）；AR-c `docker run` 未加 `--network none`；AR-d 開發者於未 build 的 checkout 執行 `seed:admin` 會拿到 dist 缺檔錯誤，且 `e2e/attachments-demo.spec.ts:13` 前置說明仍寫「running seed-admin.ts」，日後寫 runbook 應指向 `seed:admin:dev`；AR-e dev checkout 中 `dist/` 過期會靜默跑舊碼（與既有 `start` 同性質）。
+- **流程建議（reviewer 提出，零程式）**：作為 Gate 證據的回歸跑，**不得與執行中的 compose stack 共用主機**，宜寫入 Handoff 模板的驗證前置條件。
 - **E2E 現況**：**11 條全綠**（attachments-demo 3 + travel-application 4 + admin-applications 3 + data-isolation 1），**由大總管親自實跑驗證**。Spec §11.4 五個情境已全數落地。
 - **舊 E2E 現況（歷史）**：**7 條全綠**（attachments-demo 3 + travel-application 2 + admin-applications 2），T13 與 T14 兩次皆由大總管親自實跑驗證，非採信 Handoff。E2E 仍未進 CI（整合 Gate 手動執行）。
 
@@ -238,7 +250,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **a85e6f3**（SPEC-004-FIX）；整合驗收 Gate 已通過，待 PR 合併批准
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **69eeb16**（PHASE-004-R9）；整合驗收 Gate 已通過、全部 Review 清零，待 Draft PR 與人類合併批准
 
 ## Human Gate（PHASE-004）
 
