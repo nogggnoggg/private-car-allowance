@@ -58,14 +58,15 @@ Updated: 2026-08-02
 | R3 | REPAIR：測試套件不具決定性（Review M-1）+ R3F lint | High | DONE | 2d78280 |
 | R4 | REPAIR：交易邊界（Review M-2 + S-1）+ 503 production 評估 | High | DONE | 697ad62 |
 | R5 | REPAIR：D4 Decimal 傳字串 + seed-admin 雙重 cast（S-2/S-3） | Medium | DONE | 78dce86 |
-| T9 | 綜合紀錄查詢（分頁/篩選/授權隔離） | High | 待辦 | — |
-| T10 | 管理員代操作 | High | 待辦 | — |
-| T12 | 代操作稽核 | High | 待辦 | — |
+| T9 | 綜合紀錄查詢（分頁/篩選/授權隔離） | High | DONE | b2e05da |
+| T10 | 管理員代操作 | High | DONE | e9d28db |
+| R6 | REPAIR：測試清理之 SQL LIKE 萬用字元前綴碰撞 | Medium | DONE | ae0b5f8 |
+| T12 | 代操作稽核（含 migration、T12F teardown） | High | DONE | 2ffdad3 |
 | T13 | 前端列表/表單/預覽/附件/響應式（**含 E2E 遷移**） | Medium | 待辦 | — |
 | T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | 待辦 | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
-- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ **814（R4）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
+- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ **871（T12）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
 - **驗收紀律事件（T6）**：implementer 回報之「全套回歸」係在未設 `DATABASE_URL` 下執行（55 skipped），非有效證據；大總管重跑後才確認。**後續 Packet 一律要求 Handoff 標明 passed/failed/skipped 三個數字且 skipped 必須為 0。**
 - **T11 Stop 事件（implementer 正確觸發）**：D12 移除公開 `POST /attachments/:id/link` 會使 `phase3-lifecycle.test.ts` 20 個測試中 16 處必然失敗，而該檔同時列為不得修改。大總管裁定**逐條遷移不得刪除**，寫入 Spec §17 修訂紀錄（commit c5fc3cb）後恢復執行。
 - **B-30 併發事件（T11 → T11R → T11R2，2026-08-02）**：T11 交付後大總管 13 輪重跑發現 B-30 併發測試約 **23% 失敗**（`expected [200,200] to deeply equal [200,409]`，即每段 3 張上限被突破），三個修復回合（T11 一次、T11R 兩次：advisory lock 提前、SERIALIZABLE→READ COMMITTED、原子單一 UPDATE）**全部未關閉**；implementer 於第三回合正確觸發 Stop（§28 三回合上限）。**大總管診斷結論：目標框錯**——B-30 測試打的是整份取代式 `PUT`，兩個併發請求各自宣告的都是合法的 3 張（恰為上限），依 D15 語意「兩者皆成功、最終 3 張」才是正確；原 PHASE-003 測試 race 的是增量式 link 打到 `limit=1` 容器，T11 依 §17 C1 逐條遷移換端點後**斷言未同步修正**。另查得真實缺陷：`computeAttachmentDeltas` 的 baseline 在**交易外**（`prisma` 而非 `tx`）計算，併發時雙方 baseline 皆為前態、各自只 link 不 detach → 最終 4 張。**處置**：Spec §17 新增 **D19**（使用者 leonchih 2026-08-02 批准「最後寫入者贏」＋裁定回退兩次失敗嘗試）→ T11R2 回退 + baseline 移入交易內 + 斷言依 D19 修正 + 新增 AC-22 鑑別力測試 → 大總管 **14 輪重跑（13 輪 779 全綠，B-30 零失敗）**。
@@ -90,6 +91,9 @@ Updated: 2026-08-02
   - Accepted Risk：A-1 `computeCompletionBlockers` 未檢附件上限（link 時 409 已保證）；A-2 測試 DB 殘留 715 筆 DRAFT 與 26 個 `t11stress_*` 帳號（B-30 調查期臨時 harness，未進 repo，建議清理）；A-3 `DRAFT→DRAFT` / `DRAFT→VOIDED` 回 400 非 403（AC-58 僅要求拋 AppError，合規）；A-4 孤兒警告 log 含 `TripSegment` id（內部識別碼，未違 §6.3）。
 - **驗收紀律事件（第三次，R3）**：R3 Handoff 列了 `npx biome check .` 為驗收指令，但錯誤就在其交付的新檔中；另其回歸數字為 `753 passed / 55 skipped`（未明確 `export DATABASE_URL`），不符「skipped 必須為 0」。大總管重跑後才確認實況。**後續 Packet 一律明文要求「明確 export DATABASE_URL，不得依賴 .env 自動載入」並貼 biome 實際輸出。**
 - **spec-writer 待辦（累積中，非阻擋）**：(a) §6.1 授權矩陣表 L387 與 §9 流程 L766 之 `/complete` 授權文字須改為 owner-only，與 D17 及 §17 矛盾釐清列一致；(b) reviewer 建議把 D15 之 `attachmentIds` 三態語意（缺席＝不動，與 §8.2 字面「必填」不同、實作已註解說明理由）補入 §17 修訂列，使文字與實作一致。
+- **測試隔離事故 #6（R6，2026-08-02）——SQL LIKE 萬用字元前綴碰撞**：`phase4-application-model.test.ts` 之清理用 Prisma `{ loginName: { startsWith: "p4t1_" } }`，編譯為 `LIKE 'p4t1_%'`，而 SQL LIKE 中未跳脫的 `_` 是**任一單一字元萬用字元**，故也比對到 `p4t10_*`（T10 檔）與 `p4t12_*`（T12 檔）——`_` 吸收了多出來的數字。實際危害不只 FK 違反：以除錯埋點捕捉到它 **靜默刪除其他測試檔正在使用的使用者**，同一次執行中 `phase4-admin-on-behalf.test.ts` 隨即失敗；`afterAll` 再次清理時與他檔併發交易搶鎖產生 40P01 deadlock。修法：字面片段作寬鬆 SQL 邊界 + 真正的 JS `startsWith` 精確篩選 + 先刪名下所有 Application 再刪使用者 + fixture 加 `RUN_ID`。**大總管原假設（陳年殘留）被 implementer 以直接證據推翻**（建立 `p4t10_zzztest` 後 `startsWith: "p4t1_"` 確實比對到它）。
+- **R6 掃描結論（追蹤事項）**：(a) 萬用字元碰撞逐對核對其餘 9 個前綴，**無第二組**（結構上不存在）；(b) **9 個測試檔共有次要缺口**——`afterAll` 只刪追蹤陣列內的 id 後即廣泛刪使用者、且無 `beforeAll` self-heal。正常紅/綠不會壞（vitest 斷言失敗仍跑 `afterAll`），但**行程級中斷**（人工中止／OOM／CI 逾時砍程序）留下的殘留會在下次執行爆同樣 FK。已於 `phase4-travel-draft.test.ts` 注入模擬殘留實際重現（72/72 個別測試全過但 Test File 判定 FAIL）。受影響檔案清單見 commit `ae0b5f8`。**建議 Gate 前統一補上 self-heal**。
+- **追蹤事項（交 Phase 終審 reviewer 裁定）**：`application-query.ts:290` 之關鍵字查詢使用 Prisma `contains`（LIKE 家族）且輸入為使用者可控——關鍵字含 `%` 或 `_` 時被當作萬用字元（查 `%` 會回全部）。查詢已限定 `ownerId`，**無跨使用者外洩風險**，屬 AC-64「部分比對」語意之邊界瑕疵。**production 程式全庫無任何 Prisma `startsWith` 使用**，R6 的萬用字元陷阱僅存在於測試層。
 - **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
@@ -208,7 +212,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **78dce86**（PHASE-004-R5）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **2ffdad3**（PHASE-004-T12）
 
 ## Human Gate（PHASE-004）
 
