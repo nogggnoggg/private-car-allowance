@@ -12,6 +12,11 @@ Updated: 2026-08-02
 > - D18 為唯一未採 spec-writer 建議者：**維持單一 PHASE-004**（不拆 004a/004b），改以 Phase 內期中 reviewer 檢查點取得同等品質效益，避免變更 PRD 結構與產生兩次人類合併批准。
 > - 大總管代定項（供使用者事後調整）：D14(ii) 出差目的 ≤500 字／地點 ≤200 字；D18 Phase 結構。
 
+> **CHORE-001 開工記錄（2026-08-03，使用者夜間授權「完成第 3 項累積追蹤事項」）**
+> - 範圍（僅程式兩項，其餘追蹤事項已於 INFRA-001/DOC-FIX-001 關閉）：①**wire-level 畸形請求 500→400 硬化**（`backend/src/platform/error-handler.ts:104-118` 分支 3 前補「statusCode 4xx 或 FST_ERR_CTP_* → 400 VALIDATION_ERROR」，追蹤項原文含修法與影響面：未登入者可穩定製造 level:50 錯誤日誌、reviewer 已實測 /auth/login 畸形 JSON 亦 500；`phase4-r8-wire-level-empty-json-body.test.ts` 刻意 pin 500 的對照測試須一併轉正——該檔註解已預告）②**`parameter-service.ts:472` 最後一處 `new Prisma.Decimal(0)` 傳數字改傳字串**（D4 bright-line 全域一致，R5 遺留）。
+> - branch：`chore-001`（自 main @ `8e94b77`，INFRA-001 合併後）。流程：implementer TDD → 大總管獨立驗收 → reviewer 輕量複審 → Draft PR + CI → 合併（reviewer APPROVE + CI 綠 → 依夜間授權；否則留 PR 待人類）。
+> - §15 重錨定：大總管零程式修改，全數派 implementer。error-handler 屬 platform 層非 auth 領域（不觸 `src/auth/**`/seed/附件權限），Risk 定 Medium；惟其位於 auth 之前的請求路徑，reviewer 複審必含「不得放寬任何授權/驗證行為」檢查項。
+
 > **INFRA-001 開工記錄（2026-08-03，使用者裁定優先於 PHASE-005）**
 > - 目標：測試隔離結構性修復（A-1 基礎設施債，retrospective PHASE-004 §5 建議①）——per-worker 隔離使「跑一輪」重新成為證據，消滅共用 DB 造成的六類事故（flake、跨檔污染、萬用字元誤刪、殘留 FK 爆炸等）。
 > - 現況勘查（大總管）：backend 47 測試檔、27 檔共 60 處 `new PrismaClient()` 直讀同一 `DATABASE_URL`；`vitest.config.ts` maxForks=cores/2 為容量緩解非根治；A-1 實測一般開發機 41% 背景負載即有 ~21% 異常率。
