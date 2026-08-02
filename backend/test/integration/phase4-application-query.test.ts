@@ -137,6 +137,8 @@ describeWithDb("PHASE-004-T9 — GET /applications 綜合紀錄查詢", () => {
   let andOwnerCookie: string;
   let dtoOwnerId: string;
   let dtoOwnerCookie: string;
+  let wildcardOwnerId: string;
+  let wildcardOwnerCookie: string;
 
   const createdApplicationIds: string[] = [];
   function track(id: string): string {
@@ -232,6 +234,7 @@ describeWithDb("PHASE-004-T9 — GET /applications 綜合紀錄查詢", () => {
     const emptyOwner = await createUser("empty");
     const andOwner = await createUser("and");
     const dtoOwner = await createUser("dto");
+    const wildcardOwner = await createUser("wildcard");
 
     ownerId = owner.id;
     otherId = other.id;
@@ -243,6 +246,7 @@ describeWithDb("PHASE-004-T9 — GET /applications 綜合紀錄查詢", () => {
     emptyOwnerId = emptyOwner.id;
     andOwnerId = andOwner.id;
     dtoOwnerId = dtoOwner.id;
+    wildcardOwnerId = wildcardOwner.id;
 
     app = await buildServer({ databaseUrl: DB_URL, logLevel: "error" });
     await app.ready();
@@ -257,6 +261,7 @@ describeWithDb("PHASE-004-T9 — GET /applications 綜合紀錄查詢", () => {
     emptyOwnerCookie = await loginUser(app, emptyOwner.loginName, PASSWORD);
     andOwnerCookie = await loginUser(app, andOwner.loginName, PASSWORD);
     dtoOwnerCookie = await loginUser(app, dtoOwner.loginName, PASSWORD);
+    wildcardOwnerCookie = await loginUser(app, wildcardOwner.loginName, PASSWORD);
 
     // AC-84 fixture: owner has 2 TRAVEL applications; other has 1 — used to
     // prove admin-scoped ownerId query returns ONLY owner's rows.
@@ -282,6 +287,7 @@ describeWithDb("PHASE-004-T9 — GET /applications 綜合紀錄查詢", () => {
         emptyOwnerId,
         andOwnerId,
         dtoOwnerId,
+        wildcardOwnerId,
       ].filter(Boolean);
       if (userIds.length > 0) {
         await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
@@ -656,6 +662,105 @@ describeWithDb("PHASE-004-T9 — GET /applications 綜合紀錄查詢", () => {
       expect(resp.statusCode).toBe(200);
       const body = resp.json<ListResponse>();
       expect(body.items).toEqual([]);
+    });
+  });
+
+  // ===========================================================================
+  // B-23 關鍵字含 SQL LIKE 萬用字元（`%`、`_`）須視為字面字元（Spec §5 B-23、
+  // §11.5）。Prisma 的 `contains` 已參數化（無注入風險），但預設**不**跳脫
+  // pattern 內的 `%`/`_`——這兩者在 PostgreSQL ILIKE 裡本身就是萬用字元，會
+  // 被解讀為「任意字元序列／任一字元」而非字面比對。
+  //
+  // 鑑別力設計：wildcardOwner 底下建立 4 筆申請，僅 1 筆的出差目的含 `%`、僅
+  // 1 筆含 `_`，其餘 2 筆兩者皆無。修復前，關鍵字 `%` 會被組成 pattern
+  // `%%%`（等價於單一萬用字元 `%`），命中「全部」4 筆非 null purpose；修復後
+  // 應只命中恰好 1 筆。`_` 同理。
+  // ===========================================================================
+
+  describe("B-23 關鍵字含 SQL 萬用字元須視為字面比對", () => {
+    const percentPurpose = "達成率100%專案檢討會議";
+    const underscorePurpose = "客戶_A_案件檢討會議";
+    const plainPurposeOne = "一般部門週會記錄";
+    const plainPurposeTwo = "月度盤點作業說明";
+
+    beforeAll(async () => {
+      await createApp({
+        ownerId: wildcardOwnerId,
+        primaryDate: "2026-09-01",
+        purpose: percentPurpose,
+      });
+      await createApp({
+        ownerId: wildcardOwnerId,
+        primaryDate: "2026-09-02",
+        purpose: underscorePurpose,
+      });
+      await createApp({
+        ownerId: wildcardOwnerId,
+        primaryDate: "2026-09-03",
+        purpose: plainPurposeOne,
+      });
+      await createApp({
+        ownerId: wildcardOwnerId,
+        primaryDate: "2026-09-04",
+        purpose: plainPurposeTwo,
+      });
+    });
+
+    it("正向：目的含 `%`，關鍵字 `%` 能命中該筆", async () => {
+      const resp = await getList(wildcardOwnerCookie, { keyword: "%", type: "TRAVEL" });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      expect(body.items.some((i) => i.title === percentPurpose)).toBe(true);
+    });
+
+    it("正向：目的含 `%`，關鍵字 `100%`（字面片段含 `%`）能命中該筆", async () => {
+      const resp = await getList(wildcardOwnerCookie, { keyword: "100%", type: "TRAVEL" });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      expect(body.items.some((i) => i.title === percentPurpose)).toBe(true);
+    });
+
+    it("反向：關鍵字 `%` 不得命中不含 `%` 的目的（修復前 `%` 會被組成萬用 pattern `%%%`，命中全部 4 筆——此測試修復前必紅）", async () => {
+      const resp = await getList(wildcardOwnerCookie, { keyword: "%", type: "TRAVEL" });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      const titles = body.items.map((i) => i.title);
+      expect(titles).not.toContain(plainPurposeOne);
+      expect(titles).not.toContain(plainPurposeTwo);
+      expect(titles).not.toContain(underscorePurpose);
+      // 恰好只命中含 % 的那一筆（比對集合大小，杜絕「剛好沒抽到」的僥倖）。
+      expect(body.items).toHaveLength(1);
+      expect(body.total).toBe(1);
+    });
+
+    it("正向：目的含 `_`，關鍵字 `_` 能命中該筆", async () => {
+      const resp = await getList(wildcardOwnerCookie, { keyword: "_", type: "TRAVEL" });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      expect(body.items.some((i) => i.title === underscorePurpose)).toBe(true);
+    });
+
+    it("反向：關鍵字 `_` 不得命中不含 `_` 的目的（修復前 `_` 會被當作單一字元萬用，命中全部 4 筆——此測試修復前必紅）", async () => {
+      const resp = await getList(wildcardOwnerCookie, { keyword: "_", type: "TRAVEL" });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      const titles = body.items.map((i) => i.title);
+      expect(titles).not.toContain(plainPurposeOne);
+      expect(titles).not.toContain(plainPurposeTwo);
+      expect(titles).not.toContain(percentPurpose);
+      expect(body.items).toHaveLength(1);
+      expect(body.total).toBe(1);
+    });
+
+    it("跳脫字元本身（`\\`）不影響一般關鍵字比對（無 `\\` 的目的仍可用一般字串命中）", async () => {
+      const resp = await getList(wildcardOwnerCookie, { keyword: "檢討會議", type: "TRAVEL" });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      const titles = body.items.map((i) => i.title);
+      expect(titles).toContain(percentPurpose);
+      expect(titles).toContain(underscorePurpose);
+      expect(titles).not.toContain(plainPurposeOne);
+      expect(titles).not.toContain(plainPurposeTwo);
     });
   });
 

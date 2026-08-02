@@ -72,6 +72,29 @@ function isApplicationStatus(value: string): value is ApplicationStatus {
 }
 
 // ---------------------------------------------------------------------------
+// escapeLikePattern — B-23：SQL LIKE/ILIKE 萬用字元跳脫（純函式）
+// ---------------------------------------------------------------------------
+
+/**
+ * B-23（Spec §5、§11.5）：Prisma 的 `contains`/`startsWith`/`endsWith` 於
+ * PostgreSQL 上一律編譯為參數化的 `ILIKE`/`LIKE`，值以單一 bound parameter
+ * 傳遞——**已無 SQL 注入風險**，但 Prisma 不會跳脫值內容裡的 `%`／`_`：這兩
+ * 個字元在 LIKE pattern 語意中本身就是萬用字元（`%` 比對任意長度字元序列、
+ * `_` 比對任一單一字元），PostgreSQL 對沒有顯式 `ESCAPE` 子句的 LIKE/ILIKE
+ * 仍套用預設跳脫字元 `\`（backslash）。因此只要在送進 `contains` 前，把使用
+ * 者輸入裡的 `\`、`%`、`_` 都加上 `\` 前綴，PostgreSQL 收到的 pattern 就會把
+ * 這三者當成字面字元比對，而非萬用字元。
+ *
+ * 刻意不改用 `$queryRaw` 或自訂 `ESCAPE` 子句——維持 Prisma 產生的
+ * `column ILIKE $1`／`mode: "insensitive"` 語意與既有索引利用方式完全不變
+ * （見檔頭「索引使用」註解），只有 bound parameter 的字串內容不同，查詢計畫
+ * 不受影響。
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (metachar) => `\\${metachar}`);
+}
+
+// ---------------------------------------------------------------------------
 // resolveOwnerId — AC-74/84 授权（純函式）
 // ---------------------------------------------------------------------------
 
@@ -286,8 +309,12 @@ export function buildApplicationWhere(
   // AC-64/D10: 本 Phase 僅比對 TravelApplication.purpose（不分大小寫、部分比對）。
   // MAINTENANCE/DEPRECIATION 尚無子表可比對——帶 keyword 時這兩型天然查無結果，
   // 與 AC-71「相容行為」不衝突（AC-71 本身不涉及 keyword 組合）。
+  // B-23: keyword 先跳脫 LIKE 萬用字元（`%`/`_`/`\`），使其在 ILIKE pattern
+  // 中成為字面字元，見 `escapeLikePattern` 文件註解。
   if (filters.keyword !== null) {
-    where.travel = { purpose: { contains: filters.keyword, mode: "insensitive" } };
+    where.travel = {
+      purpose: { contains: escapeLikePattern(filters.keyword), mode: "insensitive" },
+    };
   }
   return where;
 }
