@@ -42,6 +42,24 @@ import { computeMaxForks } from "./test/setup/max-forks.js";
 // unchanged — only its location moved.
 const maxForks = computeMaxForks();
 
+// INFRA-001-T3 — 為何 maxForks 上限在 per-worker schema 隔離之後仍保留
+// （Spec docs/specs/INFRA-001.md §7 表列第 1 項，逐字對應如下）：
+//
+// 「`maxForks = cores/2` — 仍有效、仍必要。它對付的是容量型延遲（成因 b，
+// §4.7），per-schema 完全不覆蓋」。
+//
+// 換句話說：上面 L4-42 的 R3 因果證據把 503 SERVICE_UNAVAILABLE 的根因拆成
+// 兩個獨立成因——(a) 跨 worker 的 SSI 序列化衝突（不同 worker 對同一張全域
+// 共用表如 FuelParameterVersion/EtcParameterVersion 的謂詞鎖互撞）與 (b)
+// CPU/IO 排隊延遲（多 worker 同時對同一個 Postgres 執行個體發真交易，查詢
+// 排隊時間被拉長到超出重試退避視窗）。INFRA-001 的 per-worker schema +
+// per-file TRUNCATE（見下方 globalSetup/setupFiles）讓不同 worker 觸及不同
+// 的 relation，結構上消滅成因 (a)；但它完全不降低 DB 主機的 CPU 負載，對
+// 成因 (b) 沒有任何緩解——這正是 R3 的 maxForks 減半機制存在的理由，兩者是
+// 互補而非互斥的兩道防線，不因新增隔離而讓舊防線變冗餘（Spec AC-25：本回合
+// 一行既有防線都不刪，也不調整 maxForks 的計算公式）。實測結果見 Task
+// Handoff 的 AC-24（14 輪量測）與 AC-23（wall time 前後對照）。
+
 export default defineConfig({
   test: {
     environment: "node",

@@ -596,34 +596,34 @@ vitest 主行程
 
 | AC | 層級 | 測試檔（預定） | 測試名（預定） | Task | 狀態 |
 |---|---|---|---|---|---|
-| AC-01 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `current_schema() 為本 worker 專屬 schema 且 search_path 不含 public` | T1 | 待實作 |
-| AC-02 | unit | `test/unit/infra001-db-isolation.test.ts` | `resolveWorkerDatabaseUrl — 三種 URL 形狀改寫正確` | T1 | 待實作 |
-| AC-03 | unit | `test/unit/infra001-db-isolation.test.ts` | `fail-closed — POOL_ID 缺席/非正整數一律拋錯` | T1 | 待實作 |
-| AC-03(c) | integration | `test/integration/infra001-isolation-self-check.test.ts` | `schema 不存在時 setup 拋出可行動錯誤` | T1 | 待實作 |
-| AC-04 | unit | `test/unit/infra001-db-isolation.test.ts` | `DATABASE_URL 未設時不動作且不拋錯` | T1 | 待實作 |
-| AC-05 | unit | `test/unit/infra001-db-isolation.test.ts` | `TEST_DB_ISOLATION=off 原樣回傳；無效值拋錯；skip 僅在明示 off 時` | T1 | 待實作 |
-| AC-05 | evidence | — | `TEST_DB_ISOLATION=off` 全套一輪全綠（Handoff 貼三數字） | T3 | 待實作 |
-| AC-06 | unit | `test/unit/infra001-db-isolation.test.ts` | `NODE_ENV=production 時 globalSetup 護欄拒絕執行` | T1 | 待實作 |
-| AC-07 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `worker schema 的 _prisma_migrations 已完成筆數 = migrations 目錄數` | T1 | 待實作 |
-| AC-08 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `worker schema 含 11 業務表與 6 個 schema 本地 enum（oid ≠ public）` | T1 | 待實作 |
-| AC-09 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `僅存在 ^vitest_w\d+$ 且編號 ≤ maxForks；public 表數未變` | T1 | 待實作 |
-| AC-10 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `檔案起跑時 11 張業務表列數皆為 0` | T2 | 待實作 |
-| AC-11 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `beforeAll 建立的資料在多個 it 之間存活（非 per-test 清空）` | T2 | 待實作 |
-| AC-12 | integration | `test/integration/infra001-residue-selfheal.test.ts` | `注入 User+Application+AuditLog 殘留後仍能從零起跑且 FK 不爆` | T2 | 待實作 |
-| AC-13 | integration | `infra001-collision-a.test.ts` + `infra001-collision-b.test.ts` | `以固定 loginName 建立且不清理，兩檔皆 count===1` | T2 | 待實作 |
-| AC-14 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `current_schema() 符合 ^vitest_w\d+$（隔離未生效即紅）` | T1 | 待實作 |
-| AC-15 | evidence | — | `maxForks=1` 全套一輪 0 failed / 0 skipped | T2 | 待實作 |
-| AC-16 | evidence | — | `git diff` 對既有 47 測試檔為空；全套 ≥879 / 0 / 0 | T1,T2 | 待實作 |
-| AC-17 | evidence | — | `git diff` 對 `src/`、`prisma/`、`frontend/`、`e2e/` 為空 | T1,T2 | 待實作 |
-| AC-18 | unit | `test/unit/infra001-structural.test.ts` | `src/** 不引用 test/setup 或 TEST_DB_ISOLATION` | T1 | 待實作 |
-| AC-19 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `SELECT ... FROM "Application" FOR UPDATE 在 worker schema 解析成功` | T1 | 待實作 |
-| AC-20 | evidence | — | `git diff .github/workflows/ci.yml` 為空 | T3 | 待實作 |
-| AC-21 | evidence | — | Draft PR 的 `Backend Build & Tests` job 綠燈 + log 中自檢輸出的 schema 名 | T3 | 待實作 |
-| AC-22 | evidence | — | globalSetup 耗時（本機 + CI 各一） | T1 | 待實作 |
-| AC-23 | evidence | — | 全套 wall time 前後對照（同機同負載） | T3 | 待實作 |
-| AC-24 | evidence | — | 14 輪固定格式表（round/passed/failed/skipped/wall/CPU%） | T3 | 待實作 |
-| AC-25 | evidence | — | `git diff` 顯示 `maxForks` 值未變、無測試檔清理程式碼被刪 | T3 | 待實作 |
-| AC-26 | evidence | — | 本 Spec §7-#9 記錄 + AC-10/AC-12 綠燈 | T3 | 待實作 |
+| AC-01 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `current_schema() 為本 worker 專屬 schema 且 search_path 不含 public` | T1 | 已完成（T1，`3120029`） |
+| AC-02 | unit | `test/unit/infra001-db-isolation.test.ts` | `resolveWorkerDatabaseUrl — 三種 URL 形狀改寫正確` | T1 | 已完成（T1，`3120029`） |
+| AC-03 | unit | `test/unit/infra001-db-isolation.test.ts` | `fail-closed — POOL_ID 缺席/非正整數一律拋錯` | T1 | 已完成（T1，`3120029`） |
+| AC-03(c) | integration | `test/integration/infra001-isolation-self-check.test.ts` | `schema 不存在時 setup 拋出可行動錯誤` | T1 | 已完成（T1，`3120029`） |
+| AC-04 | unit | `test/unit/infra001-db-isolation.test.ts` | `DATABASE_URL 未設時不動作且不拋錯` | T1 | 已完成（T1，`3120029`） |
+| AC-05 | unit | `test/unit/infra001-db-isolation.test.ts` | `TEST_DB_ISOLATION=off 原樣回傳；無效值拋錯；skip 僅在明示 off 時` | T1 | 已完成（T1，`3120029`） |
+| AC-05 | evidence | — | `TEST_DB_ISOLATION=off` 全套一輪全綠（Handoff 貼三數字） | T3 | **部分達標**——T3 於 2026-08-03 實測：機制正確（4 檔/11 條隔離專屬測試整體 skip、globalSetup 無任何 DDL log），但預設並行度（本機 maxForks）下連續 3 輪皆以完全相同的 2 個測試（`phase3-lifecycle.test.ts` D11、`phase4-travel-complete.test.ts` AC-48）現紅（`expected 503 to be 200`）；`--pool-options.forks.maxForks=1`（序列化）下同批次 0 failed。判定為 §4.7 成因 (a)（跨 worker SSI 衝突）在共用 `public` schema 下的真實重現，屬 A-1 既有風險而非 T3 引入的缺陷，但與本列原文「須綠」字面不符，需人類/大總管裁定 AC-05 的驗收讀法（見 Handoff）。 |
+| AC-06 | unit | `test/unit/infra001-db-isolation.test.ts` | `NODE_ENV=production 時 globalSetup 護欄拒絕執行` | T1 | 已完成（T1，`3120029`） |
+| AC-07 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `worker schema 的 _prisma_migrations 已完成筆數 = migrations 目錄數` | T1 | 已完成（T1，`3120029`） |
+| AC-08 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `worker schema 含 11 業務表與 6 個 schema 本地 enum（oid ≠ public）` | T1 | 已完成（T1，`3120029`） |
+| AC-09 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `僅存在 ^vitest_w\d+$ 且編號 ≤ maxForks；public 表數未變` | T1 | 已完成（T1，`3120029`） |
+| AC-10 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `檔案起跑時 11 張業務表列數皆為 0` | T2 | 已完成（T2，`6319fea`） |
+| AC-11 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `beforeAll 建立的資料在多個 it 之間存活（非 per-test 清空）` | T2 | 已完成（T2，`6319fea`） |
+| AC-12 | integration | `test/integration/infra001-residue-selfheal.test.ts` | `注入 User+Application+AuditLog 殘留後仍能從零起跑且 FK 不爆` | T2 | 已完成（T2，`6319fea`） |
+| AC-13 | integration | `infra001-collision-a.test.ts` + `infra001-collision-b.test.ts` | `以固定 loginName 建立且不清理，兩檔皆 count===1` | T2 | 已完成（T2，`6319fea`；紅燈鑑別力已於 T2 Handoff 實證） |
+| AC-14 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `current_schema() 符合 ^vitest_w\d+$（隔離未生效即紅）` | T1 | 已完成（T1，`3120029`） |
+| AC-15 | evidence | — | `maxForks=1` 全套一輪 0 failed / 0 skipped | T2 | 已完成（T2，`6319fea`；大總管獨立驗收 922/0/0） |
+| AC-16 | evidence | — | `git diff` 對既有 47 測試檔為空；全套 ≥879 / 0 / 0 | T1,T2 | 已完成——T3 覆核 `git diff main...HEAD --stat` 對既有測試檔/`src/`/`prisma/`/`frontend/`/`e2e/`/`.github/` 為空（僅新增 10 個 `infra001-*`/setup 檔案），T3 的 14 輪皆 922/0/0 |
+| AC-17 | evidence | — | `git diff` 對 `src/`、`prisma/`、`frontend/`、`e2e/` 為空 | T1,T2 | 已完成——同上 T3 覆核結果 |
+| AC-18 | unit | `test/unit/infra001-structural.test.ts` | `src/** 不引用 test/setup 或 TEST_DB_ISOLATION` | T1 | 已完成（T1，`3120029`） |
+| AC-19 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `SELECT ... FROM "Application" FOR UPDATE 在 worker schema 解析成功` | T1 | 已完成（T1，`3120029`） |
+| AC-20 | evidence | — | `git diff .github/workflows/ci.yml` 為空 | T3 | 檔案層面已確認（`git diff` 對 `.github/**` 為空）；CI 實際綠燈證據待大總管開 Draft PR 取得，不在 T3 職責內 |
+| AC-21 | evidence | — | Draft PR 的 `Backend Build & Tests` job 綠燈 + log 中自檢輸出的 schema 名 | T3 | 待大總管開 Draft PR 後取得，不在 T3 職責內 |
+| AC-22 | evidence | — | globalSetup 耗時（本機 + CI 各一） | T1 | 已完成（本機，T1 Handoff）；CI 端待大總管開 PR 後取得 |
+| AC-23 | evidence | — | 全套 wall time 前後對照（同機同負載） | T3 | **未達標**——T3 於 2026-08-03 以 `TEST_DB_ISOLATION=off`（預設並行度）近似修復前基準：3 次量測 Duration 均值約 7.9s（CPU 45~50%），對照預設模式（schema 隔離）14 輪 Duration 均值約 13.4s（CPU 34~54%）——增幅約 **70%**，超過 §3 AC-23 訂的 ≤20% 過關線。方法論說明與根因假設（per-file TRUNCATE + `isolate:true` 下每檔皆需全新 PrismaClient 連線的握手成本，實測遠高於 §2.3 探針的 192ms/次估計）見 Handoff；修正需改動 `backend/test/setup/setup-file.ts`（T3 Files Forbidden），故列為待人類/大總管裁定事項，不由 T3 自行處理 |
+| AC-24 | evidence | — | 14 輪固定格式表（round/passed/failed/skipped/wall/CPU%） | T3 | **已完成**——T3 於 2026-08-03 連續 14 輪，每輪 922 passed / 0 failed / 0 skipped，CPU 負載 34~54%，backend-only wall time 12.6~15.3s（Duration 欄），全數見 Handoff；無 503 flake、無需中止重跑 |
+| AC-25 | evidence | — | `git diff` 顯示 `maxForks` 值未變、無測試檔清理程式碼被刪 | T3 | 已完成——`git diff main...HEAD` 對既有 47 測試檔、`vitest.config.ts` 的 `maxForks` 計算公式（僅搬遷至 `max-forks.ts`，公式字元未變）、既有清理程式碼（RUN_ID/前綴/`deleteMany`）均無刪除或改動 |
+| AC-26 | evidence | — | 本 Spec §7-#9 記錄 + AC-10/AC-12 綠燈 | T3 | 已完成——§7-#9 已記錄「結構性關閉，9 檔不需各自補 beforeAll」；AC-10/AC-12 綠燈已於 T2（`6319fea`）與本 T3 14 輪中反覆驗證 |
 
 ---
 
@@ -752,6 +752,7 @@ L1 的存在本身是 AC-05 的驗收對象——**回退路徑必須被測過�
 
 | 日期 | 版本 | 變更 | 依據 |
 |---|---|---|---|
+| 2026-08-03 | ACTIVE（T3 量測） | T3（成效量測、防線盤點、CI 前置）完成大部分交付並更新 §9.5 狀態欄：AC-01~AC-19、AC-22（本機）、AC-24~AC-26 已完成；AC-16/17（既有 47 檔+`src/`/`prisma/`/`frontend/`/`e2e/`/`.github/` 零改動）覆核通過。**兩項未達 Spec 原文字面標準，留待人類/大總管裁定**：(1) AC-23 全套 wall time 增幅實測約 70%（`TEST_DB_ISOLATION=off` 預設並行度 3 次均值 ~7.9s vs 預設 schema 隔離模式 14 輪均值 ~13.4s），超過 §3 訂的 ≤20% 過關線；(2) AC-05 evidence 在預設並行度下連續 3 輪皆以相同 2 個測試現紅（`expected 503 to be 200`），僅在 `--pool-options.forks.maxForks=1`（序列化）下全綠——判定為 §4.7 已知成因 (a)（跨 worker SSI 衝突）在共用 `public` schema 下的真實重現，屬 A-1 既有風險而非 T3/T1/T2 引入的新缺陷，但與 AC-05 原文「須綠」字面不符。兩項的修正（若採納）皆需改動 T3 Files Forbidden 範圍內的檔案（`setup-file.ts` 等），故 T3 未自行處理，完整數據與根因假設見 Task Handoff。AC-20/21（CI 綠燈）依 Spec 原意由大總管開 Draft PR 後取得，非 T3 職責。 | T3 implementer 實測（2026-08-03），Spec §3/§4.7/§9.4 |
 | 2026-08-03 | DRAFT→ACTIVE | 人類 Spec Gate 通過：**D1~D8 全數照 spec-writer 建議批准**（D1 per-worker schema、D2 `VITEST_POOL_ID`、D3 globalSetup 並行供裝＋run 前 drop、**D4 per-file TRUNCATE 必加**、D5 `TEST_DB_ISOLATION` fail-closed、D6 既有防線一行不刪、D7 A-1 不自動關閉、D8 N=14）。大總管同回合代修兩處驗收發現之瑕疵：檔頭 Governance-Version 誤植 `2026-08-02.3`→`2026-08-01.2`；§4.1 兩處「32 檔」統一為「31 個 integration 檔（29 檔 `DB_URL` + 2 檔例外路徑）」與 §2.1 一致。轉 ACTIVE，開始 T1。 | 使用者 Gate 批准（2026-08-03，leonchih）|
 | 2026-08-03 | DRAFT 建立 | 依 SPEC-INFRA-001 Packet 建立完整 Spec（§1~§16 + 決策點 D1~D8 + 26 條 AC + AC↔測試映射表）。相對 Packet 原案新增 **D4（per-file TRUNCATE）**，理由為 `isolate: true` 造成 worker 槽位跨檔重用，單靠 per-worker schema 不足以消滅同槽位前後檔污染（§2.4 原始碼實證、§4.4 事故對照表）。所有技術定案附 §2 的實測證據。 | `docs/retrospective/PHASE-004.md` §5 建議①（L153-156）；`PROJECT_STATE.md` A-1（L146-147）、R6（L120-121）、六類事故（L98-102）；`backend/vitest.config.ts` L4-37；`.github/workflows/ci.yml` L53-99；`playwright.config.ts` L9/28-30；vitest 2.1.9 與 tinypool 原始碼；2026-08-03 對本機 PG16 之可逆探針實測 |
 
