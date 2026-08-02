@@ -21,8 +21,46 @@ import { PrismaClient } from "@prisma/client";
 import { validateNewPassword } from "../auth/password-rules.js";
 import { hashPassword } from "../auth/password.js";
 
+/**
+ * Minimal shape of the Prisma operations runSeedAdmin actually needs.
+ *
+ * This exists solely so tests (PHASE-004-R2) can inject a stub client and
+ * exercise the "no ADMIN exists -> create" / "ADMIN exists -> no-op"
+ * branches without mutating real rows in the shared integration-test
+ * database (which is queried by many parallel test-file workers and
+ * caused cross-file flakiness — see admin-users.test.ts history).
+ *
+ * Not used in production: when no override is supplied, runSeedAdmin
+ * creates and owns a real PrismaClient exactly as before.
+ */
+export interface SeedAdminPrismaLike {
+  user: {
+    findFirst: (args: { where: { role: "ADMIN" } }) => Promise<{ id: string } | null>;
+    create: (args: {
+      data: {
+        loginName: string;
+        displayName: string;
+        passwordHash: string;
+        role: "ADMIN";
+        isActive: boolean;
+        mustChangePassword: boolean;
+      };
+    }) => Promise<unknown>;
+  };
+}
+
+export interface SeedAdminDeps {
+  /**
+   * Test-only Prisma client override. Omit in production usage — the
+   * default behaviour (own PrismaClient, connect/disconnect) is
+   * unchanged for real deployments and the CLI entry point below.
+   */
+  prisma?: SeedAdminPrismaLike;
+}
+
 export async function runSeedAdmin(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  deps: SeedAdminDeps = {}
 ): Promise<void> {
   const loginName = env.SEED_ADMIN_LOGIN;
   const password = env.SEED_ADMIN_PASSWORD;
@@ -47,10 +85,19 @@ export async function runSeedAdmin(
     process.exit(1);
   }
 
-  const prisma = new PrismaClient();
+  // deps.prisma is test-only (see SeedAdminDeps above). In production
+  // (deps omitted), we create and own a real PrismaClient exactly as
+  // the original implementation did — connect before use, disconnect
+  // in `finally`. When a test injects a stub, we neither connect nor
+  // disconnect it (that's the test's responsibility, if applicable).
+  const ownsPrisma = deps.prisma === undefined;
+  const realClient = ownsPrisma ? new PrismaClient() : undefined;
+  const prisma: SeedAdminPrismaLike = deps.prisma ?? (realClient as unknown as SeedAdminPrismaLike);
 
   try {
-    await prisma.$connect();
+    if (realClient) {
+      await realClient.$connect();
+    }
 
     // Check if any ADMIN user already exists
     const existingAdmin = await prisma.user.findFirst({
@@ -78,7 +125,9 @@ export async function runSeedAdmin(
 
     console.log(`[seed:admin] Admin user created: ${loginName.trim()} (mustChangePassword=true)`);
   } finally {
-    await prisma.$disconnect();
+    if (realClient) {
+      await realClient.$disconnect();
+    }
   }
 }
 

@@ -22,6 +22,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { adminPlugin } from "../../src/admin/routes.js";
 import { requireAdmin, requireAuth, requirePasswordChanged } from "../../src/auth/middleware.js";
 import { hashPassword } from "../../src/auth/password.js";
+import type { SeedAdminPrismaLike } from "../../src/seed/seed-admin.js";
 import { buildServer } from "../../src/server.js";
 
 const DB_URL = process.env.DATABASE_URL;
@@ -1043,74 +1044,97 @@ describeWithDb("seed:admin function (Spec §13.1-1/D9)", () => {
     }
   });
 
+  // ---------------------------------------------------------------------
+  // PHASE-004-R2: The two tests below used to mutate the ROLE of every
+  // ADMIN row in the shared integration-test database (downgrade all to
+  // USER, call runSeedAdmin, restore). Under parallel vitest forks that
+  // window let this test both (a) make other files' `requireAdmin` checks
+  // see 0 admins mid-run, and (b) get falsely failed itself whenever
+  // another parallel worker created a real ADMIN during the downgrade
+  // window — runSeedAdmin's own `findFirst({ role: "ADMIN" })` would see
+  // that unrelated row and no-op, so `expect(created).not.toBeNull()`
+  // failed with "expected null not to be null". Reproduced directly by
+  // racing a concurrent ADMIN creation against the downgrade window.
+  //
+  // Fix: the "no ADMIN exists -> create" branch is now tested with an
+  // injected stub Prisma client (see SeedAdminPrismaLike / SeedAdminDeps
+  // in src/seed/seed-admin.ts) so it never touches real shared-DB rows,
+  // and needs no precondition about global admin state at all. The
+  // "ADMIN exists -> no-op" branch still exercises the real DB / real
+  // PrismaClient path (for genuine integration coverage of the
+  // connect/query/disconnect wiring), but the ADMIN precondition is now
+  // self-created rather than borrowed from "previous test or other
+  // tests" — so it no longer depends on, or interferes with, any other
+  // test file.
+  // ---------------------------------------------------------------------
+
   it("creates admin when no ADMIN exists and valid env is provided", async () => {
-    // Use a unique login to avoid collision
+    // Stub Prisma client: reports no ADMIN exists, and records what
+    // runSeedAdmin would create. This exercises the exact branch logic
+    // (findFirst -> null -> hash password -> create with role=ADMIN,
+    // mustChangePassword=true, isActive=true) without ever touching the
+    // real shared database, so it cannot be polluted by — or pollute —
+    // any other parallel test file.
     const uniqueLogin = `seed_admin_${SUFFIX}`;
-    seedLogins.push(uniqueLogin);
+    const createCalls: Array<{
+      loginName: string;
+      displayName: string;
+      passwordHash: string;
+      role: "ADMIN";
+      isActive: boolean;
+      mustChangePassword: boolean;
+    }> = [];
+    const stubPrisma: SeedAdminPrismaLike = {
+      user: {
+        findFirst: async () => null,
+        create: async (args) => {
+          createCalls.push(args.data);
+          return { id: "stub-admin-id", ...args.data };
+        },
+      },
+    };
 
-    // Ensure no ADMIN with this login exists
-    await prisma.user.deleteMany({ where: { loginName: uniqueLogin } });
+    const { runSeedAdmin } = await import("../../src/seed/seed-admin.js");
+    await runSeedAdmin(
+      { SEED_ADMIN_LOGIN: uniqueLogin, SEED_ADMIN_PASSWORD: "SeedAdmin123!" },
+      { prisma: stubPrisma }
+    );
 
-    // Temporarily ensure no admins exist for this test
-    // We can't delete all ADMINs as they may be from other tests
-    // Instead, use a dedicated test DB path — but we don't have one.
-    // Strategy: test the "already has ADMIN" path and "no ADMIN" path separately
-    // by deleting and creating as needed.
-
-    // To test "no ADMIN" we need a DB with no ADMIN at all.
-    // Since we cannot guarantee that, we test the "already has ADMIN" path
-    // and the input validation path; and for "no ADMIN", we use a separate
-    // PrismaClient pointing to the test DB and verify the function creates.
-
-    // Actually: let's just call runSeedAdmin with env and verify behavior.
-    // If there are no ADMINs, it should create. If there are, it should not.
-    // We can delete all ADMIN users temporarily for this test.
-    const existingAdmins = await prisma.user.findMany({ where: { role: "ADMIN" } });
-
-    // Temporarily change all admins to USER so we can test creation
-    for (const a of existingAdmins) {
-      await prisma.user.update({ where: { id: a.id }, data: { role: "USER" } });
-    }
-
-    try {
-      // Import and call the seed function directly
-      const { runSeedAdmin } = await import("../../src/seed/seed-admin.js");
-
-      // We need to use the test DB URL for the seed function.
-      // runSeedAdmin uses process.env.DATABASE_URL by default.
-      // Temporarily set DATABASE_URL to the test URL.
-      const originalDbUrl = process.env.DATABASE_URL;
-      process.env.DATABASE_URL = DB_URL;
-
-      try {
-        await runSeedAdmin({
-          SEED_ADMIN_LOGIN: uniqueLogin,
-          SEED_ADMIN_PASSWORD: "SeedAdmin123!",
-        });
-      } finally {
-        process.env.DATABASE_URL = originalDbUrl;
-      }
-
-      // Verify the admin was created
-      const created = await prisma.user.findUnique({ where: { loginName: uniqueLogin } });
-      expect(created).not.toBeNull();
-      expect(created?.role).toBe("ADMIN");
-      expect(created?.mustChangePassword).toBe(true);
-      expect(created?.isActive).toBe(true);
-    } finally {
-      // Restore original admins
-      for (const a of existingAdmins) {
-        await prisma.user.update({ where: { id: a.id }, data: { role: "ADMIN" } });
-      }
-    }
+    expect(createCalls).toHaveLength(1);
+    const createdData = createCalls[0];
+    expect(createdData.loginName).toBe(uniqueLogin);
+    expect(createdData.role).toBe("ADMIN");
+    expect(createdData.mustChangePassword).toBe(true);
+    expect(createdData.isActive).toBe(true);
+    // Password must be hashed before being handed to the DB layer, and
+    // must never be the raw plaintext value.
+    expect(typeof createdData.passwordHash).toBe("string");
+    expect(createdData.passwordHash).not.toBe("SeedAdmin123!");
+    expect(createdData.passwordHash.length).toBeGreaterThan(0);
   });
 
   it("does NOT create a second admin if ADMIN already exists (no-op)", async () => {
-    const secondSeedLogin = `seed_admin_second_${SUFFIX}`;
+    // Self-contained precondition: create our OWN dedicated ADMIN so the
+    // "an ADMIN already exists" precondition is guaranteed without
+    // depending on (or reading) any other test's or test file's data.
+    // Production semantics are "if ANY admin exists, no-op" — our own
+    // row is sufficient to prove that, regardless of what else is or
+    // isn't in the shared DB at the same moment.
+    const ownAdminLogin = `seed_admin_precondition_${SUFFIX}`;
+    seedLogins.push(ownAdminLogin);
+    await prisma.user.create({
+      data: {
+        loginName: ownAdminLogin,
+        displayName: "Seed Precondition Admin",
+        passwordHash: await hashPassword("OwnAdmin123!"),
+        role: "ADMIN",
+        isActive: true,
+        mustChangePassword: false,
+      },
+    });
 
-    // Ensure at least one ADMIN exists
-    const existingAdmin = await prisma.user.findFirst({ where: { role: "ADMIN" } });
-    expect(existingAdmin).not.toBeNull(); // there should be at least one from previous test or other tests
+    const secondSeedLogin = `seed_admin_second_${SUFFIX}`;
+    seedLogins.push(secondSeedLogin);
 
     const { runSeedAdmin } = await import("../../src/seed/seed-admin.js");
     const originalDbUrl = process.env.DATABASE_URL;
