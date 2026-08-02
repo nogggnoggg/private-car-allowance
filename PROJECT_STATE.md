@@ -51,6 +51,7 @@ Updated: 2026-08-02
 | T7 | 參數套用 + 缺參數處理 + 預覽端點 | High | DONE | 558cdda |
 | T11 | 附件整合 + **AR-D 閉環** + 代上傳 ownerId | High | DONE | 26d6ee8 |
 | D19 | Spec 修訂：併發整份 PUT 語意（使用者批准） | — | DONE | b8ba575 |
+| R2 | REPAIR：seed:admin 測試跨檔共用狀態污染 | Medium→High | DONE | 618a694 |
 | T8 | 完成流程 + 快照 + 附件鎖定 | High | 待辦 | — |
 | T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | 待辦 | — |
 | — | **期中 reviewer 檢查點**（後端核心） | — | 待辦 | — |
@@ -67,7 +68,9 @@ Updated: 2026-08-02
 - **B-30 併發事件（T11 → T11R → T11R2，2026-08-02）**：T11 交付後大總管 13 輪重跑發現 B-30 併發測試約 **23% 失敗**（`expected [200,200] to deeply equal [200,409]`，即每段 3 張上限被突破），三個修復回合（T11 一次、T11R 兩次：advisory lock 提前、SERIALIZABLE→READ COMMITTED、原子單一 UPDATE）**全部未關閉**；implementer 於第三回合正確觸發 Stop（§28 三回合上限）。**大總管診斷結論：目標框錯**——B-30 測試打的是整份取代式 `PUT`，兩個併發請求各自宣告的都是合法的 3 張（恰為上限），依 D15 語意「兩者皆成功、最終 3 張」才是正確；原 PHASE-003 測試 race 的是增量式 link 打到 `limit=1` 容器，T11 依 §17 C1 逐條遷移換端點後**斷言未同步修正**。另查得真實缺陷：`computeAttachmentDeltas` 的 baseline 在**交易外**（`prisma` 而非 `tx`）計算，併發時雙方 baseline 皆為前態、各自只 link 不 detach → 最終 4 張。**處置**：Spec §17 新增 **D19**（使用者 leonchih 2026-08-02 批准「最後寫入者贏」＋裁定回退兩次失敗嘗試）→ T11R2 回退 + baseline 移入交易內 + 斷言依 D19 修正 + 新增 AC-22 鑑別力測試 → 大總管 **14 輪重跑（13 輪 779 全綠，B-30 零失敗）**。
 - **裁定教訓（大總管自省，已寫入 Spec §17 D19 列）**：C1「逐條遷移不得刪除」的裁定本身正確，但當時**未要求 implementer 逐條檢查「換了端點後原斷言是否還成立」**，導致失真的斷言被當成事實追了三個回合。後續任何測試遷移類裁定，Packet 必須明文要求同步複核語意等價性。
 - **驗收紀律（再次驗證有效）**：T11 與 T11R 兩份 Handoff 皆宣稱回歸全綠（分別為「5 輪連續全綠」「100+ 次壓測零違規」），**皆由大總管獨立重跑推翻**。continue：Handoff 之測試宣稱一律不採信，大總管必自跑；High 風險併發項目重跑輪次需依失敗率決定（本次 23% 失敗率 → 跑滿 14 輪使誤判機率降至約 3%）。
-- **PHASE-004-R2（批次修復，待辦）**：`admin-users.test.ts` 之 `seed:admin` 清理競態，全套平行下約 **15% 失敗**（大總管 27 輪中 3 次；PHASE-002 既有問題，非本 Phase 引入）。已明確排除於 T11/T11R/T11R2 範圍外以維持 commit 原子性。**Gate 前必須關閉**——它會持續污染每一次回歸驗收的判讀。
+- **PHASE-004-R2（測試隔離修復）：DONE**（commit `618a694`）。根因非單純 flake，而是 `admin-users.test.ts` 的 `seed:admin` 測試組**全域降級共用測試 DB 內所有 ADMIN**（`findMany({role:"ADMIN"})` → 逐筆改為 `USER` → finally 還原），16-way 平行下形成**雙向污染**：污染別人（降級窗內其他檔 `requireAdmin` 拿 403）、被別人污染（降級後別的 fork 建了 ADMIN → `runSeedAdmin` no-op → 斷言失敗）；另一條測試註解自承依賴其他檔案資料。還原僅覆蓋例外、不覆蓋行程中止（會留下「所有管理員皆為 USER」的損壞 DB）。修法：`seed-admin.ts` 加向後相容可選注入縫（`SeedAdminDeps.prisma`，型別僅暴露 `user.findFirst`/`create`），建立分支改以 stub 驗證、no-op 分支保留真實 DB 但自建前置 ADMIN。測試數 36 不變。大總管重驗：**12 輪皆 779/0/0，零 admin-users 失敗**（修復前 37 輪 3 次 ≈ 8%）；靜態核對全域降級與跨檔依賴皆已消失、無全域 ADMIN 計數斷言、暫存腳本無殘留。
+- **治理事件（2026-08-02，大總管自陳）**：R2 觸及 `backend/src/seed/seed-admin.ts`——建立首位管理員並做密碼雜湊，屬 CLAUDE.md 明文之「**認證／密碼相關工作一律 High、需人類事前批准**」。**大總管於 Packet 誤定為 Medium 並自行授權 implementer 開注入縫，未先取得批准**。事後補呈證據（production 路徑逐行未變、CLI 進入點不傳 `deps`），經使用者 leonchih 2026-08-02 明示批准採用。**教訓**：Risk Level 判定須以「觸及的檔案領域」而非「變更幅度」為準；`src/auth/**`、`src/seed/seed-admin.ts`、附件權限相關檔案一經觸及即為 High，Packet 產出前必須先取得人類批准。
+- **reviewer 必審項（R2）**：(a) 注入縫無法自任何 production 路徑觸及；(b) 管理員存在性檢查語意未變；(c) 密碼驗證順序與 log 行為未變；(d) `SeedAdminPrismaLike` 未擴大 Prisma 暴露面；(e) 「無 ADMIN 時建立」分支由真實 DB 整合測試降級為 stub 單元測試之覆蓋形態變更是否可接受。
 - **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
@@ -186,7 +189,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **26d6ee8**（PHASE-004-T11）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **618a694**（PHASE-004-R2）
 
 ## Human Gate（PHASE-004）
 
