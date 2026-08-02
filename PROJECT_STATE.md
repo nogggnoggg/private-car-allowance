@@ -69,7 +69,8 @@ Updated: 2026-08-02
 | R8 | **REPAIR（Must Fix）**：完成申請對真實使用者 500 | High | DONE | e685403 |
 | R7 | REPAIR：終審 S-2 LIKE 跳脫 + S-3 補 E2E 情境（含 R8F） | Medium | DONE | a09ca5f |
 | — | S-4 Spec 文字校正（阻擋 Spec 轉 COMPLETED） | — | 待辦 | — |
-| — | reviewer 輕量複審（R7/R8） | — | 待辦 | — |
+| — | reviewer 輕量複審（R7/R8/S-4） | — | DONE | **APPROVE**（0 Must / 0 Should） |
+| — | **整合驗收 Gate（人類 leonchih）** | — | **通過（2026-08-02）** | compose 真實拓撲 |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
 - 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ 871（T12）→ 877（R7）→ **879（R8）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
@@ -110,6 +111,14 @@ Updated: 2026-08-02
   - **大總管 Packet 錯誤（自陳，第二次）**：R8 Packet 之 Done When #2 要求「後端整合測試斷言不是 500」，在不改 `backend/src` 的前提下**對任何無 body 端點皆不可達成**——防線被我預設在後端，但這一類缺陷的源頭在呼叫端。implementer 的替代方案位置更正確、覆蓋更廣，折衷已接受。
   - **追蹤事項**：後端對畸形 wire-level 請求回 500 而非 4xx（無 exploit、零觸發呼叫端），另案評估。
 - **R8F（大總管授權之單一常數修改）**：`e2e/travel-application.spec.ts` 之 `SUCCESS_TRIP_DATE` 由固定日曆日期改為相對今日動態計算。原值於今日已落在 AC-60/D9(iii) 預設回溯窗外，**產品行為正確、是測試日期過期**。implementer 正確診斷且未為轉綠而動 Forbidden 檔案。
+- **輕量複審（`PHASE-004-REVIEW-POSTFIX`）：DONE — APPROVE**（0 Must Fix、0 Should Fix、6 Accepted Risk）。五項 finding（S-1~S-4 + 新 Must Fix）**全數真正關閉**，reviewer 全部獨立驗證：以真實 PostgreSQL 逐案打 `ILIKE` 跳脫（含尾端反斜線組）、攔截 Prisma 產生 SQL 確認索引形狀未退化、以**位元組比對**驗 AC 區段與 §17.1 未動、自行重寫掃描腳本複核 7 個無 body 端點、獨立重現 879／110／145／11 四條基準線。
+  - **大總管 Packet 事實錯誤（第三次，自陳）**：複審 Packet 誤寫 `Base: 41c4b5a → HEAD`，但 `41c4b5a` 是排在 `a09ca5f` 之後的 PROJECT_STATE commit——照該範圍取 diff **只會看到 S-4，完全看不到 Must Fix 修復與 S-2/S-3**，整場複審會變成空的。reviewer 自行推導出正確範圍 `81b7bf3..a85e6f3`。**教訓與前兩次同源：憑印象寫規範而非先驗證。**
+  - **reviewer 更正大總管的兩個結論**：(a)「防線位置在呼叫端」只對一半——呼叫端測試防的是前端再犯，防不了其他 client；正確分層為**呼叫端＝止血、E2E 情境 1＝回歸屏障、後端硬化＝根治**，三者不可互相取代，追蹤事項不得因「呼叫端已守住」而降級。(b) 最強的回歸屏障其實是 E2E 情境 1（有人把 header 加回去就立刻紅），大總管原本沒把它算進來。
+- **追蹤事項（依 reviewer AR-1 放寬文字）**：`backend/src/platform/error-handler.ts:104-118` 分支 3 使 **Fastify body parser／wire-level 錯誤一律落入未知例外分支回 500**——範圍**不限於無 body 端點**：reviewer 以 `/auth/login` 送畸形 JSON 實測亦為 500，大總管於 Gate 搭環境時以中文字元造成 Content-Length 不符亦重現 500。此路徑在 auth 之前，未登入者即可穩定製造 `level:50` 錯誤日誌。無資料外洩（500 本文為固定文案不含 stack）、無授權繞過、非 PHASE-004 引入（PHASE-001 既有）。修法：分支 3 前補「`statusCode` 為 4xx 或 `FST_ERR_CTP_*` → 400 `VALIDATION_ERROR`」。**注意**：修好時 `backend/test/integration/phase4-r8-wire-level-empty-json-body.test.ts` 中刻意 pin 住 500 的對照測試會變紅（該檔註解已載明），硬化 Task 須一併處理。
+- **PHASE-007／008 前置約束（依 reviewer AR-6 新增）**：**不得以「一般使用者不知道單價」作為安全前提**。D6 邊界已於 PHASE-004 經使用者批准擴張為「任一啟用使用者可得知任一日之油資／ETC 單價」（送 `totalKm=1` 至預覽端點即可推導），詳見 `docs/specs/PHASE-004.md` §17 D6 授權邊界修訂列。
+- **其餘 Accepted Risk（reviewer 輕量複審，批次追蹤）**：AR-2 B-23 第 6 條測試標題宣稱涵蓋「跳脫字元本身」但內容全程無反斜線（實作正確，惟若日後移除 `\` 字元類別無測試會紅）；AR-3 前端無 body mutation 防線為人工維護的 7 函式清單，新增者不會自動納入；AR-5 `travel-service.ts:362` 註解描述的是**舊版 Spec**（`attachmentIds` 已於 `a85e6f3` 改為可選）。
+- **整合驗收 Gate：通過（人類 leonchih，2026-08-02）**。大總管於 **compose 真實拓撲**（frontend:8080 nginx / backend / PG16 全新 volume，Windows `DOCKER_BUILDKIT=0 -p oilexpense` workaround）建置環境：7 個 migration 乾淨套用、合成管理員 + 兩名一般使用者、油資 5.0000／ETC 2.0000 參數版本、DB 起始為 0 申請 0 附件。使用者親自完成八項檢核**全數通過**：①金額語意（12.5/4.3 + 8/0 → 各段 71 與 40、**整筆 111**、總里程 20.5 高速不重複加；儲存／重整／完成後金額一致）②完成後全面凍結 ③快照不變性（事後新增更早生效日、單價 9.9999 之版本，金額仍 111）④授權隔離（B 直連 A 的 URL 被拒且不洩漏）⑤代操作 owner/creator 分離 ⑥管理員不可代完成（D17）⑦每段附件上限 3 ⑧響應式 375px。
+- **Gate 過程中大總管之疏失（自陳）**：交付檢核清單時**從未實際開啟過畫面**，係依 Spec 與程式碼推導，漏掉「里程欄位須先按『新增行程段』才出現」這一步，使用者因此卡住並回報。後續改為先以瀏覽器實際查看再給操作指引。
 - **E2E 現況**：**11 條全綠**（attachments-demo 3 + travel-application 4 + admin-applications 3 + data-isolation 1），**由大總管親自實跑驗證**。Spec §11.4 五個情境已全數落地。
 - **舊 E2E 現況（歷史）**：**7 條全綠**（attachments-demo 3 + travel-application 2 + admin-applications 2），T13 與 T14 兩次皆由大總管親自實跑驗證，非採信 Handoff。E2E 仍未進 CI（整合 Gate 手動執行）。
 
@@ -229,7 +238,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **a09ca5f**（PHASE-004-R7）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **a85e6f3**（SPEC-004-FIX）；整合驗收 Gate 已通過，待 PR 合併批准
 
 ## Human Gate（PHASE-004）
 
