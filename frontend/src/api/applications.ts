@@ -309,6 +309,15 @@ export async function apiPreviewTravel(
 // ---------------------------------------------------------------------------
 // POST /applications/:id/complete (AC-49~54) — body 一律忽略，故本函式不接受
 // 任何參數（避免呼叫端誤以為送出的欄位有作用，§9「完成申請」body 一律忽略）。
+//
+// PHASE-004-R8 修復：本函式不送 body，因此**不得**宣告
+// `Content-Type: application/json`——Fastify 的預設 JSON body parser 對
+// 「宣告 JSON 但空 body」的請求會丟出 wire-level 錯誤（早於 auth
+// preHandler），落入全域 error handler 的未知例外分支變成 500
+// INTERNAL_ERROR（見 backend/test/integration/
+// phase4-r8-wire-level-empty-json-body.test.ts 的重現與回歸防線）。沒有
+// body 就不該宣告 body 型別；不得改為送假 body 繞過（那與 AC-54「body 一律
+// 忽略」的語意衝突，且會讓下一個讀 body 的人誤解本端點吃 body）。
 // ---------------------------------------------------------------------------
 
 export async function apiCompleteApplication(
@@ -316,7 +325,6 @@ export async function apiCompleteApplication(
 ): Promise<{ application: TravelApplicationDto }> {
   const res = await fetch(`/api/applications/${id}/complete`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     credentials: "include",
   });
   return parseApiResponse<{ application: TravelApplicationDto }>(res);
