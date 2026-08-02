@@ -19,6 +19,7 @@ Updated: 2026-08-02
 > - **T1（四項修正）：DONE**（commit `de1a3c0`，僅三檔）。大總管獨立驗收：前端 **121/0/0**（基準 110 + 新增 11）、tsc 0、biome 145 檔乾淨；**dev 拓撲真實瀏覽器 computed style 驗證**四項全生效（padding 10px 12px／border `#e5e7eb`／th 底 `#f9fafb`／num-col th+td 靠右／折舊表 wrapper=`table-scroll`／建立時間 `2026-08-02` 補零），375px 下 body 不橫捲（375/375）、wrapper 內捲（492>343）。
 > - **reviewer 輕量複審：DONE — APPROVE**（0 Must / 0 Should）。reviewer 獨立重跑 121/0/0 與 tsc/biome、逐條核鑑別力（補零負向斷言、油資表「不得有 wrapper」反向對照）、確認 `.num-col`/`.param-table` 作用域不污染既有樣式、`formatDateYmd` 本地時區無 UTC 錯位、既有 19 條測試零弱化。Accepted Risk 4 項（記錄保留）：AR-U1 formatDateYmd 本地時區性質無回歸測試（fixture 皆 01:00Z，UTC/UTC+8 同日——係刻意避免 TZ flake；日後擴大再於 setup 釘 TZ 補邊界測試）；AR-U2 非法日期輸出 `NaN-NaN-NaN`（後端 DTO 保證 ISO，不可達）；AR-U3 helper 置於 page 模組（無第二使用者，比例合理）；AR-U4 `.param-table` 無 ≤640px 專屬版型（折舊表以 `.table-scroll` 撐住 body 不橫捲，標題折行屬批准範圍外取捨）。
 > - 驗收環境備註：`.claude/launch.json` 為大總管本機驗收工具設定（dev server 啟動配置），**不進 commit**；測試 DB 合成資料（uifix_admin／參數版本）為驗收殘留，無礙。
+> - **結案（2026-08-02）**：使用者親自驗收 dev 環境畫面**通過**並批准合併；**PR #6 已合併至 main（`dd61734`）**，CI 三 job 全綠。ui-fix-001 branch 已完成使命。回合結束，主線回到「測試隔離債（A-1 結構性修復）vs. PHASE-005 開工」決策。
 
 > **PHASE-003a 開工記錄（2026-08-01，使用者指令接續）**
 > - §15 rule 0 重錨定完成：大總管零程式修改（白名單＝PROJECT_STATE／Spec 狀態欄・修訂／ADR／CHANGELOG／治理節）；003a 為 High 風險，Spec 需事前批准 Gate 才進實作；commit 前逐檔核對 Handoff、程式 commit 必含 Task ID。
