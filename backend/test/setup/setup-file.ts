@@ -117,8 +117,22 @@ export async function verifyWorkerSchemaExists(
  * Handoff）不構成循環，此函式預期回傳完整順序；防禦性寫法是為了未來 schema
  * 演進時不會靜默產生錯誤的刪除順序。
  */
+/**
+ * INFRA-001-R2 (S-3)：`truncateWorkerSchema` 與其內部的
+ * `computeForeignKeySafeDeleteOrder` 只用得到 `$queryRawUnsafe` /
+ * `$executeRawUnsafe` 這兩個方法——把參數型別收斂成這個結構化介面（而非具體
+ * `PrismaClient` class），讓 unit test 可以注入一個不連真實 DB 的假物件，直接
+ * 驗證「查到 0 張表時應 throw」這個分支的行為，不需要在測試環境裡真的建立一
+ * 個空 schema。真正的 `PrismaClient` 實例在結構上相容，呼叫端（本檔 root
+ * `beforeAll` 與 `infra001-residue-selfheal.test.ts`）完全不用改寫。
+ */
+export interface WorkerSchemaSqlExecutor {
+  $queryRawUnsafe<T = unknown>(query: string, ...values: unknown[]): Promise<T>;
+  $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>;
+}
+
 async function computeForeignKeySafeDeleteOrder(
-  prisma: PrismaClient,
+  prisma: WorkerSchemaSqlExecutor,
   tableNames: readonly string[]
 ): Promise<string[] | undefined> {
   const nameSet = new Set(tableNames);
@@ -191,11 +205,27 @@ async function computeForeignKeySafeDeleteOrder(
  * per-test) semantics mean this function only ever runs once per file via the
  * root `beforeAll` registered below.
  */
-export async function truncateWorkerSchema(prisma: PrismaClient): Promise<void> {
+export async function truncateWorkerSchema(prisma: WorkerSchemaSqlExecutor): Promise<void> {
   const tables = await prisma.$queryRawUnsafe<Array<{ tablename: string }>>(
     "SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename <> '_prisma_migrations'"
   );
-  if (tables.length === 0) return;
+  if (tables.length === 0) {
+    // INFRA-001-R2 (S-3): 本 schema（由 global-setup 以 `prisma migrate
+    // deploy` 供裝）必然含 11 張業務表（Spec §3 AC-08）。查到 0 張不是「這個
+    // worker schema 剛好沒有業務資料」——TRUNCATE/DELETE 清空的是資料列，不是
+    // 表本身，表結構應恆存在。0 張表唯一合理的解釋是 `current_schema()`（即
+    // `search_path`）失效，落回一個不含任何表的 schema（例如
+    // `resolveWorkerDatabaseUrl` 的改寫失敗但未拋錯、或連線字串的 `schema=`
+    // 參數被後續程式碼覆寫）——這種情況下靜默 return 會讓後續測試在錯誤的
+    // schema（很可能是別的 worker 的、甚至是 public）上跑而完全不清空，是比
+    // 「清空失敗」更危險的靜默資料污染，因此必須 fail-closed。
+    throw new Error(
+      "[INFRA-001 setup-file] truncateWorkerSchema：目標 schema 找不到任何業務表（0 張）。" +
+        "本 worker schema 應已由 global-setup 供裝 11 張業務表——查到 0 張代表 " +
+        "current_schema()/search_path 失效，本次清空已中止以避免在錯誤的 schema 上動作。" +
+        "請確認 global-setup 是否已成功執行、DATABASE_URL 的 schema= 參數是否被覆寫。"
+    );
+  }
   const tableNames = tables.map((t) => t.tablename);
 
   const deleteOrder = await computeForeignKeySafeDeleteOrder(prisma, tableNames);

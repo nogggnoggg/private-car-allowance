@@ -176,7 +176,21 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
     const state = readInfra001IsolationState();
     expect(state, "global-setup 應已寫入量測狀態檔").toBeDefined();
     expect(state?.maxForks).toBe(maxForks);
-    expect(state?.publicTableCountAfter).toBe(state?.publicTableCountBefore);
+
+    // INFRA-001-R2 (S-4): 原本這裡只比對 state 檔內兩個由 globalSetup 自己
+    // 寫入的數字（publicTableCountBefore/After）——兩者皆源自同一次 globalSetup
+    // 執行的記憶內狀態，若 globalSetup 的守護邏輯本身失效（例如比較邏輯被
+    // 誤刪、或兩個欄位被同時寫壞），這個斷言仍會恆真，鑑別力為零。改為在測試
+    // 執行的「此刻」對 public schema 即時查一次 BASE TABLE 數，與供裝當時記錄
+    // 的 before 值比對——這樣才是獨立於 globalSetup 內部比較邏輯之外的第二個
+    // 見證：若本回合任何 worker 對 public 動了 DDL（新增/刪除表），此刻查到的
+    // 即時值會與供裝前的快照不同，測試才會真的變紅。
+    const publicTableCountNowRows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+      `SELECT count(*)::bigint AS count FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
+    );
+    const publicTableCountNow = Number(publicTableCountNowRows[0]?.count ?? -1);
+    expect(publicTableCountNow).toBe(state?.publicTableCountBefore);
   });
 
   it("AC-19: travel-service 的 `SELECT ... FOR UPDATE` 原始 SQL 在 worker schema 下經 updateTravelDraft 正確解析", async () => {
