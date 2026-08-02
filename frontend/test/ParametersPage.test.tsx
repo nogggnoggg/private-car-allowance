@@ -17,7 +17,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { AuthProvider } from "../src/context/AuthContext.js";
-import ParametersPage from "../src/pages/ParametersPage.js";
+import ParametersPage, { formatDateYmd } from "../src/pages/ParametersPage.js";
 import type { UserDto } from "../src/types/api.js";
 
 // ---- Fixture users ----
@@ -718,5 +718,204 @@ describe("ParametersPage — 版本列表渲染", () => {
       expect(screen.getByText(/100000\.00/)).toBeInTheDocument();
       expect(screen.getByText(/6\.6667/)).toBeInTheDocument();
     });
+  });
+});
+
+// ============================================================
+// UI-FIX-001-T1 — 建立時間格式（YYYY-MM-DD，補零，本地時區）
+// ============================================================
+
+describe("formatDateYmd — 純函式單元測試", () => {
+  it("單位數月份與日期均補零為兩位數", () => {
+    // 2026-01-05T01:00:00.000Z 在 Asia/Taipei（UTC+8）為本地 2026-01-05 09:00
+    expect(formatDateYmd("2026-01-05T01:00:00.000Z")).toBe("2026-01-05");
+  });
+
+  it("單位數日期、雙位數月份亦補零", () => {
+    // 2026-09-01T01:00:00.000Z 在 Asia/Taipei 為本地 2026-09-01 09:00
+    expect(formatDateYmd("2026-09-01T01:00:00.000Z")).toBe("2026-09-01");
+  });
+
+  it("雙位數月份與日期原樣輸出", () => {
+    expect(formatDateYmd("2026-12-25T01:00:00.000Z")).toBe("2026-12-25");
+  });
+});
+
+describe("ParametersPage — 建立時間欄格式化為 YYYY-MM-DD", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("Fuel: 建立時間欄顯示補零的 YYYY-MM-DD（單位數月/日具鑑別力）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", [{ ...fuelVersion, createdAt: "2026-03-05T01:00:00.000Z" }]);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      // 修復前 toLocaleDateString("zh-TW") 輸出為 "2026/3/5"（無補零），
+      // 修復後應為 "2026-03-05"。
+      expect(screen.getByText("2026-03-05")).toBeInTheDocument();
+      expect(screen.queryByText(/2026\/3\/5/)).not.toBeInTheDocument();
+    });
+  });
+
+  it("ETC: 建立時間欄顯示補零的 YYYY-MM-DD", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", [{ ...etcVersion, createdAt: "2026-09-01T01:00:00.000Z" }]);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText("2026-09-01")).toBeInTheDocument();
+      expect(screen.queryByText(/2026\/9\/1/)).not.toBeInTheDocument();
+    });
+  });
+
+  it("Depreciation: 建立時間欄顯示補零的 YYYY-MM-DD", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [
+      { ...depreciationVersion, createdAt: "2026-07-04T01:00:00.000Z" },
+    ]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText("2026-07-04")).toBeInTheDocument();
+      expect(screen.queryByText(/2026\/7\/4/)).not.toBeInTheDocument();
+    });
+  });
+});
+
+// ============================================================
+// UI-FIX-001-T1 — 折舊表 .table-scroll wrapper
+// ============================================================
+
+describe("ParametersPage — 折舊表包在 .table-scroll wrapper 內", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("折舊表格的直接外層具備 .table-scroll class", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [depreciationVersion]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("折舊參數版本清單")).toBeInTheDocument();
+    });
+
+    const table = screen.getByLabelText("折舊參數版本清單");
+    expect(table.parentElement).toHaveClass("table-scroll");
+  });
+
+  it("油資表格不需要 .table-scroll wrapper（僅 3 欄）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", [fuelVersion]);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("油資參數版本清單")).toBeInTheDocument();
+    });
+
+    const table = screen.getByLabelText("油資參數版本清單");
+    expect(table.parentElement).not.toHaveClass("table-scroll");
+  });
+});
+
+// ============================================================
+// UI-FIX-001-T1 — 數值欄靠右對齊 class
+// ============================================================
+
+describe("ParametersPage — 數值欄具備靠右對齊 class", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("Fuel: 每公里單價欄（th 與 td）具備 num-col class", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", [fuelVersion]);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/3\.5000/)).toBeInTheDocument();
+    });
+
+    const th = screen.getByRole("columnheader", { name: "每公里單價（元）" });
+    expect(th).toHaveClass("num-col");
+    const td = screen.getByText("3.5000");
+    expect(td).toHaveClass("num-col");
+  });
+
+  it("ETC: 每公里單價欄（th 與 td）具備 num-col class", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", [etcVersion]);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/2\.0000/)).toBeInTheDocument();
+    });
+
+    const th = screen.getByRole("columnheader", { name: "每公里單價（元）" });
+    expect(th).toHaveClass("num-col");
+    const td = screen.getByText("2.0000");
+    expect(td).toHaveClass("num-col");
+  });
+
+  it("Depreciation: 五個數值欄（車價/折舊年限/預估年里程/每年折舊費用/每公里單價）均具備 num-col class", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [depreciationVersion]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/500000\.00/)).toBeInTheDocument();
+    });
+
+    const headerNames = [
+      "車價（元）",
+      "折舊年限（年）",
+      "預估年里程（公里）",
+      "每年折舊費用（元）",
+      "每公里單價（元）",
+    ];
+    for (const name of headerNames) {
+      expect(screen.getByRole("columnheader", { name })).toHaveClass("num-col");
+    }
+
+    expect(screen.getByText("500000.00")).toHaveClass("num-col");
+    expect(screen.getByText("5")).toHaveClass("num-col");
+    expect(screen.getByText("15000")).toHaveClass("num-col");
+    expect(screen.getByText("100000.00")).toHaveClass("num-col");
+    expect(screen.getByText("6.6667")).toHaveClass("num-col");
   });
 });

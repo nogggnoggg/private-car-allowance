@@ -37,6 +37,20 @@ type SectionState<T> =
 
 // ---- Shared helpers ----
 
+/**
+ * 格式化日期為 YYYY-MM-DD（補零、本地時區）。
+ * UI-FIX-001-T1：取代 toLocaleDateString("zh-TW")（輸出 2026/8/2，無補零，
+ * 與生效日期欄格式不一致）。刻意使用本地時區的 getFullYear/getMonth/getDate
+ * （而非 toISOString 的 UTC 方法），避免時區邊界日期錯位。
+ */
+export function formatDateYmd(input: string | Date): string {
+  const d = typeof input === "string" ? new Date(input) : input;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /** Parse ApiError.details.conflictVersion if available (PARAMETER_PERIOD_OVERLAP, §4.8) */
 function getConflictVersionInfo(err: ApiError): string | null {
   const details = err.details;
@@ -209,7 +223,7 @@ function FuelSection(): React.ReactElement {
             <thead>
               <tr>
                 <th>生效日期</th>
-                <th>每公里單價（元）</th>
+                <th className="num-col">每公里單價（元）</th>
                 <th>建立時間</th>
               </tr>
             </thead>
@@ -217,8 +231,8 @@ function FuelSection(): React.ReactElement {
               {sectionState.versions.map((v) => (
                 <tr key={v.id}>
                   <td>{v.effectiveFrom}</td>
-                  <td>{v.unitPrice}</td>
-                  <td>{new Date(v.createdAt).toLocaleDateString("zh-TW")}</td>
+                  <td className="num-col">{v.unitPrice}</td>
+                  <td>{formatDateYmd(v.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -389,7 +403,7 @@ function EtcSection(): React.ReactElement {
             <thead>
               <tr>
                 <th>生效日期</th>
-                <th>每公里單價（元）</th>
+                <th className="num-col">每公里單價（元）</th>
                 <th>建立時間</th>
               </tr>
             </thead>
@@ -397,8 +411,8 @@ function EtcSection(): React.ReactElement {
               {sectionState.versions.map((v) => (
                 <tr key={v.id}>
                   <td>{v.effectiveFrom}</td>
-                  <td>{v.unitPrice}</td>
-                  <td>{new Date(v.createdAt).toLocaleDateString("zh-TW")}</td>
+                  <td className="num-col">{v.unitPrice}</td>
+                  <td>{formatDateYmd(v.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -614,33 +628,35 @@ function DepreciationSection(): React.ReactElement {
           </div>
         )}
         {sectionState.kind === "ready" && sectionState.versions.length > 0 && (
-          <table className="param-table" aria-label="折舊參數版本清單">
-            <thead>
-              <tr>
-                <th>生效日期</th>
-                <th>車價（元）</th>
-                <th>折舊年限（年）</th>
-                <th>預估年里程（公里）</th>
-                <th>每年折舊費用（元）</th>
-                <th>每公里單價（元）</th>
-                <th>建立時間</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sectionState.versions.map((v) => (
-                <tr key={v.id}>
-                  <td>{v.effectiveFrom}</td>
-                  <td>{v.vehiclePrice}</td>
-                  <td>{v.usefulLifeYears}</td>
-                  <td>{v.estimatedAnnualKm}</td>
-                  {/* derived — displayed from backend response, NOT calculated by frontend (AC-20) */}
-                  <td>{v.derived.annualDepreciation}</td>
-                  <td>{v.derived.perKmUnitPrice}</td>
-                  <td>{new Date(v.createdAt).toLocaleDateString("zh-TW")}</td>
+          <div className="table-scroll">
+            <table className="param-table" aria-label="折舊參數版本清單">
+              <thead>
+                <tr>
+                  <th>生效日期</th>
+                  <th className="num-col">車價（元）</th>
+                  <th className="num-col">折舊年限（年）</th>
+                  <th className="num-col">預估年里程（公里）</th>
+                  <th className="num-col">每年折舊費用（元）</th>
+                  <th className="num-col">每公里單價（元）</th>
+                  <th>建立時間</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {sectionState.versions.map((v) => (
+                  <tr key={v.id}>
+                    <td>{v.effectiveFrom}</td>
+                    <td className="num-col">{v.vehiclePrice}</td>
+                    <td className="num-col">{v.usefulLifeYears}</td>
+                    <td className="num-col">{v.estimatedAnnualKm}</td>
+                    {/* derived — displayed from backend response, NOT calculated by frontend (AC-20) */}
+                    <td className="num-col">{v.derived.annualDepreciation}</td>
+                    <td className="num-col">{v.derived.perKmUnitPrice}</td>
+                    <td>{formatDateYmd(v.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </section>
