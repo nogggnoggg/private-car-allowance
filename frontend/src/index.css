@@ -130,6 +130,20 @@ body {
   cursor: not-allowed;
 }
 
+/* PHASE-004-T14: bare .form-group <select> (AdminUserApplicationsPage's
+   使用者選擇器) — mirrors .form-group input's width:100% so a long
+   displayName option list cannot force intrinsic select width past the
+   375px viewport (AC-89 精神：body 不得水平溢位). `.filter-bar select`
+   above already sets the same width:100% for ApplicationListSection's own
+   filter selects; this generalizes it to any bare .form-group select. */
+.form-group select {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 1rem;
+  width: 100%;
+}
+
 .field-error {
   font-size: 0.8rem;
   color: #dc2626;

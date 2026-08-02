@@ -69,12 +69,33 @@ type ListState =
     };
 
 export interface ApplicationListSectionProps {
-  /** For a future admin "檢視他人紀錄" reuse (PHASE-004-T14); omitted = self. */
+  /** Reused by the admin "檢視他人紀錄" page (PHASE-004-T14); omitted = self. */
   ownerId?: string;
+  /**
+   * PHASE-004-T14: the self-service "新增差旅補助" link (toolbar + empty
+   * state) creates a draft owned by the CALLER (`POST /applications/travel`,
+   * owner 恆為呼叫者 — AC-79a). That is wrong when this section is reused on
+   * the admin "使用者 U 的申請紀錄" page: showing it there would let an admin
+   * create a draft owned by *themselves* while viewing U's list, which is not
+   * what Spec §3.2/§4 wants (that page has its own "代建立差旅草稿" entry,
+   * calling `POST /admin/users/:userId/applications/travel` instead — see
+   * `AdminUserApplicationsPage.tsx`). Defaults to `true` (existing self-view
+   * behavior, PHASE-004-T13's `ApplicationListSection.test.tsx` renders with
+   * no props and asserts this link is present — unchanged).
+   */
+  showCreateLink?: boolean;
+  /**
+   * PHASE-004-T14: Spec §4 為管理員頁的 Empty 狀態指定不同文案（「該使用者
+   * 尚無申請紀錄」，而非個人列表頁的「尚無任何申請紀錄。」）. Defaults to the
+   * original self-view text — unchanged for existing callers/tests.
+   */
+  emptyMessage?: string;
 }
 
 export default function ApplicationListSection({
   ownerId,
+  showCreateLink = true,
+  emptyMessage = "尚無任何申請紀錄。",
 }: ApplicationListSectionProps): React.ReactElement {
   const [filters, setFilters] = useState<FilterFormState>(EMPTY_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<FilterFormState>(EMPTY_FILTERS);
@@ -143,11 +164,13 @@ export default function ApplicationListSection({
 
   return (
     <section className="application-list-section" aria-label="我的申請紀錄">
-      <div className="list-toolbar">
-        <Link to="/applications/travel/new" className="btn btn-primary">
-          新增差旅補助
-        </Link>
-      </div>
+      {showCreateLink && (
+        <div className="list-toolbar">
+          <Link to="/applications/travel/new" className="btn btn-primary">
+            新增差旅補助
+          </Link>
+        </div>
+      )}
 
       <form className="filter-bar" onSubmit={handleSubmitFilters} aria-label="篩選申請紀錄">
         <div className="form-group">
@@ -254,10 +277,12 @@ export default function ApplicationListSection({
 
       {state.kind === "ready" && state.items.length === 0 && !hasActiveFilters && (
         <div className="empty-block">
-          <p>尚無任何申請紀錄。</p>
-          <Link to="/applications/travel/new" className="btn btn-primary">
-            新增差旅補助
-          </Link>
+          <p>{emptyMessage}</p>
+          {showCreateLink && (
+            <Link to="/applications/travel/new" className="btn btn-primary">
+              新增差旅補助
+            </Link>
+          )}
         </div>
       )}
 

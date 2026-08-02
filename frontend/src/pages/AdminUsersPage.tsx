@@ -255,6 +255,11 @@ export default function AdminUsersPage(): React.ReactElement {
           <Link to="/" className="btn btn-secondary">
             返回首頁
           </Link>
+          {/* PHASE-004-T14 (AD-US-06): 未預選使用者的一般化入口，見
+              AdminUserApplicationsPage.tsx 檔頭註解。 */}
+          <Link to="/admin/applications" className="btn btn-secondary">
+            使用者申請紀錄
+          </Link>
           <button
             type="button"
             className="btn btn-primary"
@@ -306,6 +311,16 @@ export default function AdminUsersPage(): React.ReactElement {
                       </span>
                     </td>
                     <td className="action-cell">
+                      {/* PHASE-004-T14 (AD-US-06/07): 進入該使用者的申請紀錄 +
+                          代操作頁（Spec §3.2 步驟 2「點使用者姓名」對應的實
+                          際入口——實作為獨立按鈕而非把 displayName 本身變成
+                          連結，鍵盤可操作性與可發現性較佳，功能等價）。 */}
+                      <Link
+                        to={`/admin/users/${u.id}/applications`}
+                        className="btn btn-sm btn-secondary"
+                      >
+                        申請紀錄
+                      </Link>
                       {u.isActive ? (
                         <button
                           type="button"
@@ -385,6 +400,12 @@ export default function AdminUsersPage(): React.ReactElement {
                     <span>角色：{u.role === "ADMIN" ? "管理員" : "一般使用者"}</span>
                   </div>
                   <div className="card-actions">
+                    <Link
+                      to={`/admin/users/${u.id}/applications`}
+                      className="btn btn-sm btn-secondary"
+                    >
+                      申請紀錄
+                    </Link>
                     {u.isActive ? (
                       <button
                         type="button"

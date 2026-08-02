@@ -211,6 +211,29 @@ export async function apiCreateTravelDraft(
 }
 
 // ---------------------------------------------------------------------------
+// POST /admin/users/:userId/applications/travel (§8.2, T10) — 管理員代建立
+// 差旅草稿（AC-78/79/85）. Body shape identical to `POST /applications/travel`
+// (see `apiCreateTravelDraft` above) — the ONLY difference is the URL, which
+// carries `:userId` (the被代理使用者); the backend sets `ownerId=:userId`,
+// `createdById=` the calling admin (T14 Packet C1: authorization is decided
+// server-side by `requireAdmin` — this client function does not, and cannot,
+// enforce anything; it merely calls the endpoint T10 already authorizes).
+// ---------------------------------------------------------------------------
+
+export async function apiCreateTravelDraftOnBehalf(
+  userId: string,
+  body: CreateTravelDraftRequest = {}
+): Promise<{ application: TravelApplicationDto }> {
+  const res = await fetch(`/api/admin/users/${userId}/applications/travel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  return parseApiResponse<{ application: TravelApplicationDto }>(res);
+}
+
+// ---------------------------------------------------------------------------
 // GET /applications/travel/:id (§8.2 AC-04)
 // ---------------------------------------------------------------------------
 
