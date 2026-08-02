@@ -34,7 +34,7 @@ Updated: 2026-08-02
 
 - **PHASE-003 DONE**：整合驗收通過、PR #3 經人類批准合併至 main（766abf8，2026-08-01）；Spec 轉 COMPLETED。
 - **PHASE-003a（補助參數維護）：DONE**。整合驗收通過、PR #4 經人類批准合併至 main（94a87a8，2026-08-02）；Spec 轉 COMPLETED。CI 全綠（Lint/Typecheck/Frontend、Backend Build&Tests、Docker Build 皆 pass）。授權於 compose 真實環境實測：一般使用者 staff01 對所有 /parameters 端點（GET fuel/etc/depreciation、POST fuel/depreciation）皆 403；管理員專屬（後端 requireAdmin 為權威 + 前端首頁連結僅管理員可見 + 頁面 permission-denied 態）。
-- **PHASE-004（差旅申請，垂直核心；branch: phase-004）：IN_PROGRESS**。Spec `docs/specs/PHASE-004.md` 為 **ACTIVE**（93 條 AC、15 Task、D1~D18 已定案）。
+- **PHASE-004（差旅申請，垂直核心）：DONE**。整合驗收 Gate 通過（人類 leonchih，2026-08-02）、**PR #5 經人類批准合併至 main（`0680ae27`）**、CI 三 job 全綠；Spec 轉 **COMPLETED**。15 Task + 9 REPAIR + 期中/終審 Review + 兩次輕量複審，46 commit。測試 516 → **879**（後端）／**110**（前端）／**11**（E2E）。
 
 ### PHASE-004 Task 進度
 
@@ -74,7 +74,7 @@ Updated: 2026-08-02
 | R9 | REPAIR：seed:admin 於 production 映像失效（Gate 發現） | High | DONE | 69eeb16 |
 | — | R9 輕量複審 | — | DONE | **APPROVE** |
 | — | Draft PR #5 + CI | — | DONE | 三 job 全綠 |
-| — | **PR 合併批准（人類）** | — | **待觸發** | — |
+| — | **PR 合併批准（人類）** | — | **通過（2026-08-02）** | PR #5 → 0680ae27 |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
 - 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ 871（T12）→ 877（R7）→ **879（R8）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
@@ -252,7 +252,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **9e00b8c**；已 push 至 origin/phase-004，**Draft PR #5** 已建立，**CI 三 job 全綠**；待人類合併批准
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；**main @ 0680ae27**（PHASE-004 合併後，PR #5）。phase-004 branch 已完成使命。
 
 ## Human Gate（PHASE-004）
 
