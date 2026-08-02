@@ -16,6 +16,9 @@ Updated: 2026-08-02
 > - 範圍（僅程式兩項，其餘追蹤事項已於 INFRA-001/DOC-FIX-001 關閉）：①**wire-level 畸形請求 500→400 硬化**（`backend/src/platform/error-handler.ts:104-118` 分支 3 前補「statusCode 4xx 或 FST_ERR_CTP_* → 400 VALIDATION_ERROR」，追蹤項原文含修法與影響面：未登入者可穩定製造 level:50 錯誤日誌、reviewer 已實測 /auth/login 畸形 JSON 亦 500；`phase4-r8-wire-level-empty-json-body.test.ts` 刻意 pin 500 的對照測試須一併轉正——該檔註解已預告）②**`parameter-service.ts:472` 最後一處 `new Prisma.Decimal(0)` 傳數字改傳字串**（D4 bright-line 全域一致，R5 遺留）。
 > - branch：`chore-001`（自 main @ `8e94b77`，INFRA-001 合併後）。流程：implementer TDD → 大總管獨立驗收 → reviewer 輕量複審 → Draft PR + CI → 合併（reviewer APPROVE + CI 綠 → 依夜間授權；否則留 PR 待人類）。
 > - §15 重錨定：大總管零程式修改，全數派 implementer。error-handler 屬 platform 層非 auth 領域（不觸 `src/auth/**`/seed/附件權限），Risk 定 Medium；惟其位於 auth 之前的請求路徑，reviewer 複審必含「不得放寬任何授權/驗證行為」檢查項。
+> - **T1：DONE**（commit `fbcec11`，5 檔）。修復前紅燈實證（stash 手法,4 條 500→400）；大總管獨立驗收 **933/0/0**（隔離上線後一輪即證據）、tsc 0、biome 乾淨。**輕量複審：0 Must Fix**,程式面可合入；S-1（文件,已由下列更正關閉）；AR-1 413/415 被壓平為 400（每一現存情境均為 500→400 之嚴格改善,無回歸;reviewer 明確不主張排除 BODY_TOO_LARGE）;AR-2 multipart 4xx 逃逸情境同為改善方向;AR-3 chore001 硬化測試檔 (c) 未掛 describeWithDb（無 DB 環境會紅非 skip,CI 有 DB 不阻擋）;AR-4 `.claude/` 未入 .gitignore。
+> - **S-1 措辭更正（reviewer 查證）**：CHORE-001 修掉的是最後一處 **`Decimal(0)` 字面量**,「D4 bright-line 全域一致」不成立——`Decimal(<number 變數>)` 建構仍有 4 處活躍且落在持久化金額欄位（`parameter-service.ts:171→208`、`:280→317`、`:466`、`depreciation-engine.ts:72`;routes.ts:71/88 accept any value 使 JSON 數字直達）。R5 當初僅盤點 `Decimal(0)` 字面量 7 處,從未盤點變數建構。實務上 ≤15 有效位不失真,非急迫。
+> - **新追蹤項（D4-Decimal-number,待後續回合）**：上列 4 處 `new Prisma.Decimal(<number>)` 改字串化建構以完成真正的 bright-line;連同 reviewer follow-up 建議「wire-level 4xx 分類改保留原始 status 對照表（413→PAYLOAD_TOO_LARGE、415→UNSUPPORTED_MEDIA_TYPE、其餘→400）」一併排程（三個 code 均已在 ErrorCode 聯集,成本低）。
 
 > **INFRA-001 開工記錄（2026-08-03，使用者裁定優先於 PHASE-005）**
 > - 目標：測試隔離結構性修復（A-1 基礎設施債，retrospective PHASE-004 §5 建議①）——per-worker 隔離使「跑一輪」重新成為證據，消滅共用 DB 造成的六類事故（flake、跨檔污染、萬用字元誤刪、殘留 FK 爆炸等）。
