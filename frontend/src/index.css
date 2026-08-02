@@ -345,6 +345,38 @@ body {
   background: #f9fafb;
 }
 
+/* ===== Parameter Table（UI-FIX-001-T1） ===== */
+.param-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.param-table th,
+.param-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.param-table th {
+  background: #f9fafb;
+  font-weight: 600;
+  color: #555;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.param-table tr:hover {
+  background: #f9fafb;
+}
+
+.param-table th.num-col,
+.param-table td.num-col {
+  text-align: right;
+}
+
 .row-inactive td {
   color: #999;
 }
