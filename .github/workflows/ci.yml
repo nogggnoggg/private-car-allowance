@@ -119,3 +119,47 @@ jobs:
 
       - name: Build frontend image
         run: docker build -f frontend/Dockerfile -t frontend:ci .
+
+      # ──────────────────────────────────────────────────────────────────
+      # PHASE-004-R9 regression guard: `npm run seed:admin` (the documented
+      # way to create the system's first ADMIN, docs/specs/PHASE-002.md
+      # §13.1-1) must resolve and run inside the *built runtime image* —
+      # not just in dev/CI checkouts where backend/src is present. The
+      # original defect (backend/package.json pointing seed:admin at
+      # `tsx src/seed/seed-admin.ts`, while the runtime image intentionally
+      # ships only `dist/`, never `src/`) surfaced ONLY against a real
+      # image and was invisible to the "Backend Build & Tests" job above,
+      # which runs straight from the checkout.
+      #
+      # No Postgres is wired into this job, so we don't attempt a full
+      # end-to-end seed here (that is verified manually against a real
+      # docker-compose stack as part of the PHASE-004-R9 task evidence).
+      # Instead we override the image's ENTRYPOINT (which otherwise runs
+      # `prisma migrate deploy` unconditionally and would fail on a missing
+      # DATABASE_URL before ever reaching npm) and invoke `npm run
+      # seed:admin` directly with no env vars set. seed-admin.ts validates
+      # SEED_ADMIN_LOGIN/SEED_ADMIN_PASSWORD *before* touching Prisma/the
+      # DB, so this deterministically reaches the script's own
+      # parameter-validation output without any database — while still
+      # exercising real module resolution inside the built image. This
+      # is precisely where the original defect (ERR_MODULE_NOT_FOUND) hit.
+      - name: Verify seed:admin resolves inside built backend image
+        run: |
+          set +e
+          OUTPUT=$(docker run --rm --entrypoint npm backend:ci run seed:admin 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -q "ERR_MODULE_NOT_FOUND"; then
+            echo "::error::seed:admin cannot resolve its module inside the built runtime image (regression of PHASE-004-R9 — the image must not require backend/src)."
+            exit 1
+          fi
+          if ! echo "$OUTPUT" | grep -q "SEED_ADMIN_LOGIN environment variable is required"; then
+            echo "::error::seed:admin did not reach its own parameter-validation output; unexpected failure mode (see log above)."
+            exit 1
+          fi
+          if [ "$STATUS" -ne 1 ]; then
+            echo "::error::seed:admin exited with status $STATUS, expected 1 (missing required env vars)."
+            exit 1
+          fi
+          echo "OK: seed:admin resolves and runs correctly inside the built image."

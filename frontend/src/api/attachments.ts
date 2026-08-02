@@ -61,21 +61,12 @@ export async function apiUploadAttachment(file: File): Promise<{ attachment: Att
   return parseApiResponse<{ attachment: AttachmentDto }>(res);
 }
 
-/** POST /api/attachments/:id/link — link attachment to a container */
-export async function apiLinkAttachment(
-  attachmentId: string,
-  refType: AttachmentRefType,
-  refId: string,
-  limit: number
-): Promise<{ attachment: AttachmentDto }> {
-  const res = await fetch(`/api/attachments/${attachmentId}/link`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ refType, refId, limit }),
-  });
-  return parseApiResponse<{ attachment: AttachmentDto }>(res);
-}
+// apiLinkAttachment (POST /api/attachments/:id/link) — REMOVED (PHASE-004-T11, D12).
+// The public link endpoint was removed on the backend (AR-D 閉環): it let a
+// caller self-supply `limit`/`refId`/`containerState`, which would have been a
+// real authorization bypass once PHASE-004 has real completed applications.
+// Attachment linking is now driven exclusively by `PUT /applications/travel/:id`'s
+// `attachmentIds[]` (see frontend/src/pages travel form, T13).
 
 /** DELETE /api/attachments/:id — delete/unlink an attachment */
 export async function apiDeleteAttachment(attachmentId: string): Promise<void> {

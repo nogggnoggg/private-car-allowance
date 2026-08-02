@@ -1,5 +1,6 @@
 import type React from "react";
 import { Link } from "react-router-dom";
+import ApplicationListSection from "../components/ApplicationListSection.js";
 import { useAuth } from "../context/AuthContext.js";
 
 export default function HomePage(): React.ReactElement {
@@ -45,7 +46,7 @@ export default function HomePage(): React.ReactElement {
 
       <main className="page-main">
         <h2>我的私車補助紀錄</h2>
-        <p className="placeholder-note">（功能建置中，將於後續版本提供）</p>
+        <ApplicationListSection />
       </main>
     </div>
   );

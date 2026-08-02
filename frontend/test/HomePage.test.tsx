@@ -51,6 +51,34 @@ function mockMeAs(user: UserDto) {
   );
 }
 
+// PHASE-004-T13: HomePage now also renders <ApplicationListSection />, which
+// fires a GET /api/applications on mount. These existing (PHASE-003a-T7)
+// tests only assert on header/nav elements, but without this second mock the
+// component would fall through to a real (failing) fetch call for the list —
+// this queues a deterministic empty-list response so those unrelated
+// assertions keep passing. Not a modification of any existing assertion.
+function mockEmptyApplicationsList() {
+  (fetch as Mock).mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        items: [],
+        page: 1,
+        pageSize: 20,
+        total: 0,
+        appliedFilters: {
+          dateFrom: "2025-01-01",
+          dateTo: null,
+          type: null,
+          status: null,
+          keyword: null,
+          ownerId: "self",
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    )
+  );
+}
+
 function renderHomePage() {
   return render(
     <MemoryRouter initialEntries={["/"]}>
@@ -81,6 +109,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁顯示「補助參數維護」連結，指向 /admin/parameters", async () => {
     mockMeAs(adminUser);
+    mockEmptyApplicationsList();
 
     renderHomePage();
 
@@ -93,6 +122,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("一般使用者（role=USER）登入 → 首頁不顯示「補助參數維護」連結", async () => {
     mockMeAs(regularUser);
+    mockEmptyApplicationsList();
 
     renderHomePage();
 
@@ -107,6 +137,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁仍顯示既有「使用者管理」連結", async () => {
     mockMeAs(adminUser);
+    mockEmptyApplicationsList();
 
     renderHomePage();
 
@@ -119,6 +150,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁仍顯示「變更密碼」連結", async () => {
     mockMeAs(adminUser);
+    mockEmptyApplicationsList();
 
     renderHomePage();
 
@@ -131,6 +163,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁仍顯示「登出」按鈕", async () => {
     mockMeAs(adminUser);
+    mockEmptyApplicationsList();
 
     renderHomePage();
 

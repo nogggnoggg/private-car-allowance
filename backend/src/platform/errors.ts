@@ -18,6 +18,7 @@ export type ErrorCode =
   | "CONFLICT" // 409 — loginName duplicate, delete blocked (has history), self-deactivate/delete
   | "TOO_MANY_ATTACHMENTS" // 409 — attachment count reached container limit
   | "PARAMETER_PERIOD_OVERLAP" // 409 — new parameter version overlaps with an existing version (PHASE-003a §4.8 D5); body includes details.conflictVersion
+  | "PARAMETER_NOT_AVAILABLE" // 409 — trip date has no effective fuel/ETC parameter version, cannot complete (PHASE-004 §8.5, AC-47); body includes details.missing (("FUEL"|"ETC")[]) and details.tripDate
   | "INTERNAL_ERROR" // 500 — unhandled/unexpected exception
   | "SERVICE_UNAVAILABLE"; // 503 — dependency unavailable (e.g. DB down)
 

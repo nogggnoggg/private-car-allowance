@@ -1,25 +1,33 @@
 /**
  * userHasHistory — PHASE-002-T9 extensible judgment point.
+ * Closed out in PHASE-004-T15 (AC-92 / AD-US-04).
  *
- * Spec §4.6 / AC-23 / D7:
+ * Spec §4.6 / AC-23 / D7 (PHASE-002) + PHASE-004 §2 AC-92:
  *   Determines whether a user has any "history" that should prevent deletion.
- *   "History" is defined as: application/report data owned by the user
- *   (申請/報表資料).
+ *   "History" is defined as: any `Application` row owned by the user
+ *   (申請/報表資料) — DRAFT or COMPLETED both count (AC-92; VOIDED is not
+ *   reachable in this Phase per AC-58, but would count too since it is still
+ *   an Application row owned by the user).
  *
- *   In PHASE-002, no such data tables exist yet (PHASE-004+).
- *   Therefore this function currently always returns false — all users
- *   are considered to have no history and can be hard-deleted.
+ *   In PHASE-002, no such data tables existed yet, so this always returned
+ *   false. PHASE-004-T15 wires it to the real `Application` table added by
+ *   PHASE-004-T1.
  *
- * Extensibility:
- *   PHASE-004+ will extend the `getHistoryCount` dependency to query
- *   application/report tables. Tests inject a stub via the factory
- *   function to verify the "has history → reject delete" branch.
+ * Query shape (existence check, not a full-table scan):
+ *   `prisma.application.count({ where: { ownerId: userId } }) > 0`
+ *   — matches the PHASE-004 §10.2 pseudocode contract exactly. `ownerId` is
+ *   the leading column of `Application`'s `[ownerId, status, primaryDate]`
+ *   and `[ownerId, primaryDate]` indexes (schema.prisma), so this query is
+ *   an index scan, not a table scan (C4).
  *
  * Design (injectable for testability per Spec §9):
  *   - Default export: `userHasHistory(prisma, userId)` — uses the production
- *     check (always false in this Phase).
+ *     check (real `Application` count as of PHASE-004-T15).
  *   - `makeUserHasHistory(checker)` — factory accepting a custom async
- *     checker function, used in tests to stub "has history = true".
+ *     checker function, used in tests to stub "has history = true"
+ *     (see `admin-users.test.ts` — that test builds its own Fastify
+ *     instance with an injected stub and does not exercise this
+ *     production checker at all, so it is unaffected by this change).
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -31,19 +39,19 @@ import type { PrismaClient } from "@prisma/client";
 export type HistoryChecker = (prisma: PrismaClient, userId: string) => Promise<boolean>;
 
 /**
- * Production history checker — PHASE-002: always returns false.
+ * Production history checker — PHASE-004-T15: real `Application` count.
  *
- * PHASE-004+: replace body with queries to application/report tables.
- * Example:
- *   const count = await prisma.application.count({ where: { userId } });
- *   return count > 0;
+ * Any `Application` row owned by the user counts as history, regardless of
+ * `status` (DRAFT or COMPLETED both count — AC-92). Deleting the Application
+ * row itself (e.g. by an out-of-band cleanup) makes the user deletable again;
+ * this function has no notion of "was ever deleted", only current rows.
  */
 const productionHistoryChecker: HistoryChecker = async (
-  _prisma: PrismaClient,
-  _userId: string
+  prisma: PrismaClient,
+  userId: string
 ): Promise<boolean> => {
-  // No application/report tables in PHASE-002 → no history.
-  return false;
+  const count = await prisma.application.count({ where: { ownerId: userId } });
+  return count > 0;
 };
 
 /**

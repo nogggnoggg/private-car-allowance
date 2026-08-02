@@ -36,21 +36,16 @@ const MINIMAL_JPEG = Buffer.from([
   0x00, 0x01, 0x00, 0x00, 0xff, 0xd9,
 ]);
 
-/** Minimal valid 1x1 PNG (real 89 50 4E 47 header) */
-const MINIMAL_PNG = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-  0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
-  0x00, 0x00, 0x02, 0x00, 0x01, 0xe2, 0x21, 0xbc, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
-  0x44, 0xae, 0x42, 0x60, 0x82,
-]);
+// PHASE-004-T13: MINIMAL_PNG / pngFixture removed along with the AC-21 test
+// that used them (migrated to e2e/travel-application.spec.ts — see the
+// pointer comment where that test used to be, below). The remaining tests in
+// this file (AC-19/20) only ever used jpegFixture / inline buffers.
 
 // ---------------------------------------------------------------------------
 // File fixtures written to temp dir
 // ---------------------------------------------------------------------------
 let tmpDir: string;
 let jpegFixture: string;
-let pngFixture: string;
 
 // ---------------------------------------------------------------------------
 // Collect attachment IDs for cleanup
@@ -97,10 +92,8 @@ test.beforeAll(async () => {
   // Create temp fixture files
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-att-"));
   jpegFixture = path.join(tmpDir, "test-photo.jpg");
-  pngFixture = path.join(tmpDir, "link-test.png");
 
   fs.writeFileSync(jpegFixture, MINIMAL_JPEG);
-  fs.writeFileSync(pngFixture, MINIMAL_PNG);
 });
 
 test.afterAll(async () => {
@@ -200,54 +193,19 @@ test.describe("附件驗收頁 — PHASE-003 Gate E2E", () => {
     await expect(page.locator('img[alt="document.pdf"]')).not.toBeVisible();
   });
 
-  /**
-   * AC-21: Upload PNG → link → delete → reload does not show attachment
-   */
-  test("AC-21: 上傳 PNG 關聯後刪除 → 重新載入不顯示", async ({ page }) => {
-    await loginAndGoToDemo(page);
-
-    // Step 1: Upload PNG
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent("filechooser"),
-      page.click('button:has-text("選擇圖片")'),
-    ]);
-    await fileChooser.setFiles(pngFixture);
-
-    // Wait for thumbnail in uploader's "已附圖片清單" (shows after upload, before linking)
-    const uploadedImg = page
-      .locator('[aria-label="已附圖片清單"] img[alt="link-test.png"]')
-      .first();
-    await expect(uploadedImg).toBeVisible({ timeout: 15000 });
-
-    // Record attachment ID for cleanup
-    const src = await uploadedImg.getAttribute("src");
-    const match = src?.match(/\/api\/attachments\/([^/]+)\/thumbnail/);
-    if (match?.[1]) createdAttachmentIds.push(match[1]);
-
-    // Step 2: Link the attachment via the 「關聯」 button in the staging area
-    await page.click('[aria-label="關聯 link-test.png"]');
-
-    // Wait for linked section to show the attachment (AC-14: LINKED state)
-    const linkedSection = page.locator('[aria-label="已關聯附件清單"]');
-    await expect(linkedSection).toBeVisible({ timeout: 10000 });
-    await expect(linkedSection.locator('img[alt="link-test.png"]')).toBeVisible({ timeout: 10000 });
-
-    // Step 3: Delete from linked list (AC-21: can delete in draft state).
-    // Scope to the linked section to avoid strict mode violation
-    // (same aria-label may also appear in the uploader's own list).
-    await linkedSection.locator('[aria-label="刪除 link-test.png"]').click();
-
-    // Should disappear from the linked section
-    await expect(linkedSection.locator('img[alt="link-test.png"]')).not.toBeVisible({
-      timeout: 10000,
-    });
-
-    // Step 4: Reload page — attachment must not reappear (AC-21)
-    // Note: The demo page does not persist state across reloads (no server-side fetch of linked list),
-    // so after reload the linked section will be empty — verifying the deletion was permanent.
-    await page.reload();
-    await page.waitForURL(`${BASE}/attachments-demo`, { timeout: 10000 });
-    await expect(page.locator("h1")).toContainText("附件功能驗收頁");
-    await expect(page.locator('img[alt="link-test.png"]')).not.toBeVisible({ timeout: 5000 });
-  });
+  // AC-21 was originally verified here: "上傳 PNG → 關聯 → 刪除 → 重新載入不顯示".
+  // MIGRATED in PHASE-004-T13 to e2e/travel-application.spec.ts (see that
+  // file's header comment for the full before/after coverage mapping).
+  // Rationale: the scenario relied on the public `POST /attachments/:id/link`
+  // endpoint and this page's "關聯"/「已關聯附件清單」 UI, both of which were
+  // removed in PHASE-004-T11 (D12, AR-D 閉環 — that endpoint let a caller
+  // self-supply `limit`/`refId`/`containerState`, a real authorization bypass
+  // once PHASE-004 has real completed applications). There is no equivalent
+  // "link" action left on THIS page to test — attachment linking is now
+  // exclusively driven by the real travel draft form's `PUT
+  // /applications/travel/:id` (`attachmentIds[]`, D15), which is what the
+  // migrated scenario exercises instead, with STRONGER coverage (it also
+  // proves the link survives a page reload via real backend persistence,
+  // which this demo page never did — it never fetched a server-side linked
+  // list back).
 });

@@ -13,8 +13,11 @@
  *   9. createAttachment(TEMP) in DB.
  *  10. Compensation delete of written storage keys if any post-put step fails.
  *
- * Owner rule (D3 definite): ownerId is always the uploading user; the optional
- * ownerId field in the multipart form is ignored. The calling route enforces this.
+ * Owner rule (D3 definite; extended PHASE-004-T11 D11): ownerId defaults to the
+ * uploading user, but the calling route (routes.ts) may resolve a different,
+ * ADMIN-authorized `ownerId` (on-behalf upload) and pass it through explicitly
+ * via `UploadOptions.ownerId`. `uploaderId` is ALWAYS the authenticated caller
+ * — never client-supplied, never overridden here.
  *
  * Log safety (§9.4): errors logged via sanitizeForLog; no volume paths or raw bytes.
  */
@@ -45,8 +48,17 @@ export interface UploadResult {
 }
 
 export interface UploadOptions {
-  /** Authenticated user performing the upload (owner = uploading user per D3) */
+  /** Authenticated user performing the upload (always the actual caller) */
   uploaderId: string;
+  /**
+   * Resource owner (PHASE-004-T11 D11). Optional — defaults to `uploaderId`
+   * when omitted (D3 default, and what every PHASE-003 caller of this
+   * function still does). `routes.ts`'s `POST /attachments` handler always
+   * resolves and passes this explicitly (self, or an ADMIN-authorized
+   * on-behalf owner from `?ownerId=`) — the authorization decision belongs
+   * entirely to the route layer; this module never makes it.
+   */
+  ownerId?: string;
   /** Max bytes allowed; from env ATTACHMENT_MAX_BYTES */
   maxBytes: number;
   /** Thumbnail long-side pixel limit; from env ATTACHMENT_THUMBNAIL_MAX_PX */
@@ -143,6 +155,7 @@ export async function processUpload(
   options: UploadOptions
 ): Promise<UploadResult> {
   const { uploaderId, maxBytes, thumbnailMaxPx } = options;
+  const ownerId = options.ownerId ?? uploaderId; // D3 default when route doesn't override (D11)
 
   // Step 1: Get the multipart file field
   // @fastify/multipart attaches .file() on the request for single-file mode
@@ -258,7 +271,7 @@ export async function processUpload(
       byteSize: fileBuffer.length,
       originalFilename,
       uploaderId,
-      ownerId: uploaderId, // D3: owner always = uploader in this Phase
+      ownerId, // D3 default (= uploaderId) or D11 on-behalf owner, resolved by routes.ts
       status: "TEMP",
     });
 

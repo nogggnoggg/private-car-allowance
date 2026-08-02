@@ -1,36 +1,56 @@
 /**
- * Attachment routes — PHASE-003-T3
+ * Attachment routes — PHASE-003-T3, revised PHASE-004-T11 (AR-D 閉環, D11/D12)
  *
- * Routes registered in this module (T3 scope):
+ * Routes registered in this module:
  *   POST /attachments  — stream upload, magic-byte validation, size limit,
- *                        storage put, thumbnail, DB record (TEMP)
+ *                        storage put, thumbnail, DB record (TEMP).
+ *                        PHASE-004-T11 (D11/AC-29): accepts an optional
+ *                        `?ownerId=` query param — only ADMIN may specify a
+ *                        different owner; `uploaderId` is always the caller.
+ *   GET /attachments/:id/content|thumbnail — unchanged from PHASE-003-T5.
+ *   DELETE /attachments/:id — PHASE-004-T11 (AR-D/AC-27): `containerState` is
+ *     now derived from DB (`deriveContainerState`) — no client-supplied query
+ *     or body `containerState` is read anywhere in this handler.
  *
- * GET /attachments/:id/content and /thumbnail are implemented in T5.
- * POST /attachments/:id/link and DELETE /attachments/:id are implemented in T6.
+ * REMOVED in PHASE-004-T11 (D12, AR-D 閉環 — 最高優先):
+ *   POST /attachments/:id/link — the public link endpoint allowed a client to
+ *   self-supply `limit` (bypass the 3/segment cap), `refId` (link to any
+ *   container), and `containerState` (claim 'draft' to bypass completion
+ *   lock) — a real authorization bypass once PHASE-004 has real completed
+ *   assets. Requests to this path now 404 (no route registered). Attachment
+ *   linking is now exclusively driven by `PUT /applications/travel/:id`'s
+ *   `attachmentIds[]` (travel-service.ts), which calls the SERVICE layer
+ *   (`linkAttachmentTx`) directly — never this HTTP surface. The service
+ *   function `linkAttachment`/`linkAttachmentTx` remains exported from
+ *   lifecycle-service.ts for that internal use.
  *
- * Middleware (Spec §5.1):
+ * Middleware (Spec §5.1/§6.1):
  *   POST /attachments: requireAuth + requirePasswordChanged
+ *   DELETE /attachments/:id: requireAuth + requirePasswordChanged
  *
- * Owner rule (D3): ownerId always = authenticated uploader; any ownerId in the
- * form data is silently ignored.
+ * Owner rule (D3, extended D11): ownerId defaults to the authenticated
+ * uploader; ADMIN may override via `?ownerId=` to upload on behalf of another
+ * (active) user. `uploaderId` is ALWAYS the authenticated caller, never
+ * client-supplied.
  *
- * Error codes (Spec §4.8):
- *   400 VALIDATION_ERROR  — missing file field
+ * Error codes (Spec §4.8, §8.5):
+ *   400 VALIDATION_ERROR  — missing file field; ownerId points to an inactive user
+ *   403 FORBIDDEN         — non-ADMIN specifies a different ownerId
+ *   404 NOT_FOUND         — ownerId points to a non-existent user
  *   413 PAYLOAD_TOO_LARGE — single file exceeds ATTACHMENT_MAX_BYTES
  *   415 UNSUPPORTED_MEDIA_TYPE — magic bytes not JPEG/PNG/WebP
  *   401 UNAUTHORIZED       — not authenticated (from requireAuth)
  */
 
 import multipart from "@fastify/multipart";
-import type { AttachmentRefType, PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { z } from "zod";
 import { requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { getEnvOrTestDefaults } from "../config/env.js";
 import { AppError } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
 import { getAttachmentContent, getAttachmentThumbnail } from "./access-service.js";
-import { type ContainerState, deleteAttachment, linkAttachment } from "./lifecycle-service.js";
+import { deleteAttachment } from "./lifecycle-service.js";
 import { processUpload } from "./upload-service.js";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +91,26 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
   // -------------------------------------------------------------------------
   // POST /attachments
   // Stream upload; magic-byte detection; size abort; DB TEMP record.
+  //
+  // PHASE-004-T11 (D11/AC-29): optional `?ownerId=` query param.
+  //   - omitted, or equal to the caller's own id → ownerId = uploaderId = caller
+  //     (unchanged PHASE-003 default behavior).
+  //   - a DIFFERENT id, non-ADMIN caller        → 403 FORBIDDEN.
+  //   - a DIFFERENT id, ADMIN caller             → allowed; ownerId = that user,
+  //     uploaderId = the admin (on-behalf upload; §9「管理員代建立」step 5).
+  //     Target user must exist (404 NOT_FOUND if not) and be active
+  //     (400 VALIDATION_ERROR if isActive=false) — 404-vs-400 split mirrors the
+  //     established precedent in admin/routes.ts (user-not-found → 404) and
+  //     PHASE-004 §8.2's sibling admin-create-draft endpoint (disabled user →
+  //     400, nonexistent user → 404).
+  //
+  // Transport choice: `ownerId` is read from the QUERY STRING, not an
+  // additional multipart form field. This endpoint's body is a raw file
+  // stream consumed by `processUpload`/`@fastify/multipart`'s `request.file()`
+  // — adding a second multipart field would require `attachFieldsToBody` and
+  // strict field-ordering guarantees that are unrelated to this Task's actual
+  // requirement (an optional owner override). The query string carries this
+  // one piece of metadata unambiguously without touching the upload pipeline.
   // -------------------------------------------------------------------------
 
   fastify.post(
@@ -79,10 +119,36 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
       preHandler: [requireAuth(prisma), requirePasswordChanged],
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const uploaderId = request.currentUser.id;
+      const actor = request.currentUser;
+      const uploaderId = actor.id;
+
+      const query = request.query as Record<string, string | undefined>;
+      const requestedOwnerId = query.ownerId;
+
+      let ownerId = uploaderId;
+      if (
+        requestedOwnerId !== undefined &&
+        requestedOwnerId !== "" &&
+        requestedOwnerId !== uploaderId
+      ) {
+        if (actor.role !== "ADMIN") {
+          throw new AppError("FORBIDDEN", 403, "無權為他人上傳附件");
+        }
+        const targetUser = await prisma.user.findUnique({ where: { id: requestedOwnerId } });
+        if (!targetUser) {
+          throw new AppError("NOT_FOUND", 404, "指定的擁有人不存在");
+        }
+        if (!targetUser.isActive) {
+          throw new AppError("VALIDATION_ERROR", 400, "指定的擁有人已停用，無法代其上傳附件", [
+            { field: "ownerId", reason: "指定的擁有人已停用" },
+          ]);
+        }
+        ownerId = requestedOwnerId;
+      }
 
       const result = await processUpload(request, prisma, storage, {
         uploaderId,
+        ownerId,
         maxBytes,
         thumbnailMaxPx,
       });
@@ -162,86 +228,38 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
   );
 
   // -------------------------------------------------------------------------
-  // POST /attachments/:id/link
-  // Link a TEMP attachment to a container (draft state).
-  //
-  // Spec §5.1 / Done-When T6:
-  //   - requireAuth + requirePasswordChanged
-  //   - Body: { refType, refId, limit, containerState? } (zod validated)
-  //   - containerState defaults to 'draft'; callers (PHASE-004+) will inject the
-  //     real container state. 'completed' → 403 FORBIDDEN (AC-16).
-  //   - Authorization: DB ownerId via assertOwnershipOrAdmin (in service layer)
-  //   - TOCTOU prevention: count→check→update in prisma.$transaction
-  //   - 400 VALIDATION_ERROR if missing required fields
-  //   - 403 FORBIDDEN if non-owner, non-admin, or completed container
-  //   - 404 NOT_FOUND if attachment does not exist
-  //   - 409 TOO_MANY_ATTACHMENTS if count >= limit
-  //   - 409 CONFLICT if attachment is already LINKED
-  //
-  // containerState source (Spec §2 AC-16 "可注入的容器狀態測試"):
-  //   This Phase provides containerState via the request body (optional, defaults
-  //   to 'draft'). PHASE-004+ will inject real container state from the application
-  //   service layer, bypassing this route parameter and calling the service directly.
+  // POST /attachments/:id/link — REMOVED (PHASE-004-T11, D12, AR-D 閉環).
+  // No route is registered for this path; requests now receive Fastify's
+  // default 404 (route not found). See file header comment for rationale.
+  // The service-layer functions (`linkAttachment`/`linkAttachmentTx` in
+  // lifecycle-service.ts) remain available for internal callers
+  // (travel-service.ts's `updateTravelDraft`).
   // -------------------------------------------------------------------------
-
-  // Zod schema for link body
-  const linkBodySchema = z.object({
-    refType: z.enum(["TRIP_SEGMENT", "MAINTENANCE", "DEPRECIATION"]),
-    refId: z.string().min(1),
-    limit: z.number().int().positive(),
-    containerState: z.enum(["draft", "completed"]).optional().default("draft"),
-  });
-
-  fastify.post(
-    "/attachments/:id/link",
-    {
-      preHandler: [requireAuth(prisma), requirePasswordChanged],
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const { id } = request.params as { id: string };
-      const actor = request.currentUser;
-
-      // Validate body
-      const parseResult = linkBodySchema.safeParse(request.body);
-      if (!parseResult.success) {
-        const issues = parseResult.error.issues;
-        const fields = issues.map((e) => ({
-          field: e.path.join(".") || "body",
-          reason: e.message,
-        }));
-        throw new AppError("VALIDATION_ERROR", 400, "請求資料驗證失敗", fields);
-      }
-
-      const { refType, refId, limit, containerState } = parseResult.data;
-
-      const dto = await linkAttachment(prisma, {
-        attachmentId: id,
-        refType: refType as AttachmentRefType,
-        refId,
-        limit,
-        containerState: containerState as ContainerState,
-        actor,
-      });
-
-      return reply.status(200).send({ attachment: dto });
-    }
-  );
 
   // -------------------------------------------------------------------------
   // DELETE /attachments/:id
   // Delete or detach an attachment.
   //
-  // Spec §5.1 / Done-When T6:
+  // Spec §5.1 / PHASE-003-T6, revised PHASE-004-T11 (AR-D/AC-26/27),
+  // revised PHASE-004-R4 (S-1 — 推導與寫入現在同一交易):
   //   - requireAuth + requirePasswordChanged
   //   - LINKED → detach (status → TEMP, ref cleared, createdAt reset as TTL base)
   //   - TEMP → physical delete (DB record + storage files)
-  //   - containerState: optional query param or body param (defaults to 'draft')
-  //     'completed' → 403 FORBIDDEN (AC-16)
+  //   - containerState is DERIVED FROM DB, INSIDE `deleteAttachment`'s own
+  //     transaction (lifecycle-service.ts) — this handler does NOT read any
+  //     client-supplied `containerState`, from either the query string or the
+  //     request body, anywhere (AC-27b). Any such client value is completely
+  //     inert — this is the AR-D closure. 'completed' (derived) → 403
+  //     FORBIDDEN (AC-26). PHASE-004-R4 (S-1): this handler no longer does
+  //     its OWN separate `findUnique`/`deriveContainerState` call before
+  //     invoking `deleteAttachment` — that pre-R4 two-step (derive here,
+  //     write inside `deleteAttachment`) left a TOCTOU window where a
+  //     concurrent `completeTravelApplication` could commit in between. Both
+  //     steps now happen inside `deleteAttachment`'s own single transaction
+  //     (see that function's doc comment).
   //   - 200 { ok: true } on success
-  //   - 403 FORBIDDEN if non-owner, non-admin, or completed container
+  //   - 403 FORBIDDEN if non-owner, non-admin, or (derived) completed container
   //   - 404 NOT_FOUND if attachment does not exist
-  //
-  // containerState query param example: DELETE /attachments/:id?containerState=completed
   // -------------------------------------------------------------------------
 
   fastify.delete(
@@ -253,18 +271,8 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
       const { id } = request.params as { id: string };
       const actor = request.currentUser;
 
-      // containerState can come from query string (for test injection per Spec §2/AC-16)
-      // Default to 'draft' (mutable) when not provided.
-      const query = request.query as Record<string, string | undefined>;
-      const rawContainerState = query.containerState;
-      const containerState: ContainerState =
-        rawContainerState === "completed" ? "completed" : "draft";
-
-      const result = await deleteAttachment(prisma, storage, {
-        attachmentId: id,
-        containerState,
-        actor,
-      });
+      const log = { warn: (msg: string) => request.log.warn(msg) };
+      const result = await deleteAttachment(prisma, storage, { attachmentId: id, actor }, log);
 
       return reply.status(200).send(result);
     }

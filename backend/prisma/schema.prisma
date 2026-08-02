@@ -34,6 +34,8 @@ enum AuditAction {
   USER_PASSWORD_RESET
   USER_DELETED
   PARAMETER_VERSION_CREATED
+  APPLICATION_CREATED_ON_BEHALF
+  APPLICATION_UPDATED_ON_BEHALF
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +61,8 @@ model User {
   auditLogsAsTarget      AuditLog[]   @relation("AuditTarget")
   attachmentsAsUploader  Attachment[] @relation("AttachmentUploader")
   attachmentsAsOwner     Attachment[] @relation("AttachmentOwner")
+  applicationsAsOwner    Application[] @relation("ApplicationOwner")
+  applicationsAsCreator  Application[] @relation("ApplicationCreatedBy")
 
   @@index([loginName])
 }
@@ -194,4 +198,103 @@ model Attachment {
   @@index([status])
   @@index([refType, refId])
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-004 models
+// ---------------------------------------------------------------------------
+
+// ── PHASE-004 enums ────────────────────────────────────────────────
+enum ApplicationType {
+  TRAVEL
+  MAINTENANCE   // 宣告以供查詢相容；子表於 PHASE-006 建立
+  DEPRECIATION  // 宣告以供查詢相容；子表於 PHASE-007 建立
+}
+
+enum ApplicationStatus {
+  DRAFT
+  COMPLETED
+  VOIDED        // 宣告（供 PHASE-005 過濾條件可寫）；本 Phase 無任何轉換路徑（AC-58）
+}
+
+// AuditAction 擴充（既有 enum 追加值）
+//   APPLICATION_CREATED_ON_BEHALF
+//   APPLICATION_UPDATED_ON_BEHALF
+
+// ── 共用父表 ────────────────────────────────────────────────────────
+model Application {
+  id          String            @id @default(cuid())
+  type        ApplicationType
+  status      ApplicationStatus @default(DRAFT)
+
+  ownerId     String                                     // 資料擁有人（授權權威）
+  owner       User @relation("ApplicationOwner",     fields: [ownerId],     references: [id], onDelete: Restrict)
+  createdById String                                     // 實際操作者（代操作時為管理員）
+  createdBy   User @relation("ApplicationCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  /// 列表排序與期間篩選之歸屬日期（D9）：差旅＝出差日期；未填時暫以建立日期代之。
+  /// 非統計權威——PHASE-005 統計一律讀 TravelApplication.tripDate（已完成必非空）。
+  primaryDate DateTime @db.Date
+
+  /// 完成快照：最終申報金額（新臺幣整數）。草稿為 null（AC-07/50）。
+  totalAmount Int?
+  completedAt DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  travel      TravelApplication?
+
+  @@index([ownerId, status, primaryDate])
+  @@index([ownerId, primaryDate])
+  @@index([type, status])
+  @@index([primaryDate])
+}
+
+// ── 差旅子表（1:1） ─────────────────────────────────────────────────
+model TravelApplication {
+  applicationId String      @id
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  tripDate DateTime? @db.Date   // 出差日期（日粒度，含當日；歸屬期間與年度之權威）
+  purpose  String?              // 出差目的（關鍵字查詢對象）
+
+  // ── 完成快照（BE-US-18）；一經寫入不可變 ──
+  fuelUnitPrice          Decimal? @db.Decimal(10, 4)  // 快照單價，與 PHASE-003a D8 精度一致
+  etcUnitPrice           Decimal? @db.Decimal(10, 4)
+  fuelParameterVersionId String?                      // 引用保護來源（AC-93）
+  etcParameterVersionId  String?
+  snapshotTotalKm        Decimal? @db.Decimal(12, 2)  // Σ 各段 totalKm（高速不重複加）
+  snapshotRawAmount      Decimal? @db.Decimal(14, 4)  // Σ 各段取整前金額
+  calculatedAt           DateTime?
+
+  segments TripSegment[]
+
+  @@index([tripDate])
+  @@index([fuelParameterVersionId])
+  @@index([etcParameterVersionId])
+}
+
+// ── 行程段 ─────────────────────────────────────────────────────────
+model TripSegment {
+  id                  String            @id @default(cuid())
+  travelApplicationId String
+  travel              TravelApplication @relation(fields: [travelApplicationId], references: [applicationId], onDelete: Cascade)
+
+  sortOrder   Int                           // 0..n-1，依提交陣列索引重寫（D15）
+  origin      String?
+  destination String?
+  totalKm     Decimal? @db.Decimal(10, 2)   // D5：2 位小數（金額語意，須人類批准）
+  highwayKm   Decimal? @db.Decimal(10, 2)
+
+  // ── 段快照（完成時寫入，不可變）──
+  snapshotFuelAmount Decimal? @db.Decimal(14, 4)  // 取整前
+  snapshotEtcAmount  Decimal? @db.Decimal(14, 4)  // 取整前
+  snapshotRawAmount  Decimal? @db.Decimal(14, 4)  // 取整前（油資+ETC）
+  snapshotAmount     Int?                          // 取整後（整數）
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([travelApplicationId, sortOrder])
 }

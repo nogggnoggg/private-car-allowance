@@ -2,6 +2,7 @@ import type React from "react";
 import { Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import { RedirectIfAuthenticated, RequireAuth } from "./components/RouteGuard.js";
 import { AuthProvider } from "./context/AuthContext.js";
+import AdminUserApplicationsPage from "./pages/AdminUserApplicationsPage.js";
 import AdminUsersPage from "./pages/AdminUsersPage.js";
 import AttachmentsDemoPage from "./pages/AttachmentsDemoPage.js";
 import ChangePasswordPage from "./pages/ChangePasswordPage.js";
@@ -9,6 +10,7 @@ import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
 import HomePage from "./pages/HomePage.js";
 import LoginPage from "./pages/LoginPage.js";
 import ParametersPage from "./pages/ParametersPage.js";
+import TravelApplicationPage from "./pages/TravelApplicationPage.js";
 
 export default function App(): React.ReactElement {
   return (
@@ -59,6 +61,48 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <AdminUsersPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-004-T14: 管理員檢視指定使用者紀錄 + 代操作入口（§8.4 明定路由）。
+              `:userId` 由 AdminUsersPage 的每列連結帶入，作為預選對象。 */}
+          <Route
+            path="/admin/users/:userId/applications"
+            element={
+              <RequireAuth>
+                <AdminUserApplicationsPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-004-T14: 同一頁面元件的「未選使用者」進入點（Spec §8.4 未列舉，
+              純屬額外 UI 入口，不變更任何既有路由/AC——見
+              AdminUserApplicationsPage.tsx 檔頭註解的完整理由）。從
+              AdminUsersPage 標頭的「使用者申請紀錄」連結進入，讓 Done When
+              「未選使用者時代操作入口必須停用」有真實可到達的路由，而非只能
+              以元件層級的 props 測試。 */}
+          <Route
+            path="/admin/applications"
+            element={
+              <RequireAuth>
+                <AdminUserApplicationsPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-004-T13: 差旅草稿建立／編輯／已完成檢視。
+              單一路由涵蓋 §8.4 的兩條路由項——「/applications/travel/new」與
+              「/applications/travel/:id」——因為 React Router 對靜態片段的比對
+              優先於動態參數，若額外註冊一條無 :id 的靜態
+              "/applications/travel/new" route，該路由底下 useParams().id 會是
+              undefined 而非 "new"，導致 TravelApplicationPage 判斷不到「建立
+              草稿」分支。保留單一 :id 路由，讓 "new" 本身成為 id 參數值。 */}
+          <Route
+            path="/applications/travel/:id"
+            element={
+              <RequireAuth>
+                <TravelApplicationPage />
               </RequireAuth>
             }
           />
