@@ -54,7 +54,10 @@ Updated: 2026-08-02
 | R2 | REPAIR：seed:admin 測試跨檔共用狀態污染 | Medium→High | DONE | 618a694 |
 | T8 | 完成流程 + 快照 + 附件鎖定 | High | DONE | f385981 |
 | T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | DONE | c92cc28 |
-| — | **期中 reviewer 檢查點**（後端核心） | — | 待辦 | — |
+| — | **期中 reviewer 檢查點**（後端核心） | — | DONE | REQUEST_CHANGES |
+| R3 | REPAIR：測試套件不具決定性（Review M-1）+ R3F lint | High | DONE | 2d78280 |
+| R4 | REPAIR：交易邊界（Review M-2 + S-1）+ 503 production 評估 | High | IN_PROGRESS | — |
+| R5 | REPAIR：D4 Decimal 傳字串 + seed-admin 雙重 cast（S-2/S-3） | Low | 待辦 | — |
 | T9 | 綜合紀錄查詢（分頁/篩選/授權隔離） | High | 待辦 | — |
 | T10 | 管理員代操作 | High | 待辦 | — |
 | T12 | 代操作稽核 | High | 待辦 | — |
@@ -73,7 +76,15 @@ Updated: 2026-08-02
 - **reviewer 必審項（R2）**：(a) 注入縫無法自任何 production 路徑觸及；(b) 管理員存在性檢查語意未變；(c) 密碼驗證順序與 log 行為未變；(d) `SeedAdminPrismaLike` 未擴大 Prisma 暴露面；(e) 「無 ADMIN 時建立」分支由真實 DB 整合測試降級為 stub 單元測試之覆蓋形態變更是否可接受。
 - **Spec 矛盾釐清（T8，2026-08-02）**：implementer 主動回報 §6.1 授權矩陣表（L387）與 §9 流程（L766）將 `/complete` 標為 `assertOwnershipOrAdmin`，與 §17.1 **D17「本 Phase 不提供代完成」**牴觸。大總管依治理 §9 事實來源優先序裁定 **D17 為準**（owner-only，非擁有人含 ADMIN 皆 403），寫入 Spec §17 修訂紀錄（commit `51cf4ff`）。**待辦（非阻擋）**：L387／L766 之本體文字須由 spec-writer 於後續文件校正回合修正，在此之前以修訂列為權威。
 - **大總管 Packet 錯誤（T8，自陳）**：T8 Packet 之 C1 誤寫「整筆 `totalAmount` 為 Σ 取整前金額之取整值，不得用 Σ 各段取整後」——與 **AC-41「整筆 = Σ 各段已取整金額」原文正好相反**（§9 流程 L760 亦明載 `totalAmount = Σ segAmt（加總已取整）`）。implementer 未採大總管 Packet、依 Spec 與 T6 既有引擎（已過 reviewer）實作，**判斷正確**。若照 Packet 執行將打破 AC-41 並與 T6 矛盾。**教訓**：金額語意類約束不得憑記憶寫入 Packet，必須逐條回查 AC 原文；事實來源優先序（Spec > Packet）在本次有效攔截。
-- **spec-writer 待辦（累積中，非阻擋）**：(a) §6.1 授權矩陣表 L387 與 §9 流程 L766 之 `/complete` 授權文字須改為 owner-only，與 D17 及 §17 矛盾釐清列一致。
+- **期中 reviewer 檢查點（D18）：DONE — REQUEST_CHANGES**（2 Must Fix、4 Should Fix）。**金額語意、快照不變性、AR-D 閉環、D19、D17 授權本身品質良好**，鑑別力抽查全數有效，D1~D19 忠實落地（D4 除 Decimal 傳字串外全對；D6 被評為模範——型別上根本沒有單價欄位，編譯期杜絕而非執行期過濾）。缺陷集中於「交易邊界」與「測試隔離」兩處。
+  - **M-1（Critical）測試套件不具決定性 → R3 已修（）**。
+  - **M-2（High）已完成申請可被併發修改／刪除 → R4 處理中**： 僅存在於 （交易外）， 與  的交易內 select 皆無 。與 B-30 同類（守門在交易外算好、交易內不重驗）。後果為已完成申請的段落被改而快照金額不變 → 申報金額與計算依據不一致，且完成不可逆。
+  - **S-1（Medium） 推導與 detach 不同交易 → R4 一併處理**（同類）。
+  - **S-2/S-3（Medium）→ R5**： 傳數字 7 處違反 D4 bright-line； 之  雙重 cast 關閉型別檢查，疊加 R2 的 stub 化後 create 分支既無真實 DB 測試也無編譯期把關。
+  - **S-4 → 已併入 R3 修復**（三處全域缺席假設改為當場查 DB）。
+  - Accepted Risk：A-1  未檢附件上限（link 時 409 已保證）；A-2 測試 DB 殘留 715 筆 DRAFT 與 26 個 （B-30 調查期臨時 harness，未進 repo，建議清理）；A-3  回 400 非 403（AC-58 僅要求拋 AppError，合規）；A-4 孤兒警告 log 含  id（內部識別碼，未違 §6.3）。
+- **驗收紀律事件（第三次，R3）**：R3 Handoff 列了 Checked 126 files in 57ms. No fixes applied. 為驗收指令，但錯誤就在其交付的新檔中；另其回歸數字為 （未明確 ），不符「skipped 必須為 0」。大總管重跑後才確認實況。**後續 Packet 一律明文要求「明確 export DATABASE_URL，不得依賴 .env 自動載入」並貼 biome 實際輸出。**
+- **spec-writer 待辦（累積中，非阻擋）**：(a) §6.1 授權矩陣表 L387 與 §9 流程 L766 之 `/complete` 授權文字須改為 owner-only，與 D17 及 §17 矛盾釐清列一致；(b) reviewer 建議把 D15 之  三態語意（缺席＝不動，與 §8.2 字面「必填」不同、實作已註解說明理由）補入 §17 修訂列，使文字與實作一致。
 - **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
@@ -192,7 +203,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **c92cc28**（PHASE-004-T15）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **2d78280**（PHASE-004-R3）
 
 ## Human Gate（PHASE-004）
 
