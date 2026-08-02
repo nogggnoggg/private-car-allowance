@@ -22,8 +22,15 @@
  *     用在這裡即等同開放代完成，牴觸 D17；故此路由改為嚴格
  *     `actor.id === application.ownerId`（見下方路由本體的行內註解）。
  *
+ * Endpoints implemented in PHASE-004-T9 (this Task's own addition):
+ *   GET /applications → 200 ApplicationListResponse
+ *     個人綜合紀錄查詢：日期／類型／狀態／關鍵字篩選、分頁、排序、授權隔離。
+ *     授權判定（AC-74/84）與 query 格式驗證（AC-60~66）皆委派給
+ *     `./application-query.js` 的純函式（`resolveOwnerId`/
+ *     `parseApplicationListQuery`）——本路由只做「呼叫 → 若有錯誤就 throw
+ *     400/403 → 否則查詢並回應」的薄層編排，不重複實作任何驗證邏輯。
+ *
  * Explicitly OUT of scope for this Task (see PHASE-004.md §2, Task Graph):
- *   GET  /applications                        (T9)
  *   POST /admin/users/:userId/applications/travel (T10)
  *
  * Auth (§6.1 授權矩陣): requireAuth + requirePasswordChanged on every route
@@ -34,15 +41,24 @@
  * (401/403 PASSWORD_CHANGE_REQUIRED) but there is no `assertOwnershipOrAdmin`
  * call because there is no persisted resource to own. `POST
  * /applications/:id/complete` is the one exception to the
- * `assertOwnershipOrAdmin` pattern — see the T8 note above (D17).
+ * `assertOwnershipOrAdmin` pattern — see the T8 note above (D17). `GET
+ * /applications` is a different exception again: there is no single resource
+ * to own (it is a per-owner *list*), so authorization is `resolveOwnerId`
+ * (AC-74/84) rather than `assertOwnershipOrAdmin` — see T9 note above.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
-import { parseUtcDate } from "../parameters/parameter-service.js";
+import { formatUtcDate, parseUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
+import {
+  parseApplicationListQuery,
+  queryApplications,
+  resolveOwnerId,
+  toApplicationListItemDto,
+} from "./application-query.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
 import { resolveTravelParameters } from "./travel-parameters.js";
 import type { SegmentPatch } from "./travel-service.js";
@@ -521,6 +537,68 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       await deleteApplication(prisma, id);
       return reply.status(200).send({ ok: true });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /applications (PHASE-004-T9)
+  // AC-60~71/74/84/91, §8.1 ApplicationListResponse, §8.2, §9「綜合查詢」.
+  //
+  // 授權（AC-74/84）先於格式驗證：一般使用者自帶他人 ownerId 直接 403，甚至
+  // 不必先看其餘 query 參數是否合法——符合 §6.2 資料隔離不變式「不因資源存在
+  // 與否／其他條件洩漏」的精神，並讓 403 測試不受其他無關參數影響。
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/applications",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = request.query as Record<string, string | undefined>;
+      const actor = request.currentUser;
+
+      // AC-74/84: 一般使用者強制 ownerId=self，自帶他人 → 403；管理員可指定
+      // 任一 ownerId，未指定則預設自己（D10）。以 DB 查得之 ownerId 為準的
+      // 精神在此體現為「永不信任請求參數決定要不要套用授權」——本函式本身
+      // 就是唯一的授權判定點，見 application-query.ts 文件註解。
+      const ownerId = resolveOwnerId(actor, query.ownerId);
+
+      const parsed = parseApplicationListQuery(query, new Date());
+      if (parsed.errors.length > 0) {
+        throw new AppError(
+          "VALIDATION_ERROR",
+          400,
+          "查詢參數有誤，請檢查標示欄位。",
+          parsed.errors
+        );
+      }
+
+      const filters = {
+        ownerId,
+        dateFrom: parsed.dateFrom,
+        dateTo: parsed.dateTo,
+        type: parsed.type,
+        status: parsed.status,
+        keyword: parsed.keyword,
+        page: parsed.page,
+        pageSize: parsed.pageSize,
+      };
+
+      const { items, total } = await queryApplications(prisma, filters);
+
+      return reply.status(200).send({
+        items: items.map(toApplicationListItemDto),
+        page: filters.page,
+        pageSize: filters.pageSize,
+        total,
+        appliedFilters: {
+          dateFrom: formatUtcDate(filters.dateFrom),
+          dateTo: filters.dateTo ? formatUtcDate(filters.dateTo) : null,
+          type: filters.type,
+          status: filters.status,
+          keyword: filters.keyword,
+          ownerId: filters.ownerId,
+        },
+      });
     }
   );
 };
