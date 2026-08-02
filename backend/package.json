@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "migrate:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
-    "seed:admin": "tsx src/seed/seed-admin.ts"
+    "seed:admin": "node dist/seed/seed-admin.js",
+    "seed:admin:dev": "tsx src/seed/seed-admin.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
