@@ -101,7 +101,43 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
         );
     }
 
-    // 3. Unknown/unhandled exception → INTERNAL_ERROR
+    // 3. Wire-level / framework 4xx errors not already handled above (CHORE-001).
+    //    Example: malformed JSON body, Content-Length mismatch, empty body with
+    //    `Content-Type: application/json` (Fastify's built-in body parser throws
+    //    e.g. FST_ERR_CTP_INVALID_JSON_BODY / FST_ERR_CTP_EMPTY_JSON_BODY /
+    //    FST_ERR_CTP_INVALID_CONTENT_LENGTH). This happens in Fastify's body
+    //    parser, which runs BEFORE preHandler/auth — an unauthenticated caller
+    //    can trigger it. It is a client-input problem, not a server bug, and
+    //    must not be classified as INTERNAL_ERROR (500) nor logged at error
+    //    level (SF-1/log-security: caller-triggered 4xx is request.log.info,
+    //    matching branch 2's existing convention above).
+    //    Narrow condition (deliberately NOT "any thrown error"): AppError
+    //    (branch 1) and ajv schema-validation errors (branch 2) are already
+    //    handled above, so by the time execution reaches here an error only
+    //    matches if it carries an explicit numeric 4xx `.statusCode` or a
+    //    `FST_ERR_CTP_*` code — both are properties Fastify's own error
+    //    classes set, not something an arbitrary unexpected exception/bug
+    //    happens to carry. Genuine unknown exceptions (real bugs) essentially
+    //    never have a 4xx statusCode, so this does not swallow real 500s.
+    const wireError = error as Error & { statusCode?: number; code?: string };
+    const isFastifyContentTypeError =
+      typeof wireError.code === "string" && wireError.code.startsWith("FST_ERR_CTP_");
+    const has4xxStatusCode =
+      typeof wireError.statusCode === "number" &&
+      wireError.statusCode >= 400 &&
+      wireError.statusCode < 500;
+    if (isFastifyContentTypeError || has4xxStatusCode) {
+      // AR-3: omit { requestId } from log object — logController already injects it
+      request.log.info(
+        { errName: error.name, errCode: wireError.code },
+        "Wire-level 4xx error (body parser / framework)"
+      );
+      return reply
+        .status(400)
+        .send(buildErrorBody("VALIDATION_ERROR", "輸入資料有誤，請檢查標示欄位。", requestId));
+    }
+
+    // 4. Unknown/unhandled exception → INTERNAL_ERROR
     //    SF-1: log only sanitized name+message — no stack (stack repeats the message and
     //    adds file paths; sanitizing multi-line stacks reliably is harder than a single
     //    message string, and requestId is sufficient for correlation in a structured log).

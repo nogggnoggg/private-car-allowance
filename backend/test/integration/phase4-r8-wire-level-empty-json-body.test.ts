@@ -85,22 +85,22 @@ describeWithDb("PHASE-004-R8 — 完成申請 500 缺陷回歸防線", () => {
     expect(resp.json<ErrorJson>().error.code).toBe("UNAUTHORIZED");
   });
 
-  it("對照：明確重新加上 Content-Type: application/json（模擬修復前的呼叫形狀）→ 500，證明本測試對這一類缺陷確實有鑑別力（非恆綠斷言）", async () => {
-    // 這個 it 刻意驗證「修復前的呼叫形狀」仍然是 500——不是我們想要的最終
-    // 狀態，而是用來證明上面那個 it 不是恆真：如果有人不小心把
-    // Content-Type 加回 apiCompleteApplication，本檔的第一個測試會立刻
-    // 從 401 變 500 而失敗。這裡把「加回 header 會 500」也明確斷言出來，
-    // 是為了讓「上面的測試具備鑑別力」這件事本身也是可驗證、有證據的，而
-    // 非口頭宣稱。修復 wire-level 這個 500（Fastify body parser + 全域
-    // error handler 的組合行為）需要修改 backend/src/**，超出本 Task
-    // Files Allowed 範圍（Packet 明文列為 Forbidden／Stop Condition）——
-    // 這一個 it 之後如果因為後端硬化而不再是 500，屬於預期之中的失敗，
-    // 應視為「該去更新/移除這個對照 it」的訊號，而非回歸。
+  it("對照：明確重新加上 Content-Type: application/json（模擬修復前的呼叫形狀）→ CHORE-001 硬化後為 400 VALIDATION_ERROR（非 500），證明本測試對這一類缺陷確實有鑑別力（非恆綠斷言）", async () => {
+    // 這個 it 原先（PHASE-004-R8）刻意驗證「修復前的呼叫形狀」仍然是
+    // 500——用來證明上面那個 it 不是恆真：如果有人不小心把 Content-Type
+    // 加回 apiCompleteApplication，本檔的第一個測試會立刻從 401 變 500
+    // 而失敗。CHORE-001 已把 wire-level 畸形/空 body 請求（Fastify body
+    // parser 丟出的 FST_ERR_CTP_* 系列錯誤）從 500 INTERNAL_ERROR 硬化為
+    // 400 VALIDATION_ERROR（見 backend/src/platform/error-handler.ts 分支
+    // 3，此前已預告本檔會因此轉紅）。故本斷言由 500 轉正為 400；「加回
+    // header 仍會被歸類為異常路徑（非 2xx/401）」這件事本身依然具鑑別力：
+    // 若有人不慎讓這條路徑退化回被判定為未知例外，本斷言會再次變動而失敗。
     const resp = await app.inject({
       method: "POST",
       url: "/applications/nonexistent/complete",
       headers: { "content-type": "application/json" },
     });
-    expect(resp.statusCode).toBe(500);
+    expect(resp.statusCode).toBe(400);
+    expect(resp.json<ErrorJson>().error.code).toBe("VALIDATION_ERROR");
   });
 });

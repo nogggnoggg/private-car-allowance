@@ -469,7 +469,7 @@ export async function createDepreciationVersion(
     }
   } catch {
     fieldErrors.push({ field: "vehiclePrice", reason: "必須為有效數值且大於 0" });
-    vehiclePriceDecimal = new Prisma.Decimal(0); // placeholder; won't be used if there's an error
+    vehiclePriceDecimal = new Prisma.Decimal("0"); // placeholder; won't be used if there's an error
   }
 
   // Validate usefulLifeYears > 0 and integer (AC-05, D8)
