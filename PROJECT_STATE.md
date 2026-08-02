@@ -12,6 +12,12 @@ Updated: 2026-08-02
 > - D18 為唯一未採 spec-writer 建議者：**維持單一 PHASE-004**（不拆 004a/004b），改以 Phase 內期中 reviewer 檢查點取得同等品質效益，避免變更 PRD 結構與產生兩次人類合併批准。
 > - 大總管代定項（供使用者事後調整）：D14(ii) 出差目的 ≤500 字／地點 ≤200 字；D18 Phase 結構。
 
+> **INFRA-001 開工記錄（2026-08-03，使用者裁定優先於 PHASE-005）**
+> - 目標：測試隔離結構性修復（A-1 基礎設施債，retrospective PHASE-004 §5 建議①）——per-worker 隔離使「跑一輪」重新成為證據，消滅共用 DB 造成的六類事故（flake、跨檔污染、萬用字元誤刪、殘留 FK 爆炸等）。
+> - 現況勘查（大總管）：backend 47 測試檔、27 檔共 60 處 `new PrismaClient()` 直讀同一 `DATABASE_URL`；`vitest.config.ts` maxForks=cores/2 為容量緩解非根治；A-1 實測一般開發機 41% 背景負載即有 ~21% 異常率。
+> - branch：`infra-001`（自 main @ 29f3472 切出）。流程：spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
+> - §15 重錨定：大總管零程式修改；本回合含 vitest/CI/migration 接線變更，全數派 implementer。
+
 > **UI-FIX-001 開工記錄（2026-08-02，使用者 Gate 後反饋）**
 > - 使用者回報參數維護頁「歷史版本」表格欄位黏連難辨識（`.param-table` 無 CSS 定義，PHASE-003a T6 遺漏）。四項修正經使用者批准（①補樣式 ②數值欄靠右 ③折舊表 .table-scroll ④建立時間統一 YYYY-MM-DD），已寫入 PHASE-003a Spec §13 修訂列。
 > - branch：`ui-fix-001`（自 main @ b0c8969 切出）。流程：Lite Packet → implementer TDD → 大總管獨立驗收（含實際開瀏覽器目視）→ reviewer 輕量複審 → Draft PR + CI → 人類批准合併。
