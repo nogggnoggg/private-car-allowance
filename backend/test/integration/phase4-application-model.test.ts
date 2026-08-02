@@ -27,6 +27,11 @@ const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
 
 const LOGIN_PREFIX = "p4t1_";
+// Per-run suffix (R1 dafcd21 convention) — defense in depth on top of the
+// wildcard-collision fix above: keeps this suite's fixture login names
+// distinguishable across runs/crashes without weakening the broad
+// LOGIN_PREFIX-scoped self-heal (which still matches regardless of suffix).
+const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 describeWithDb("PHASE-004-T1 — Application / TravelApplication / TripSegment models", () => {
   // biome-ignore lint/suspicious/noExplicitAny: dynamic import for test isolation
@@ -38,15 +43,56 @@ describeWithDb("PHASE-004-T1 — Application / TravelApplication / TripSegment m
   // Deleting an Application cascades to its TravelApplication + TripSegment rows.
   const createdApplicationIds: string[] = [];
 
+  // Root cause (verified empirically — see Task Handoff): Prisma's
+  // `{ startsWith: LOGIN_PREFIX }` compiles to SQL `LIKE 'LOGIN_PREFIX%'`,
+  // and Postgres LIKE treats a literal `_` in the pattern as a single-
+  // character WILDCARD, not a literal underscore. LOGIN_PREFIX = "p4t1_"
+  // therefore also matches OTHER suites' fixed prefixes that happen to
+  // extend "p4t1" with one more digit before their own underscore, e.g.
+  // "p4t10_" (phase4-admin-on-behalf.test.ts) and "p4t12_"
+  // (phase4-on-behalf-audit.test.ts) — the "_" absorbs their "0"/"2".
+  // When those suites run concurrently (separate vitest fork workers) and
+  // currently have live users owning an Application, this suite's
+  // "self-heal" deleteMany(loginName startsWith "p4t1_") either (a) fails
+  // with the FK violation this repair item was filed for, when the victim
+  // user currently owns an Application, or (b) silently deletes a live
+  // concurrent suite's users out from under it when it does not — a graver,
+  // silent cross-suite corruption. Confirmed directly: a user literally
+  // named "p4t10_zzztest" matches `{ loginName: { startsWith: "p4t1_" } }`.
+  //
+  // Fix: never rely on Prisma's SQL-LIKE `startsWith` for the authoritative
+  // membership check. Use it only as a cheap, deliberately-over-broad bound
+  // (safe because it can only ever return a superset, never miss a real
+  // match), then filter with real JS string `.startsWith()` — which has no
+  // wildcard semantics — before deleting. This also fixes the secondary gap
+  // the Packet flagged: any Application owned by a resolved "own" user is
+  // now deleted (not just ones this process tracked via
+  // createdApplicationIds), so an untracked residual from a previously
+  // crashed run of THIS suite can no longer FK-block the user delete either.
   async function cleanupSyntheticData() {
     if (createdApplicationIds.length > 0) {
       await prisma.application.deleteMany({
         where: { id: { in: createdApplicationIds } },
       });
     }
-    await prisma.user.deleteMany({
-      where: { loginName: { startsWith: LOGIN_PREFIX } },
+
+    // literalBound is guaranteed free of SQL LIKE special characters
+    // ("_"/"%") since LOGIN_PREFIX's own literal separator has not been
+    // reached yet — safe to hand to Prisma's startsWith as an over-broad
+    // pre-filter; correctness comes from the exact JS filter below.
+    const literalBound = LOGIN_PREFIX.split("_")[0];
+    const candidates = await prisma.user.findMany({
+      where: { loginName: { startsWith: literalBound } },
+      select: { id: true, loginName: true },
     });
+    const ownUserIds = candidates
+      .filter((u: { loginName: string }) => u.loginName.startsWith(LOGIN_PREFIX))
+      .map((u: { id: string }) => u.id);
+
+    if (ownUserIds.length > 0) {
+      await prisma.application.deleteMany({ where: { ownerId: { in: ownUserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: ownUserIds } } });
+    }
   }
 
   beforeAll(async () => {
@@ -62,14 +108,14 @@ describeWithDb("PHASE-004-T1 — Application / TravelApplication / TripSegment m
 
     ownerUser = await prisma.user.create({
       data: {
-        loginName: `${LOGIN_PREFIX}owner`,
+        loginName: `${LOGIN_PREFIX}owner_${RUN_ID}`,
         displayName: "P4T1 Owner",
         passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$salt$hash_placeholder",
       },
     });
     adminUser = await prisma.user.create({
       data: {
-        loginName: `${LOGIN_PREFIX}admin`,
+        loginName: `${LOGIN_PREFIX}admin_${RUN_ID}`,
         displayName: "P4T1 Admin",
         passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$salt$hash_placeholder",
         role: "ADMIN",
@@ -369,7 +415,7 @@ describeWithDb("PHASE-004-T1 — Application / TravelApplication / TripSegment m
   it("onDelete: Restrict — deleting a User who owns an Application is rejected by the DB", async () => {
     const restrictedUser = await prisma.user.create({
       data: {
-        loginName: `${LOGIN_PREFIX}restrict_owner`,
+        loginName: `${LOGIN_PREFIX}restrict_owner_${RUN_ID}`,
         displayName: "P4T1 Restrict Owner",
         passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$salt$hash_placeholder",
       },
