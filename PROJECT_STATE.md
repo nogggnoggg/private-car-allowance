@@ -12,6 +12,8 @@ Updated: 2026-08-02
 > - D18 為唯一未採 spec-writer 建議者：**維持單一 PHASE-004**（不拆 004a/004b），改以 Phase 內期中 reviewer 檢查點取得同等品質效益，避免變更 PRD 結構與產生兩次人類合併批准。
 > - 大總管代定項（供使用者事後調整）：D14(ii) 出差目的 ≤500 字／地點 ≤200 字；D18 Phase 結構。
 
+> **CHORE-001：DONE（2026-08-03）**——PR #8 依夜間授權合併至 main（`a0c044c`）,CI 三 job 全綠。第 3 項累積追蹤事項全數處置完畢：wire-level 硬化+Decimal 字面量（本回合）、9 檔 self-heal（INFRA-001 結構性關閉）、文件校正（DOC-FIX-001）。新開追蹤項見上方 S-1 節（D4-Decimal-number、4xx status 對照表）。
+>
 > **CHORE-001 開工記錄（2026-08-03，使用者夜間授權「完成第 3 項累積追蹤事項」）**
 > - 範圍（僅程式兩項，其餘追蹤事項已於 INFRA-001/DOC-FIX-001 關閉）：①**wire-level 畸形請求 500→400 硬化**（`backend/src/platform/error-handler.ts:104-118` 分支 3 前補「statusCode 4xx 或 FST_ERR_CTP_* → 400 VALIDATION_ERROR」，追蹤項原文含修法與影響面：未登入者可穩定製造 level:50 錯誤日誌、reviewer 已實測 /auth/login 畸形 JSON 亦 500；`phase4-r8-wire-level-empty-json-body.test.ts` 刻意 pin 500 的對照測試須一併轉正——該檔註解已預告）②**`parameter-service.ts:472` 最後一處 `new Prisma.Decimal(0)` 傳數字改傳字串**（D4 bright-line 全域一致，R5 遺留）。
 > - branch：`chore-001`（自 main @ `8e94b77`，INFRA-001 合併後）。流程：implementer TDD → 大總管獨立驗收 → reviewer 輕量複審 → Draft PR + CI → 合併（reviewer APPROVE + CI 綠 → 依夜間授權；否則留 PR 待人類）。
