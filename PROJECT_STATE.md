@@ -49,7 +49,8 @@ Updated: 2026-08-02
 | T4 | 段落 diff + sortOrder 重寫 + 刪段 detach | High | DONE | 789cf49 |
 | T6 | 差旅計算引擎純函式（金額語意核心） | High | DONE | a94fc65 |
 | T7 | 參數套用 + 缺參數處理 + 預覽端點 | High | DONE | 558cdda |
-| T11 | 附件整合 + **AR-D 閉環** + 代上傳 ownerId | High | IN_PROGRESS | — |
+| T11 | 附件整合 + **AR-D 閉環** + 代上傳 ownerId | High | DONE | 26d6ee8 |
+| D19 | Spec 修訂：併發整份 PUT 語意（使用者批准） | — | DONE | b8ba575 |
 | T8 | 完成流程 + 快照 + 附件鎖定 | High | 待辦 | — |
 | T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | 待辦 | — |
 | — | **期中 reviewer 檢查點**（後端核心） | — | 待辦 | — |
@@ -60,9 +61,13 @@ Updated: 2026-08-02
 | T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | 待辦 | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
-- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ **754（T7）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
+- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ **779（T11）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
 - **驗收紀律事件（T6）**：implementer 回報之「全套回歸」係在未設 `DATABASE_URL` 下執行（55 skipped），非有效證據；大總管重跑後才確認。**後續 Packet 一律要求 Handoff 標明 passed/failed/skipped 三個數字且 skipped 必須為 0。**
 - **T11 Stop 事件（implementer 正確觸發）**：D12 移除公開 `POST /attachments/:id/link` 會使 `phase3-lifecycle.test.ts` 20 個測試中 16 處必然失敗，而該檔同時列為不得修改。大總管裁定**逐條遷移不得刪除**，寫入 Spec §17 修訂紀錄（commit c5fc3cb）後恢復執行。
+- **B-30 併發事件（T11 → T11R → T11R2，2026-08-02）**：T11 交付後大總管 13 輪重跑發現 B-30 併發測試約 **23% 失敗**（`expected [200,200] to deeply equal [200,409]`，即每段 3 張上限被突破），三個修復回合（T11 一次、T11R 兩次：advisory lock 提前、SERIALIZABLE→READ COMMITTED、原子單一 UPDATE）**全部未關閉**；implementer 於第三回合正確觸發 Stop（§28 三回合上限）。**大總管診斷結論：目標框錯**——B-30 測試打的是整份取代式 `PUT`，兩個併發請求各自宣告的都是合法的 3 張（恰為上限），依 D15 語意「兩者皆成功、最終 3 張」才是正確；原 PHASE-003 測試 race 的是增量式 link 打到 `limit=1` 容器，T11 依 §17 C1 逐條遷移換端點後**斷言未同步修正**。另查得真實缺陷：`computeAttachmentDeltas` 的 baseline 在**交易外**（`prisma` 而非 `tx`）計算，併發時雙方 baseline 皆為前態、各自只 link 不 detach → 最終 4 張。**處置**：Spec §17 新增 **D19**（使用者 leonchih 2026-08-02 批准「最後寫入者贏」＋裁定回退兩次失敗嘗試）→ T11R2 回退 + baseline 移入交易內 + 斷言依 D19 修正 + 新增 AC-22 鑑別力測試 → 大總管 **14 輪重跑（13 輪 779 全綠，B-30 零失敗）**。
+- **裁定教訓（大總管自省，已寫入 Spec §17 D19 列）**：C1「逐條遷移不得刪除」的裁定本身正確，但當時**未要求 implementer 逐條檢查「換了端點後原斷言是否還成立」**，導致失真的斷言被當成事實追了三個回合。後續任何測試遷移類裁定，Packet 必須明文要求同步複核語意等價性。
+- **驗收紀律（再次驗證有效）**：T11 與 T11R 兩份 Handoff 皆宣稱回歸全綠（分別為「5 輪連續全綠」「100+ 次壓測零違規」），**皆由大總管獨立重跑推翻**。continue：Handoff 之測試宣稱一律不採信，大總管必自跑；High 風險併發項目重跑輪次需依失敗率決定（本次 23% 失敗率 → 跑滿 14 輪使誤判機率降至約 3%）。
+- **PHASE-004-R2（批次修復，待辦）**：`admin-users.test.ts` 之 `seed:admin` 清理競態，全套平行下約 **15% 失敗**（大總管 27 輪中 3 次；PHASE-002 既有問題，非本 Phase 引入）。已明確排除於 T11/T11R/T11R2 範圍外以維持 commit 原子性。**Gate 前必須關閉**——它會持續污染每一次回歸驗收的判讀。
 - **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
@@ -181,7 +186,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **26d6ee8**（PHASE-004-T11）
 
 ## Human Gate（PHASE-004）
 
