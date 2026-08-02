@@ -43,12 +43,14 @@
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { parsePurposeField, parseTripDateField } from "../applications/routes.js";
+import type { OnTravelDraftCreated } from "../applications/travel-service.js";
 import { createTravelDraft, toTravelApplicationDto } from "../applications/travel-service.js";
 import { writeAudit } from "../audit/audit.js";
 import { requireAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { validateNewPassword } from "../auth/password-rules.js";
 import { hashPassword } from "../auth/password.js";
 import { revokeAllUserSessions, toUserDto } from "../auth/session.js";
+import { formatUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 import { makeUserHasHistory } from "../users/history.js";
@@ -465,21 +467,45 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       // AC-78: owner/creator 分離——ownerId=:userId（被代理使用者），
       // createdById=管理員（操作者）。兩者刻意不同（Packet C2）。
       //
-      // PHASE-004-T12（稽核，本 Task Out of Scope）預留掛點：`createTravelDraft`
-      // 目前是單一 Prisma 巢狀寫入（非 `$transaction`），尚未提供 `onCreated`
-      // 交易內回呼（比照 parameters/parameter-service.ts 既有的 `onCreated`
-      // 模式）。本 Task 刻意不引入該包裝，以避免變動 `createTravelDraft`——這是
-      // 一般端點 `POST /applications/travel` 也共用的核心函式——擴大本次 High
-      // 風險 Task 的變更半徑；T12 實作稽核時，可仿 parameter-service.ts 的做法
-      // 為 `createTravelDraft` 加一個可選的交易內 `onCreated` 回呼，讓「建立
-      // 申請」與「寫入 AuditLog（AC-82：action=APPLICATION_CREATED_ON_BEHALF）」
-      // 原子化。
-      const application = await createTravelDraft(prisma, {
-        ownerId: userId,
-        createdById: actorId,
-        tripDate,
-        purpose,
-      });
+      // PHASE-004-T12（AC-82/83/86，C3）: `createTravelDraft` 現已提供交易內
+      // `onCreated` 回呼（比照 parameters/parameter-service.ts 既有的
+      // `onCreated` 模式），「建立申請」與「寫入 AuditLog
+      // （action=APPLICATION_CREATED_ON_BEHALF）」同一交易原子化（AC-83）。
+      // C3 邊界：即使呼叫這個代操作端點，若 `:userId` 恰好等於管理員自己的
+      // id（對自己代建立），仍算「自己操作」而非代操作——只有
+      // `userId !== actorId` 才建構 hook；否則完全不傳，天然滿足 AC-86。
+      const isOnBehalf = userId !== actorId;
+      const onCreated: OnTravelDraftCreated | undefined = isOnBehalf
+        ? async (tx, created) => {
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_CREATED_ON_BEHALF",
+                actorId,
+                targetId: userId,
+                targetLabel: `${targetUser.loginName}#${created.id}`,
+                summary: {
+                  applicationId: created.id,
+                  type: "TRAVEL",
+                  tripDate: created.travel?.tripDate
+                    ? formatUtcDate(created.travel.tripDate)
+                    : null,
+                  purpose: created.travel?.purpose ?? null,
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const application = await createTravelDraft(
+        prisma,
+        {
+          ownerId: userId,
+          createdById: actorId,
+          tripDate,
+          purpose,
+        },
+        onCreated
+      );
 
       const dto = await toTravelApplicationDto(prisma, application);
       return reply.status(201).send({ application: dto });

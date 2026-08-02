@@ -34,6 +34,8 @@ enum AuditAction {
   USER_PASSWORD_RESET
   USER_DELETED
   PARAMETER_VERSION_CREATED
+  APPLICATION_CREATED_ON_BEHALF
+  APPLICATION_UPDATED_ON_BEHALF
 }
 
 // ---------------------------------------------------------------------------

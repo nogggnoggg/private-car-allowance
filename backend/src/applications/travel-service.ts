@@ -129,7 +129,11 @@ export function derivePrimaryDate(tripDate: Date | null, createdAtFallback: Date
 // ---------------------------------------------------------------------------
 
 const travelApplicationInclude = {
-  owner: { select: { displayName: true } },
+  // loginName（PHASE-004-T12 新增）: 供 on-behalf 稽核 hook 組 targetLabel
+  // 用（AC-82：「擁有人 loginName 快照 + 申請識別」）——loginName 本身非敏感
+  // 資料（非密碼/token），沿用既有 displayName 的同一個 select 物件擴充，
+  // 不新增查詢往返。
+  owner: { select: { displayName: true, loginName: true } },
   createdBy: { select: { displayName: true } },
   travel: {
     include: {
@@ -143,6 +147,57 @@ type TravelApplicationRecord = Prisma.ApplicationGetPayload<{
 }>;
 
 // ---------------------------------------------------------------------------
+// PHASE-004-T12 audit hooks — AC-82/83/86
+//
+// Both `createTravelDraft` and `updateTravelDraft` accept an OPTIONAL hook
+// invoked INSIDE the same transaction that writes the primary Application/
+// TravelApplication/TripSegment rows (mirrors `parameters/parameter-service.ts`'s
+// `onCreated` pattern, T5/PHASE-003a precedent — see that file's header
+// comment). The hook is deliberately typed to accept `Prisma.TransactionClient`
+// (the type Prisma's own `$transaction` callback already produces — no local
+// hand-rolled `Omit<PrismaClient, ...>` alias needed, unlike
+// parameter-service.ts, since this file already uses `Prisma.TransactionClient`
+// elsewhere, e.g. `computeAttachmentDeltas`).
+//
+// Callers (admin/routes.ts, applications/routes.ts) decide WHETHER to pass a
+// hook at all — this file has no knowledge of "who is calling" (actorId) or
+// "is this on-behalf" (AC-86/C3: `actorId !== ownerId`). A caller that omits
+// the hook gets ZERO audit writes for that call, satisfying AC-86 (self
+// create/update never audited) simply by never constructing a hook in that
+// code path — there is no separate "skip audit" flag to get wrong.
+//
+// Atomicity (AC-83): the hook runs INSIDE the transaction, using the SAME
+// `tx` handle as every other write in this function. If the hook throws
+// (e.g. a genuine DB write failure, or a test-injected failure), the
+// exception propagates out of the `prisma.$transaction(...)` callback exactly
+// like any other error raised mid-transaction — Prisma rolls back the WHOLE
+// transaction, including the Application/TravelApplication/TripSegment writes
+// that already ran earlier in the SAME attempt. Nothing partial can land.
+// ---------------------------------------------------------------------------
+
+export type OnTravelDraftCreated = (
+  tx: Prisma.TransactionClient,
+  application: TravelApplicationRecord
+) => Promise<void>;
+
+/** Before-state snapshot passed to `OnTravelDraftUpdated`, read fresh inside the same transaction attempt (never a stale pre-transaction read — see `updateTravelDraft`'s existing SERIALIZABLE re-read discipline). */
+export interface TravelDraftUpdateAuditContext {
+  ownerId: string;
+  ownerLoginName: string;
+  before: {
+    tripDate: Date | null;
+    purpose: string | null;
+    segmentsCount: number;
+  };
+}
+
+export type OnTravelDraftUpdated = (
+  tx: Prisma.TransactionClient,
+  context: TravelDraftUpdateAuditContext,
+  application: TravelApplicationRecord
+) => Promise<void>;
+
+// ---------------------------------------------------------------------------
 // createTravelDraft (AC-01)
 // ---------------------------------------------------------------------------
 
@@ -154,37 +209,59 @@ export interface CreateTravelDraftInput {
 }
 
 /**
- * Creates a new TRAVEL draft (Application + TravelApplication, 1:1) in a
- * single Prisma nested write (Prisma wraps nested create in one atomic
- * operation — see T1 model test for the same pattern).
+ * Creates a new TRAVEL draft (Application + TravelApplication, 1:1).
  *
  * owner is ALWAYS supplied by the caller from `request.currentUser` /
  * `:userId` (admin on-behalf, T10) — never from request body (AC-79a,
  * §6.2 資料隔離不變式 1).
+ *
+ * PHASE-004-T12（本次擴充，AC-82/83）: previously a single Prisma nested
+ * write (Prisma already wraps a nested `create` in one atomic operation on
+ * its own — see T1 model test for that prior pattern). Now explicitly
+ * wrapped in `prisma.$transaction` so the OPTIONAL `onCreated` audit hook
+ * (see this file's header "PHASE-004-T12 audit hooks" section) can run in
+ * the SAME transaction as the insert — required for AC-83's atomicity
+ * ("稽核寫入失敗 → 主體變更 rollback"). Default (unspecified) isolation
+ * level is intentionally UNCHANGED from before this Task: this function has
+ * no read-then-write race to protect against (a single `create`, no
+ * existing-row read to go stale) — explicit `$transaction` wrapping changes
+ * NOTHING about concurrent-safety here, only adds the hook's atomicity.
+ * `onCreated` defaults to a no-op when omitted (the general
+ * `POST /applications/travel` self-create route never passes one — AC-86:
+ * self-service create is NEVER audited).
  */
 export async function createTravelDraft(
   prisma: PrismaClient,
-  input: CreateTravelDraftInput
+  input: CreateTravelDraftInput,
+  onCreated?: OnTravelDraftCreated
 ): Promise<TravelApplicationRecord> {
   const tripDate = input.tripDate ?? null;
   const purpose = input.purpose ?? null;
   const primaryDate = derivePrimaryDate(tripDate, new Date());
 
-  return prisma.application.create({
-    data: {
-      type: "TRAVEL",
-      status: "DRAFT",
-      ownerId: input.ownerId,
-      createdById: input.createdById,
-      primaryDate,
-      travel: {
-        create: {
-          tripDate,
-          purpose,
+  return prisma.$transaction(async (tx) => {
+    const application = await tx.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "DRAFT",
+        ownerId: input.ownerId,
+        createdById: input.createdById,
+        primaryDate,
+        travel: {
+          create: {
+            tripDate,
+            purpose,
+          },
         },
       },
-    },
-    include: travelApplicationInclude,
+      include: travelApplicationInclude,
+    });
+
+    if (onCreated) {
+      await onCreated(tx, application);
+    }
+
+    return application;
   });
 }
 
@@ -591,7 +668,8 @@ export async function updateTravelDraft(
   prisma: PrismaClient,
   id: string,
   patch: UpdateTravelDraftPatch,
-  segments?: ReadonlyArray<SegmentPatch>
+  segments?: ReadonlyArray<SegmentPatch>,
+  onUpdated?: OnTravelDraftUpdated
 ): Promise<TravelApplicationRecord> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= UPDATE_DRAFT_MAX_RETRIES; attempt++) {
@@ -620,6 +698,10 @@ export async function updateTravelDraft(
               status: true,
               ownerId: true,
               createdAt: true,
+              // owner.loginName（PHASE-004-T12 新增）: 供 on-behalf 稽核 hook
+              // 組 targetLabel 用，讀自本次交易嘗試的新鮮快照（非交易外的過期
+              // 讀取——與本函式其餘欄位一致的原則）。
+              owner: { select: { loginName: true } },
               travel: {
                 select: {
                   tripDate: true,
@@ -748,10 +830,37 @@ export async function updateTravelDraft(
             },
           });
 
-          return tx.application.findUniqueOrThrow({
+          const after = await tx.application.findUniqueOrThrow({
             where: { id },
             include: travelApplicationInclude,
           });
+
+          // PHASE-004-T12 audit hook (AC-82/83/86): only invoked when the
+          // CALLER supplied one (routes.ts decides based on
+          // `actorId !== existing.ownerId`, C3 — this function itself has no
+          // notion of "who is calling"). Runs on THIS attempt's `tx`, after
+          // every primary write and BEFORE the transaction commits — a throw
+          // here rolls back everything written above in the SAME attempt
+          // (AC-83 atomicity). "before" is the FRESH in-transaction snapshot
+          // read at the top of this attempt (`existing`), never a stale
+          // pre-transaction read.
+          if (onUpdated) {
+            await onUpdated(
+              tx,
+              {
+                ownerId: existing.ownerId,
+                ownerLoginName: existing.owner.loginName,
+                before: {
+                  tripDate: existing.travel?.tripDate ?? null,
+                  purpose: existing.travel?.purpose ?? null,
+                  segmentsCount: existing.travel?.segments.length ?? 0,
+                },
+              },
+              after
+            );
+          }
+
+          return after;
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );

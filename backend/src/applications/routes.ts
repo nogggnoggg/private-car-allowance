@@ -61,7 +61,7 @@ import {
 } from "./application-query.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
 import { resolveTravelParameters } from "./travel-parameters.js";
-import type { SegmentPatch } from "./travel-service.js";
+import type { OnTravelDraftUpdated, SegmentPatch } from "./travel-service.js";
 import {
   completeTravelApplication,
   createTravelDraft,
@@ -435,7 +435,46 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       // 資源一律 403，不因資源存在與否洩漏」一致 —— 見 segment-diff.ts 文件
       // 註解的完整理由）。附件關聯（attachmentIds → link，3/段上限）為
       // T11 範圍，本 Task 完全不處理。
-      const updated = await updateTravelDraft(prisma, id, patch, parsedSegments);
+      //
+      // PHASE-004-T12（AC-82/83/86，C3）: 這個 PUT 端點同時服務「使用者改自己
+      // 的草稿」與「管理員代改他人草稿」（`assertOwnershipOrAdmin` 對兩者皆放
+      // 行）——分野純以 `actorId !== existing.ownerId` 判定（C3：管理員改自己
+      // 的申請＝自己操作，不算代操作）。只有代操作才建構 `onUpdated` hook；
+      // 使用者改自己的草稿完全不傳 hook，天然滿足 AC-86「不產生 AuditLog」，
+      // 不是「傳了 hook 但內部判斷跳過」。
+      const actorId = request.currentUser.id;
+      const isOnBehalf = actorId !== existing.ownerId;
+
+      const onUpdated: OnTravelDraftUpdated | undefined = isOnBehalf
+        ? async (tx, context, after) => {
+            const beforeTripDate = context.before.tripDate
+              ? formatUtcDate(context.before.tripDate)
+              : null;
+            const afterTripDate = after.travel?.tripDate
+              ? formatUtcDate(after.travel.tripDate)
+              : null;
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_UPDATED_ON_BEHALF",
+                actorId,
+                targetId: context.ownerId,
+                targetLabel: `${context.ownerLoginName}#${id}`,
+                summary: {
+                  applicationId: id,
+                  type: "TRAVEL",
+                  tripDate: { before: beforeTripDate, after: afterTripDate },
+                  purpose: { before: context.before.purpose, after: after.travel?.purpose ?? null },
+                  segmentsCount: {
+                    before: context.before.segmentsCount,
+                    after: after.travel?.segments.length ?? 0,
+                  },
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const updated = await updateTravelDraft(prisma, id, patch, parsedSegments, onUpdated);
       const dto = await toTravelApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
     }

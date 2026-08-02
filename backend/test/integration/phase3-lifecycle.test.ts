@@ -155,6 +155,11 @@ describeWithDb("PHASE-003-T6 — Lifecycle: link, detach, delete (migrated PHASE
   const ADMIN_LOGIN = `t6_admin_${RUN_ID}`;
   const ADMIN_PASSWORD = "AdminPass99!";
   let adminCookie: string;
+  // PHASE-004-T12F（teardown-only）: captured so afterAll can scope its
+  // AuditLog cleanup — previously discarded (see beforeAll below), which is
+  // why AuditLog rows written by admin-on-behalf PUTs in this file were never
+  // cleaned up.
+  let adminId: string;
 
   // Track created attachments/applications for cleanup
   const createdAttachmentIds: string[] = [];
@@ -199,7 +204,7 @@ describeWithDb("PHASE-003-T6 — Lifecycle: link, detach, delete (migrated PHASE
 
     // Create admin
     const adminHash = await hashPassword(ADMIN_PASSWORD);
-    await prisma.user.create({
+    const adminUser = await prisma.user.create({
       data: {
         loginName: ADMIN_LOGIN,
         displayName: "T6 Admin",
@@ -209,6 +214,7 @@ describeWithDb("PHASE-003-T6 — Lifecycle: link, detach, delete (migrated PHASE
         role: "ADMIN",
       },
     });
+    adminId = adminUser.id;
 
     // Build server
     app = await buildServer({ databaseUrl: DB_URL, logLevel: "error", storageRoot });
@@ -247,6 +253,22 @@ describeWithDb("PHASE-003-T6 — Lifecycle: link, detach, delete (migrated PHASE
       }
       // Safety net: clean any remaining attachments by ownerId (owner or other).
       await prisma.attachment.deleteMany({ where: { ownerId: { in: [ownerId, otherId] } } });
+      // PHASE-004-T12F（teardown-only, 授權範圍：僅此段）: PHASE-004-T12 之後，
+      // 本檔的「Admin can link an attachment into another user's draft on
+      // their behalf」測試（admin PUT other 的草稿）會正確寫入
+      // APPLICATION_UPDATED_ON_BEHALF AuditLog（actorId=adminId）。這裡的
+      // AuditLog 清理限定本檔自建的三個使用者 id（ownerId/otherId/adminId），
+      // 必須在下面的 user.deleteMany 之前執行，否則會撞
+      // AuditLog_actorId_fkey——比照 phase4-admin-on-behalf.test.ts /
+      // phase4-travel-draft.test.ts 既有同模式的 teardown 寫法。
+      await prisma.auditLog.deleteMany({
+        where: {
+          OR: [
+            { actorId: { in: [ownerId, otherId, adminId] } },
+            { targetId: { in: [ownerId, otherId, adminId] } },
+          ],
+        },
+      });
       await prisma.session.deleteMany({ where: { user: { loginName: OWNER_LOGIN } } });
       await prisma.session.deleteMany({ where: { user: { loginName: OTHER_LOGIN } } });
       await prisma.session.deleteMany({ where: { user: { loginName: ADMIN_LOGIN } } });
