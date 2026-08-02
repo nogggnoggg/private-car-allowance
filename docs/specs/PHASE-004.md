@@ -313,7 +313,9 @@ AC 以 Given/When/Then 表述，逐條可測，標註對應 US 與主要 Task。
 ### 3.2 管理員代操作流程
 
 ```
-1. 管理員登入 → 管理首頁 → 使用者管理 → 點使用者姓名
+1. 管理員登入 → 管理首頁 → 使用者管理 → 點該列的「申請紀錄」按鈕
+     （每列一個獨立按鈕，非姓名本身可點；理由：鍵盤可及性與可發現性。
+      功能等價之進入點，僅 affordance 不同——依 §17「實作偏離記錄（T14，ACTIVE 內）」修訂列）
 2. 進入「使用者 U 的申請紀錄」頁 → GET /applications?ownerId=U（+ 篩選）（AD-US-06）
 3. 「代 U 建立差旅草稿」→ POST /admin/users/:U/applications/travel
      → ownerId=U、createdById=管理員 → 寫 AuditLog(APPLICATION_CREATED_ON_BEHALF)（同交易）
@@ -321,7 +323,10 @@ AC 以 Given/When/Then 表述，逐條可測，標註對應 US 與主要 Task。
      → assertOwnershipOrAdmin 通過（ADMIN）→ 儲存 → 因 actor≠owner，寫 AuditLog(APPLICATION_UPDATED_ON_BEHALF)（同交易）
 5. 代上傳截圖：POST /attachments 帶 ownerId=U（uploaderId=管理員）→ 關聯時斷言 attachment.ownerId === application.ownerId
 6. 管理員對「已完成」申請按編輯 → 403 + 「請建立修正版」提示（PHASE-009）
-7.（依 D17）管理員是否可代「完成」— 預設不提供，由使用者本人完成
+7. 管理員不可代「完成」——D17 已 Gate 定案（§17.1）：本 Phase 不提供代完成，
+     完成一律由使用者本人執行。後端 POST /applications/:id/complete 為 owner-only，
+     管理員縱使可編輯該草稿（步驟 4），對非自己擁有的申請按完成仍得 403 FORBIDDEN
+     （見 §6.1 授權矩陣、§9「完成申請」流程、§17「矛盾釐清（ACTIVE 內）」修訂列）
 ```
 
 ---
@@ -384,12 +389,14 @@ AC 以 Given/When/Then 表述，逐條可測，標註對應 US 與主要 Task。
 | 端點 | 中介層 | 額外判定 |
 |---|---|---|
 | `POST /applications/travel` | `requireAuth` + `requirePasswordChanged` | owner 恆為呼叫者；**不接受 body `ownerId`** |
-| `GET/PUT/DELETE /applications/travel/:id`、`POST /applications/:id/complete` | `requireAuth` + `requirePasswordChanged` | `assertOwnershipOrAdmin(actor, application.ownerId)`（以 **DB 查得之 ownerId** 為準，非請求參數） |
+| `GET/PUT /applications/travel/:id` | `requireAuth` + `requirePasswordChanged` | `assertOwnershipOrAdmin(actor, application.ownerId)`（以 **DB 查得之 ownerId** 為準，非請求參數） |
+| `DELETE /applications/:id`（**非 travel 專屬路徑**——路徑依 §8.2 端點表與 **AC-05/AC-06** 明文為準，通用於各申請類型） | `requireAuth` + `requirePasswordChanged` | 同上 `assertOwnershipOrAdmin(actor, application.ownerId)`（以 **DB 查得之 ownerId** 為準，非請求參數）；已完成 → 403 `FORBIDDEN`（AC-06） |
+| `POST /applications/:id/complete` | `requireAuth` + `requirePasswordChanged` | **owner-only**：嚴格 `actor.id === application.ownerId`（以 **DB 查得之 ownerId** 為準，非請求參數）。非擁有人**含 ADMIN** 一律 403 `FORBIDDEN`；擁有人恰為 ADMIN 時完成自己的申請則允許——**阻擋條件是「非擁有人」而非「ADMIN 角色」**。**刻意不採 `assertOwnershipOrAdmin`**（該函式會放行 ADMIN，用於本端點即等同開放管理員代完成）。依 §17.1 **D17**「本 Phase 不提供代完成」與 §17「矛盾釐清（ACTIVE 內）」修訂列 |
 | `POST /applications/travel/preview` | `requireAuth` + `requirePasswordChanged` | 無資料擁有權（stateless）；不回傳他人資料 |
 | `GET /applications` | `requireAuth` + `requirePasswordChanged` | 一般使用者：強制 `ownerId = self`；自帶他人 `ownerId` → 403（AC-74）。管理員：可指定任一 `ownerId`；未指定則預設自己（見 D10） |
 | `POST /admin/users/:userId/applications/travel` | `requireAuth` + `requirePasswordChanged` + `requireAdmin` | `:userId` 須存在且啟用 |
 | `POST /attachments`（既有，擴充 `ownerId`） | `requireAuth` + `requirePasswordChanged` | 非 ADMIN 指定他人 `ownerId` → 403（AC-29） |
-| `GET /attachments/:id/content|thumbnail`（既有） | `requireAuth` | 沿用 PHASE-003 `assertOwnershipOrAdmin`（AC-28） |
+| `GET /attachments/:id/content`、`GET /attachments/:id/thumbnail`（既有） | `requireAuth` | 沿用 PHASE-003 `assertOwnershipOrAdmin`（AC-28） |
 | `DELETE /attachments/:id`（既有，改造） | `requireAuth` + `requirePasswordChanged` | `containerState` **由後端推導**（AC-27） |
 | ~~`POST /attachments/:id/link`~~ | — | **移除**（D12） |
 
@@ -670,13 +677,18 @@ interface SegmentInput {
   destination?: string | null;
   totalKm?: string | number | null;
   highwayKm?: string | number | null;
-  attachmentIds: string[];     // 該段之附件（最多 3；後端據此 link/detach）
+  attachmentIds?: string[];    // 該段之附件（最多 3；後端據此 link/detach）——三態，見下方說明
 }
 ```
 
 > **`PUT` 語意（D15）**：整份替換 + 以 `id` 對齊 diff。未出現於 `segments[]` 的既有段落 → 刪除並 detach 其附件；`sortOrder` 依陣列索引重寫。`attachmentIds` 中新增者 → link（`limit=3`、`containerState` 由服務層注入）；原本 LINKED 但已移除者 → detach。全部在**單一交易**內完成。
 >
 > **`tripDate`/`purpose` 的三態**：欄位缺席 = 不變；`null` = 清空；有值 = 設定。
+>
+> **`attachmentIds` 的三態**（釐清既有實作，非新決策——見 §17 SPEC-004-FIX 修訂列）：與 `tripDate`/`purpose` 及段落其他欄位一致的三態慣例——
+> **缺席** = 不對帳該段附件（既有 `LINKED` 關聯原封不動）；**空陣列 `[]`** = 清空該段全部附件（全數 detach）；**有值** = 該段附件的**完整目標集合**（與目前 `LINKED` 集合做差集：新增者 link、移除者 detach）。
+> 缺席**不得**視為「清空」：既有請求型態中大量存在「只帶 `{id}` 更新既有段、完全不提 `attachmentIds`」者（例如純調整段落順序），若缺席即清空，使用者僅重排順序就會意外解除所有附件關聯——屬任何 AC 均未要求的破壞性副作用。
+> 上限 3 張（AC-22、BE-US-24）與已完成拒改（AC-59）不受三態影響：單一請求宣告第 4 張仍為 409 `TOO_MANY_ATTACHMENTS`。
 
 ### 8.3 既有附件端點的改造（PHASE-003）
 
@@ -685,7 +697,7 @@ interface SegmentInput {
 | `POST /attachments` | **新增可選 `ownerId`**（僅 ADMIN 可指定他人；一般使用者指定他人 → 403）。`uploaderId` 恆為呼叫者（AC-29）。此為 PHASE-003 D3「代操作留 PHASE-004」之預留路徑落地。 |
 | `POST /attachments/:id/link` | **移除**（D12）。服務層 `linkAttachment()` 保留供內部呼叫。 |
 | `DELETE /attachments/:id` | 移除 client `containerState` 參數；改由後端依 `refType/refId` → `TripSegment` → `Application.status` 推導（AC-26/27）。`TEMP`（無容器）→ `draft`。 |
-| `GET /attachments/:id/content|thumbnail` | 不變（沿用 PHASE-003 授權）。 |
+| `GET /attachments/:id/content`、`GET /attachments/:id/thumbnail` | 不變（沿用 PHASE-003 授權）。 |
 
 ### 8.4 前端路由（新增／調整）
 
@@ -694,7 +706,8 @@ interface SegmentInput {
 | `/`（HomePage） | 由 placeholder 改為**個人綜合列表 + 篩選 + 新增入口**（FE-US-04/05） |
 | `/applications/travel/new` | 建立草稿（呼叫 POST 後導向 `:id`） |
 | `/applications/travel/:id` | 草稿編輯表單（多段／預覽／附件）；已完成則轉檢視態 |
-| `/admin/users/:userId/applications` | 管理員檢視指定使用者紀錄 + 代操作入口（AD-US-06/07） |
+| `/admin/users/:userId/applications` | 管理員檢視指定使用者紀錄 + 代操作入口（AD-US-06/07）；`:userId` 依構造恆存在，故必為「已選使用者」狀態 |
+| `/admin/applications` | **同一頁面元件的「未選使用者」進入點**：初始為未選狀態並提供使用者下拉選單，使 §4「管理員：代建立入口」列之 Empty 態「未選使用者 → 入口停用」（AC-79 之 UX 面）成為可到達路由。重用 PHASE-002 既有 `GET /admin/users` 取得使用者清單，**未新增任何後端 API**；上列 `/admin/users/:userId/applications` 之行為完全未變。依 §17「實作偏離記錄（T14，ACTIVE 內）」修訂列補列 |
 | `/attachments-demo`（既有） | PHASE-003 最小宿主頁；因 link 端點移除須調整或移除（見 D12） |
 
 ### 8.5 錯誤碼（沿用 + 新增）
@@ -763,7 +776,10 @@ interface SegmentInput {
 
 ── 完成申請 ────────────────────────────────────────────────────────────
 使用者 → POST /applications/:id/complete（body 一律忽略，AC-54）
-  【授權】assertOwnershipOrAdmin（以 DB ownerId 為準）
+  【授權】owner-only：actor.id === application.ownerId（以 DB ownerId 為準，非請求參數）
+         非擁有人（含 ADMIN）→ 403 FORBIDDEN；擁有人恰為 ADMIN 時完成自己的申請則允許
+         刻意不採 assertOwnershipOrAdmin（會放行 ADMIN ＝ 開放代完成）
+         依 §17.1 D17（本 Phase 不提供代完成）與 §17「矛盾釐清（ACTIVE 內）」修訂列
   → 交易開始（SERIALIZABLE 或條件式更新 WHERE status='DRAFT'，防併發雙完成 B-29）：
       ①【狀態機】assertTransition(DRAFT → COMPLETED)，非 DRAFT → 403
       ② 完整性驗證（純函式，回全部 blockers；非空 → 400 VALIDATION_ERROR + details.blockers，rollback）
@@ -1337,16 +1353,12 @@ PHASE-002(authz/audit)  PHASE-003(attachment)  PHASE-003a(parameters)
 |---|---|---|---|
 | 2026-08-02 | DRAFT 建立 | 依 SPEC-004 Packet 建立 PHASE-004 完整 Spec（§1~§16：93 條 AC、正常流程、五態、32 項邊界、權限與敏感資料、API contract、資料模型與 migration、Data Flow、NFR、測試策略、Rollback、Architecture/Data Flow 影響、已知限制、15 Task 之 Task Graph、決策點 D1~D18） | PRD §5 PHASE-004（311–337 行）；`userstory.md` FE-US-04/05/07~12/21/27、AD-US-06/07/08、BE-US-02/03/05/06/07/08/09/18/20/24/25/29、NFR-US-10/14/16；PHASE-001 錯誤協定；PHASE-002 授權中介與稽核慣例；PHASE-003 附件生命週期與 Review AR-D 前置約束；PHASE-003a Decimal 語意 D3/D8、`findEffectiveVersion`、錯誤碼 D5、稽核 D6；`ARCHITECTURE.md` §3/§4.1~4.6；`DATA_FLOW.md` §1/§2.2/§2.3/§2.8；`PROJECT_STATE.md` 前置約束與測試隔離紀律 |
 | 2026-08-02 | **DRAFT → ACTIVE** | Gate 通過；D1~D18 全數定案（見 §17.1）。D1~D17 依 spec-writer 建議定案；**D18 改採 (b) 維持單一 PHASE-004**，並將 §15 之 004a/004b 分組改作「Phase 內階段性獨立 Review 檢查點」。無 AC 增刪、無 US 原意變更。 | **使用者 leonchih 於 2026-08-02 明示授權：「spec 寫好後直接進入實作，這次的 session 的 spec 不用 approval」**——由大總管代行 Gate 裁定並完整記錄理由，供使用者事後複核。合併進 main 仍保留為人類批准事項（不可逆，未代決）。 |
-
 | 2026-08-02 | **D19 新增（ACTIVE 內，使用者批准）**：併發整份 `PUT` 之產品語意 = **最後寫入者贏** | **背景（實測證據）**：B-30 併發測試於全套平行負載下約 23% 失敗（大總管 13 輪重跑 3 次；`expected [200,200] to deeply equal [200,409]`），三個修復回合（T11 一次、T11R 兩次）均未關閉。診斷發現**問題不在併發控制，而在測試遷移時語意被改變**：D15 已定案儲存語意為「整份 `PUT` + 以 `id` 對齊 diff」，測試中兩個併發請求各自宣告 `[...filler, attX]` 共 **3 張＝恰為上限、皆為合法請求**，故「其中一方必須被 409 拒絕」的斷言與 D15 的 full-replacement 語意本身矛盾。原 PHASE-003 測試 race 的是**增量式** `POST /attachments/:id/link` 到 `limit=1` 容器（「只有一方成功」為正確）；T11 依 §17 逐條遷移改掛整份 `PUT` 端點時，語意隨之改變而斷言未同步修正。另查得真實缺陷：`travel-service.ts` 之 baseline 於**交易外**（`prisma` 而非 `tx`）計算 → 併發時雙方 baseline 皆為前態，各自只 link 不 detach → 最終 4 張，**上限確可被突破**；而循序情況下回出的 409 亦係過期 baseline 之副作用，非真正「超過上限」。**定案**：(i) 兩個併發整份 `PUT` 各自宣告合法集合時**皆回 200**，最終狀態為後手宣告之集合，該段附件數恆等於宣告數（本例 3）；(ii) baseline 必須於**交易內**重算並確保真正序列化，杜絕「最終 4 張」；(iii) B-30 測試斷言改為 `[200, 200]` + `linkedCount === SEGMENT_ATTACHMENT_LIMIT`。**AC-22 不受影響且不得弱化**——單一請求宣告第 4 張仍須 409 `TOO_MANY_ATTACHMENTS`，由既有測試繼續守住。無 AC 增刪、無 US 原意變更、不需 migration。 | **使用者 leonchih 於 2026-08-02 明示批准**（大總管提出三選項並附證據，使用者選定「最後寫入者贏」，並同時裁定「回退 T11R 兩次失敗嘗試之副作用（`SERIALIZABLE`→`READ COMMITTED` 降級、`linkAttachmentTx` 改寫為原生 SQL）再重做」）。依治理 2026-08-01.2 §13 Gate 反饋流程：本列 Spec 修訂先行，其後派 implementer 以 TDD 實作，再經 reviewer 複審方得合入。§17 之 C1「逐條遷移不得弱化」續行——本次修正係**回復遷移時失真的語意**，非降低斷言強度。 |
-
 | 2026-08-02 | **矛盾釐清（ACTIVE 內）**：`POST /applications/:id/complete` 之授權為 **owner-only** | **矛盾內容**：§6.1 授權矩陣表（本檔 L387）將 `/complete` 與 `GET/PUT/DELETE /applications/travel/:id` 併列於同一列並標示 `assertOwnershipOrAdmin`；§9「完成申請」流程（L766）亦寫 `【授權】assertOwnershipOrAdmin`。`assertOwnershipOrAdmin` 會放行 ADMIN，用於本端點即等同**開放管理員代完成**，與 §17.1 **D17「(a) 本 Phase 不提供代完成；管理員可代建立／代修改草稿，完成由使用者本人執行」**直接牴觸。**裁定**：以 **D17 為準**——`/complete` 採嚴格 `actor.id === application.ownerId`；非擁有人（**含 ADMIN**）一律 403 `FORBIDDEN`；擁有人為 ADMIN 時完成自己的申請則允許（阻擋條件是「非擁有人」而非「ADMIN 角色」）。理由：§17.1 為 Gate 定案之人類決策紀錄，依治理 §9 事實來源優先序高於 Spec 本體敘述；且 D17 明載「AI 不得自行擴大 US 未描述的管理員能力，尤其是不可逆操作」，`userstory.md` 對管理員能力的列舉止於代建立／代修改**草稿**（AD-US-07/08）。**待辦（非阻擋）**：§6.1 表格 L387 與 §9 流程 L766 之文字須由 spec-writer 於後續文件校正回合修正，使本體敘述與 D17 一致；在該修正完成前，本列為權威。 | implementer 於 PHASE-004-T8 主動回報此矛盾（未自行裁定，符合 Stop Condition 精神），大總管依治理 §9 事實來源優先序裁定。無 AC 增刪、無 US 原意變更、非新的產品決策——僅釐清既有 D17 之落地方式。T8 已依本裁定實作並附鑑別力測試（他人 403、ADMIN 非擁有人 403、ADMIN 完成自己的 200、未登入 401）。 |
-
 | 2026-08-02 | **D6 授權邊界修訂（ACTIVE 內，使用者明示批准）**：承認「任一啟用使用者可得知任一日單價」為既成事實，等同事後採用 D6(b) | **發現（Phase 終審 reviewer）**：D6 定案 (c) 選「草稿／預覽 `computed` **不含**單價」，其明文理由為「若草稿預覽附單價等於以另一路徑對一般使用者揭露參數表，屬對 003a D10 已批准授權範圍的實質擴張，**不由 AI 代為放寬**」。實作在**型別層**忠實落地（`TravelComputedDto` 編譯期即無單價欄位，期中 reviewer 評為模範），但 **D6(c) 的目的在語意層失效**：`POST /applications/travel/preview` 僅掛 `requireAuth` + `requirePasswordChanged`，回應含每段 `fuelAmount = totalKm × fuelUnitPrice`（`toFixed(4)`），而 `tripDate` 與 `totalKm` 皆為使用者可控——送 `totalKm=1` 即得單價本身、4 位小數完全一致；`highwayKm=1` 同理取得 ETC 單價。任一啟用使用者可對任意日期反覆查詢，完整還原參數版本歷史。**專案自身測試即為佐證**：`backend/test/integration/phase4-travel-preview.test.ts:255-273` 以一般使用者 cookie 送 `totalKm:"1"`，斷言 `fuelAmount === "5.0000"`，而該值正是該日 `FuelParameterVersion.unitPrice`。亦即 **Gate 當初明確否決之 D6(b) 後果實際成立，而 Gate 紀錄以為已避免**。**裁定**：**承認此邊界擴張**，不改程式。003a D10「參數端點全 requireAdmin」之邊界於 PHASE-004 事實上已擴張至「**任一啟用使用者可得知任一日之油資／ETC 單價**」。理由：(i) 單價為公司補助費率而非個人資料，使用者本就能自其已完成申請之 `snapshot` 反推自身期間費率；(ii) 產品層封堵需令預覽對非管理員不回每段取整前金額，直接抵觸 **AC-33**（明文要求單段回傳 `fuelAmount`/`etcAmount`）與 FE-US-10 之預覽體驗，且整筆金額除以總里程仍可得近似單價，未必徹底堵死。**後續 Phase 注意**：PHASE-007（折舊）、PHASE-008（報表）不得再以「一般使用者不知道單價」為安全前提。 | **使用者 leonchih 於 2026-08-02 明示批准**（大總管附 reviewer 證據提三選項，使用者選定「承認邊界已擴張，記入 Spec」）。D6 原文標題即「金額語意 + 授權範圍，**必人類批准**」，故本項不由 AI 代決；terminal 裁定權在人類，本列為其行使紀錄。無 AC 增刪、無程式變更、無 US 原意變更。 |
-
 | 2026-08-02 | **實作偏離記錄（T14，ACTIVE 內）**：管理員前端新增 `/admin/applications` 路由與「申請紀錄」按鈕 affordance | implementer 於 PHASE-004-T14 主動揭露兩項超出 Spec 字面之前端實作決定，大總管審視後**予以接受並記錄**，兩者皆**未改變任何 AC、未改變任何 API contract、未擴大 Scope**：**(a) 新增 `/admin/applications` 路由**——§8.4 路由表僅列 `/admin/users/:userId/applications`（`:userId` 依構造恆存在），但 T14 之 Done When 要求「**未選使用者時代操作入口須停用**」這個可達狀態，該路由在結構上無法呈現。處置：將同一頁面元件**額外**掛載於 `/admin/applications`（無 `:userId`），初始為未選狀態並提供使用者下拉選單（重用 PHASE-002 既有 `GET /admin/users`，未新增後端 API）。Spec 明列之路由行為完全未變，本項為純粹新增的 UI 進入點。**(b) 「申請紀錄」按鈕**——§4 文字為「點使用者姓名」進入，實作改為每列一個獨立按鈕而非讓姓名本身可點，理由為鍵盤可及性與可發現性；功能等價之進入點，僅 affordance 不同。**待辦（非阻擋）**：spec-writer 後續文件校正回合宜將 §8.4 路由表與 §4 之 affordance 描述同步為實作現況，避免文件與實作漂移（本 Phase 已因 `/complete` 授權文字漂移付出過代價）。 | implementer 主動揭露（未自行認定為無需記錄），大總管依治理 §11.2「AI 可以修改但必須記錄」之「非公開 Data Flow／內部結構」類別接受。兩項皆不屬 §11.3 需人類批准之情形（未改 US 原意、未刪減 AC、未擴大 Scope、未改公開 API contract）。前端隱藏入口不構成授權——後端 `requireAdmin` 仍為權威且未變（T10 已實作並測試）。 |
-
 | 2026-08-02 | 測試策略澄清（ACTIVE 內） | **D12 的既有測試連帶處置**：移除公開 `POST /attachments/:id/link` 會使 `backend/test/integration/phase3-lifecycle.test.ts`（PHASE-003）之 20 個測試中有 16 處引用該端點而必然失敗。裁定：**逐條遷移，不得刪除或 skip**——每一條既有斷言所保護的**行為**（擁有權 403、上限 409、重複關聯 409、容器不可變 403、未登入 401、驗證 400）在本 Phase 後仍然存在，只是唯一入口改為 `PUT /applications/travel/:id` 的 `attachmentIds`；遷移後測試數**不得減少**，且「client 可自帶 `limit`／`containerState`」這類**已被刻意消滅的能力**，其測試須改寫為「該繞道已不可能」的反向斷言。`e2e/attachments-demo.spec.ts` 因對應 UI 尚未存在，遷移延後至 T13（期間為已追蹤之 Known Issue，E2E 未進 CI）。 | 治理 2026-08-01.2 §11.2「測試策略屬 AI 可修改但必須記錄」；本項為 Gate 已批准之 D12 的實作連帶結果，非新的產品決策，不改變任何 AC 或 US 原意。衝突由 implementer 依 Stop Condition 正確回報，大總管裁定。 |
+| 2026-08-02 | **文件校正（ACTIVE 內，SPEC-004-FIX）**：Spec 本體敘述對齊已定案決策與既有實作；並補記 `attachmentIds` 三態語意 | 終審 reviewer 列 Should Fix S-4（阻擋 Spec 轉 `COMPLETED`），大總管派 SPEC-004-FIX 校正（第一回合五處 + 第二回合追加兩處 + 第三回合追加一處＝共八處），**純文件、零程式變更**：**(1) §6.1 授權矩陣**——原將 `POST /applications/:id/complete` 與 `GET/PUT/DELETE /applications/travel/:id` 併列同一列並標示 `assertOwnershipOrAdmin`（會放行 ADMIN），今拆為獨立一列並改為 **owner-only** 語意（非擁有人含 ADMIN 一律 403；擁有人恰為 ADMIN 時完成自己的申請則允許）。**(2) §9「完成申請」流程**——同上，`【授權】` 由 `assertOwnershipOrAdmin` 改為 owner-only。(1)(2) 均係執行上一列「矛盾釐清（ACTIVE 內）」所載之**待辦**，以 §17.1 **D17** 為準，非新決策。**(3) §8.4 前端路由表**——補列 `/admin/applications`（未選使用者之進入點）並註明其用途與「未新增後端 API」。**(4) §3.2 代操作流程步驟 1**——affordance 由「點使用者姓名」改為「點該列的『申請紀錄』按鈕」。(3)(4) 均係執行「實作偏離記錄（T14，ACTIVE 內）」所載之待辦；註：該列原文稱 affordance 位於「§4」，實際文字位於 **§3.2 步驟 1**，本次於實際位置修正，§4 五態表未動。**(5) §8.2 `SegmentInput.attachmentIds`**——字面原為必填（無 `?`），補記實作採用之**三態**：缺席 = 不對帳該段附件（既有關聯不動）、空陣列 `[]` = 清空、有值 = 完整目標集合。此為**釐清既有實作、非新決策**——與 D15 對 `tripDate`/`purpose` 之既有三態慣例一致；若缺席即清空，則僅調整段落順序（只帶 `{id}`）的 `PUT` 會意外解除所有附件關聯，屬任何 AC 均未要求之破壞性副作用。上限 3 張（AC-22）與已完成拒改（AC-59）不受影響。**以下 (6)(7) 為第二回合追加（大總管採納 spec-writer 第一回合之「只列不修」發現）**：**(6) §6.1 授權矩陣之 DELETE 路徑更正**——原列寫作 `GET/PUT/DELETE /applications/travel/:id`，但 **AC-05／AC-06 明文**與 §8.2 端點表皆為 `DELETE /applications/:id`（無 `/travel`，通用於各申請類型；實作 `backend/src/applications/routes.ts` 亦同，該處註解明載 "Generic across Application types"）。今拆為 `GET/PUT /applications/travel/:id` 與 `DELETE /applications/:id` 兩列，各自標示正確路徑；**授權判定語意完全不變**（兩者皆仍為 `assertOwnershipOrAdmin`）。採納理由與 S-4 同類：PHASE-009（修正版／作廢）會讀 §6.1 尋找刪除／作廢端點路徑，錯誤路徑會直接誤導下游。**(7) §3.2 步驟 7 之 DRAFT 期語氣更正**——原文「（依 D17）管理員**是否**可代『完成』— 預設不提供」以懸而未決語氣書寫，但 D17 已 Gate 定案且已實作；此屬 High 風險授權決策，模糊語氣會讓後續 Phase 的 implementer 誤以為仍可討論。今改為定案陳述並指向 §6.1／§9／§17 矛盾釐清列。**以下 (8) 為第三回合追加（大總管採納 spec-writer 第二回合之發現）**：**(8) 表格儲存格內未轉義管線符號更正（純呈現層，零語意變更）**——GFM 中反引號**不保護**表格儲存格內的 `\|`，故 `` `GET /attachments/:id/content\|thumbnail` `` 會被切成多一欄擠進 3 欄／2 欄表格，導致渲染錯位或末欄被吞。受影響者為 **§6.1 授權矩陣**（附件內容／縮圖之存取授權列）與 **§8.3 既有附件端點改造表**各一列；今改寫為明列兩條端點 `` `GET /attachments/:id/content` `` 與 `` `GET /attachments/:id/thumbnail` ``（而非以 `\|` 轉義），使讀者取得可直接比對的完整路徑。**端點集合、授權判定與行為完全未變**。採納理由同 (6)：§6.1 是 PHASE-005／008／009 會讀的授權矩陣，留一列渲染錯誤與本輪校正立論自相矛盾。全檔 34 張表格已逐張機檢欄數一致性（見下）。**另**：本次一併修復本表因先前編輯而被空行切斷的 Markdown 表格結構（既有 7 列內容**一字未改**，僅移除列間空行使其重新成為單一合法表格）。**無 AC 增刪、無 AC 語意變更、無 US 原意變更、無程式／測試變更、無 migration。** | 治理 2026-08-01.2 §11.1「格式、文字澄清」與 §11.2「非公開 Data Flow／內部結構須記錄」；本列五項全為**將本體敘述對齊既有人類定案（§17.1 D17）與既有實作**，不含任何新產品決策，故不觸發 §11.3 需人類批准之情形。實作佐證：`backend/src/applications/routes.ts`（`/complete` 之 owner-only 判定）、`backend/test/integration/phase4-travel-complete.test.ts`（他人 403／ADMIN 非擁有人 403／ADMIN 完成自己的 200／未登入 401 四條鑑別力測試）、`frontend/src/App.tsx`（`/admin/applications` 路由）、`backend/src/applications/travel-service.ts`（`SegmentPatch.attachmentIds` 三態）。 |
 
 ### 17.1 Gate 定案表（2026-08-02）
 
