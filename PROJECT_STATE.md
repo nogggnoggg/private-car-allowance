@@ -73,6 +73,8 @@ Updated: 2026-08-02
 | — | **整合驗收 Gate（人類 leonchih）** | — | **通過（2026-08-02）** | compose 真實拓撲 |
 | R9 | REPAIR：seed:admin 於 production 映像失效（Gate 發現） | High | DONE | 69eeb16 |
 | — | R9 輕量複審 | — | DONE | **APPROVE** |
+| — | Draft PR #5 + CI | — | DONE | 三 job 全綠 |
+| — | **PR 合併批准（人類）** | — | **待觸發** | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
 - 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ 814（R4）→ 848（T9）→ 860（T10）→ 871（T12）→ 877（R7）→ **879（R8）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
@@ -250,7 +252,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **69eeb16**（PHASE-004-R9）；整合驗收 Gate 已通過、全部 Review 清零，待 Draft PR 與人類合併批准
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **9e00b8c**；已 push 至 origin/phase-004，**Draft PR #5** 已建立，**CI 三 job 全綠**；待人類合併批准
 
 ## Human Gate（PHASE-004）
 
