@@ -36,6 +36,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { completeTravelApplication } from "../../src/applications/travel-service.js";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
+import { dateBeforeAnyKnownParameterVersion } from "./_param-version-floor-date.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -448,8 +449,13 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
 
   describe("AC-47 — 缺參數不得完成", () => {
     it("出差日期無任何有效油資/ETC 版本 → 409 PARAMETER_NOT_AVAILABLE，details.missing=[FUEL,ETC]，狀態不變", async () => {
+      // PHASE-004-R3（機制 B 修復）：原寫死 "2020-01-01"（註解自承「早於全域
+      // 任何已知版本」——一個從未被驗證過的假設，見 Task Handoff「機制 B 根因
+      // 與證據」）改為當場查詢 DB 真實狀態動態算出，恆早於現存所有版本，不論
+      // 平行執行的其他測試檔用什麼年份。
+      const tripDate = await dateBeforeAnyKnownParameterVersion(prisma);
       const { applicationId } = await buildCompletableDraft(ownerCookie, ownerId, {
-        tripDate: "2020-01-01", // 早於全域任何已知版本（現存最早為 2026-01-01）
+        tripDate,
         purpose: "缺參數測試",
         segments: [{ origin: "A", destination: "B", totalKm: "10.00", highwayKm: "0.00" }],
       });

@@ -24,6 +24,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
+import { dateBeforeAnyKnownParameterVersion } from "./_param-version-floor-date.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -1393,7 +1394,11 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
 
   describe("PHASE-004-T7 — computed/missingParameters", () => {
     const PARAM_DATE = "2032-01-01"; // 本區塊專屬生效日：油資 6.0000 / ETC 3.0000
-    const BEFORE_PARAM_DATE = "2020-06-15"; // 早於 PARAM_DATE，故必然缺參數
+    // PHASE-004-R3（機制 B 修復）：原寫死 "2020-06-15"（註解自承「早於
+    // PARAM_DATE」——但真正需要的是「早於全域現存所有版本」，這是從未被驗證
+    // 過的假設，見 Task Handoff「機制 B 根因與證據」）。改為 `beforeAll` 內
+    // 當場查詢 DB 真實狀態動態算出。
+    let BEFORE_PARAM_DATE: string;
 
     let fuelVersionId: string;
     let etcVersionId: string;
@@ -1416,6 +1421,7 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
       });
       fuelVersionId = fuel.id;
       etcVersionId = etc.id;
+      BEFORE_PARAM_DATE = await dateBeforeAnyKnownParameterVersion(prisma);
     });
 
     afterAll(async () => {

@@ -25,6 +25,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
+import { dateBeforeAnyKnownParameterVersion } from "./_param-version-floor-date.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -216,9 +217,18 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
       expect(body.preview.totalAmount).toBe(90);
     });
 
-    it("tripDate=2030-12-31（早於所有版本，B-11）→ 查無，missingParameters=['FUEL','ETC']，仍 200", async () => {
+    it("tripDate 早於全域現存所有版本（B-11）→ 查無，missingParameters=['FUEL','ETC']，仍 200", async () => {
+      // PHASE-004-R3（機制 B 修復）：不再寫死一個「猜測早於所有版本」的日期
+      // （原 "2030-12-31" 假設不成立——`phase3a-parameter-model.test.ts` 建立
+      // 的 2026 年版本 <= 2030-12-31，若該檔平行執行中尚未 afterAll 清理，
+      // `findEffectiveVersion` 會選中它，parameterAvailable 意外變 true，
+      // 詳見 Task Handoff「機制 B 根因與證據」）。改為當場查詢 DB 真實狀態、
+      // 動態算出一個保證早於「現存所有」版本的日期——這是對當下事實的驗證，
+      // 不是對其他測試檔案日期慣例的假設，不論平行 fork 排程或未來新增測試檔
+      // 用什麼年份皆恆成立。
+      const tripDate = await dateBeforeAnyKnownParameterVersion(prisma);
       const resp = await preview(userCookie, {
-        tripDate: "2030-12-31",
+        tripDate,
         segments: [{ totalKm: "10", highwayKm: "5" }],
       });
       expect(resp.statusCode).toBe(200);
