@@ -357,10 +357,10 @@ Packet 要求確認「真併發測試是否刻意要多 worker 打同一資料�
 **實作形狀**：`setupFiles` 內註冊 root-level `beforeAll`（vitest 中 setup 檔註冊的 root hook 先於測試檔內任何 `describe` 的 `beforeAll` 執行），內容為：
 
 1. 動態列舉 `pg_tables WHERE schemaname = <worker schema> AND tablename <> '_prisma_migrations'`（**不寫死表清單**，避免日後新增 model 時漏掉）。
-2. 單一 `TRUNCATE TABLE <全部> RESTART IDENTITY CASCADE`。
-3. 用完即 `$disconnect()`。
+2. ~~單一 `TRUNCATE TABLE <全部> RESTART IDENTITY CASCADE`~~ **（R1 修訂，2026-08-03，依人類「派 REPAIR 依 R-5 方向優化」裁定）**：依 `pg_constraint` 動態計算 FK 拓撲序後**逐表 `DELETE FROM`**（微基準 178ms→0.65ms/次；TRUNCATE 的 DDL 型 catalog invalidation 廣播為成本主因）。FK 圖若有循環則回退原 TRUNCATE CASCADE。**語意差異**：DELETE 不重設 identity sequence——經查全測試套件唯一 autoincrement 為 `HealthProbe.id` 且無任何字面值斷言（reviewer 獨立複核確認），無害。
+3. ~~用完即 `$disconnect()`~~ **（R1 修訂，同上）**：worker 連線自 schema 驗證起共用至檔尾 root `afterAll` 才釋放（每檔 2 連線→1）。連線峰值實測 25/100（reviewer 量測），見 NFR-3 修訂。
 
-**成本**：實測 ~192ms/次 × 47 檔 ÷ maxForks(8) ≈ **1.2s wall**。納入 AC-23 的 20% 預算。
+**成本**：原估 ~192ms/次 × 47 檔 ÷ maxForks(8) ≈ 1.2s wall。**R1 後實測（reviewer 對齊量測,兩邊同 47 檔）**：per-file 清空+setup 邊際成本 ≈ 0,殘餘增幅幾乎全部來自 globalSetup 一次性供裝 ~2.7s（佔 off 基線 9.64s 之 28.5%）,總增幅 **+25.3%**。AC-23 處置見 §17 R1 交付列。
 
 **為何不用 per-test（每個 `it`）清空**：既有 32 個檔全部在 `beforeAll` 建 fixture、在多個 `it` 之間共用（AC-11 即為此設的防護欄）。per-test 清空會破壞全部既有測試，違反 G3。
 
@@ -606,8 +606,8 @@ vitest 主行程
 | AC-03(c) | integration | `test/integration/infra001-isolation-self-check.test.ts` | `schema 不存在時 setup 拋出可行動錯誤` | T1 | 已完成（T1，`3120029`） |
 | AC-04 | unit | `test/unit/infra001-db-isolation.test.ts` | `DATABASE_URL 未設時不動作且不拋錯` | T1 | 已完成（T1，`3120029`） |
 | AC-05 | unit | `test/unit/infra001-db-isolation.test.ts` | `TEST_DB_ISOLATION=off 原樣回傳；無效值拋錯；skip 僅在明示 off 時` | T1 | 已完成（T1，`3120029`） |
-| AC-05 | evidence | — | `TEST_DB_ISOLATION=off` 全套一輪全綠（Handoff 貼三數字） | T3 | **部分達標**——T3 於 2026-08-03 實測：機制正確（4 檔/11 條隔離專屬測試整體 skip、globalSetup 無任何 DDL log），但預設並行度（本機 maxForks）下連續 3 輪皆以完全相同的 2 個測試（`phase3-lifecycle.test.ts` D11、`phase4-travel-complete.test.ts` AC-48）現紅（`expected 503 to be 200`）；`--pool-options.forks.maxForks=1`（序列化）下同批次 0 failed。判定為 §4.7 成因 (a)（跨 worker SSI 衝突）在共用 `public` schema 下的真實重現，屬 A-1 既有風險而非 T3 引入的缺陷，但與本列原文「須綠」字面不符，需人類/大總管裁定 AC-05 的驗收讀法（見 Handoff）。 |
-| AC-06 | unit | `test/unit/infra001-db-isolation.test.ts` | `NODE_ENV=production 時 globalSetup 護欄拒絕執行` | T1 | 已完成（T1，`3120029`） |
+| AC-05 | evidence | — | `TEST_DB_ISOLATION=off`：機制正確性（skip／零 DDL／URL 不改寫）+ `maxForks=1` 全套 0 failed（2026-08-03 人類批准之修訂版基準） | T3 | **已完成（修訂版基準）**——機制正確性 T3 實測（4 檔/11 條 skip、零 DDL log）；`maxForks=1` 下 911 passed / 0 failed / 11 skipped（T3 實測、reviewer 獨立重跑皆通過）。預設並行度下重現修復前既有 503 flake（T3 三輪 3/3、reviewer 三輪 3/1/0 failed）依修訂版屬預期,不判定回退失效。原「須綠」字面之不可達性與人類裁定過程見 §17 |
+| AC-06 | unit | `test/unit/infra001-db-isolation.test.ts` | `NODE_ENV=production 時 globalSetup 護欄拒絕執行` | T1 | **更正（Review M-1，2026-08-03）**：原「已完成（T1）」為**不實宣稱**——該測試從不存在（reviewer 以 grep 與 `git show 3120029` 雙重查證），僅 T3 曾以臨時腳本手動驗證護欄行為。修復：R2 補上正式 unit 測試（見 R2 交付） |
 | AC-07 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `worker schema 的 _prisma_migrations 已完成筆數 = migrations 目錄數` | T1 | 已完成（T1，`3120029`） |
 | AC-08 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `worker schema 含 11 業務表與 6 個 schema 本地 enum（oid ≠ public）` | T1 | 已完成（T1，`3120029`） |
 | AC-09 | integration | `test/integration/infra001-isolation-self-check.test.ts` | `僅存在 ^vitest_w\d+$ 且編號 ≤ maxForks；public 表數未變` | T1 | 已完成（T1，`3120029`） |
@@ -624,7 +624,7 @@ vitest 主行程
 | AC-20 | evidence | — | `git diff .github/workflows/ci.yml` 為空 | T3 | 檔案層面已確認（`git diff` 對 `.github/**` 為空）；CI 實際綠燈證據待大總管開 Draft PR 取得，不在 T3 職責內 |
 | AC-21 | evidence | — | Draft PR 的 `Backend Build & Tests` job 綠燈 + log 中自檢輸出的 schema 名 | T3 | 待大總管開 Draft PR 後取得，不在 T3 職責內 |
 | AC-22 | evidence | — | globalSetup 耗時（本機 + CI 各一） | T1 | 已完成（本機，T1 Handoff）；CI 端待大總管開 PR 後取得 |
-| AC-23 | evidence | — | 全套 wall time 前後對照（同機同負載） | T3 | **未達標**——T3 於 2026-08-03 以 `TEST_DB_ISOLATION=off`（預設並行度）近似修復前基準：3 次量測 Duration 均值約 7.9s（CPU 45~50%），對照預設模式（schema 隔離）14 輪 Duration 均值約 13.4s（CPU 34~54%）——增幅約 **70%**，超過 §3 AC-23 訂的 ≤20% 過關線。方法論說明與根因假設（per-file TRUNCATE + `isolate:true` 下每檔皆需全新 PrismaClient 連線的握手成本，實測遠高於 §2.3 探針的 192ms/次估計）見 Handoff；修正需改動 `backend/test/setup/setup-file.ts`（T3 Files Forbidden），故列為待人類/大總管裁定事項，不由 T3 自行處理 |
+| AC-23 | evidence | — | 全套 wall time 前後對照（同機同負載） | T3→R1 | **未達標（歷程如下），待人類最終裁定**——T3 首測 ~69%（見 §17）→ 人類裁定派 R1 → R1 交付（共用連線+FK 拓撲 DELETE）增幅降至其量測之 ~40% → **reviewer 對齊重測推翻 R1 歸因**：兩邊同 47 檔之對齊量測增幅 **+25.3%**（12.08s vs 9.64s）,且 per-file 邊際成本 ≈ 0——殘餘幾乎 100% 為 globalSetup 一次性供裝 ~2.7s（佔基線 28.5%）;R1 的「isolate:true 架構性成本 47ms×53」歸因**不成立**（該數字實為供裝時間之誤歸因）。reviewer 提出第四選項（globalSetup 按需重建:比對 `_prisma_migrations` 吻合即不 drop 不 spawn,實測 no-op deploy 468ms→預期增幅 ~2%）,但需人類重裁 D3「run 前 drop」語意——**留待人類裁定:接受 ~25% or 批准第四選項** |
 | AC-24 | evidence | — | 14 輪固定格式表（round/passed/failed/skipped/wall/CPU%） | T3 | **已完成**——T3 於 2026-08-03 連續 14 輪，每輪 922 passed / 0 failed / 0 skipped，CPU 負載 34~54%，backend-only wall time 12.6~15.3s（Duration 欄），全數見 Handoff；無 503 flake、無需中止重跑 |
 | AC-25 | evidence | — | `git diff` 顯示 `maxForks` 值未變、無測試檔清理程式碼被刪 | T3 | 已完成——`git diff main...HEAD` 對既有 47 測試檔、`vitest.config.ts` 的 `maxForks` 計算公式（僅搬遷至 `max-forks.ts`，公式字元未變）、既有清理程式碼（RUN_ID/前綴/`deleteMany`）均無刪除或改動 |
 | AC-26 | evidence | — | 本 Spec §7-#9 記錄 + AC-10/AC-12 綠燈 | T3 | 已完成——§7-#9 已記錄「結構性關閉，9 檔不需各自補 beforeAll」；AC-10/AC-12 綠燈已於 T2（`6319fea`）與本 T3 14 輪中反覆驗證 |
@@ -637,7 +637,7 @@ vitest 主行程
 |---|---|---|
 | NFR-1 | globalSetup 供裝 ≤ 30s（本機 maxForks=8、CI maxForks=2） | AC-22 |
 | NFR-2 | 全套 wall time 增幅 ≤ 20% | AC-23 |
-| NFR-3 | 不增加 DB 連線峰值：per-file TRUNCATE 用完即 `$disconnect()`；不改任何 `connection_limit`（本機 `max_connections = 100`） | 實作審查 + AC-24 期間無連線耗盡錯誤 |
+| NFR-3 | 連線峰值受控（R1 修訂 2026-08-03：worker 連線每檔一條、共用至檔尾 `afterAll` 釋放,取代原「用完即 $disconnect」;實測峰值 25/100,reviewer 量測）;不改任何 `connection_limit`（本機 `max_connections = 100`） | 實作審查 + AC-24 期間無連線耗盡錯誤 + reviewer 峰值實測 |
 | NFR-4 | 跨平台：Windows（開發機）與 Linux（CI）皆須可執行——`prisma` binary 的 spawn 須處理 `.cmd` | AC-21（CI）+ 本機實跑 |
 | NFR-5 | 零新增 npm 依賴 | `git diff package*.json` 為空 |
 
@@ -712,6 +712,8 @@ L1 的存在本身是 AC-05 的驗收對象——**回退路徑必須被測過�
 - **L5 — E2E 殘留未處理**（§8.1）。
 - **L6 — 冗餘防線未清理**（§7）。47 檔中的 RUN_ID／前綴／`afterAll` 清理成為冗餘但保留；日後若要簡化，應為獨立回合並逐檔驗證，不可與本回合混合（會使 diff 不可審）。
 - **L7 — 供裝依賴 `prisma` CLI 可執行**。若 `node_modules` 未安裝或 binary 解析失敗，globalSetup 會失敗（fail-loud）。
+- **L8（Review AR-3）— 兩個 vitest run 同時打同一 DB 會互相摧毀**：後者 globalSetup 的孤兒清理會 `DROP SCHEMA CASCADE` 掉前者正在用的 schema。D3「run 前 drop」之既知後果；CI 每 job 獨立 DB 不受影響；本機請勿並行兩個 run。
+- **L9（Review AR-5）— FK 拓撲排序刻意忽略自參考 FK**（現況 self-refs = 0，reviewer 實測確認）。若未來加入 `ON DELETE RESTRICT` 自參考 FK，單表 DELETE 會失敗且拓撲排序偵測不到循環（不會回退 TRUNCATE）——屆時須調整 `computeForeignKeySafeDeleteOrder`。
 
 ---
 
@@ -758,6 +760,7 @@ L1 的存在本身是 AC-05 的驗收對象——**回退路徑必須被測過�
 |---|---|---|---|
 | 2026-08-03 | **文件校正（ACTIVE 內，DOC-FIX-001）**：§2.5 撤回「vitest 不會自動載入 `.env`」之錯誤事實主張及其對舊事故的因果歸因 | **原文主張**：§2.5 稱「vitest **不會**自動把 `.env` 載入 `process.env`」，並引 `PROJECT_STATE.md`（原文寫 L96／L118）之「未 export `DATABASE_URL` 造成 55 skipped」為佐證。**T1 實測推翻（2026-08-03）**：vitest 2.1.9 會自動載入 `backend/.env` 並把**全部**變數（非僅 `VITE_` 前綴）寫入 `process.env`（Vitest 沿用 Vite env 檔載入、對 `process.env` 採空前綴之標準行為），故本機未 `export` 時 `DATABASE_URL` 仍有值。**處置**：(1) §2.5 保留原文與原引用為歷史紀錄，另加「T1 實測更正」段落載明正確行為；(2) **撤回因果歸因**——`PROJECT_STATE.md` 之兩起 55 skipped 事故（**驗收紀律事件（T6）**、**驗收紀律事件（第三次，R3）**；原引 L96／L118，撰稿當時實際為 L99／L121，現為 L103／L125，故改以事件名稱定位）**另有成因、尚未查明**，本 Spec 與後續 Phase 不得再以「`.env` 未被載入」解釋之；(3) 明載對本 Spec **零影響**——CI 因 `backend/.env` 受 `.gitignore` L10-12 排除而無此檔（`DATABASE_URL` 由 `ci.yml` L74 workflow `env` 提供），且 `setup-file.ts` 以 `process.env.DATABASE_URL` 之實際值為輸入，來源無涉 D1 改寫與 D5 fail-closed 之正確性；(4) §4.8／§12 之「明確 `export DATABASE_URL`，不得依賴 `.env` 自動載入」**文字不變**，惟語義自此定位為執行紀律而非 vitest 行為主張。**無 AC 增刪、無 AC 語意變更、無決策變更、無程式／測試變更。** | 使用者 leonchih 2026-08-03 授權處理累積文件待辦；事實依據為 INFRA-001-T1 實測（2026-08-03）。治理 2026-08-02.3 §11.1「格式、文字澄清」——本列為**更正已被實證推翻之事實陳述**，不含新決策，不觸發 §11.3。 |
 | 2026-08-03 | ACTIVE（T3 量測） | T3（成效量測、防線盤點、CI 前置）完成大部分交付並更新 §9.5 狀態欄：AC-01~AC-19、AC-22（本機）、AC-24~AC-26 已完成；AC-16/17（既有 47 檔+`src/`/`prisma/`/`frontend/`/`e2e/`/`.github/` 零改動）覆核通過。**兩項未達 Spec 原文字面標準，留待人類/大總管裁定**：(1) AC-23 全套 wall time 增幅實測約 70%（`TEST_DB_ISOLATION=off` 預設並行度 3 次均值 ~7.9s vs 預設 schema 隔離模式 14 輪均值 ~13.4s），超過 §3 訂的 ≤20% 過關線；(2) AC-05 evidence 在預設並行度下連續 3 輪皆以相同 2 個測試現紅（`expected 503 to be 200`），僅在 `--pool-options.forks.maxForks=1`（序列化）下全綠——判定為 §4.7 已知成因 (a)（跨 worker SSI 衝突）在共用 `public` schema 下的真實重現，屬 A-1 既有風險而非 T3/T1/T2 引入的新缺陷，但與 AC-05 原文「須綠」字面不符。兩項的修正（若採納）皆需改動 T3 Files Forbidden 範圍內的檔案（`setup-file.ts` 等），故 T3 未自行處理，完整數據與根因假設見 Task Handoff。AC-20/21（CI 綠燈）依 Spec 原意由大總管開 Draft PR 後取得，非 T3 職責。 | T3 implementer 實測（2026-08-03），Spec §3/§4.7/§9.4 |
+| 2026-08-03 | R1 交付 + Review 同步（M-2） | **R1（`59e0f0d`，僅 setup-file.ts）**：依人類「派 REPAIR 依 R-5 方向優化」裁定，共用 worker 連線（每檔 2→1）+ FK 拓撲排序逐表 DELETE 取代 TRUNCATE CASCADE（循環回退 TRUNCATE；identity 不重設經雙方查證無測試依賴）。§4.4 實作形狀 2/3 兩點與 NFR-3 據此修訂（本列即依據）。**Review（REQUEST_CHANGES）發現**：M-1 AC-06 映射表不實宣稱（測試從不存在→R2 補測試+更正狀態欄）；M-2 即本列與相關狀態欄同步；S-1 reviewer 對齊重測推翻 R1 歸因（真實增幅 +25.3%，瓶頸為 globalSetup 供裝 2.7s 而非 per-file 成本）；S-2 第四選項（按需重建，預期 ~2%）需人類重裁 D3 後另案；S-3/S-4 → R2。AC-23 最終處置與 S-2 留待人類裁定。 | R1 依人類 2026-08-03 裁定；M-2 同步依 reviewer REQUEST_CHANGES（大總管執行） |
 | 2026-08-03 | T3 量測後裁定（人類批准兩項） | T3 實測：AC-24 十四輪 922/0/0 零 503（核心目標達成）；AC-23 增幅 ~69% 超過 ≤20% 門檻（根因假說：`isolate:true` 下 per-file TRUNCATE 每檔新建 Prisma 連線 ×53，Spec §2.3 探針未含連線開銷——即 §11.2 R-5 預見之情境）；AC-05 off 模式預設並行度 3/3 重現修復前 503 flake。人類裁定：①派 REPAIR（R1）依 R-5 緩解方向優化 TRUNCATE 開銷後重測 AC-23（門檻維持 ≤20% 不放寬）；②AC-05 文字修訂如該條新增粗體段（機制正確性 + maxForks=1 全綠為準）。另更正 §12 T3 Files Allowed 之「§15 修訂列」為「§17 修訂列」（章節編號誤植，T3 implementer 正確識別並回報）。 | 使用者裁定（2026-08-03，leonchih）|
 | 2026-08-03 | DRAFT→ACTIVE | 人類 Spec Gate 通過：**D1~D8 全數照 spec-writer 建議批准**（D1 per-worker schema、D2 `VITEST_POOL_ID`、D3 globalSetup 並行供裝＋run 前 drop、**D4 per-file TRUNCATE 必加**、D5 `TEST_DB_ISOLATION` fail-closed、D6 既有防線一行不刪、D7 A-1 不自動關閉、D8 N=14）。大總管同回合代修兩處驗收發現之瑕疵：檔頭 Governance-Version 誤植 `2026-08-02.3`→`2026-08-01.2`；§4.1 兩處「32 檔」統一為「31 個 integration 檔（29 檔 `DB_URL` + 2 檔例外路徑）」與 §2.1 一致。轉 ACTIVE，開始 T1。 | 使用者 Gate 批准（2026-08-03，leonchih）|
 | 2026-08-03 | DRAFT 建立 | 依 SPEC-INFRA-001 Packet 建立完整 Spec（§1~§16 + 決策點 D1~D8 + 26 條 AC + AC↔測試映射表）。相對 Packet 原案新增 **D4（per-file TRUNCATE）**，理由為 `isolate: true` 造成 worker 槽位跨檔重用，單靠 per-worker schema 不足以消滅同槽位前後檔污染（§2.4 原始碼實證、§4.4 事故對照表）。所有技術定案附 §2 的實測證據。 | `docs/retrospective/PHASE-004.md` §5 建議①（L153-156）；`PROJECT_STATE.md` A-1（L146-147）、R6（L120-121）、六類事故（L98-102）；`backend/vitest.config.ts` L4-37；`.github/workflows/ci.yml` L53-99；`playwright.config.ts` L9/28-30；vitest 2.1.9 與 tinypool 原始碼；2026-08-03 對本機 PG16 之可逆探針實測 |
