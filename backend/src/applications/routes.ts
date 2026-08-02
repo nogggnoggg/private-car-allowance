@@ -90,8 +90,14 @@ interface ApplicationsPluginOptions {
 
 type FieldParseResult<T> = { ok: true; value: T } | { ok: false; error: FieldError };
 
-/** tripDate: `null` = 清空; a valid YYYY-MM-DD string = 設定; anything else = 400. */
-function parseTripDateField(value: unknown): FieldParseResult<Date | null> {
+/**
+ * tripDate: `null` = 清空; a valid YYYY-MM-DD string = 設定; anything else = 400.
+ * Exported (PHASE-004-T10) so `admin/routes.ts`'s on-behalf create endpoint can
+ * reuse the exact same body-parsing rule as `POST /applications/travel`
+ * (Spec §8.2 表格明文「同 `POST /applications/travel`」) without re-implementing
+ * date parsing a second time.
+ */
+export function parseTripDateField(value: unknown): FieldParseResult<Date | null> {
   if (value === null) {
     return { ok: true, value: null };
   }
@@ -113,8 +119,11 @@ function parseTripDateField(value: unknown): FieldParseResult<Date | null> {
 
 const PURPOSE_MAX_LENGTH = 500; // D14(ii)：大總管代定，供人類事後調整
 
-/** purpose: `null` = 清空; a string ≤500 chars = 設定; anything else = 400. */
-function parsePurposeField(value: unknown): FieldParseResult<string | null> {
+/**
+ * purpose: `null` = 清空; a string ≤500 chars = 設定; anything else = 400.
+ * Exported (PHASE-004-T10) — same rationale as `parseTripDateField` above.
+ */
+export function parsePurposeField(value: unknown): FieldParseResult<string | null> {
   if (value === null) {
     return { ok: true, value: null };
   }

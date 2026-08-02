@@ -22,15 +22,34 @@
  *
  * Concurrent loginName collision (Spec §4.5.4):
  *   DB unique-key constraint error → 409 CONFLICT (not 500)
+ *
+ * On-behalf application creation (PHASE-004-T10, AC-78/79/85, Spec §8.2):
+ *   POST /admin/users/:userId/applications/travel → 201 { application: TravelApplicationDto }
+ *   body shape is identical to `POST /applications/travel` (§8.2 表格：
+ *   「同 `POST /applications/travel`」) — `tripDate?`/`purpose?`, both optional,
+ *   parsed via the SAME exported field parsers `applications/routes.ts` uses
+ *   for its own `POST /applications/travel` (not re-implemented here).
+ *   `ownerId` = `:userId` (the selected user), `createdById` = the calling
+ *   admin — these are DELIBERATELY different columns (§6.2/C2 of the Packet):
+ *   `ownerId` is who the resource belongs to going forward (that user views/
+ *   completes/reports on it later); `createdById` is pure audit provenance of
+ *   who made the write. `:userId` must exist (404 NOT_FOUND if not) and be
+ *   active (400 VALIDATION_ERROR if `isActive=false`) — this exact 404-vs-400
+ *   split already established by PHASE-004-T11's `POST /attachments?ownerId=`
+ *   on-behalf-upload endpoint (`attachment/routes.ts`), reused here verbatim
+ *   for consistency across the two "admin on-behalf" endpoints in this Phase.
  */
 
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { parsePurposeField, parseTripDateField } from "../applications/routes.js";
+import { createTravelDraft, toTravelApplicationDto } from "../applications/travel-service.js";
 import { writeAudit } from "../audit/audit.js";
 import { requireAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { validateNewPassword } from "../auth/password-rules.js";
 import { hashPassword } from "../auth/password.js";
 import { revokeAllUserSessions, toUserDto } from "../auth/session.js";
+import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 import { makeUserHasHistory } from "../users/history.js";
 
@@ -390,6 +409,80 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       });
 
       return reply.status(200).send({ ok: true });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:userId/applications/travel — 管理員代建立差旅草稿
+  // (PHASE-004-T10, AC-78/79/85, Spec §8.2)
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/admin/users/:userId/applications/travel",
+    { preHandler: adminPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { userId } = request.params as { userId: string };
+      const actorId = request.currentUser.id;
+
+      // AC-79(c): target user must exist and be active — checked BEFORE any
+      // write, so neither branch creates any data. 404-vs-400 split mirrors
+      // the established precedent in attachment/routes.ts's on-behalf upload
+      // endpoint (T11) — see this file's header comment for the full rationale.
+      const targetUser = await prisma.user.findUnique({ where: { id: userId } });
+      if (!targetUser) {
+        throw new AppError("NOT_FOUND", 404, "指定的使用者不存在");
+      }
+      if (!targetUser.isActive) {
+        throw new AppError("VALIDATION_ERROR", 400, "指定的使用者已停用，無法代其建立申請", [
+          { field: "userId", reason: "指定的使用者已停用" },
+        ]);
+      }
+
+      // Body shape identical to POST /applications/travel (§8.2 表格：「同
+      // POST /applications/travel」) — reuse the exact same field parsers
+      // (applications/routes.ts), not re-implemented here.
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const fieldErrors: FieldError[] = [];
+
+      let tripDate: Date | null = null;
+      if (Object.prototype.hasOwnProperty.call(body, "tripDate") && body.tripDate !== undefined) {
+        const result = parseTripDateField(body.tripDate);
+        if (!result.ok) fieldErrors.push(result.error);
+        else tripDate = result.value;
+      }
+
+      let purpose: string | null = null;
+      if (Object.prototype.hasOwnProperty.call(body, "purpose") && body.purpose !== undefined) {
+        const result = parsePurposeField(body.purpose);
+        if (!result.ok) fieldErrors.push(result.error);
+        else purpose = result.value;
+      }
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      // AC-78: owner/creator 分離——ownerId=:userId（被代理使用者），
+      // createdById=管理員（操作者）。兩者刻意不同（Packet C2）。
+      //
+      // PHASE-004-T12（稽核，本 Task Out of Scope）預留掛點：`createTravelDraft`
+      // 目前是單一 Prisma 巢狀寫入（非 `$transaction`），尚未提供 `onCreated`
+      // 交易內回呼（比照 parameters/parameter-service.ts 既有的 `onCreated`
+      // 模式）。本 Task 刻意不引入該包裝，以避免變動 `createTravelDraft`——這是
+      // 一般端點 `POST /applications/travel` 也共用的核心函式——擴大本次 High
+      // 風險 Task 的變更半徑；T12 實作稽核時，可仿 parameter-service.ts 的做法
+      // 為 `createTravelDraft` 加一個可選的交易內 `onCreated` 回呼，讓「建立
+      // 申請」與「寫入 AuditLog（AC-82：action=APPLICATION_CREATED_ON_BEHALF）」
+      // 原子化。
+      const application = await createTravelDraft(prisma, {
+        ownerId: userId,
+        createdById: actorId,
+        tripDate,
+        purpose,
+      });
+
+      const dto = await toTravelApplicationDto(prisma, application);
+      return reply.status(201).send({ application: dto });
     }
   );
 };
