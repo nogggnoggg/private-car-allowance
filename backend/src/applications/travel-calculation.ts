@@ -81,9 +81,9 @@ export function calculateTravel(input: CalculateTravelInput): CalcResult {
   const { segments, fuelUnitPrice, etcUnitPrice } = input;
 
   const segmentResults: CalcSegmentResult[] = [];
-  let totalKm = new Prisma.Decimal(0);
-  let totalRawAmountDecimal = new Prisma.Decimal(0);
-  let totalAmountDecimal = new Prisma.Decimal(0);
+  let totalKm = new Prisma.Decimal("0");
+  let totalRawAmountDecimal = new Prisma.Decimal("0");
+  let totalAmountDecimal = new Prisma.Decimal("0");
 
   for (const segment of segments) {
     // segFuel = totalKm × fuelUnitPrice（未取整）

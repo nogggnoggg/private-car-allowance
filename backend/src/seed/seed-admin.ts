@@ -90,9 +90,20 @@ export async function runSeedAdmin(
   // the original implementation did — connect before use, disconnect
   // in `finally`. When a test injects a stub, we neither connect nor
   // disconnect it (that's the test's responsibility, if applicable).
-  const ownsPrisma = deps.prisma === undefined;
-  const realClient = ownsPrisma ? new PrismaClient() : undefined;
-  const prisma: SeedAdminPrismaLike = deps.prisma ?? (realClient as unknown as SeedAdminPrismaLike);
+  //
+  // Assigned via if/else (rather than `?? (realClient as unknown as
+  // SeedAdminPrismaLike)`) so the `prisma` assignment is a genuine
+  // structural check of `PrismaClient` against `SeedAdminPrismaLike` —
+  // no `unknown` cast, no non-null assertion (forbidden by biome
+  // lint/style/noNonNullAssertion).
+  let realClient: PrismaClient | undefined;
+  let prisma: SeedAdminPrismaLike;
+  if (deps.prisma) {
+    prisma = deps.prisma;
+  } else {
+    realClient = new PrismaClient();
+    prisma = realClient;
+  }
 
   try {
     if (realClient) {

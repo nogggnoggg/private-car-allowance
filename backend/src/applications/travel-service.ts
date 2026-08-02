@@ -1346,14 +1346,14 @@ export function formatTravelComputed(
   resolved: ResolvedParameters,
   segments: ReadonlyArray<ComputedSegmentInput>
 ): TravelComputedDto {
-  const fuelUnitPrice = resolved.fuelUnitPrice ?? new Prisma.Decimal(0);
-  const etcUnitPrice = resolved.etcUnitPrice ?? new Prisma.Decimal(0);
+  const fuelUnitPrice = resolved.fuelUnitPrice ?? new Prisma.Decimal("0");
+  const etcUnitPrice = resolved.etcUnitPrice ?? new Prisma.Decimal("0");
 
   const calcSegments: CalcSegmentInput[] = segments.map((s) => ({
     segmentId: s.segmentId,
     segmentIndex: s.segmentIndex,
-    totalKm: s.totalKm ?? new Prisma.Decimal(0),
-    highwayKm: s.highwayKm ?? new Prisma.Decimal(0),
+    totalKm: s.totalKm ?? new Prisma.Decimal("0"),
+    highwayKm: s.highwayKm ?? new Prisma.Decimal("0"),
   }));
 
   const result = calculateTravel({ segments: calcSegments, fuelUnitPrice, etcUnitPrice });
