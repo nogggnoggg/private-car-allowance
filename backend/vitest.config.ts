@@ -1,5 +1,5 @@
-import os from "node:os";
 import { defineConfig } from "vitest/config";
+import { computeMaxForks } from "./test/setup/max-forks.js";
 
 // PHASE-004-R3（測試套件決定性修復）— maxForks 上限，見 Task Handoff「機制 A
 // 根因與證據」完整說明，這裡只留精簡版：
@@ -34,7 +34,13 @@ import { defineConfig } from "vitest/config";
 // 類重試耗盡理論上仍可能重現，只是門檻已大幅提高。要做到與負載完全無關的
 // 決定性，需要 per-worker 獨立 DB schema 等基礎設施層隔離，超出本 Task
 // Files Allowed 範圍（會動到 migration／CI 設定）。
-const maxForks = Math.max(2, Math.floor((os.availableParallelism?.() ?? os.cpus().length) / 2));
+// INFRA-001-T1: the calculation above was moved verbatim into
+// `./test/setup/max-forks.ts` (`computeMaxForks()`) so that `global-setup.ts`
+// (per-worker schema provisioning, see below) and this config share a single
+// source of truth for `maxForks` instead of each computing it separately and
+// risking drift (Spec §4.3 "maxForks 的單一事實來源"). The formula itself is
+// unchanged — only its location moved.
+const maxForks = computeMaxForks();
 
 export default defineConfig({
   test: {
@@ -52,5 +58,16 @@ export default defineConfig({
         maxForks,
       },
     },
+    // INFRA-001-T1: per-worker PostgreSQL schema isolation (Spec
+    // docs/specs/INFRA-001.md §5.2/§5.3). `globalSetup` provisions one schema
+    // per pool slot (1..maxForks) once, before any test file runs;
+    // `setupFiles` rewrites `process.env.DATABASE_URL` inside each fork
+    // worker — before that worker's test file module is imported (confirmed
+    // by a real R-1 execution experiment, see Task Handoff) — to point at
+    // that worker's own schema, and fails closed if the schema isn't there.
+    // Toggle: `TEST_DB_ISOLATION=off` reverts to the pre-INFRA-001 shared
+    // `public` behavior with zero code changes (G5, one-key rollback).
+    globalSetup: ["./test/setup/global-setup.ts"],
+    setupFiles: ["./test/setup/setup-file.ts"],
   },
 });
