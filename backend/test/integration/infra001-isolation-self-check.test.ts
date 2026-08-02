@@ -1,15 +1,17 @@
 /**
- * Integration tests for INFRA-001-T1 — per-worker PostgreSQL schema isolation
- * self-check (real DB, real global-setup-provisioned schema).
+ * Integration tests for INFRA-001-T1/T2 — per-worker PostgreSQL schema
+ * isolation self-check (real DB, real global-setup-provisioned schema).
  *
- * AC covered (Spec docs/specs/INFRA-001.md §3/§9.2, T1 slice only — AC-10/11
- * per-file-empty-start and AC-12/13 collision/residue tests belong to T2 and
- * are NOT in this file yet; setup-file.ts in T1 does not TRUNCATE):
+ * AC covered (Spec docs/specs/INFRA-001.md §3/§9.2):
  *   AC-01  current_schema() 為本 worker 專屬 schema，search_path 不含 public
  *   AC-03(c) 目標 schema 不存在時 fail-closed 拋出可行動錯誤
  *   AC-07  worker schema 的 _prisma_migrations 已完成筆數 = migrations 目錄數（動態）
  *   AC-08  worker schema 含全部 11 張業務表 + 6 個 schema 本地 enum（oid ≠ public）
  *   AC-09  僅存在 ^vitest_w[0-9]+$ 且編號 ≤ maxForks；public 表數（run 前後）未變
+ *   AC-10  本檔第一個 beforeAll 執行時（root TRUNCATE 已完成），11 張業務表
+ *          列數皆為 0；_prisma_migrations 不受影響（T2）
+ *   AC-11  beforeAll 建立的資料在該檔多個 it 之間持續存在（per-file 而非
+ *          per-test 清空，T2）
  *   AC-14  current_schema() 符合 ^vitest_w[0-9]+$（隔離失效即紅——鑑別力核心）
  *   AC-19  travel-service.ts 的 `SELECT ... FOR UPDATE` 原始 SQL 在 worker
  *          schema 下經 updateTravelDraft 正確解析（無 schema 限定表名依
@@ -46,15 +48,62 @@ const BUSINESS_ENUM_NAMES = [
   "ApplicationStatus",
 ] as const;
 
-describeIsolation("INFRA-001-T1 — per-worker schema isolation self-check", () => {
+describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", () => {
   let prisma: PrismaClient;
+  let ac11FixtureUserId: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+
+    // AC-10: 這是本檔的第一個 beforeAll。setup-file.ts 以 setupFiles 註冊的
+    // root-level beforeAll（TRUNCATE，T2）必已在此之前執行完畢——斷言故意放
+    // 在這裡（而非某個 it），因為 AC-10 驗證的正是「這個時間點」的狀態；若
+    // 挪到後面才檢查，下面緊接著建立的 AC-11 fixture 會使斷言恆假。
+    const tableRows = await prisma.$queryRawUnsafe<Array<{ table_name: string }>>(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
+    );
+    expect(tableRows.length).toBe(11);
+    for (const { table_name } of tableRows) {
+      const rows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+        `SELECT count(*)::bigint AS count FROM "${table_name}"`
+      );
+      expect(Number(rows[0]?.count ?? -1), `AC-10: 表 ${table_name} 應為空`).toBe(0);
+    }
+    const migrationRows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+      `SELECT count(*)::bigint AS count FROM "_prisma_migrations" WHERE "finished_at" IS NOT NULL`
+    );
+    expect(Number(migrationRows[0]?.count ?? 0)).toBe(countMigrationDirs());
+
+    // AC-11 fixture：刻意建立在 beforeAll（而非某個 it）裡，用來證明
+    // beforeAll 建立的資料會在本檔的多個 it 之間持續存在（per-file 而非
+    // per-test 清空）——見下面兩個 "AC-11" it。
+    const fixtureUser = await prisma.user.create({
+      data: {
+        loginName: "infra001_ac11_fixture_user",
+        displayName: "INFRA-001 AC-11 跨 it 存活 fixture",
+        passwordHash: "infra001-synthetic-not-a-real-hash",
+        role: "USER",
+      },
+    });
+    ac11FixtureUserId = fixtureUser.id;
   });
 
   afterAll(async () => {
+    await prisma.user.delete({ where: { id: ac11FixtureUserId } }).catch(() => {});
     await prisma.$disconnect();
+  });
+
+  it("AC-11 (1/2): beforeAll 建立的 fixture 使用者在本 it 中仍存在", async () => {
+    const found = await prisma.user.findUnique({ where: { id: ac11FixtureUserId } });
+    expect(found).not.toBeNull();
+    expect(found?.loginName).toBe("infra001_ac11_fixture_user");
+  });
+
+  it("AC-11 (2/2): beforeAll 建立的 fixture 使用者在後續 it 中依然存在（非 per-test 清空）", async () => {
+    const found = await prisma.user.findUnique({ where: { id: ac11FixtureUserId } });
+    expect(found).not.toBeNull();
+    expect(found?.id).toBe(ac11FixtureUserId);
   });
 
   it("AC-01 / AC-14: current_schema() 為本 worker 專屬 schema，search_path 不含 public", async () => {
