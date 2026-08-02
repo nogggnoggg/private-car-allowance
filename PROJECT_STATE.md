@@ -20,6 +20,9 @@ Updated: 2026-08-02
 > - **SPEC-INFRA-001：DONE**（`docs/specs/INFRA-001.md`，758 行，26 AC + D1~D8 全附實測證據——spec-writer 以可逆探針實測 `?schema=` 行為/migration 供裝 2.37s/enum schema 本地性，並自 vitest 2.1.9 與 tinypool 原始碼確認 `VITEST_POOL_ID` 槽位語意）。關鍵補強 **D4 per-file TRUNCATE**：`isolate:true` 下槽位跨檔重用，單靠 per-worker schema 不足。
 > - **Spec Gate 通過（人類 leonchih，2026-08-03）：D1~D8 全數照建議批准**，Spec 轉 ACTIVE。大總管驗收發現之兩處瑕疵（Governance-Version 誤植、32/31 檔數不一致）已於同回合代修並記入 §17。
 > - Task Graph：T1 隔離核心 → T2 per-file 清空+鑑別力 → T3 十四輪量測+CI 證據（全 Medium，不觸 auth/seed-admin）。
+> - **T1（隔離核心）：DONE**（commit `3120029`，8 檔全在 Files Allowed）。R-1 支點實驗確認 setupFiles 先於測試檔 import；供裝 8 schema 約 2.9s；AC-09 孤兒清理以 `vitest_w999` 實證。大總管獨立驗收：**兩輪 917/0/0（主機負載 48%——修復前此負載約 21% 異常率，兩輪全綠為初步正面訊號）**、tsc 0、biome 程式目錄乾淨、自檢 6/6、既有 47 檔 diff 為空。測試基準線 879 → **917**。
+> - **T1 交付之新事證（待 spec-writer 修 Spec §2.5，非阻擋）**：實測 vitest 2.1.9 **會**自動把 `backend/.env` 載入 `process.env`（與 Spec §2.5 引 PROJECT_STATE 舊記錄之主張相反；舊事故另有成因）。對機制無影響（CI 無 .env、改寫不分來源），僅影響本機「truly unset」情境的端到端可測性。
+> - T1 附帶觀察：AC-15（maxForks=1 全套序列化單 schema）在 T2 尚未加 TRUNCATE 前即已全綠（implementer 加跑，非正式驗收項）；prisma CLI 以 `node build/index.js` 直呼（NFR-4 Windows `.cmd` 規避，reviewer 需留意此偏離之等價性）。
 
 > **UI-FIX-001 開工記錄（2026-08-02，使用者 Gate 後反饋）**
 > - 使用者回報參數維護頁「歷史版本」表格欄位黏連難辨識（`.param-table` 無 CSS 定義，PHASE-003a T6 遺漏）。四項修正經使用者批准（①補樣式 ②數值欄靠右 ③折舊表 .table-scroll ④建立時間統一 YYYY-MM-DD），已寫入 PHASE-003a Spec §13 修訂列。
