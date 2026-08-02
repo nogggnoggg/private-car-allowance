@@ -1,5 +1,5 @@
-import os from "node:os";
 import { defineConfig } from "vitest/config";
+import { computeMaxForks } from "./test/setup/max-forks.js";
 
 // PHASE-004-R3（測試套件決定性修復）— maxForks 上限，見 Task Handoff「機制 A
 // 根因與證據」完整說明，這裡只留精簡版：
@@ -34,7 +34,31 @@ import { defineConfig } from "vitest/config";
 // 類重試耗盡理論上仍可能重現，只是門檻已大幅提高。要做到與負載完全無關的
 // 決定性，需要 per-worker 獨立 DB schema 等基礎設施層隔離，超出本 Task
 // Files Allowed 範圍（會動到 migration／CI 設定）。
-const maxForks = Math.max(2, Math.floor((os.availableParallelism?.() ?? os.cpus().length) / 2));
+// INFRA-001-T1: the calculation above was moved verbatim into
+// `./test/setup/max-forks.ts` (`computeMaxForks()`) so that `global-setup.ts`
+// (per-worker schema provisioning, see below) and this config share a single
+// source of truth for `maxForks` instead of each computing it separately and
+// risking drift (Spec §4.3 "maxForks 的單一事實來源"). The formula itself is
+// unchanged — only its location moved.
+const maxForks = computeMaxForks();
+
+// INFRA-001-T3 — 為何 maxForks 上限在 per-worker schema 隔離之後仍保留
+// （Spec docs/specs/INFRA-001.md §7 表列第 1 項，逐字對應如下）：
+//
+// 「`maxForks = cores/2` — 仍有效、仍必要。它對付的是容量型延遲（成因 b，
+// §4.7），per-schema 完全不覆蓋」。
+//
+// 換句話說：上面 L4-42 的 R3 因果證據把 503 SERVICE_UNAVAILABLE 的根因拆成
+// 兩個獨立成因——(a) 跨 worker 的 SSI 序列化衝突（不同 worker 對同一張全域
+// 共用表如 FuelParameterVersion/EtcParameterVersion 的謂詞鎖互撞）與 (b)
+// CPU/IO 排隊延遲（多 worker 同時對同一個 Postgres 執行個體發真交易，查詢
+// 排隊時間被拉長到超出重試退避視窗）。INFRA-001 的 per-worker schema +
+// per-file TRUNCATE（見下方 globalSetup/setupFiles）讓不同 worker 觸及不同
+// 的 relation，結構上消滅成因 (a)；但它完全不降低 DB 主機的 CPU 負載，對
+// 成因 (b) 沒有任何緩解——這正是 R3 的 maxForks 減半機制存在的理由，兩者是
+// 互補而非互斥的兩道防線，不因新增隔離而讓舊防線變冗餘（Spec AC-25：本回合
+// 一行既有防線都不刪，也不調整 maxForks 的計算公式）。實測結果見 Task
+// Handoff 的 AC-24（14 輪量測）與 AC-23（wall time 前後對照）。
 
 export default defineConfig({
   test: {
@@ -52,5 +76,16 @@ export default defineConfig({
         maxForks,
       },
     },
+    // INFRA-001-T1: per-worker PostgreSQL schema isolation (Spec
+    // docs/specs/INFRA-001.md §5.2/§5.3). `globalSetup` provisions one schema
+    // per pool slot (1..maxForks) once, before any test file runs;
+    // `setupFiles` rewrites `process.env.DATABASE_URL` inside each fork
+    // worker — before that worker's test file module is imported (confirmed
+    // by a real R-1 execution experiment, see Task Handoff) — to point at
+    // that worker's own schema, and fails closed if the schema isn't there.
+    // Toggle: `TEST_DB_ISOLATION=off` reverts to the pre-INFRA-001 shared
+    // `public` behavior with zero code changes (G5, one-key rollback).
+    globalSetup: ["./test/setup/global-setup.ts"],
+    setupFiles: ["./test/setup/setup-file.ts"],
   },
 });

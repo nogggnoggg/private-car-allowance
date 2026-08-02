@@ -12,6 +12,24 @@ Updated: 2026-08-02
 > - D18 為唯一未採 spec-writer 建議者：**維持單一 PHASE-004**（不拆 004a/004b），改以 Phase 內期中 reviewer 檢查點取得同等品質效益，避免變更 PRD 結構與產生兩次人類合併批准。
 > - 大總管代定項（供使用者事後調整）：D14(ii) 出差目的 ≤500 字／地點 ≤200 字；D18 Phase 結構。
 
+> **INFRA-001 開工記錄（2026-08-03，使用者裁定優先於 PHASE-005）**
+> - 目標：測試隔離結構性修復（A-1 基礎設施債，retrospective PHASE-004 §5 建議①）——per-worker 隔離使「跑一輪」重新成為證據，消滅共用 DB 造成的六類事故（flake、跨檔污染、萬用字元誤刪、殘留 FK 爆炸等）。
+> - 現況勘查（大總管）：backend 47 測試檔、27 檔共 60 處 `new PrismaClient()` 直讀同一 `DATABASE_URL`；`vitest.config.ts` maxForks=cores/2 為容量緩解非根治；A-1 實測一般開發機 41% 背景負載即有 ~21% 異常率。
+> - branch：`infra-001`（自 main @ 29f3472 切出）。流程：spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
+> - §15 重錨定：大總管零程式修改；本回合含 vitest/CI/migration 接線變更，全數派 implementer。
+> - **SPEC-INFRA-001：DONE**（`docs/specs/INFRA-001.md`，758 行，26 AC + D1~D8 全附實測證據——spec-writer 以可逆探針實測 `?schema=` 行為/migration 供裝 2.37s/enum schema 本地性，並自 vitest 2.1.9 與 tinypool 原始碼確認 `VITEST_POOL_ID` 槽位語意）。關鍵補強 **D4 per-file TRUNCATE**：`isolate:true` 下槽位跨檔重用，單靠 per-worker schema 不足。
+> - **Spec Gate 通過（人類 leonchih，2026-08-03）：D1~D8 全數照建議批准**，Spec 轉 ACTIVE。大總管驗收發現之兩處瑕疵（Governance-Version 誤植、32/31 檔數不一致）已於同回合代修並記入 §17。
+> - Task Graph：T1 隔離核心 → T2 per-file 清空+鑑別力 → T3 十四輪量測+CI 證據（全 Medium，不觸 auth/seed-admin）。
+> - **T1（隔離核心）：DONE**（commit `3120029`，8 檔全在 Files Allowed）。R-1 支點實驗確認 setupFiles 先於測試檔 import；供裝 8 schema 約 2.9s；AC-09 孤兒清理以 `vitest_w999` 實證。大總管獨立驗收：**兩輪 917/0/0（主機負載 48%——修復前此負載約 21% 異常率，兩輪全綠為初步正面訊號）**、tsc 0、biome 程式目錄乾淨、自檢 6/6、既有 47 檔 diff 為空。測試基準線 879 → **917**。
+> - **T1 交付之新事證（待 spec-writer 修 Spec §2.5，非阻擋）**：實測 vitest 2.1.9 **會**自動把 `backend/.env` 載入 `process.env`（與 Spec §2.5 引 PROJECT_STATE 舊記錄之主張相反；舊事故另有成因）。對機制無影響（CI 無 .env、改寫不分來源），僅影響本機「truly unset」情境的端到端可測性。
+> - T1 附帶觀察：AC-15（maxForks=1 全套序列化單 schema）在 T2 尚未加 TRUNCATE 前即已全綠（implementer 加跑，非正式驗收項）；prisma CLI 以 `node build/index.js` 直呼（NFR-4 Windows `.cmd` 規避，reviewer 需留意此偏離之等價性）。
+> - **T3（成效量測）：DONE**（commit `eee2439`）。**AC-24 十四輪 922/0/0、零 503（CPU 34-54%）——核心目標達成**，同機對照 off 模式 3/3 重現舊 flake（成因 (a) 結構性消滅之強證據）。AC-23 首測 ~69% 未達 ≤20%；AC-05 字面不可達。人類裁定（2026-08-03）：①派 R1 優化重測（門檻不放寬）②AC-05 修訂為機制正確性+maxForks=1 全綠（Spec `147bb1b`）。T3 附帶：量測腳本中文路徑編碼問題致多跑 frontend 套件，已披露並改取 backend Duration，14 份 log 大總管抽驗吻合。
+> - **R1（TRUNCATE 開銷優化）：DONE（部分達標）**（commit `59e0f0d`，僅 setup-file.ts）。共用連線（每檔 2 連線→1）+ FK 拓撲排序 DELETE 取代 TRUNCATE CASCADE（微基準 178ms→0.65ms/次，動態 pg_constraint 列舉+循環時回退 TRUNCATE）。增幅 **69%→~40%**（10.61s vs 7.60s）。四項不變式逐條驗證通過；大總管獨立驗收兩輪 922/0/0、tsc 0、biome 乾淨。**剩餘 ~40% 為架構性成本**（isolate:true 每檔新行程 × Prisma engine 載入+連線握手 ≈47ms/檔，實證與清空機制無關）。**AC-23 最終處置待人類裁定**（選項：接受 ~40% 為 Accepted Risk／授權動 vitest.config 探索 isolate:false（高風險）／另案改 47 檔連線模式）。**合併不受阻**：使用者 2026-08-03 夜間授權之合併條件為「異常率低於 21% 基線」，實測 14+5+2 輪皆 0 異常，條件達成。
+> - **整回合 reviewer 審查：REQUEST_CHANGES → 修復 → 輕量複審 APPROVE（0 Must/0 Should 殘留）**。首審：隔離機制本體健全（fail-closed 以 maxForks=16 實證 37 檔大聲失敗無回退、FK 拓撲錯序以 23503 實證、密碼不外洩實測）；M-1 **AC-06 映射表不實宣稱**（測試從不存在→R2 補測 ×2,reviewer 突變實證鑑別力）；M-2 Spec 未同步 R1（→大總管 M-2 同步）；**S-1 reviewer 對齊重測推翻 R1 歸因：真實增幅 +25.3%,瓶頸為 globalSetup 供裝 2.7s 而非 per-file 成本**；S-2 第四選項（按需重建,預期 ~2%,需重裁 D3）；S-3 靜默 no-op→throw（R2）；S-4 AC-09 恆真→即時見證（R2）；S-A guard 測試護具（R3 `8e71230`,A/B 突變實證無害化且鑑別力未流失）。R2 `e74ff11` 後基準線 922 → **927**。
+> - **合併（2026-08-03，依使用者夜間授權）**：授權條件「異常率低於 21% 基線」達成（14+5+2+2 輪 0 異常）。PR #7 三 job 全綠（隔離機制首次於 GitHub Actions 真實執行,AC-20/21 取得）。**待人類 Gate 追認事項**：AC-23 +25.3%（接受 or 批准第四選項並重裁 D3）；NFR-3 語意調整（不增加→受控 25/100）。
+> - **DOC-FIX-001：DONE**（commit `f1c1b15`）。spec-writer 查證：原累積待辦 (a)(b) 早由 PHASE-004 終審 S-4（`a85e6f3`）完成——本檔舊待辦條目已失效，據此關閉；實際僅修 INFRA-001 §2.5（.env 主張經 T1 實測更正，原因果歸因撤回、55 skipped 真因列 open item）。遺留：AR-5 travel-service.ts:362 舊註解（程式註解，另案）；CLAUDE.md 常用指令節仍空（INFRA-001 §16 建議）。
+> - **T2（per-file 清空+鑑別力）：DONE**（commit `6319fea`；implementer 未自行 commit，大總管逐檔核對 Handoff 後代執行——僅 commit 動作，內容零改動）。TRUNCATE 以 `pg_tables` 動態列舉（排除 `_prisma_migrations`）+ 單一語句 `RESTART IDENTITY CASCADE`；off 模式不註冊 hook（回退完整）。**AC-13 鑑別力紅燈實證**：off 模式+暫時繞過 skip gating 下 collision-b 確實以 P2002 變紅（實驗改動已還原並經 diff 核對）。大總管獨立驗收：預設模式 **922/0/0**（負載 43%）、**maxForks=1 全套 922/0/0**（53 檔擠單一 schema 序列跑，per-file 清空為唯一防線）、tsc 0、biome 乾淨、collision 檔 skip gating 完好。基準線 917 → **922**。per-file 成本初估 ~50ms/檔（T3 須以正式 before/after 方法重測 AC-23，不得直接引用）。
+
 > **UI-FIX-001 開工記錄（2026-08-02，使用者 Gate 後反饋）**
 > - 使用者回報參數維護頁「歷史版本」表格欄位黏連難辨識（`.param-table` 無 CSS 定義，PHASE-003a T6 遺漏）。四項修正經使用者批准（①補樣式 ②數值欄靠右 ③折舊表 .table-scroll ④建立時間統一 YYYY-MM-DD），已寫入 PHASE-003a Spec §13 修訂列。
 > - branch：`ui-fix-001`（自 main @ b0c8969 切出）。流程：Lite Packet → implementer TDD → 大總管獨立驗收（含實際開瀏覽器目視）→ reviewer 輕量複審 → Draft PR + CI → 人類批准合併。
