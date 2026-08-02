@@ -53,7 +53,7 @@ Updated: 2026-08-02
 | D19 | Spec 修訂：併發整份 PUT 語意（使用者批准） | — | DONE | b8ba575 |
 | R2 | REPAIR：seed:admin 測試跨檔共用狀態污染 | Medium→High | DONE | 618a694 |
 | T8 | 完成流程 + 快照 + 附件鎖定 | High | DONE | f385981 |
-| T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | 待辦 | — |
+| T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | DONE | c92cc28 |
 | — | **期中 reviewer 檢查點**（後端核心） | — | 待辦 | — |
 | T9 | 綜合紀錄查詢（分頁/篩選/授權隔離） | High | 待辦 | — |
 | T10 | 管理員代操作 | High | 待辦 | — |
@@ -62,7 +62,7 @@ Updated: 2026-08-02
 | T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | 待辦 | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
-- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ **802（T8）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
+- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ **808（T15）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
 - **驗收紀律事件（T6）**：implementer 回報之「全套回歸」係在未設 `DATABASE_URL` 下執行（55 skipped），非有效證據；大總管重跑後才確認。**後續 Packet 一律要求 Handoff 標明 passed/failed/skipped 三個數字且 skipped 必須為 0。**
 - **T11 Stop 事件（implementer 正確觸發）**：D12 移除公開 `POST /attachments/:id/link` 會使 `phase3-lifecycle.test.ts` 20 個測試中 16 處必然失敗，而該檔同時列為不得修改。大總管裁定**逐條遷移不得刪除**，寫入 Spec §17 修訂紀錄（commit c5fc3cb）後恢復執行。
 - **B-30 併發事件（T11 → T11R → T11R2，2026-08-02）**：T11 交付後大總管 13 輪重跑發現 B-30 併發測試約 **23% 失敗**（`expected [200,200] to deeply equal [200,409]`，即每段 3 張上限被突破），三個修復回合（T11 一次、T11R 兩次：advisory lock 提前、SERIALIZABLE→READ COMMITTED、原子單一 UPDATE）**全部未關閉**；implementer 於第三回合正確觸發 Stop（§28 三回合上限）。**大總管診斷結論：目標框錯**——B-30 測試打的是整份取代式 `PUT`，兩個併發請求各自宣告的都是合法的 3 張（恰為上限），依 D15 語意「兩者皆成功、最終 3 張」才是正確；原 PHASE-003 測試 race 的是增量式 link 打到 `limit=1` 容器，T11 依 §17 C1 逐條遷移換端點後**斷言未同步修正**。另查得真實缺陷：`computeAttachmentDeltas` 的 baseline 在**交易外**（`prisma` 而非 `tx`）計算，併發時雙方 baseline 皆為前態、各自只 link 不 detach → 最終 4 張。**處置**：Spec §17 新增 **D19**（使用者 leonchih 2026-08-02 批准「最後寫入者贏」＋裁定回退兩次失敗嘗試）→ T11R2 回退 + baseline 移入交易內 + 斷言依 D19 修正 + 新增 AC-22 鑑別力測試 → 大總管 **14 輪重跑（13 輪 779 全綠，B-30 零失敗）**。
@@ -73,6 +73,7 @@ Updated: 2026-08-02
 - **reviewer 必審項（R2）**：(a) 注入縫無法自任何 production 路徑觸及；(b) 管理員存在性檢查語意未變；(c) 密碼驗證順序與 log 行為未變；(d) `SeedAdminPrismaLike` 未擴大 Prisma 暴露面；(e) 「無 ADMIN 時建立」分支由真實 DB 整合測試降級為 stub 單元測試之覆蓋形態變更是否可接受。
 - **Spec 矛盾釐清（T8，2026-08-02）**：implementer 主動回報 §6.1 授權矩陣表（L387）與 §9 流程（L766）將 `/complete` 標為 `assertOwnershipOrAdmin`，與 §17.1 **D17「本 Phase 不提供代完成」**牴觸。大總管依治理 §9 事實來源優先序裁定 **D17 為準**（owner-only，非擁有人含 ADMIN 皆 403），寫入 Spec §17 修訂紀錄（commit `51cf4ff`）。**待辦（非阻擋）**：L387／L766 之本體文字須由 spec-writer 於後續文件校正回合修正，在此之前以修訂列為權威。
 - **大總管 Packet 錯誤（T8，自陳）**：T8 Packet 之 C1 誤寫「整筆 `totalAmount` 為 Σ 取整前金額之取整值，不得用 Σ 各段取整後」——與 **AC-41「整筆 = Σ 各段已取整金額」原文正好相反**（§9 流程 L760 亦明載 `totalAmount = Σ segAmt（加總已取整）`）。implementer 未採大總管 Packet、依 Spec 與 T6 既有引擎（已過 reviewer）實作，**判斷正確**。若照 Packet 執行將打破 AC-41 並與 T6 矛盾。**教訓**：金額語意類約束不得憑記憶寫入 Packet，必須逐條回查 AC 原文；事實來源優先序（Spec > Packet）在本次有效攔截。
+- **spec-writer 待辦（累積中，非阻擋）**：(a) §6.1 授權矩陣表 L387 與 §9 流程 L766 之 `/complete` 授權文字須改為 owner-only，與 D17 及 §17 矛盾釐清列一致。
 - **Known Issue（追蹤中，Gate 前必須關閉）**：`e2e/attachments-demo.spec.ts` 的 AC-21 依賴已移除的 link 端點，因對應 UI 尚未存在，遷移至**真實差旅流程**的更強覆蓋延後至 **T13**。E2E 未進 CI（僅整合 Gate 手動執行），期間為已知紅燈。
 
 ### PHASE-003a（補助參數維護）：DONE（已合併，詳見下方歸檔）
@@ -191,7 +192,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **f385981**（PHASE-004-T8）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **c92cc28**（PHASE-004-T15）
 
 ## Human Gate（PHASE-004）
 
