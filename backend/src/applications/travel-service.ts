@@ -9,9 +9,15 @@
  * mirroring the parameters/parameter-service.ts + parameters/routes.ts split
  * (T3 Packet §Required Context 4).
  *
- * Extension points left for later Tasks (Packet 明文要求，勿移除標記)：
- *   - TODO(PHASE-004-T8): 完成快照（segment.snapshot / 頂層 snapshot）於
- *     toTravelApplicationDto 接入
+ * PHASE-004-T8（本次擴充，完成流程 + 快照，AC-49~54/43/48/59）：
+ *   - `completeTravelApplication`：狀態機守門 → 完整性驗證（`completion-blockers.ts`
+ *     同一份純函式，D7/C4）→ 參數可用性（獨立 409，AC-47）→ 計算引擎（T6
+ *     `calculateTravel` 原樣重用，C1）→ 段落/申請快照寫入 → 狀態轉換，單一
+ *     SERIALIZABLE 交易（AC-53 原子性；B-29 併發以重試+`assertTransition`
+ *     收斂）。
+ *   - `toTravelApplicationDto`：`TripSegmentDto.snapshot`/`TravelApplicationDto.snapshot`
+ *     已接入真實快照資料（COMPLETED 專用，讀欄位非重算，AC-48）。
+ *     `TODO(PHASE-004-T8)` 標記已移除。
  *
  * PHASE-004-T4（本次擴充）：`updateTravelDraft` 的 `segments` 整份 PUT diff
  * 語意（D15）+ 刪段連帶 detach（D16）+ `deleteApplication` 的 AC-05 補完，
@@ -71,11 +77,17 @@ import {
 } from "../attachment/lifecycle-service.js";
 import { formatUtcDate } from "../parameters/parameter-service.js";
 import { AppError } from "../platform/errors.js";
+import type { FieldError } from "../platform/errors.js";
+import { assertTransition } from "./application-state-machine.js";
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
 import { type CalcSegmentInput, calculateTravel } from "./travel-calculation.js";
-import { type ResolvedParameters, resolveTravelParameters } from "./travel-parameters.js";
+import {
+  type ResolvedParameters,
+  assertParametersAvailable,
+  resolveTravelParameters,
+} from "./travel-parameters.js";
 
 // ---------------------------------------------------------------------------
 // SEGMENT_ATTACHMENT_LIMIT — PHASE-004-T11 (AC-22, Spec §10.4)
@@ -761,6 +773,302 @@ export async function deleteApplication(prisma: PrismaClient, id: string): Promi
 }
 
 // ---------------------------------------------------------------------------
+// completeTravelApplication (PHASE-004-T8) — AC-49~54/43/48/59, §9「完成申請」
+// ---------------------------------------------------------------------------
+
+/**
+ * Count currently-`LINKED` attachments per segment, WITHIN the caller's
+ * transaction (`tx`) — the completion-flow equivalent of `getSegmentAttachments`
+ * (which reads outside any transaction for DTO building). Only counts are
+ * needed here (feeding `computeCompletionBlockers`'s `attachmentCount`), not
+ * full `AttachmentDto[]`.
+ */
+async function getSegmentAttachmentCountsTx(
+  tx: Prisma.TransactionClient,
+  segmentIds: string[]
+): Promise<Map<string, number>> {
+  if (segmentIds.length === 0) return new Map();
+  const rows = await tx.attachment.findMany({
+    where: { refType: "TRIP_SEGMENT", refId: { in: segmentIds }, status: "LINKED" },
+    select: { refId: true },
+  });
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.refId) continue;
+    counts.set(row.refId, (counts.get(row.refId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export interface CompleteTravelApplicationOptions {
+  /**
+   * TEST-ONLY injection point (AC-53 原子性鑑別力測試需要一個可控的失敗切點）：
+   * invoked inside the completion transaction AFTER every snapshot write
+   * (segment `snapshotFuel/Etc/Raw/Amount` + `TravelApplication` 單價/版本 id/
+   * `snapshotTotalKm`/`snapshotRawAmount`/`calculatedAt`) but BEFORE the
+   * `Application` status flip (`status=COMPLETED`/`totalAmount`/`completedAt`)
+   * — i.e. exactly the cut point the Packet's Required Test #1 names ("快照
+   * 寫入後、狀態轉換前"). Throwing here lets a test prove the whole sequence
+   * is one atomic transaction: everything written before the throw must roll
+   * back together with the (never-reached) status flip.
+   *
+   * Default is a no-op. `routes.ts` (the only production caller) NEVER passes
+   * this option — production behavior is 100% unaffected by this seam's
+   * existence. Named with a `__testOnly` prefix so its purpose and blast
+   * radius are unmistakable at every call site.
+   */
+  __testOnlyFailAfterSnapshotWrite?: () => void;
+}
+
+/** Retry budget for SERIALIZABLE conflicts, mirroring `updateTravelDraft`'s pattern (B-29). */
+const COMPLETE_MAX_RETRIES = 6;
+
+/**
+ * Completes a TRAVEL draft: state-machine gate → completeness validation
+ * (§9 step②, shares `computeCompletionBlockers` with the draft-view
+ * `completionBlockers` field per D7/C4 — NOT a second validation
+ * implementation) → parameter availability (§9 step③, independent 409 check,
+ * NOT folded into step②'s blockers — see inline comment) → calculation
+ * (reuses `calculateTravel`, T6, verbatim — C1) → snapshot writes → status
+ * transition, all inside ONE SERIALIZABLE transaction (AC-53: any failure at
+ * any step rolls back everything, including earlier snapshot writes in the
+ * SAME transaction attempt).
+ *
+ * D17 / Packet Out of Scope: this function has NO owner/admin distinction —
+ * authorization (owner-only, no admin-on-behalf) is `routes.ts`'s
+ * responsibility, resolved BEFORE this function is ever called.
+ *
+ * Concurrency (B-29): SERIALIZABLE + retry-on-conflict, identical pattern to
+ * `updateTravelDraft`. Two concurrent completions of the same draft: both
+ * read `status=DRAFT` in their own snapshot, both attempt to write the same
+ * `Application`/`TripSegment` rows — Postgres aborts the loser with a
+ * serialization failure at commit; the loser retries with a FRESH
+ * transaction, re-reads (now `status=COMPLETED`, written by the winner), and
+ * `assertTransition` throws 403 FORBIDDEN (D13 message) — satisfying "落敗方
+ * 得 403/409，不得雙重完成或雙重快照" without any bespoke conditional-update
+ * mechanism.
+ */
+export async function completeTravelApplication(
+  prisma: PrismaClient,
+  id: string,
+  options: CompleteTravelApplicationOptions = {}
+): Promise<TravelApplicationRecord> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= COMPLETE_MAX_RETRIES; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const existing = await tx.application.findUniqueOrThrow({
+            where: { id },
+            include: travelApplicationInclude,
+          });
+
+          // Step ①: state-machine gate (AC-55~59, T2 single source of truth).
+          // Non-DRAFT (already COMPLETED, or the theoretically-unreachable
+          // VOIDED) → 403 FORBIDDEN, D13 message.
+          assertTransition(existing.status, "COMPLETED");
+
+          const segments = existing.travel?.segments ?? [];
+          const tripDate = existing.travel?.tripDate ?? null;
+          const purpose = existing.travel?.purpose ?? null;
+
+          const attachmentCounts = await getSegmentAttachmentCountsTx(
+            tx,
+            segments.map((s) => s.id)
+          );
+
+          // Step ②: completeness validation — SAME pure function as the
+          // draft-view `completionBlockers` field (D7/C4: single authority,
+          // never a second implementation). `missingParameters` is
+          // DELIBERATELY `[]` here: Spec §9's completion flow lists step②
+          // (400 VALIDATION_ERROR + `details.blockers[]`, AC-52) and step③
+          // (409 PARAMETER_NOT_AVAILABLE, AC-47) as two INDEPENDENT checks
+          // with two DIFFERENT error codes — folding missing-parameter
+          // blockers into this 400 response would make AC-47's 409 case
+          // unreachable whenever parameters are ALSO missing (structural
+          // completeness is checked first; parameter availability is step③,
+          // below, entirely on its own).
+          const blockers = computeCompletionBlockers({
+            tripDate,
+            purpose,
+            segments: segments.map((s) => ({
+              id: s.id,
+              sortOrder: s.sortOrder,
+              origin: s.origin,
+              destination: s.destination,
+              totalKm: s.totalKm,
+              highwayKm: s.highwayKm,
+              attachmentCount: attachmentCounts.get(s.id) ?? 0,
+            })),
+            missingParameters: [],
+          });
+
+          if (blockers.length > 0) {
+            // D14(i): 400 VALIDATION_ERROR + fields[] (only entries that
+            // carry a field path — SEGMENT_REQUIRED/SEGMENT_ATTACHMENT_REQUIRED
+            // have none) + details.blockers[] (ALWAYS the full list, AC-52 —
+            // "回應列出全部未通過項，非只回第一項", every item incl. those
+            // without a `field`, each still carrying `segmentId` when
+            // applicable for precise UI positioning).
+            const fields: FieldError[] = [];
+            for (const b of blockers) {
+              if (typeof b.field === "string") {
+                fields.push({ field: b.field, reason: b.message });
+              }
+            }
+            throw new AppError(
+              "VALIDATION_ERROR",
+              400,
+              "尚未符合完成條件，請檢查標示項目後再試一次。",
+              fields,
+              { blockers }
+            );
+          }
+
+          // Step ③: parameter availability — independent 409 check (AC-47),
+          // see step② comment above for why this is NOT folded into the 400
+          // response. `tx` passed through (resolveTravelParameters accepts
+          // PrismaClientOrTx) so this reads inside the SAME transaction.
+          const resolved = await resolveTravelParameters(tx, tripDate);
+          assertParametersAvailable(resolved, tripDate);
+
+          // assertParametersAvailable already guarantees all four fields
+          // below are non-null (its `missing[]` check is exhaustive over
+          // exactly these four) — narrow here instead of a bare `!` assertion.
+          if (
+            resolved.fuelUnitPrice === null ||
+            resolved.etcUnitPrice === null ||
+            resolved.fuelVersionId === null ||
+            resolved.etcVersionId === null
+          ) {
+            // Unreachable — defensive only.
+            throw new AppError(
+              "PARAMETER_NOT_AVAILABLE",
+              409,
+              "該出差日期尚無有效補助參數，請聯絡管理員設定。"
+            );
+          }
+          const fuelUnitPrice = resolved.fuelUnitPrice;
+          const etcUnitPrice = resolved.etcUnitPrice;
+
+          // Step ④: calculation engine — T6's `calculateTravel` verbatim
+          // (C1: 不得另寫一套). `totalKm`/`highwayKm` are non-null and
+          // business-valid here because blockers.length===0 above already
+          // proved it (SEGMENT_TOTAL_KM_REQUIRED/INVALID and
+          // SEGMENT_HIGHWAY_KM_REQUIRED/INVALID/GT_TOTAL would otherwise be
+          // present).
+          const calcSegments: CalcSegmentInput[] = segments.map((s) => ({
+            segmentId: s.id,
+            segmentIndex: s.sortOrder,
+            totalKm: s.totalKm as Prisma.Decimal,
+            highwayKm: s.highwayKm as Prisma.Decimal,
+          }));
+          const result = calculateTravel({ segments: calcSegments, fuelUnitPrice, etcUnitPrice });
+
+          // Step ⑤a: per-segment snapshot (取整前 fuel/etc/raw + 取整後 amount).
+          const resultBySegmentId = new Map(result.segments.map((s) => [s.segmentId, s]));
+          for (const segment of segments) {
+            const segResult = resultBySegmentId.get(segment.id);
+            if (!segResult) {
+              // Unreachable: calcSegments was built 1:1 from `segments` above.
+              throw new AppError("INTERNAL_ERROR", 500, "計算結果與行程段不一致");
+            }
+            await tx.tripSegment.update({
+              where: { id: segment.id },
+              data: {
+                snapshotFuelAmount: segResult.fuelAmount,
+                snapshotEtcAmount: segResult.etcAmount,
+                snapshotRawAmount: segResult.rawAmount,
+                snapshotAmount: segResult.amount,
+              },
+            });
+          }
+
+          const calculatedAt = new Date();
+
+          // Step ⑤b: TravelApplication snapshot (單價/版本 id/總里程/整筆取整前金額/計算時間).
+          await tx.travelApplication.update({
+            where: { applicationId: id },
+            data: {
+              fuelUnitPrice,
+              etcUnitPrice,
+              fuelParameterVersionId: resolved.fuelVersionId,
+              etcParameterVersionId: resolved.etcVersionId,
+              snapshotTotalKm: result.totalKm,
+              snapshotRawAmount: result.totalRawAmount,
+              calculatedAt,
+            },
+          });
+
+          // TEST-ONLY injection point — see `CompleteTravelApplicationOptions`
+          // doc comment. Everything written above (segment snapshots +
+          // TravelApplication snapshot) must roll back together with the
+          // status flip below if this throws.
+          options.__testOnlyFailAfterSnapshotWrite?.();
+
+          // Step ⑤c: Application status transition — LAST write (AC-49/50/54).
+          // Body-supplied amounts are never read anywhere in this function —
+          // AC-54's "忽略任何金額 body" holds because there is no code path
+          // that ever touches request.body at all.
+          await tx.application.update({
+            where: { id },
+            data: {
+              totalAmount: result.totalAmount,
+              completedAt: calculatedAt,
+              status: "COMPLETED",
+            },
+          });
+
+          // Step ⑥: attachment lock — no Attachment row is touched here.
+          // `deriveContainerState` (attachment/lifecycle-service.ts, T11)
+          // reads `Application.status` fresh on every request; once this
+          // transaction commits, it resolves 'completed' automatically
+          // (AC-59). Not this Task's file to modify (Packet Files Forbidden).
+
+          return tx.application.findUniqueOrThrow({
+            where: { id },
+            include: travelApplicationInclude,
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (err) {
+      lastError = err;
+
+      // Business errors (403/400/409/etc.) and the test-only injected error
+      // propagate immediately — never retried (a test-injected failure is a
+      // plain Error, not a Prisma serialization error, so it also falls
+      // through to the `throw err` below on its first and only attempt).
+      if (err instanceof AppError) {
+        throw err;
+      }
+
+      const isP2034 = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
+      const isP2010SerializationFailure =
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === "P2010" &&
+        (err.meta as { code?: string } | undefined)?.code === "40001";
+      const isPrismaSerializationError = isP2034 || isP2010SerializationFailure;
+      if (!isPrismaSerializationError) {
+        throw err;
+      }
+
+      if (attempt >= COMPLETE_MAX_RETRIES) {
+        throw new AppError(
+          "SERVICE_UNAVAILABLE",
+          503,
+          "系統忙碌，請稍後再試（完成申請時發生資料庫並發衝突，已重試多次仍未成功）"
+        );
+      }
+      await sleep(retryBackoffMs(attempt));
+    }
+  }
+
+  // Unreachable (loop always returns or throws) — satisfies TypeScript control-flow analysis.
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
 // Per-segment LINKED attachments (PHASE-004-T11) — replaces the T3-era
 // count-only `getLinkedAttachmentCounts`: now returns the full `AttachmentDto[]`
 // per segment (Spec §8.1 `TripSegmentDto.attachments`), and the count used by
@@ -813,7 +1121,25 @@ export interface TripSegmentDto {
     etcAmount: string;
     rawAmount: string;
     amount: number;
-  } | null; // TODO(PHASE-004-T8): 完成快照
+  } | null; // 僅 COMPLETED（PHASE-004-T8，讀 TripSegment 的 snapshot* 欄位，非重算）
+}
+
+/**
+ * PHASE-004-T8: 僅 COMPLETED 申請回傳（讀 `TravelApplication` 的快照欄位 +
+ * `Application.totalAmount`，非重算——AC-48 快照不變性的 DTO 層對應）。
+ * D6(c)：草稿/預覽從不回傳單價（見 `TravelComputedDto` 上方註解）；本介面
+ * 唯一存在的理由就是「已完成申請可回傳自己的計算依據」，故單價欄位在此
+ * 刻意存在，與 `TravelComputedDto` 刻意不存在互為對照。
+ */
+export interface TravelSnapshotDto {
+  fuelUnitPrice: string;
+  etcUnitPrice: string;
+  fuelParameterVersionId: string;
+  etcParameterVersionId: string;
+  totalKm: string;
+  totalRawAmount: string;
+  totalAmount: number;
+  calculatedAt: string; // ISO
 }
 
 export interface TravelApplicationDto {
@@ -830,7 +1156,7 @@ export interface TravelApplicationDto {
   segments: TripSegmentDto[];
   completionBlockers: Blocker[];
   computed: TravelComputedDto | null; // DRAFT：即算預覽；COMPLETED：null（D8）
-  snapshot: unknown | null; // TODO(PHASE-004-T8): TravelSnapshotDto
+  snapshot: TravelSnapshotDto | null; // COMPLETED：快照；DRAFT：null（PHASE-004-T8）
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -944,7 +1270,20 @@ export async function toTravelApplicationDto(
     totalKm: s.totalKm !== null ? s.totalKm.toFixed(2) : null,
     highwayKm: s.highwayKm !== null ? s.highwayKm.toFixed(2) : null,
     attachments: attachmentsBySegment.get(s.id) ?? [],
-    snapshot: null, // TODO(PHASE-004-T8)
+    // PHASE-004-T8: 僅 COMPLETED 段落非 null（四個 snapshot* 欄位由完成流程
+    // 同一交易寫入，草稿階段恆為 null——見 completeTravelApplication Step ⑤a）。
+    snapshot:
+      s.snapshotFuelAmount !== null &&
+      s.snapshotEtcAmount !== null &&
+      s.snapshotRawAmount !== null &&
+      s.snapshotAmount !== null
+        ? {
+            fuelAmount: s.snapshotFuelAmount.toFixed(4),
+            etcAmount: s.snapshotEtcAmount.toFixed(4),
+            rawAmount: s.snapshotRawAmount.toFixed(4),
+            amount: s.snapshotAmount,
+          }
+        : null,
   }));
 
   // PHASE-004-T7: resolve parameters ONCE for DRAFT (§10.2 perf note — avoid
@@ -986,6 +1325,33 @@ export async function toTravelApplicationDto(
       )
     : null;
 
+  // PHASE-004-T8: 僅 COMPLETED 且快照欄位齊備時非 null——讀 `TravelApplication`
+  // 的快照欄位 + `Application.totalAmount`，絕不重新查詢參數表或重算
+  // （AC-48 快照不變性：即使日後新增更早生效日的參數版本，這裡讀到的仍是
+  // 完成當下寫入的值，因為完全不呼叫 resolveTravelParameters/calculateTravel）。
+  const travel = application.travel;
+  const snapshot: TravelSnapshotDto | null =
+    application.status === "COMPLETED" &&
+    travel?.fuelUnitPrice != null &&
+    travel?.etcUnitPrice != null &&
+    travel?.fuelParameterVersionId != null &&
+    travel?.etcParameterVersionId != null &&
+    travel?.snapshotTotalKm != null &&
+    travel?.snapshotRawAmount != null &&
+    travel?.calculatedAt != null &&
+    application.totalAmount != null
+      ? {
+          fuelUnitPrice: travel.fuelUnitPrice.toFixed(4),
+          etcUnitPrice: travel.etcUnitPrice.toFixed(4),
+          fuelParameterVersionId: travel.fuelParameterVersionId,
+          etcParameterVersionId: travel.etcParameterVersionId,
+          totalKm: travel.snapshotTotalKm.toFixed(2),
+          totalRawAmount: travel.snapshotRawAmount.toFixed(4),
+          totalAmount: application.totalAmount,
+          calculatedAt: travel.calculatedAt.toISOString(),
+        }
+      : null;
+
   return {
     id: application.id,
     type: "TRAVEL",
@@ -1000,7 +1366,7 @@ export async function toTravelApplicationDto(
     segments: segmentDtos,
     completionBlockers,
     computed,
-    snapshot: null, // TODO(PHASE-004-T8)
+    snapshot,
     createdAt: application.createdAt.toISOString(),
     updatedAt: application.updatedAt.toISOString(),
     completedAt: application.completedAt ? application.completedAt.toISOString() : null,

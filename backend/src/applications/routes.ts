@@ -12,8 +12,17 @@
  *     stateless（AC-36：絕對不寫任何 DB 資料列，only reads via
  *     resolveTravelParameters's findMany）; §8.2, §9「金額預覽（stateless）」.
  *
+ * Endpoints implemented in PHASE-004-T8 (this Task's own addition):
+ *   POST   /applications/:id/complete → 200 { application: TravelApplicationDto }
+ *     （`status=COMPLETED` + `snapshot`）; body 一律忽略（AC-54，本路由完全
+ *     不讀取 request.body）; AC-49~54/43/48/59, §9「完成申請」.
+ *     授權**不**使用本檔其餘端點共用的 `assertOwnershipOrAdmin`：D17（Spec
+ *     §17.1 定案，Packet Out of Scope 明文）「本 Phase 不提供管理員代完成，
+ *     完成僅能由使用者本人執行」——`assertOwnershipOrAdmin` 會放行 ADMIN，
+ *     用在這裡即等同開放代完成，牴觸 D17；故此路由改為嚴格
+ *     `actor.id === application.ownerId`（見下方路由本體的行內註解）。
+ *
  * Explicitly OUT of scope for this Task (see PHASE-004.md §2, Task Graph):
- *   POST /applications/:id/complete           (T8)
  *   GET  /applications                        (T9)
  *   POST /admin/users/:userId/applications/travel (T10)
  *
@@ -23,7 +32,9 @@
  * (§6.2 資料隔離不變式 1 — BE-US-02 第三條 AC). `/applications/travel/preview`
  * has NO data ownership (stateless, §6.1 授權矩陣表) — auth is still required
  * (401/403 PASSWORD_CHANGE_REQUIRED) but there is no `assertOwnershipOrAdmin`
- * call because there is no persisted resource to own.
+ * call because there is no persisted resource to own. `POST
+ * /applications/:id/complete` is the one exception to the
+ * `assertOwnershipOrAdmin` pattern — see the T8 note above (D17).
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
@@ -36,6 +47,7 @@ import { assertApplicationMutable } from "./application-state-machine.js";
 import { resolveTravelParameters } from "./travel-parameters.js";
 import type { SegmentPatch } from "./travel-service.js";
 import {
+  completeTravelApplication,
   createTravelDraft,
   deleteApplication,
   formatTravelComputed,
@@ -452,6 +464,39 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       );
 
       return reply.status(200).send({ preview });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/:id/complete (PHASE-004-T8)
+  // AC-49~54/43/48/59, §9「完成申請」. Body 一律忽略（AC-54）——below, only
+  // `request.params.id` and `request.currentUser` are ever read; there is no
+  // code path that touches `request.body` at all.
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/:id/complete",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const existing = await getTravelApplication(prisma, id);
+      if (!existing) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // D17（Spec §17.1 定案 + Packet Out of Scope 明文）：完成僅能由申請
+      // 擁有人本人執行——本 Phase 不提供管理員代完成。刻意不呼叫本檔其餘端點
+      // 共用的 `assertOwnershipOrAdmin`（它會放行 ADMIN），改用嚴格的
+      // owner-only 判定；ADMIN 若非擁有人，同一般他人一樣得 403（§6.2 資料
+      // 隔離不變式 4：他人資源一律 403，不因資源存在與否洩漏）。
+      if (request.currentUser.id !== existing.ownerId) {
+        throw new AppError("FORBIDDEN", 403, "無權存取此資源");
+      }
+
+      const completed = await completeTravelApplication(prisma, id);
+      const dto = await toTravelApplicationDto(prisma, completed);
+      return reply.status(200).send({ application: dto });
     }
   );
 
