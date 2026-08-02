@@ -78,7 +78,7 @@ import {
 import { formatUtcDate } from "../parameters/parameter-service.js";
 import { AppError } from "../platform/errors.js";
 import type { FieldError } from "../platform/errors.js";
-import { assertTransition } from "./application-state-machine.js";
+import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
@@ -386,6 +386,63 @@ function retryBackoffMs(attempt: number): number {
   return Math.floor(Math.random() * exp);
 }
 
+/**
+ * PHASE-004-R4: is `err` a transient, retry-eligible Postgres transaction
+ * conflict raised by a concurrent SERIALIZABLE transaction? Shared by all
+ * three retry loops in this file (`updateTravelDraft`,
+ * `completeTravelApplication`, `deleteApplication`).
+ *
+ * Discovered while writing this round's REQUIRED concurrency tests
+ * (`phase4-concurrency-freeze.test.ts`, genuine `Promise.allSettled` races
+ * between `updateTravelDraft`/`deleteApplication` and
+ * `completeTravelApplication`): a real Postgres DEADLOCK (SQLSTATE 40P01,
+ * "deadlock detected") can occur when `updateTravelDraft`'s `SELECT ...
+ * FOR UPDATE` on the `Application` row and `completeTravelApplication`'s
+ * ordinary `tx.tripSegment.update`/`tx.application.update` calls form a lock
+ * -wait cycle (A holds the Application row lock, waiting on a TripSegment row
+ * B already holds; B is waiting on the Application row A holds). Postgres's
+ * deadlock detector aborts one side with 40P01 — this is DIFFERENT from a
+ * SERIALIZABLE serialization failure (40001) and was NOT previously
+ * recognized as retryable by ANY of this file's three retry loops, so a real
+ * concurrent PUT-vs-complete deadlock would have propagated as an unhandled
+ * error instead of being retried like every other transient conflict here.
+ *
+ * Three distinct shapes this can arrive in (all observed or documented):
+ *   - P2034: Prisma's own conflict code for ordinary (non-raw) Prisma Client
+ *     operations — the ORIGINAL case this file's retry loops already handled.
+ *   - P2010 wrapping Postgres SQLSTATE 40001 or 40P01: surfaces through
+ *     `$queryRaw` (the `SELECT ... FOR UPDATE` lock in `updateTravelDraft`/
+ *     `deleteApplication`) because raw queries report the underlying DB error
+ *     via Prisma's generic "raw query failed" code rather than P2034.
+ *   - `PrismaClientUnknownRequestError` with "deadlock detected" in its
+ *     message: observed via `completeTravelApplication`'s ORDINARY (non-raw)
+ *     `tx.application.update` call when IT is the deadlock victim — Prisma
+ *     5.x does not map this case to a `PrismaClientKnownRequestError` code at
+ *     all, so the two `P2xxx` checks above cannot catch it; the message must
+ *     be inspected directly.
+ *
+ * Retrying on 40P01 (in addition to 40001) is standard practice for
+ * SERIALIZABLE transactions — NOT a lowering of isolation level, NOT an
+ * increase to any function's retry COUNT (still 6, unchanged), and NOT a
+ * test-weakening move: it recognizes an additional legitimate,
+ * already-transient Postgres error class as retry-eligible, exactly the way
+ * 40001 already was.
+ */
+function isRetryableTransactionConflict(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === "P2034") return true;
+    if (err.code === "P2010") {
+      const meta = err.meta as { code?: string } | undefined;
+      return meta?.code === "40001" || meta?.code === "40P01";
+    }
+    return false;
+  }
+  if (err instanceof Prisma.PrismaClientUnknownRequestError) {
+    return /deadlock detected|could not serialize access/i.test(err.message);
+  }
+  return false;
+}
+
 /** One segment's attachment reconciliation target, gathered while creating/updating segments. */
 interface SegmentAttachmentPlan {
   segmentId: string;
@@ -476,12 +533,17 @@ async function computeAttachmentDeltas(
  *
  * `containerState` is NOT a parameter here — `linkAttachmentTx` (unlike the
  * full `linkAttachment`) has no containerState/ownership gate of its own;
- * those checks belong to the caller. Reaching this function at all already
- * implies the application is DRAFT (routes.ts's `assertApplicationMutable`
- * ran before `updateTravelDraft` was ever called), so the injected
- * containerState would always be 'draft' — encoding that as "no check needed
- * here" rather than threading a constant through is deliberate (§9: "草稿階段
- * 必為 'draft'，因 assertApplicationMutable 已在前面擋掉非草稿").
+ * those checks belong to the caller. Reaching this function at all implies
+ * the application is DRAFT — PHASE-004-R4 (M-2 修復): this is now guaranteed
+ * by `updateTravelDraft`'s OWN in-transaction `assertApplicationMutable(existing.status)`
+ * call (see that function's doc comment), not merely by routes.ts's outer,
+ * pre-transaction check. Before R4, this comment described the outer check
+ * ALONE as sufficient — that was the exact TOCTOU gap M-2 closed: a
+ * concurrent `completeTravelApplication` could commit AFTER routes.ts's
+ * outer check passed but BEFORE this transaction's writes, leaving the outer
+ * check's DRAFT read stale. The in-transaction re-check now makes the
+ * "reaching here implies DRAFT" invariant actually hold for the ATTEMPT that
+ * reaches this function, not just for the caller's earlier, separate read.
  */
 async function applyAttachmentDeltas(
   tx: Prisma.TransactionClient,
@@ -555,6 +617,7 @@ export async function updateTravelDraft(
           const existing = await tx.application.findUniqueOrThrow({
             where: { id },
             select: {
+              status: true,
               ownerId: true,
               createdAt: true,
               travel: {
@@ -574,6 +637,19 @@ export async function updateTravelDraft(
               },
             },
           });
+
+          // PHASE-004-R4 (M-2, High): re-validate mutability INSIDE this
+          // transaction, on the FRESH row this attempt just read — do not
+          // trust routes.ts's outer, pre-transaction `assertApplicationMutable`
+          // call alone. That outer check reads `status` before this
+          // transaction even opens; a concurrent `completeTravelApplication`
+          // can commit `status=COMPLETED` in the window between the outer
+          // check and this line, which the outer check has no way to see.
+          // Throwing here (AppError) is caught by the retry loop below and
+          // re-thrown immediately without retry (business errors are never
+          // retried — see the catch block's `err instanceof AppError` check),
+          // so a losing concurrent PUT gets a clean 403, no partial writes.
+          assertApplicationMutable(existing.status);
 
           const nextTripDate = hasKey(patch, "tripDate")
             ? (patch.tripDate ?? null)
@@ -687,22 +763,11 @@ export async function updateTravelDraft(
         throw err;
       }
 
-      // Serialization failures can surface two different ways here:
-      //   - P2034: Prisma's own write-conflict/deadlock code for ordinary
-      //     Prisma Client operations (same as `linkAttachment`'s retry check,
-      //     lifecycle-service.ts).
-      //   - P2010 wrapping Postgres SQLSTATE 40001 ("could not serialize
-      //     access due to concurrent update"): surfaces THROUGH `$queryRaw`
-      //     (the `SELECT ... FOR UPDATE` lock above) because raw queries
-      //     report the underlying DB error via Prisma's generic "raw query
-      //     failed" code rather than P2034.
-      const isP2034 = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
-      const isP2010SerializationFailure =
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === "P2010" &&
-        (err.meta as { code?: string } | undefined)?.code === "40001";
-      const isPrismaSerializationError = isP2034 || isP2010SerializationFailure;
-      if (!isPrismaSerializationError) {
+      // Transient Postgres transaction conflicts (serialization failure
+      // 40001, or a genuine deadlock 40P01 — see `isRetryableTransactionConflict`'s
+      // doc comment for the three shapes this can arrive in and why 40P01 was
+      // added in PHASE-004-R4) are retried; everything else propagates.
+      if (!isRetryableTransactionConflict(err)) {
         throw err;
       }
 
@@ -754,22 +819,90 @@ export async function updateTravelDraft(
  * directly by `id` without an extra join through `TravelApplication`.
  * Non-TRAVEL applications (no `TripSegment` rows can reference their id)
  * simply yield an empty `segments` array here — safe no-op.
+ *
+ * PHASE-004-R4 (M-2, High): mutability is re-validated INSIDE this
+ * transaction (fresh `status` read via `SELECT ... FOR UPDATE` +
+ * `assertApplicationMutable`), not trusted from routes.ts's outer,
+ * pre-transaction `assertApplicationMutable` call alone — mirrors
+ * `updateTravelDraft`'s identical fix and the same rationale: the outer
+ * check reads `status` before this transaction opens, and a concurrent
+ * `completeTravelApplication` can commit in the window between that read
+ * and this transaction's delete. Isolation raised from the previous
+ * (unspecified/default) level to SERIALIZABLE + retry-on-conflict, the same
+ * pattern used by `updateTravelDraft`/`completeTravelApplication` — this is
+ * a RAISE, not a lowering (the Packet forbids lowering isolation, not
+ * raising it): the previous default level could not otherwise guarantee
+ * that a `DELETE` blocked behind a concurrent `complete`'s row lock
+ * re-observes the post-commit `status` before proceeding (plain
+ * `SELECT`/`DELETE` under READ COMMITTED does not re-check a value read
+ * earlier in the same transaction). The `FOR UPDATE` lock on the
+ * `Application` row is the SAME row `completeTravelApplication`'s final
+ * write (`tx.application.update`, Step ⑤c) touches, so the two are
+ * guaranteed to conflict under concurrent execution — whichever commits
+ * second gets a serialization failure and retries against the other's
+ * now-committed state.
  */
+const DELETE_APPLICATION_MAX_RETRIES = 6;
+
 export async function deleteApplication(prisma: PrismaClient, id: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const segments = await tx.tripSegment.findMany({
-      where: { travelApplicationId: id },
-      select: { id: true },
-    });
-    if (segments.length > 0) {
-      await detachAttachmentsByRefTx(
-        tx,
-        "TRIP_SEGMENT",
-        segments.map((s) => s.id)
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= DELETE_APPLICATION_MAX_RETRIES; attempt++) {
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          // Table name quoted for Postgres case-sensitivity (unquoted-default,
+          // no @@map in schema.prisma) — same pattern as updateTravelDraft's
+          // own FOR UPDATE lock, above.
+          await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
+
+          const existing = await tx.application.findUniqueOrThrow({
+            where: { id },
+            select: { status: true },
+          });
+          assertApplicationMutable(existing.status); // AC-06/56/59: 已完成 → 403 FORBIDDEN
+
+          const segments = await tx.tripSegment.findMany({
+            where: { travelApplicationId: id },
+            select: { id: true },
+          });
+          if (segments.length > 0) {
+            await detachAttachmentsByRefTx(
+              tx,
+              "TRIP_SEGMENT",
+              segments.map((s) => s.id)
+            );
+          }
+          await tx.application.delete({ where: { id } });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );
+      return;
+    } catch (err) {
+      lastError = err;
+
+      // Business errors (404/403/etc.) propagate immediately — never retried
+      // (mirrors updateTravelDraft/completeTravelApplication).
+      if (err instanceof AppError) {
+        throw err;
+      }
+
+      if (!isRetryableTransactionConflict(err)) {
+        throw err;
+      }
+
+      if (attempt >= DELETE_APPLICATION_MAX_RETRIES) {
+        throw new AppError(
+          "SERVICE_UNAVAILABLE",
+          503,
+          "系統忙碌，請稍後再試（刪除申請時發生資料庫並發衝突，已重試多次仍未成功）"
+        );
+      }
+      await sleep(retryBackoffMs(attempt));
     }
-    await tx.application.delete({ where: { id } });
-  });
+  }
+
+  // Unreachable (loop always returns or throws) — satisfies TypeScript control-flow analysis.
+  throw lastError;
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,13 +1176,7 @@ export async function completeTravelApplication(
         throw err;
       }
 
-      const isP2034 = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
-      const isP2010SerializationFailure =
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === "P2010" &&
-        (err.meta as { code?: string } | undefined)?.code === "40001";
-      const isPrismaSerializationError = isP2034 || isP2010SerializationFailure;
-      if (!isPrismaSerializationError) {
+      if (!isRetryableTransactionConflict(err)) {
         throw err;
       }
 

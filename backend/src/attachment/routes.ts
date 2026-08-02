@@ -50,7 +50,7 @@ import { getEnvOrTestDefaults } from "../config/env.js";
 import { AppError } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
 import { getAttachmentContent, getAttachmentThumbnail } from "./access-service.js";
-import { deleteAttachment, deriveContainerState } from "./lifecycle-service.js";
+import { deleteAttachment } from "./lifecycle-service.js";
 import { processUpload } from "./upload-service.js";
 
 // ---------------------------------------------------------------------------
@@ -240,15 +240,23 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
   // DELETE /attachments/:id
   // Delete or detach an attachment.
   //
-  // Spec §5.1 / PHASE-003-T6, revised PHASE-004-T11 (AR-D/AC-26/27):
+  // Spec §5.1 / PHASE-003-T6, revised PHASE-004-T11 (AR-D/AC-26/27),
+  // revised PHASE-004-R4 (S-1 — 推導與寫入現在同一交易):
   //   - requireAuth + requirePasswordChanged
   //   - LINKED → detach (status → TEMP, ref cleared, createdAt reset as TTL base)
   //   - TEMP → physical delete (DB record + storage files)
-  //   - containerState is DERIVED FROM DB via `deriveContainerState` — this
-  //     handler does NOT read any client-supplied `containerState`, from
-  //     either the query string or the request body, anywhere (AC-27b). Any
-  //     such client value is completely inert — this is the AR-D closure.
-  //     'completed' (derived) → 403 FORBIDDEN (AC-26).
+  //   - containerState is DERIVED FROM DB, INSIDE `deleteAttachment`'s own
+  //     transaction (lifecycle-service.ts) — this handler does NOT read any
+  //     client-supplied `containerState`, from either the query string or the
+  //     request body, anywhere (AC-27b). Any such client value is completely
+  //     inert — this is the AR-D closure. 'completed' (derived) → 403
+  //     FORBIDDEN (AC-26). PHASE-004-R4 (S-1): this handler no longer does
+  //     its OWN separate `findUnique`/`deriveContainerState` call before
+  //     invoking `deleteAttachment` — that pre-R4 two-step (derive here,
+  //     write inside `deleteAttachment`) left a TOCTOU window where a
+  //     concurrent `completeTravelApplication` could commit in between. Both
+  //     steps now happen inside `deleteAttachment`'s own single transaction
+  //     (see that function's doc comment).
   //   - 200 { ok: true } on success
   //   - 403 FORBIDDEN if non-owner, non-admin, or (derived) completed container
   //   - 404 NOT_FOUND if attachment does not exist
@@ -263,22 +271,8 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
       const { id } = request.params as { id: string };
       const actor = request.currentUser;
 
-      const attachment = await prisma.attachment.findUnique({ where: { id } });
-      if (!attachment) {
-        throw new AppError("NOT_FOUND", 404, "找不到附件");
-      }
-
-      // AR-D（AC-27）: containerState 一律由後端依 DB 狀態推導；本行以前、以
-      // 後皆不存在任何讀取 request.query/request.body 的 containerState 程式
-      // 碼路徑（無論命名為何），故 client 傳入的任何同名參數必然無效。
       const log = { warn: (msg: string) => request.log.warn(msg) };
-      const containerState = await deriveContainerState(prisma, attachment, log);
-
-      const result = await deleteAttachment(prisma, storage, {
-        attachmentId: id,
-        containerState,
-        actor,
-      });
+      const result = await deleteAttachment(prisma, storage, { attachmentId: id, actor }, log);
 
       return reply.status(200).send(result);
     }

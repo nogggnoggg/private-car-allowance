@@ -186,9 +186,14 @@ export function assertContainerMutable(containerState: ContainerState): void {
  * it no longer reads any client-supplied containerState at all (AC-27b).
  *
  * @param log Optional logger for the orphan case (non-fatal, informational).
+ *
+ * PHASE-004-R4 (S-1): `prisma` is `PrismaTxLike` (not just `PrismaClient`) so
+ * `deleteAttachment` (below) can call this INSIDE its own transaction — the
+ * fix for S-1 (derive-then-write TOCTOU) requires the derivation to read
+ * from the SAME transaction snapshot the subsequent write commits into.
  */
 export async function deriveContainerState(
-  prisma: PrismaClient,
+  prisma: PrismaTxLike,
   attachment: {
     status: AttachmentStatus;
     refType: AttachmentRefType | null;
@@ -606,10 +611,42 @@ export async function detachAttachmentsByIdsTx(
 
 export interface DeleteAttachmentInput {
   attachmentId: string;
-  /** Container state injected by caller; 'completed' blocks deletion (AC-16) */
-  containerState: ContainerState;
   /** Authenticated user performing the action */
   actor: CurrentUser;
+}
+
+/** Retry budget for SERIALIZABLE conflicts, mirroring `linkAttachment`'s pattern. */
+const DELETE_ATTACHMENT_MAX_RETRIES = 3;
+const DELETE_ATTACHMENT_BACKOFF_CAP_MS = 100;
+
+function deleteAttachmentBackoffMs(attempt: number): number {
+  return Math.floor(Math.random() * Math.min(DELETE_ATTACHMENT_BACKOFF_CAP_MS, 15 * 2 ** attempt));
+}
+
+/**
+ * PHASE-004-R4: is `err` a transient, retry-eligible Postgres transaction
+ * conflict? Same rationale and shape as `travel-service.ts`'s identically-named
+ * helper (see that file's doc comment for the full account of why a genuine
+ * Postgres DEADLOCK, SQLSTATE 40P01, must be recognized here too — discovered
+ * via this round's `phase4-concurrency-freeze.test.ts` racing
+ * `deleteAttachment` against `completeTravelApplication`) — NOT shared as a
+ * cross-file import to avoid coupling attachment/lifecycle-service.ts to
+ * applications/travel-service.ts for a small pure predicate; duplicated
+ * deliberately, same as this file's existing per-function retry-loop style.
+ */
+function isRetryableTransactionConflict(err: unknown): boolean {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === "P2034") return true;
+    if (err.code === "P2010") {
+      const meta = err.meta as { code?: string } | undefined;
+      return meta?.code === "40001" || meta?.code === "40P01";
+    }
+    return false;
+  }
+  if (err instanceof Prisma.PrismaClientUnknownRequestError) {
+    return /deadlock detected|could not serialize access/i.test(err.message);
+  }
+  return false;
 }
 
 /**
@@ -640,60 +677,126 @@ export interface DeleteAttachmentInput {
  *   The column comment in the schema says "上傳時間（暫存 TTL 基準）" — after detach,
  *   this is reinterpreted as "last-became-TEMP time". No schema change needed.
  *
+ * PHASE-004-R4 (S-1, Medium — 附件刪除的推導與 detach 不同交易):
+ *   Before R4, the caller (routes.ts) did `findUnique` → `deriveContainerState`
+ *   → this function (which did ANOTHER separate `findUnique` → ownership →
+ *   `assertContainerMutable` → `update`/`delete`) — no `$transaction` tied any
+ *   of these together. Between the derivation (`containerState='draft'`) and
+ *   the write, a concurrent `completeTravelApplication` could commit,
+ *   completing the application while this call still went on to detach/delete
+ *   the attachment — bypassing AC-26/AC-59 exactly like M-2's PUT/DELETE
+ *   races. Fixed by moving the ENTIRE load → ownership check → derive →
+ *   `assertContainerMutable` → write sequence inside ONE SERIALIZABLE
+ *   transaction (`containerState` is no longer accepted as caller input —
+ *   `routes.ts` no longer derives it separately; see that file). Storage I/O
+ *   (best-effort, TEMP-delete branch only) still happens AFTER the
+ *   transaction commits, matching the codebase's established rule that
+ *   storage IO never happens inside a DB transaction (D16).
+ *
+ *   Concurrency correctness: this transaction's containerState-deriving READ
+ *   (via `deriveContainerState`, which for a LINKED/TRIP_SEGMENT attachment
+ *   reads `Application.status` through the TripSegment→TravelApplication
+ *   join) and its attachment WRITE, raced against
+ *   `completeTravelApplication`'s READ of LINKED attachments (for
+ *   `attachmentCount`) and WRITE of `Application.status`, form the classic
+ *   2-transaction write-skew cycle: this tx reads old `status` that complete
+ *   later overwrites, and complete reads the old `LINKED` attachment state
+ *   this tx later overwrites. Postgres SERIALIZABLE (SSI) detects exactly
+ *   this cycle and aborts one side with a serialization failure — the
+ *   aborted side retries against a fresh, consistent snapshot (same
+ *   LINK_MAX_RETRIES-style retry loop as `linkAttachment`, above).
+ *
  * @returns { ok: true }
  */
 export async function deleteAttachment(
   prisma: PrismaClient,
   storage: Storage,
-  input: DeleteAttachmentInput
+  input: DeleteAttachmentInput,
+  log?: { warn: (msg: string) => void }
 ): Promise<{ ok: true }> {
-  const { attachmentId, containerState, actor } = input;
+  const { attachmentId, actor } = input;
 
-  // Load attachment
-  const attachment = await prisma.attachment.findUnique({
-    where: { id: attachmentId },
-  });
-  if (!attachment) {
-    throw new AppError("NOT_FOUND", 404, "找不到附件");
-  }
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= DELETE_ATTACHMENT_MAX_RETRIES; attempt++) {
+    try {
+      const storageCleanup = await prisma.$transaction(
+        async (tx) => {
+          // Load attachment (inside tx — see doc comment: this is the ONLY
+          // read of the attachment row now, replacing the two separate
+          // pre-R4 reads in routes.ts and here).
+          const attachment = await tx.attachment.findUnique({
+            where: { id: attachmentId },
+          });
+          if (!attachment) {
+            throw new AppError("NOT_FOUND", 404, "找不到附件");
+          }
 
-  // Ownership check
-  assertOwnershipOrAdmin(actor, attachment.ownerId);
+          // Ownership check
+          assertOwnershipOrAdmin(actor, attachment.ownerId);
 
-  // Container state check (AC-16) — blocks delete if container is completed
-  assertContainerMutable(containerState);
+          // AR-D（AC-27）: containerState 一律由後端依 DB 狀態推導，且現在
+          // 與下方的寫入在同一個交易內完成（S-1 修復核心，見上方文件註解）。
+          const containerState = await deriveContainerState(tx, attachment, log);
+          assertContainerMutable(containerState); // AC-16/AC-26
 
-  if (attachment.status === "LINKED") {
-    // Detach: revert to TEMP, clear ref fields, reset createdAt as TTL base
-    // (D2/§4.5). PHASE-004-T4: field values now come from the single shared
-    // `detachFieldSet` helper — also used by `detachAttachmentsByRefTx` —
-    // so both detach paths are provably identical (see that function's
-    // doc comment for why this stays a per-id `update`, not a refId-based
-    // `updateMany`).
-    await prisma.attachment.update({
-      where: { id: attachmentId },
-      data: detachFieldSet(new Date()),
-    });
-  } else {
-    // TEMP attachment: physical delete
-    // DB first (source of truth), then storage (best-effort)
-    const { storageKey, thumbnailKey } = attachment;
+          if (attachment.status === "LINKED") {
+            // Detach: revert to TEMP, clear ref fields, reset createdAt as TTL
+            // base (D2/§4.5) — same shared `detachFieldSet` as
+            // `detachAttachmentsByRefTx`/`detachAttachmentsByIdsTx`.
+            await tx.attachment.update({
+              where: { id: attachmentId },
+              data: detachFieldSet(new Date()),
+            });
+            return null;
+          }
 
-    await prisma.attachment.delete({ where: { id: attachmentId } });
+          // TEMP attachment: physical delete. DB row removed inside the
+          // transaction (source of truth); storage cleanup is deferred to
+          // AFTER commit (best-effort, no storage IO inside a DB tx — D16).
+          await tx.attachment.delete({ where: { id: attachmentId } });
+          return { storageKey: attachment.storageKey, thumbnailKey: attachment.thumbnailKey };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
 
-    // Storage cleanup (best-effort — orphan is unreachable if DB record is gone)
-    const keysToDelete = [storageKey, thumbnailKey].filter(
-      (k): k is string => typeof k === "string" && k.length > 0
-    );
-    for (const key of keysToDelete) {
-      try {
-        await storage.delete(key);
-      } catch {
-        // Orphan file: not exposed to user; PHASE-011 can clean up unreachable keys.
-        // Intentionally not re-throwing (compensatory best-effort per §4.4 pattern).
+      if (storageCleanup) {
+        const keysToDelete = [storageCleanup.storageKey, storageCleanup.thumbnailKey].filter(
+          (k): k is string => typeof k === "string" && k.length > 0
+        );
+        for (const key of keysToDelete) {
+          try {
+            await storage.delete(key);
+          } catch {
+            // Orphan file: not exposed to user; PHASE-011 can clean up unreachable keys.
+            // Intentionally not re-throwing (compensatory best-effort per §4.4 pattern).
+          }
+        }
       }
+
+      return { ok: true };
+    } catch (err) {
+      lastError = err;
+
+      // Business errors (404/403/409/etc.) propagate immediately — never retried.
+      if (err instanceof AppError) {
+        throw err;
+      }
+
+      if (!isRetryableTransactionConflict(err)) {
+        throw err;
+      }
+
+      if (attempt >= DELETE_ATTACHMENT_MAX_RETRIES) {
+        throw new AppError(
+          "SERVICE_UNAVAILABLE",
+          503,
+          "系統忙碌，請稍後再試（刪除附件時發生資料庫並發衝突，已重試多次仍未成功）"
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, deleteAttachmentBackoffMs(attempt)));
     }
   }
 
-  return { ok: true };
+  // Unreachable (loop always returns or throws) — satisfies TypeScript control-flow analysis.
+  throw lastError;
 }
