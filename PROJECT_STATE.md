@@ -56,8 +56,8 @@ Updated: 2026-08-02
 | T15 | 引用保護閉環（userHasHistory / parameterHasReferences） | High | DONE | c92cc28 |
 | — | **期中 reviewer 檢查點**（後端核心） | — | DONE | REQUEST_CHANGES |
 | R3 | REPAIR：測試套件不具決定性（Review M-1）+ R3F lint | High | DONE | 2d78280 |
-| R4 | REPAIR：交易邊界（Review M-2 + S-1）+ 503 production 評估 | High | IN_PROGRESS | — |
-| R5 | REPAIR：D4 Decimal 傳字串 + seed-admin 雙重 cast（S-2/S-3） | Low | 待辦 | — |
+| R4 | REPAIR：交易邊界（Review M-2 + S-1）+ 503 production 評估 | High | DONE | 697ad62 |
+| R5 | REPAIR：D4 Decimal 傳字串 + seed-admin 雙重 cast（S-2/S-3） | Medium | DONE | 78dce86 |
 | T9 | 綜合紀錄查詢（分頁/篩選/授權隔離） | High | 待辦 | — |
 | T10 | 管理員代操作 | High | 待辦 | — |
 | T12 | 代操作稽核 | High | 待辦 | — |
@@ -65,7 +65,7 @@ Updated: 2026-08-02
 | T14 | 前端管理員檢視他人紀錄 + 代操作入口 | Medium | 待辦 | — |
 
 - 執行順序調整（大總管裁定並記錄）：**T5 提前於 T4**——AC-19 要求儲存時即拒 3 位小數，T4 寫入里程前必須先有格式驗證器；T5 僅依賴 T1，順序合法。
-- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ **808（T15）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
+- 測試基準線推進：516（Phase 起點）→ 532（T1）→ 551（T2）→ 617（T3）→ 678（T5）→ 702（T4）→ 729（T6）→ 754（T7）→ 779（T11）→ 802（T8）→ 808（T15）→ **814（R4）**。每個 Task 均由大總管以真實 DB（`DATABASE_URL` 已設、skipped=0）獨立重跑 ≥2 輪確認零回歸。
 - **驗收紀律事件（T6）**：implementer 回報之「全套回歸」係在未設 `DATABASE_URL` 下執行（55 skipped），非有效證據；大總管重跑後才確認。**後續 Packet 一律要求 Handoff 標明 passed/failed/skipped 三個數字且 skipped 必須為 0。**
 - **T11 Stop 事件（implementer 正確觸發）**：D12 移除公開 `POST /attachments/:id/link` 會使 `phase3-lifecycle.test.ts` 20 個測試中 16 處必然失敗，而該檔同時列為不得修改。大總管裁定**逐條遷移不得刪除**，寫入 Spec §17 修訂紀錄（commit c5fc3cb）後恢復執行。
 - **B-30 併發事件（T11 → T11R → T11R2，2026-08-02）**：T11 交付後大總管 13 輪重跑發現 B-30 併發測試約 **23% 失敗**（`expected [200,200] to deeply equal [200,409]`，即每段 3 張上限被突破），三個修復回合（T11 一次、T11R 兩次：advisory lock 提前、SERIALIZABLE→READ COMMITTED、原子單一 UPDATE）**全部未關閉**；implementer 於第三回合正確觸發 Stop（§28 三回合上限）。**大總管診斷結論：目標框錯**——B-30 測試打的是整份取代式 `PUT`，兩個併發請求各自宣告的都是合法的 3 張（恰為上限），依 D15 語意「兩者皆成功、最終 3 張」才是正確；原 PHASE-003 測試 race 的是增量式 link 打到 `limit=1` 容器，T11 依 §17 C1 逐條遷移換端點後**斷言未同步修正**。另查得真實缺陷：`computeAttachmentDeltas` 的 baseline 在**交易外**（`prisma` 而非 `tx`）計算，併發時雙方 baseline 皆為前態、各自只 link 不 detach → 最終 4 張。**處置**：Spec §17 新增 **D19**（使用者 leonchih 2026-08-02 批准「最後寫入者贏」＋裁定回退兩次失敗嘗試）→ T11R2 回退 + baseline 移入交易內 + 斷言依 D19 修正 + 新增 AC-22 鑑別力測試 → 大總管 **14 輪重跑（13 輪 779 全綠，B-30 零失敗）**。
@@ -82,6 +82,11 @@ Updated: 2026-08-02
   - **S-1（Medium）`DELETE /attachments/:id` 推導與 detach 不同交易 → R4 一併處理**（同類）。
   - **S-2/S-3（Medium）→ R5**：`new Prisma.Decimal(0)` 傳數字 7 處違反 D4 bright-line；`seed-admin.ts` 之 `as unknown as` 雙重 cast 關閉型別檢查，疊加 R2 的 stub 化後 create 分支既無真實 DB 測試也無編譯期把關。
   - **S-4 → 已併入 R3 修復**（三處全域缺席假設改為當場查 DB）。
+  - **Review findings 全數關閉（2026-08-02）**：M-1→R3（`2d78280`）、M-2/S-1→R4（`697ad62`）、S-2/S-3→R5（`78dce86`）、S-4→R3。**尚未經 reviewer 複審**——R3/R4/R5 的修復本身依治理 §15「Review 之後產生的修復也必須經 reviewer 複審（可用輕量模式）才能合入」，須於 Phase 終審一併複核。
+- **R4 之 503 production 評估結論（Accepted Risk）**：`completeTravelApplication` 於 SERIALIZABLE 交易內全表掃描參數版本表，**判定非 production 風險**——管理員建立參數版本的交易只讀寫參數版本表本身（含 AuditLog），從不讀 `Application`/`TravelApplication`，兩者間至多一條單向 rw 邊，結構上構不成 SSI 所需的循環；`parameterHasReferences` 目前零 production 呼叫端；參數異動為罕見管理員動作。未改動完成流程之錯誤行為、隔離等級或交易結構。**可選未來優化（未實作）**：把交易內讀取縮小到該 `tripDate` 實際解析到的版本列以縮小謂詞鎖範圍——需獨立評估對 AC-48/53 的影響，建議留待後續 Phase。
+- **R4 新發現並修復（有新證據，範圍內）**：Postgres 死鎖（40P01）以 `PrismaClientUnknownRequestError` 形式浮現（Prisma 5.22 對非 raw 呼叫不映射死鎖為已知錯誤碼），三個重試迴圈皆不認得，真實死鎖會直接外拋而非重試。已以共用 `isRetryableTransactionConflict` 分類器補上。未降隔離等級、未增重試次數。
+- **R5 追蹤事項**：`backend/src/parameters/parameter-service.ts:472` 尚有一處 `new Prisma.Decimal(0)`（PHASE-003a 程式，R5 之 Files Forbidden 內未觸碰），留待後續批次處理以完成 D4 bright-line 的全域一致。
+- **測試品質備註（R4 implementer 主動揭露）**：`phase4-concurrency-freeze.test.ts` 之 M-2b 真實併發測試對該缺陷**不具獨立鑑別力**（`deleteApplication` 舊交易極短，`Promise.all` 時序結構性偏向其先完成，修復前亦會綠）；該對的載重證明為確定性重建測試。保留作為補充不變式檢查。
   - Accepted Risk：A-1 `computeCompletionBlockers` 未檢附件上限（link 時 409 已保證）；A-2 測試 DB 殘留 715 筆 DRAFT 與 26 個 `t11stress_*` 帳號（B-30 調查期臨時 harness，未進 repo，建議清理）；A-3 `DRAFT→DRAFT` / `DRAFT→VOIDED` 回 400 非 403（AC-58 僅要求拋 AppError，合規）；A-4 孤兒警告 log 含 `TripSegment` id（內部識別碼，未違 §6.3）。
 - **驗收紀律事件（第三次，R3）**：R3 Handoff 列了 `npx biome check .` 為驗收指令，但錯誤就在其交付的新檔中；另其回歸數字為 `753 passed / 55 skipped`（未明確 `export DATABASE_URL`），不符「skipped 必須為 0」。大總管重跑後才確認實況。**後續 Packet 一律明文要求「明確 export DATABASE_URL，不得依賴 .env 自動載入」並貼 biome 實際輸出。**
 - **spec-writer 待辦（累積中，非阻擋）**：(a) §6.1 授權矩陣表 L387 與 §9 流程 L766 之 `/complete` 授權文字須改為 owner-only，與 D17 及 §17 矛盾釐清列一致；(b) reviewer 建議把 D15 之 `attachmentIds` 三態語意（缺席＝不動，與 §8.2 字面「必填」不同、實作已註解說明理由）補入 §17 修訂列，使文字與實作一致。
@@ -203,7 +208,7 @@ Updated: 2026-08-02
 ## Base Commit
 
 - main @ 94a87a8（PHASE-003a 合併後，PR #4）
-- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **2d78280**（PHASE-004-R3）
+- 作用中 branch：**`phase-004`**（自 main @ 6041af4 切出，尚未 push、尚未開 PR）；最新 commit **78dce86**（PHASE-004-R5）
 
 ## Human Gate（PHASE-004）
 
