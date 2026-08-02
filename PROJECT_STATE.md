@@ -12,6 +12,11 @@ Updated: 2026-08-02
 > - D18 為唯一未採 spec-writer 建議者：**維持單一 PHASE-004**（不拆 004a/004b），改以 Phase 內期中 reviewer 檢查點取得同等品質效益，避免變更 PRD 結構與產生兩次人類合併批准。
 > - 大總管代定項（供使用者事後調整）：D14(ii) 出差目的 ≤500 字／地點 ≤200 字；D18 Phase 結構。
 
+> **UI-FIX-001 開工記錄（2026-08-02，使用者 Gate 後反饋）**
+> - 使用者回報參數維護頁「歷史版本」表格欄位黏連難辨識（`.param-table` 無 CSS 定義，PHASE-003a T6 遺漏）。四項修正經使用者批准（①補樣式 ②數值欄靠右 ③折舊表 .table-scroll ④建立時間統一 YYYY-MM-DD），已寫入 PHASE-003a Spec §13 修訂列。
+> - branch：`ui-fix-001`（自 main @ b0c8969 切出）。流程：Lite Packet → implementer TDD → 大總管獨立驗收（含實際開瀏覽器目視）→ reviewer 輕量複審 → Draft PR + CI → 人類批准合併。
+> - §15 重錨定：大總管零程式修改，本回合全部前端變更派 implementer。
+
 > **PHASE-003a 開工記錄（2026-08-01，使用者指令接續）**
 > - §15 rule 0 重錨定完成：大總管零程式修改（白名單＝PROJECT_STATE／Spec 狀態欄・修訂／ADR／CHANGELOG／治理節）；003a 為 High 風險，Spec 需事前批准 Gate 才進實作；commit 前逐檔核對 Handoff、程式 commit 必含 Task ID。
 > - 工作區清理：刪除根目錄殘留測試產物 `-w`（PHASE-003-T8 curl 誤產的合成登入 JSON，經使用者批准刪除）。
