@@ -116,7 +116,10 @@ function parsePurposeField(value: unknown): FieldParseResult<string | null> {
 // 三態語意（比照 tripDate/purpose，§8.2 「PUT 語意（D15）」延伸至各段欄位）：
 // 欄位缺席於物件上 = 不解析、也不寫入回傳物件的對應 key（travel-service.ts
 // 據此判斷「不變」）；欄位存在（含 null）= 解析並寫入 key。
-// `attachmentIds` 完全不在此處理——T11 範圍（Packet 明文）。
+// `attachmentIds`（PHASE-004-T11 新增）：格式驗證僅檢查「陣列，且每個元素為
+// 非空字串」——業務規則（附件是否存在、擁有權一致、3 張上限、409 CONFLICT）
+// 全部留給 travel-service.ts 的 `reconcileSegmentAttachments` 在交易內處理
+// （AC-22/23/25/30、B-17/32）；此處刻意不查 DB，維持這層純格式驗證的職責。
 // ---------------------------------------------------------------------------
 
 interface ParsedSegmentsResult {
@@ -168,11 +171,31 @@ function parseSegmentsInput(segmentsRaw: unknown): ParsedSegmentsResult {
       if (!result.ok) errors.push(result.error);
       else parsed.highwayKm = result.value;
     }
+    if (Object.prototype.hasOwnProperty.call(seg, "attachmentIds")) {
+      const result = parseAttachmentIdsField(seg.attachmentIds, `segments[${index}].attachmentIds`);
+      if (!result.ok) errors.push(result.error);
+      else parsed.attachmentIds = result.value;
+    }
 
     return parsed;
   });
 
   return { errors, segments };
+}
+
+/** `attachmentIds`: must be an array of non-empty strings when the key is present. */
+function parseAttachmentIdsField(value: unknown, field: string): FieldParseResult<string[]> {
+  if (!Array.isArray(value)) {
+    return { ok: false, error: { field, reason: "必須為字串陣列" } };
+  }
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || item.length === 0) {
+      return { ok: false, error: { field, reason: "必須為非空字串組成的陣列" } };
+    }
+    ids.push(item);
+  }
+  return { ok: true, value: ids };
 }
 
 // ---------------------------------------------------------------------------

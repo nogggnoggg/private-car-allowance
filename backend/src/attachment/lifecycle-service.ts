@@ -25,22 +25,24 @@
  *   request can access the file; if storage deletion fails, the file becomes orphaned but
  *   is unreachable (acceptable risk; PHASE-011 cleanup can sweep orphaned keys).
  *
- * TOCTOU prevention in linkAttachment (remediation round, definitive):
+ * TOCTOU prevention in linkAttachment (definitive, PHASE-004-T11R2):
  *   The count→check→update is wrapped in:
  *     prisma.$transaction(fn, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
  *   SERIALIZABLE isolation prevents phantom reads in Postgres: if two concurrent transactions
  *   both count the same (refType, refId) container, Postgres detects the conflict at commit
- *   time and aborts one with a serialization failure (Prisma error code P2034).
+ *   time and aborts one with a serialization failure (Prisma error code P2034). The aborted
+ *   transaction is retried up to LINK_MAX_RETRIES=3 times, re-running the entire
+ *   count→check→update block against a FRESH snapshot each time. No advisory lock is used —
+ *   SERIALIZABLE's own write-skew detection is sufficient for this single-table,
+ *   count-then-conditionally-write pattern, proven stable by
+ *   `phase3-lifecycle-concurrent.test.ts`.
  *
- *   The aborted transaction is retried up to LINK_MAX_RETRIES=3 times. On each retry the
- *   entire count→check→update block re-executes; if the retried transaction then sees
- *   count >= limit it throws TOO_MANY_ATTACHMENTS correctly. After 3 exhausted retries the
- *   error is re-raised as-is (P2034 surfaced as TOO_MANY_ATTACHMENTS since the limit is
- *   necessarily met by then, or as-is if something else caused it).
- *
- *   Advisory lock alternative (pg_advisory_xact_lock) was considered but rejected:
- *   it requires raw SQL via prisma.$queryRaw and adds complexity. SERIALIZABLE is the
- *   standard Postgres mechanism, sufficient for this low-contention (per-container) workload.
+ *   `linkAttachmentTx` (below) is this exact block, extracted so `updateTravelDraft`
+ *   (travel-service.ts) can run it inside its OWN larger SERIALIZABLE transaction (see that
+ *   function's doc comment for why baseline computation living INSIDE that transaction, not
+ *   before it, is what makes concurrent full-PUT saves resolve correctly under D19 — Spec §17
+ *   D19, PHASE-004-T11R2 Task Handoff「根因與修法」). No per-container advisory lock is taken
+ *   here either: both callers rely on their own transaction's SERIALIZABLE guarantee.
  *
  * Already-LINKED rejection: If an attachment is already LINKED and a second link is
  *   attempted, a 409 CONFLICT is returned. This is separate from TOO_MANY_ATTACHMENTS.
@@ -52,6 +54,31 @@
  * HasReferenceQuery interface: Defined here as the contract for PHASE-011 to implement
  *   real reference lookups (draft/completed/report/audit). Not implemented in this Phase
  *   because the reference source tables (TravelApplication etc.) do not exist yet.
+ *
+ * ── PHASE-004-T11 additions (AR-D 閉環, D11/D12) ──────────────────────────
+ *
+ * linkAttachmentTx: the count→check→update transaction BODY of `linkAttachment`,
+ *   extracted so a caller that already owns its own transaction (travel-service.ts's
+ *   `updateTravelDraft`) can invoke it without nesting `prisma.$transaction` calls
+ *   (Prisma does not support nested transactions). `linkAttachment` itself is
+ *   refactored to open a transaction and delegate to this function, so the two
+ *   share exactly one implementation of the count/limit/update logic — its own
+ *   public behavior (steps 1-4 outside the transaction: load/404, ownership/403,
+ *   containerState/403, TEMP-status/409; SERIALIZABLE + P2034 retry around the
+ *   transaction) is UNCHANGED (PHASE-003 tests must remain green untouched).
+ *
+ * detachAttachmentsByIdsTx: bulk detach by explicit attachment id list (as opposed
+ *   to `detachAttachmentsByRefTx`'s "all LINKED attachments under this refId").
+ *   Needed because a single TripSegment's `attachmentIds[]` reconciliation may
+ *   keep SOME of its previously-LINKED attachments while dropping others — a
+ *   refId-based bulk detach would incorrectly clear the survivors too.
+ *
+ * deriveContainerState: the AR-D authority. Replaces the PHASE-003-era pattern of
+ *   trusting a client-supplied `containerState` query/body param. Given an
+ *   attachment's DB row, walks refType/refId → TripSegment → TravelApplication →
+ *   Application.status to produce the REAL containerState. `routes.ts`'s
+ *   `DELETE /attachments/:id` is the only caller in this Phase; it no longer reads
+ *   any client-supplied containerState at all (Spec AC-27b).
  */
 
 import { Prisma } from "@prisma/client";
@@ -138,6 +165,65 @@ export function assertContainerMutable(containerState: ContainerState): void {
 }
 
 // ---------------------------------------------------------------------------
+// deriveContainerState — PHASE-004-T11 (AR-D 閉環, AC-27, §9「附件（改造點）」)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the REAL containerState for an attachment from DB state — the
+ * authoritative replacement for the PHASE-003-era pattern of trusting a
+ * client-supplied `containerState` query/body parameter.
+ *
+ * Rules (Spec §9):
+ *   attachment.status = TEMP                     → 'draft' (no container yet)
+ *   refType = TRIP_SEGMENT → TripSegment → TravelApplication → Application.status
+ *        COMPLETED → 'completed'
+ *        DRAFT     → 'draft'
+ *   refType = MAINTENANCE / DEPRECIATION         → 'draft' (子表尚不存在，本 Phase
+ *                                                   不可能真的產生此關聯，防禦性)
+ *   refId 指向已不存在的 TripSegment（孤兒）      → 'draft'（記錄 log；不得 500）
+ *
+ * The ONLY caller in this Phase is `routes.ts`'s `DELETE /attachments/:id` —
+ * it no longer reads any client-supplied containerState at all (AC-27b).
+ *
+ * @param log Optional logger for the orphan case (non-fatal, informational).
+ */
+export async function deriveContainerState(
+  prisma: PrismaClient,
+  attachment: {
+    status: AttachmentStatus;
+    refType: AttachmentRefType | null;
+    refId: string | null;
+  },
+  log?: { warn: (msg: string) => void }
+): Promise<ContainerState> {
+  if (attachment.status !== "LINKED") {
+    return "draft";
+  }
+
+  if (attachment.refType === "TRIP_SEGMENT" && attachment.refId) {
+    const segment = await prisma.tripSegment.findUnique({
+      where: { id: attachment.refId },
+      select: { travel: { select: { application: { select: { status: true } } } } },
+    });
+    if (!segment) {
+      // Orphan: refId points to a TripSegment that no longer exists. This should
+      // not normally happen (segment deletion always detaches attachments first,
+      // in the same transaction — travel-service.ts) but is handled defensively
+      // per Spec §9 rather than allowed to throw/500.
+      log?.warn(
+        `deriveContainerState: orphan attachment ref — TripSegment ${attachment.refId} not found; treating as draft`
+      );
+      return "draft";
+    }
+    return segment.travel.application.status === "COMPLETED" ? "completed" : "draft";
+  }
+
+  // MAINTENANCE/DEPRECIATION: sub-tables don't exist this Phase (PHASE-006/007) —
+  // no real attachment can carry these refTypes yet, but handled defensively.
+  return "draft";
+}
+
+// ---------------------------------------------------------------------------
 // isEligibleForCleanup — pure function (AC-17/18, §4.5)
 // ---------------------------------------------------------------------------
 
@@ -200,7 +286,13 @@ export interface AttachmentDto {
   downloadUrl: string;
 }
 
-function toDto(attachment: {
+/**
+ * Exported (PHASE-004-T11) so `travel-service.ts` can build `TripSegmentDto.attachments`
+ * (Spec §8.1: real `AttachmentDto[]`, same shape used everywhere else) from raw
+ * `Attachment` rows without re-implementing this mapping — single source of truth
+ * for "DB row → AttachmentDto".
+ */
+export function toDto(attachment: {
   id: string;
   status: AttachmentStatus;
   mimeType: string;
@@ -244,6 +336,68 @@ export interface LinkAttachmentInput {
  */
 const LINK_MAX_RETRIES = 3;
 
+// ---------------------------------------------------------------------------
+// linkAttachmentTx — PHASE-004-T11: the transaction BODY of linkAttachment,
+// extracted for callers that already own their own transaction (裁定 A).
+// ---------------------------------------------------------------------------
+
+export interface LinkAttachmentTxInput {
+  attachmentId: string;
+  refType: AttachmentRefType;
+  refId: string;
+  /** Max attachments for this container; provided by the caller (AC-12/AC-22) */
+  limit: number;
+}
+
+/**
+ * The count→check→update block, run inside a transaction the CALLER provides
+ * (`tx`). This is exactly step 5a-5c of `linkAttachment` below, unchanged in
+ * substance — `linkAttachment` opens its own SERIALIZABLE transaction and
+ * calls this function as the callback body, so the two are provably identical
+ * (裁定 A: "理想作法是讓 linkAttachment 改為「開交易後呼叫 linkAttachmentTx」，
+ * 使兩者共用同一份實作").
+ *
+ * Callers are responsible for everything `linkAttachment` does OUTSIDE the
+ * transaction (load/404, ownership/403, containerState/403, TEMP-status/409)
+ * — `updateTravelDraft` (travel-service.ts) performs its own equivalent checks
+ * (AC-30 owner-consistency instead of assertOwnershipOrAdmin, since the actor
+ * was already authorized against the Application in the route layer) before
+ * calling this. No advisory lock here — the caller's OWN SERIALIZABLE
+ * transaction is what makes this count/limit/update correct under
+ * concurrency (see this file's header comment, and — for `updateTravelDraft`
+ * specifically — that function's own doc comment on why baseline computation
+ * living inside the transaction is what actually matters, PHASE-004-T11R2).
+ *
+ * Does NOT retry on P2034 — the caller's OWN transaction determines the retry
+ * policy (see `updateTravelDraft`'s SERIALIZABLE + retry wrapper, 裁定 A).
+ *
+ * @returns AttachmentDto with status=LINKED
+ */
+export async function linkAttachmentTx(
+  tx: PrismaTxLike,
+  input: LinkAttachmentTxInput
+): Promise<AttachmentDto> {
+  const { attachmentId, refType, refId, limit } = input;
+
+  const currentCount = await countLinkedAttachments(tx as unknown as PrismaClient, refType, refId);
+
+  if (!canLink(currentCount, limit)) {
+    throw new AppError("TOO_MANY_ATTACHMENTS", 409, "附件數量已達上限");
+  }
+
+  const updated = await tx.attachment.update({
+    where: { id: attachmentId },
+    data: {
+      status: "LINKED",
+      refType,
+      refId,
+      linkedAt: new Date(),
+    },
+  });
+
+  return toDto(updated);
+}
+
 /**
  * Link a TEMP attachment to a container (draft state).
  *
@@ -255,17 +409,22 @@ const LINK_MAX_RETRIES = 3;
  *   2. assertOwnershipOrAdmin(actor, attachment.ownerId) — 403 if not owner/admin
  *   3. assertContainerMutable(containerState) — 403 if completed
  *   4. Check status === 'TEMP' — 409 CONFLICT if already LINKED
- *   5. SERIALIZABLE transaction with retry (up to LINK_MAX_RETRIES=3):
- *      a. count existing LINKED for (refType, refId)
- *      b. canLink(count, limit) → reject 409 TOO_MANY_ATTACHMENTS if over limit
- *      c. update attachment to LINKED with refType/refId/linkedAt
- *      On Prisma P2034 (serialization failure): retry the entire count→check→update block.
- *      Retries exhausted → current error is re-raised.
+ *   5. SERIALIZABLE transaction with retry (up to LINK_MAX_RETRIES=3), calling
+ *      `linkAttachmentTx` as the transaction body (PHASE-004-T11: shared with
+ *      `updateTravelDraft`'s per-segment attachment reconciliation — 裁定 A).
+ *      On Prisma P2034 (serialization failure): retry with a fresh transaction.
+ *      Retries exhausted → surfaced as TOO_MANY_ATTACHMENTS.
  *
  * TOCTOU mechanism: SERIALIZABLE isolation prevents phantom reads. Two concurrent
  * transactions counting the same container will have one aborted by Postgres at commit
  * time (P2034). The retried transaction then sees the committed count and correctly
  * rejects with TOO_MANY_ATTACHMENTS.
+ *
+ * PHASE-004-T11: this refactor moved the transaction body into `linkAttachmentTx` (see
+ * that function's doc comment) so `updateTravelDraft` (travel-service.ts) can share the
+ * same count/limit/update logic inside its own transaction. This function's own steps
+ * 1-5 and SERIALIZABLE + retry wrapper are otherwise unchanged from PHASE-003. All
+ * PHASE-003 tests exercising this function (directly or via HTTP) remain green.
  *
  * @returns AttachmentDto with status=LINKED
  */
@@ -294,43 +453,20 @@ export async function linkAttachment(
     throw new AppError("CONFLICT", 409, "附件已關聯，無法重複關聯");
   }
 
-  // Step 5: SERIALIZABLE transaction with retry on P2034 (serialization failure)
+  // Step 5: SERIALIZABLE transaction with retry on P2034 (serialization failure).
   // SERIALIZABLE prevents phantom reads: concurrent count() calls on the same container
   // will conflict at commit; Postgres aborts one with a serialization error (P2034).
-  // Retry re-runs the entire count→check→update under a fresh SERIALIZABLE transaction.
+  // Retry re-runs linkAttachmentTx (the entire count→check→update) under a fresh
+  // SERIALIZABLE transaction.
   let lastError: unknown;
   for (let attempt = 0; attempt <= LINK_MAX_RETRIES; attempt++) {
     try {
-      const updated = await prisma.$transaction(
-        async (tx) => {
-          // Count existing LINKED attachments for this container (within transaction)
-          const currentCount = await countLinkedAttachments(
-            tx as unknown as PrismaClient,
-            refType,
-            refId
-          );
-
-          // Check limit (AC-10)
-          if (!canLink(currentCount, limit)) {
-            throw new AppError("TOO_MANY_ATTACHMENTS", 409, "附件數量已達上限");
-          }
-
-          // Update to LINKED
-          return tx.attachment.update({
-            where: { id: attachmentId },
-            data: {
-              status: "LINKED",
-              refType,
-              refId,
-              linkedAt: new Date(),
-            },
-          });
-        },
+      return await prisma.$transaction(
+        (tx) => linkAttachmentTx(tx, { attachmentId, refType, refId, limit }),
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
         }
       );
-      return toDto(updated);
     } catch (err) {
       lastError = err;
 
@@ -425,6 +561,40 @@ export async function detachAttachmentsByRefTx(
 
   const result = await tx.attachment.updateMany({
     where: { refType, refId: { in: refIds }, status: "LINKED" },
+    data: detachFieldSet(new Date()),
+  });
+  return result.count;
+}
+
+// ---------------------------------------------------------------------------
+// detachAttachmentsByIdsTx — PHASE-004-T11: bulk detach by explicit attachment
+// id list (not by container refId) within a caller-owned transaction.
+// ---------------------------------------------------------------------------
+
+/**
+ * Detach specific attachments BY ID (as opposed to `detachAttachmentsByRefTx`,
+ * which detaches ALL currently-LINKED attachments under a given refId).
+ *
+ * Needed by `travel-service.ts`'s per-segment `attachmentIds[]` reconciliation
+ * (Spec §9 「儲存草稿」步驟④「移除者 → detach」): a single TripSegment may keep
+ * SOME of its previously-LINKED attachments while dropping others in the same
+ * `PUT` — a refId-based bulk detach would incorrectly clear the survivors too.
+ *
+ * Only touches rows with `status = 'LINKED'` (same guard as
+ * `detachAttachmentsByRefTx`); reuses the same `detachFieldSet` so both bulk
+ * detach paths write IDENTICAL field values (single source of truth, same
+ * rationale as `detachAttachmentsByRefTx`'s doc comment).
+ *
+ * @returns number of attachments actually detached (rows affected).
+ */
+export async function detachAttachmentsByIdsTx(
+  tx: PrismaTxLike,
+  attachmentIds: string[]
+): Promise<number> {
+  if (attachmentIds.length === 0) return 0;
+
+  const result = await tx.attachment.updateMany({
+    where: { id: { in: attachmentIds }, status: "LINKED" },
     data: detachFieldSet(new Date()),
   });
   return result.count;

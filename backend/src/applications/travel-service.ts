@@ -12,11 +12,6 @@
  * Extension points left for later Tasks (Packet 明文要求，勿移除標記)：
  *   - TODO(PHASE-004-T8): 完成快照（segment.snapshot / 頂層 snapshot）於
  *     toTravelApplicationDto 接入
- *   - TODO(PHASE-004-T11): segment.attachments（AttachmentDto[]）於
- *     toTravelApplicationDto 接入；目前僅正確計算 attachmentCount 供
- *     completionBlockers 使用，不回傳完整附件物件；`attachmentIds` 於
- *     `SegmentInput` 中依然完全被忽略（T11 之範圍，見 PHASE-004-T4 Packet
- *     「明確不在本 Task 範圍」）
  *
  * PHASE-004-T4（本次擴充）：`updateTravelDraft` 的 `segments` 整份 PUT diff
  * 語意（D15）+ 刪段連帶 detach（D16）+ `deleteApplication` 的 AC-05 補完，
@@ -25,6 +20,35 @@
  * PHASE-004-T7（本次擴充）：`computed`（草稿即算預覽）與
  * `completionBlockers` 的 `missingParameters` 已接入 `toTravelApplicationDto`
  * （見 `formatTravelComputed` 與呼叫端）。`TODO(PHASE-004-T7)` 標記已移除。
+ *
+ * PHASE-004-T11（本次擴充，AR-D 閉環 + D11/D12）：
+ *   - `SegmentPatch.attachmentIds`：`PUT` 每段的附件對帳（新增 → link、
+ *     移除 → detach）已接入 `updateTravelDraft`，於同一交易內完成
+ *     （`reconcileSegmentAttachments`，Spec §9「儲存草稿」步驟④）。
+ *   - `TripSegmentDto.attachments`：已填入真實 `AttachmentDto[]`
+ *     （`getSegmentAttachments`），`TODO(PHASE-004-T11)` 標記已移除。
+ *
+ * PHASE-004-T11R2（B-30 修復回合，取代 T11 與 T11R 的錯誤診斷；Spec §17 D19，
+ * 使用者 2026-08-02 批准）：
+ *   - 真正的根因不是併發控制機制本身，而是 `computeAttachmentDeltas`（附件
+ *     link/detach 的差集運算）曾經在**交易外**、以一次性的 `prisma`（非 `tx`）
+ *     讀取算好，兩個併發請求各自對著同一份「舊」LINKED 集合算出自己的
+ *     toRemove/toLink，於是都只 link、都沒 detach 對方——最終可能超過上限。
+ *     修法：baseline 一律在交易內、對本次 attempt 當下的 `tx` 現算（見
+ *     `updateTravelDraft` 交易本體），SERIALIZABLE 下每次交易嘗試（含 retry）
+ *     天然拿到當次的最新快照，不再有交易外的過期基準。
+ *   - D19「併發整份 PUT＝最後寫入者贏」：兩個併發整份 PUT 各自宣告合法附件集合
+ *     時皆回 200；後手在其（重試後的新鮮）快照下正確算出「detach 前手多出的、
+ *     link 自己要的」，最終該段附件數恆等於後手宣告的數量，不超過上限。
+ *   - SERIALIZABLE 保留：`Step 5` 對任何送出的既有段落一律執行
+ *     `tx.tripSegment.update`，這是兩個併發 PUT 若命中同一段落時，會真正寫入
+ *     同一列的必然操作——Postgres 對此的並發衝突偵測（`could not serialize
+ *     access due to concurrent update`）是標準、無條件的 MVCC 行為，不依賴任何
+ *     顯式鎖，交易任一方因而在 `FOR UPDATE`／後續寫入時收到 P2034/P2010(40001)，
+ *     以新交易重試、在新鮮快照下正確算出最終狀態。
+ *   - Advisory lock 已移除（原 T11 加入、T11R 誤判為關鍵機制）：baseline 移入
+ *     交易內之後，鎖已無必要——上述真實列寫入衝突已足夠讓兩個併發 PUT 正確
+ *     序列化，不需要額外的 `pg_advisory_xact_lock`。
  *
  * D6 授權邊界（最高優先，Spec §17.1 D6(c)）：`TravelComputedDto` **刻意不含**
  * `fuelUnitPrice`/`etcUnitPrice`/`fuelParameterVersionId`/`etcParameterVersionId`
@@ -38,13 +62,34 @@
 
 import type { ApplicationStatus, PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
-import { detachAttachmentsByRefTx } from "../attachment/lifecycle-service.js";
+import {
+  type AttachmentDto,
+  detachAttachmentsByIdsTx,
+  detachAttachmentsByRefTx,
+  linkAttachmentTx,
+  toDto as toAttachmentDto,
+} from "../attachment/lifecycle-service.js";
 import { formatUtcDate } from "../parameters/parameter-service.js";
+import { AppError } from "../platform/errors.js";
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
 import { type CalcSegmentInput, calculateTravel } from "./travel-calculation.js";
 import { type ResolvedParameters, resolveTravelParameters } from "./travel-parameters.js";
+
+// ---------------------------------------------------------------------------
+// SEGMENT_ATTACHMENT_LIMIT — PHASE-004-T11 (AC-22, Spec §10.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-segment attachment cap. Business constant, NOT an environment variable
+ * (Spec §10.4 明文：「附件上限 3 為業務常數而非環境設定」) — the client cannot
+ * supply or override this value; `PUT /applications/travel/:id`'s body never
+ * carries a `limit` field for segments at all (only `attachmentIds[]`), so
+ * there is no code path through which a client value could reach
+ * `linkAttachmentTx`.
+ */
+export const SEGMENT_ATTACHMENT_LIMIT = 3;
 
 // ---------------------------------------------------------------------------
 // Date helpers (D9 primaryDate derivation)
@@ -221,8 +266,16 @@ export interface UpdateTravelDraftPatch {
  * Presence is tested via `Object.prototype.hasOwnProperty`, exactly like
  * `updateTravelDraft`'s own patch handling above.
  *
- * `attachmentIds` is intentionally NOT part of this type — T11's scope
- * (Packet §Done When 3 「明確不在本 Task 範圍」).
+ * `attachmentIds`（PHASE-004-T11 新增）：三態語意與其他欄位一致——
+ *   - key 缺席              = 不對帳該段附件（保留既有 LINKED 關聯不動）
+ *   - key 存在（含空陣列 `[]`） = 該段附件的完整目標集合；與目前 LINKED 集合
+ *     做差集：新增者 → link、移除者 → detach（見 `reconcileSegmentAttachments`）
+ * 這與 Spec §8.2 `SegmentInput.attachmentIds` 宣告為必填（無 `?`）字面上不同，
+ * 但為與本檔其餘欄位一致的三態慣例的合理延伸：既有 T4 測試已大量出現「只帶
+ * `{id}` 更新既有段、完全不提 `attachmentIds`」的請求（例如排序調整），若把
+ * 缺席視為「清空所有附件」會在使用者只是調整順序時意外解除所有附件關聯，
+ * 屬未在任何 AC 中要求的破壞性副作用；「缺席=不動」與 D15 對 `tripDate`/
+ * `purpose`/各段其他欄位的既有三態慣例完全一致。
  */
 export interface SegmentPatch {
   id?: string;
@@ -230,6 +283,7 @@ export interface SegmentPatch {
   destination?: string | null;
   totalKm?: Prisma.Decimal | null;
   highwayKm?: Prisma.Decimal | null;
+  attachmentIds?: string[];
 }
 
 function hasKey(obj: object, key: string): boolean {
@@ -269,117 +323,403 @@ function resolveSegmentField<K extends keyof SegmentPatch>(
  *   3. 刪除 `toDeleteIds` 段落
  *   4. 對 `toDeleteIds` 呼叫 `detachAttachmentsByRefTx`（同交易內，D16：
  *      只做 DB、不做 storage IO）
- *   5. 更新 `toUpdate`（欄位三態合併 + `sortOrder`）
- *   6. 建立 `toCreate`（欄位 + `sortOrder`）
+ *   5. 更新 `toUpdate`（欄位三態合併 + `sortOrder`）；`attachmentIds` key 存在
+ *      者記入 `attachmentPlans`（PHASE-004-T11）
+ *   6. 建立 `toCreate`（欄位 + `sortOrder`，逐筆 `create` 以取得新段真實 id）；
+ *      `attachmentIds` key 存在者以新段 id 記入 `attachmentPlans`（T11）
+ *   6.5. 附件對帳：對 `attachmentPlans` 中每段，於**交易內**（`tx`）現算
+ *      `computeAttachmentDeltas`，將目前 LINKED 集合與請求集合做差集 → 先
+ *      detach 全部「移除者」（跨所有段落一次做完，讓同一次 PUT 內把附件從 A
+ *      段移到 B 段的情境可行）→ 再 link 全部「新增者」（含擁有權一致性
+ *      AC-30、409 CONFLICT B-17、409 TOO_MANY_ATTACHMENTS AC-22，
+ *      `SEGMENT_ATTACHMENT_LIMIT` 為後端常數）。D19：兩個併發整份 PUT 對同一
+ *      段落各自宣告合法集合時皆回 200，最後提交者的宣告為準（見下方
+ *      PHASE-004-T11R2 說明）。
  *   7. 更新 `tripDate`/`purpose`/`primaryDate`
- * 任一步驟失敗 → Prisma 自動 rollback 整個交易，含步驟 3/4 的刪除與 detach
- * （交易原子性 — Packet Done When 3「交易任一步失敗 → 全部不落地（含
- * detach）」）。
+ * 任一步驟失敗 → Prisma 自動 rollback 整個交易，含步驟 3/4/6.5 的刪除/detach/
+ * link（交易原子性 — Packet Done When 3/4「交易任一步失敗 → 全部不落地」）。
+ *
+ * PHASE-004-T11R2（B-30/D19，見檔頭同名段落）：`computeAttachmentDeltas` 於
+ * Step 6.5 一律傳入 `tx`（交易內連線），在每次交易嘗試（含 retry）當下重算——
+ * 不再於交易外預先算好、跨 retry 共用同一份基準。交易隔離等級為 SERIALIZABLE；
+ * 沒有 advisory lock。並發正確性來自：Step 5 對任一送出的既有段落一律
+ * `tx.tripSegment.update`，兩個併發 PUT 若命中同一段落即會真正競爭同一列的
+ * 寫入，Postgres 對此的 MVCC 並發衝突偵測（`could not serialize access due to
+ * concurrent update`）是無條件觸發的，交易一方因而在寫入或 `FOR UPDATE` 時
+ * 收到 P2034/P2010(40001)，交由下方 retry 迴圈以全新交易（全新快照）重跑，
+ * 這次 Step 6.5 的 `computeAttachmentDeltas` 便會看到前手已提交的最新狀態，
+ * 正確算出「detach 前手多出的、link 自己要的」，收斂到 D19 要求的最終狀態。
+ *
+ * `SELECT ... FOR UPDATE`（鎖住整筆 `Application` 列，見交易本體）補強保護
+ * 不涉及 `segments` 的併發寫入（例如兩個 PUT 都只改 `tripDate`/`purpose`）：
+ * Step 7 一律寫入 `Application` 列，同樣的 MVCC 衝突偵測機制在那裡也成立。
+ *
+ * 重試次數與退避：`UPDATE_DRAFT_MAX_RETRIES`=6 次 + 指數退避（含隨機抖動，
+ * 避免多個重試者同步撞期），退避公式：retry 前等待
+ * `min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2**attempt) + jitter`。重試只在
+ * Postgres 回報的真正序列化失敗（P2034 / SQLSTATE 40001）時才會發生——交易
+ * 已 abort、無任何寫入落地，故加入延遲重試在語意上安全。
  */
+const UPDATE_DRAFT_MAX_RETRIES = 6;
+const RETRY_BACKOFF_BASE_MS = 15;
+const RETRY_BACKOFF_CAP_MS = 200;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Exponential backoff with jitter for serialization-failure retries (see doc comment above). */
+function retryBackoffMs(attempt: number): number {
+  const exp = Math.min(RETRY_BACKOFF_CAP_MS, RETRY_BACKOFF_BASE_MS * 2 ** attempt);
+  return Math.floor(Math.random() * exp);
+}
+
+/** One segment's attachment reconciliation target, gathered while creating/updating segments. */
+interface SegmentAttachmentPlan {
+  segmentId: string;
+  requestedIds: string[];
+}
+
+/** A fixed, already-decided set of link/detach operations for one segment. */
+interface SegmentAttachmentDelta {
+  segmentId: string;
+  toLink: string[];
+  toRemove: string[];
+}
+
+/**
+ * Compute the ADD/REMOVE delta for each planned segment against its CURRENT
+ * `LINKED` set (one DB read).
+ *
+ * A PURE diff step — no writes. PHASE-004-T11R2 (Spec §17 D19; see
+ * `updateTravelDraft`'s doc comment for the full account): `updateTravelDraft`
+ * calls this with `tx` — ALWAYS inside its own transaction, and freshly on
+ * EVERY attempt including retries. This is deliberate: a previous version of
+ * this function was called with a plain (non-transactional) `PrismaClient`
+ * ONCE before the retry loop even started, so every retry reused the SAME
+ * stale delta — under concurrent PUTs to the same segment, both sides could
+ * compute "add my attachment" against the SAME pre-race LINKED set without
+ * ever computing "remove the other side's addition", letting the segment's
+ * count exceed its limit. Calling this fresh, inside `tx`, on every attempt
+ * fixes that: a transaction that had to retry (because a concurrent PUT it
+ * raced against already committed and wrote a conflicting row — see
+ * `updateTravelDraft`'s doc comment for why that conflict is guaranteed to
+ * surface) gets a FRESH SERIALIZABLE snapshot on its new attempt, so this
+ * function correctly sees the other side's already-committed LINKED set and
+ * computes the RIGHT delta: detach whatever no longer belongs, link whatever
+ * this attempt's own request still wants (Spec §17 D19 "最後寫入者贏").
+ */
+async function computeAttachmentDeltas(
+  tx: Prisma.TransactionClient,
+  plans: ReadonlyArray<SegmentAttachmentPlan>
+): Promise<SegmentAttachmentDelta[]> {
+  if (plans.length === 0) return [];
+
+  const segmentIds = plans.map((p) => p.segmentId);
+  const currentRows = await tx.attachment.findMany({
+    where: { refType: "TRIP_SEGMENT", refId: { in: segmentIds }, status: "LINKED" },
+    select: { id: true, refId: true },
+  });
+  const currentBySegment = new Map<string, Set<string>>();
+  for (const row of currentRows) {
+    if (!row.refId) continue;
+    const set = currentBySegment.get(row.refId) ?? new Set<string>();
+    set.add(row.id);
+    currentBySegment.set(row.refId, set);
+  }
+
+  return plans.map((plan) => {
+    const current = currentBySegment.get(plan.segmentId) ?? new Set<string>();
+    const requested = new Set(plan.requestedIds);
+    const toRemove = [...current].filter((existingId) => !requested.has(existingId));
+    const toLink = plan.requestedIds.filter((attachmentId) => !current.has(attachmentId));
+    return { segmentId: plan.segmentId, toLink, toRemove };
+  });
+}
+
+/**
+ * Apply a delta (add/remove lists per segment — see `computeAttachmentDeltas`,
+ * called fresh inside `tx` on every attempt, PHASE-004-T11R2) within the
+ * caller's transaction (`tx`).
+ *
+ * Two-pass design (detach-all-first, then link-all) so that moving an
+ * attachment from segment A to segment B WITHIN THE SAME `PUT` works: if A's
+ * detach ran only after B's link attempt, B would see the attachment still
+ * `LINKED` (to A) and incorrectly reject with 409 CONFLICT. Detaching every
+ * "removed from this segment" attachment first (across ALL planned segments)
+ * makes it TEMP again before any segment's "added" pass runs.
+ *
+ * Per-attachment checks on the "link" pass (Spec §9 step ④, Done When 4):
+ *   1. attachment not found              → 404 NOT_FOUND (B-32)
+ *   2. attachment.ownerId !== applicationOwnerId → 403 FORBIDDEN (AC-30)
+ *   3. attachment.status !== 'TEMP'      → 409 CONFLICT (B-17 — still LINKED
+ *      elsewhere, e.g. referenced by two segments in the same submission)
+ *   4. linkAttachmentTx (limit=SEGMENT_ATTACHMENT_LIMIT) → 409
+ *      TOO_MANY_ATTACHMENTS if a SINGLE request's own declared set exceeds
+ *      the cap (AC-22) — unaffected by D19 (D19 only concerns two DIFFERENT
+ *      concurrent requests each declaring a valid set).
+ * Any thrown AppError propagates out of the caller's transaction, rolling
+ * back everything (including the detach pass) — Done When 4's "超限 →
+ * 整份儲存 rollback".
+ *
+ * `containerState` is NOT a parameter here — `linkAttachmentTx` (unlike the
+ * full `linkAttachment`) has no containerState/ownership gate of its own;
+ * those checks belong to the caller. Reaching this function at all already
+ * implies the application is DRAFT (routes.ts's `assertApplicationMutable`
+ * ran before `updateTravelDraft` was ever called), so the injected
+ * containerState would always be 'draft' — encoding that as "no check needed
+ * here" rather than threading a constant through is deliberate (§9: "草稿階段
+ * 必為 'draft'，因 assertApplicationMutable 已在前面擋掉非草稿").
+ */
+async function applyAttachmentDeltas(
+  tx: Prisma.TransactionClient,
+  applicationOwnerId: string,
+  deltas: ReadonlyArray<SegmentAttachmentDelta>
+): Promise<void> {
+  if (deltas.length === 0) return;
+
+  // Pass 1: detach every "removed from this segment" attachment, across ALL
+  // planned segments, BEFORE any linking (see doc comment: enables within-PUT
+  // moves between segments of the same application).
+  const allToRemove = deltas.flatMap((d) => d.toRemove);
+  if (allToRemove.length > 0) {
+    await detachAttachmentsByIdsTx(tx, allToRemove);
+  }
+
+  // Pass 2: link every "added to this segment" attachment. Fresh per-attempt
+  // validation (existence/ownership/status/capacity) — see doc comment for
+  // why this is what makes the B-30 race resolve correctly even though
+  // `toLink` itself is a cached, fixed list across retries.
+  for (const delta of deltas) {
+    for (const attachmentId of delta.toLink) {
+      const attachment = await tx.attachment.findUnique({ where: { id: attachmentId } });
+      if (!attachment) {
+        throw new AppError("NOT_FOUND", 404, "找不到附件");
+      }
+      if (attachment.ownerId !== applicationOwnerId) {
+        throw new AppError("FORBIDDEN", 403, "附件擁有人與申請擁有人不一致，無法關聯");
+      }
+      if (attachment.status !== "TEMP") {
+        throw new AppError("CONFLICT", 409, "附件已關聯，無法重複關聯");
+      }
+
+      await linkAttachmentTx(tx, {
+        attachmentId,
+        refType: "TRIP_SEGMENT",
+        refId: delta.segmentId,
+        limit: SEGMENT_ATTACHMENT_LIMIT,
+      });
+    }
+  }
+}
+
 export async function updateTravelDraft(
   prisma: PrismaClient,
   id: string,
   patch: UpdateTravelDraftPatch,
   segments?: ReadonlyArray<SegmentPatch>
 ): Promise<TravelApplicationRecord> {
-  return prisma.$transaction(async (tx) => {
-    const existing = await tx.application.findUniqueOrThrow({
-      where: { id },
-      select: {
-        createdAt: true,
-        travel: {
-          select: {
-            tripDate: true,
-            purpose: true,
-            segments: {
-              select: {
-                id: true,
-                origin: true,
-                destination: true,
-                totalKm: true,
-                highwayKm: true,
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= UPDATE_DRAFT_MAX_RETRIES; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // Pessimistic per-application lock: SELECT ... FOR UPDATE on the
+          // Application row being saved. First statement of the transaction.
+          //
+          // Guards concurrent writes that DON'T touch `segments` at all (e.g.
+          // two PUTs that only change `tripDate`/`purpose`) — Step 7 below
+          // always writes this same row regardless, so this lock mainly
+          // avoids an unnecessary blocking wait turning into a guaranteed
+          // P2034 for that narrower case. For the `segments`/`attachmentIds`
+          // race (D19, Spec §17), see this function's doc comment — the real
+          // protection there comes from Step 5's unconditional
+          // `tx.tripSegment.update`, not from this lock.
+          //
+          // Table name is unquoted-default (`Application`, no `@@map` in
+          // schema.prisma) — quoted here for Postgres case-sensitivity.
+          await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
+
+          const existing = await tx.application.findUniqueOrThrow({
+            where: { id },
+            select: {
+              ownerId: true,
+              createdAt: true,
+              travel: {
+                select: {
+                  tripDate: true,
+                  purpose: true,
+                  segments: {
+                    select: {
+                      id: true,
+                      origin: true,
+                      destination: true,
+                      totalKm: true,
+                      highwayKm: true,
+                    },
+                  },
+                },
               },
             },
-          },
+          });
+
+          const nextTripDate = hasKey(patch, "tripDate")
+            ? (patch.tripDate ?? null)
+            : (existing.travel?.tripDate ?? null);
+          const nextPurpose = hasKey(patch, "purpose")
+            ? (patch.purpose ?? null)
+            : (existing.travel?.purpose ?? null);
+
+          const primaryDate = derivePrimaryDate(nextTripDate, existing.createdAt);
+
+          if (segments !== undefined) {
+            const existingSegments: ExistingSegmentRow[] = existing.travel?.segments ?? [];
+            const existingById = new Map(existingSegments.map((s) => [s.id, s]));
+
+            // Step 2: pure diff — id 對齊 + sortOrder 重寫（0..n-1）+ 未知/重複 id
+            // 拒絕（AppError → 交易 rollback）。
+            const diff = computeSegmentDiff<SegmentPatch>({
+              existing: existingSegments.map((s) => ({ id: s.id })),
+              submitted: segments,
+            });
+
+            // Step 3+4: 刪除 + detach（同交易；D16 只做 DB，不做 storage IO）。
+            if (diff.toDeleteIds.length > 0) {
+              await detachAttachmentsByRefTx(tx, "TRIP_SEGMENT", diff.toDeleteIds);
+              await tx.tripSegment.deleteMany({ where: { id: { in: diff.toDeleteIds } } });
+            }
+
+            const attachmentPlans: SegmentAttachmentPlan[] = [];
+
+            // Step 5: 更新既有段（欄位三態合併 + sortOrder 重寫）。
+            for (const u of diff.toUpdate) {
+              const previous = existingById.get(u.id);
+              await tx.tripSegment.update({
+                where: { id: u.id },
+                data: {
+                  sortOrder: u.sortOrder,
+                  origin: resolveSegmentField(u.data, "origin", previous?.origin ?? null),
+                  destination: resolveSegmentField(
+                    u.data,
+                    "destination",
+                    previous?.destination ?? null
+                  ),
+                  totalKm: resolveSegmentField(u.data, "totalKm", previous?.totalKm ?? null),
+                  highwayKm: resolveSegmentField(u.data, "highwayKm", previous?.highwayKm ?? null),
+                },
+              });
+              if (hasKey(u.data, "attachmentIds")) {
+                attachmentPlans.push({
+                  segmentId: u.id,
+                  requestedIds: u.data.attachmentIds ?? [],
+                });
+              }
+            }
+
+            // Step 6: 新增段（缺席欄位 = null，因新段無既有值可保留）。逐筆
+            // `create`（非 `createMany`）以取得每個新段的真實 id ——
+            // `attachmentIds` 對帳（Step 6.5）需要用新段 id 當 refId。
+            for (const c of diff.toCreate) {
+              const created = await tx.tripSegment.create({
+                data: {
+                  travelApplicationId: id,
+                  sortOrder: c.sortOrder,
+                  origin: c.data.origin ?? null,
+                  destination: c.data.destination ?? null,
+                  totalKm: c.data.totalKm ?? null,
+                  highwayKm: c.data.highwayKm ?? null,
+                },
+              });
+              if (hasKey(c.data, "attachmentIds")) {
+                attachmentPlans.push({
+                  segmentId: created.id,
+                  requestedIds: c.data.attachmentIds ?? [],
+                });
+              }
+            }
+
+            // Step 6.5: 附件對帳。Delta 一律在交易內、對本次 attempt 現算
+            // （PHASE-004-T11R2，D19 修法核心——見本函式檔頭文件註解）：不論是
+            // 既有段落還是本次新建的段落，`computeAttachmentDeltas(tx, ...)`
+            // 都用同一次呼叫、同一份 `tx` 快照計算，沒有交易外的過期基準。
+            const deltas = await computeAttachmentDeltas(tx, attachmentPlans);
+            await applyAttachmentDeltas(tx, existing.ownerId, deltas);
+          }
+
+          // Step 7: tripDate/purpose/primaryDate（沿用既有邏輯）。
+          await tx.application.update({
+            where: { id },
+            data: {
+              primaryDate,
+              travel: {
+                update: {
+                  tripDate: nextTripDate,
+                  purpose: nextPurpose,
+                },
+              },
+            },
+          });
+
+          return tx.application.findUniqueOrThrow({
+            where: { id },
+            include: travelApplicationInclude,
+          });
         },
-      },
-    });
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (err) {
+      lastError = err;
 
-    const nextTripDate = hasKey(patch, "tripDate")
-      ? (patch.tripDate ?? null)
-      : (existing.travel?.tripDate ?? null);
-    const nextPurpose = hasKey(patch, "purpose")
-      ? (patch.purpose ?? null)
-      : (existing.travel?.purpose ?? null);
-
-    const primaryDate = derivePrimaryDate(nextTripDate, existing.createdAt);
-
-    if (segments !== undefined) {
-      const existingSegments: ExistingSegmentRow[] = existing.travel?.segments ?? [];
-      const existingById = new Map(existingSegments.map((s) => [s.id, s]));
-
-      // Step 2: pure diff — id 對齊 + sortOrder 重寫（0..n-1）+ 未知/重複 id
-      // 拒絕（AppError → 交易 rollback）。
-      const diff = computeSegmentDiff<SegmentPatch>({
-        existing: existingSegments.map((s) => ({ id: s.id })),
-        submitted: segments,
-      });
-
-      // Step 3+4: 刪除 + detach（同交易；D16 只做 DB，不做 storage IO）。
-      if (diff.toDeleteIds.length > 0) {
-        await detachAttachmentsByRefTx(tx, "TRIP_SEGMENT", diff.toDeleteIds);
-        await tx.tripSegment.deleteMany({ where: { id: { in: diff.toDeleteIds } } });
+      // Business errors (404/403/409/etc.) propagate immediately — never retried.
+      if (err instanceof AppError) {
+        throw err;
       }
 
-      // Step 5: 更新既有段（欄位三態合併 + sortOrder 重寫）。
-      for (const u of diff.toUpdate) {
-        const previous = existingById.get(u.id);
-        await tx.tripSegment.update({
-          where: { id: u.id },
-          data: {
-            sortOrder: u.sortOrder,
-            origin: resolveSegmentField(u.data, "origin", previous?.origin ?? null),
-            destination: resolveSegmentField(u.data, "destination", previous?.destination ?? null),
-            totalKm: resolveSegmentField(u.data, "totalKm", previous?.totalKm ?? null),
-            highwayKm: resolveSegmentField(u.data, "highwayKm", previous?.highwayKm ?? null),
-          },
-        });
+      // Serialization failures can surface two different ways here:
+      //   - P2034: Prisma's own write-conflict/deadlock code for ordinary
+      //     Prisma Client operations (same as `linkAttachment`'s retry check,
+      //     lifecycle-service.ts).
+      //   - P2010 wrapping Postgres SQLSTATE 40001 ("could not serialize
+      //     access due to concurrent update"): surfaces THROUGH `$queryRaw`
+      //     (the `SELECT ... FOR UPDATE` lock above) because raw queries
+      //     report the underlying DB error via Prisma's generic "raw query
+      //     failed" code rather than P2034.
+      const isP2034 = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
+      const isP2010SerializationFailure =
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === "P2010" &&
+        (err.meta as { code?: string } | undefined)?.code === "40001";
+      const isPrismaSerializationError = isP2034 || isP2010SerializationFailure;
+      if (!isPrismaSerializationError) {
+        throw err;
       }
 
-      // Step 6: 新增段（缺席欄位 = null，因新段無既有值可保留）。
-      if (diff.toCreate.length > 0) {
-        await tx.tripSegment.createMany({
-          data: diff.toCreate.map((c) => ({
-            travelApplicationId: id,
-            sortOrder: c.sortOrder,
-            origin: c.data.origin ?? null,
-            destination: c.data.destination ?? null,
-            totalKm: c.data.totalKm ?? null,
-            highwayKm: c.data.highwayKm ?? null,
-          })),
-        });
+      if (attempt >= UPDATE_DRAFT_MAX_RETRIES) {
+        // Retries exhausted. A real D19 "last writer wins" race resolves
+        // within a handful of retries: the loser's write conflicts with the
+        // winner's already-committed write (Step 5's `tx.tripSegment.update`,
+        // or Step 7's `tx.application.update`), gets a fresh transaction on
+        // retry, and correctly recomputes its attachment delta against the
+        // winner's now-visible state (this function's doc comment). Reaching
+        // actual exhaustion here means repeated conflicts kept occurring for
+        // some OTHER reason (e.g. broader contention on this Application row
+        // from unrelated concurrent activity, or a genuine deadlock) —
+        // surface the existing, honest `SERVICE_UNAVAILABLE` code instead —
+        // no new ErrorCode introduced (Packet: 不得新增 ErrorCode).
+        throw new AppError(
+          "SERVICE_UNAVAILABLE",
+          503,
+          "系統忙碌，請稍後再試（儲存時發生資料庫並發衝突，已重試多次仍未成功）"
+        );
       }
+      // else: back off (see retryBackoffMs doc comment) then retry with a
+      // fresh transaction.
+      await sleep(retryBackoffMs(attempt));
     }
+  }
 
-    // Step 7: tripDate/purpose/primaryDate（沿用既有邏輯）。
-    await tx.application.update({
-      where: { id },
-      data: {
-        primaryDate,
-        travel: {
-          update: {
-            tripDate: nextTripDate,
-            purpose: nextPurpose,
-          },
-        },
-      },
-    });
-
-    return tx.application.findUniqueOrThrow({
-      where: { id },
-      include: travelApplicationInclude,
-    });
-  });
+  // Unreachable (loop always returns or throws) — satisfies TypeScript control-flow analysis.
+  throw lastError;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,25 +761,39 @@ export async function deleteApplication(prisma: PrismaClient, id: string): Promi
 }
 
 // ---------------------------------------------------------------------------
-// Linked attachment counts per segment (correctly queried per Packet — not 0)
+// Per-segment LINKED attachments (PHASE-004-T11) — replaces the T3-era
+// count-only `getLinkedAttachmentCounts`: now returns the full `AttachmentDto[]`
+// per segment (Spec §8.1 `TripSegmentDto.attachments`), and the count used by
+// `completionBlockers` (`SEGMENT_ATTACHMENT_REQUIRED`) is simply each list's
+// length — one query serves both purposes, no more separate count-only path.
 // ---------------------------------------------------------------------------
 
-async function getLinkedAttachmentCounts(
+async function getSegmentAttachments(
   prisma: PrismaClient,
   segmentIds: string[]
-): Promise<Map<string, number>> {
+): Promise<Map<string, AttachmentDto[]>> {
   if (segmentIds.length === 0) return new Map();
   const rows = await prisma.attachment.findMany({
     where: { refType: "TRIP_SEGMENT", refId: { in: segmentIds }, status: "LINKED" },
-    select: { refId: true },
+    select: {
+      id: true,
+      status: true,
+      mimeType: true,
+      byteSize: true,
+      originalFilename: true,
+      refType: true,
+      refId: true,
+    },
+    orderBy: { linkedAt: "asc" },
   });
-  const counts = new Map<string, number>();
+  const bySegment = new Map<string, AttachmentDto[]>();
   for (const row of rows) {
-    if (row.refId) {
-      counts.set(row.refId, (counts.get(row.refId) ?? 0) + 1);
-    }
+    if (!row.refId) continue;
+    const list = bySegment.get(row.refId) ?? [];
+    list.push(toAttachmentDto(row));
+    bySegment.set(row.refId, list);
   }
-  return counts;
+  return bySegment;
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +807,7 @@ export interface TripSegmentDto {
   destination: string | null;
   totalKm: string | null;
   highwayKm: string | null;
-  attachments: unknown[]; // TODO(PHASE-004-T11): AttachmentDto[]
+  attachments: AttachmentDto[];
   snapshot: {
     fuelAmount: string;
     etcAmount: string;
@@ -577,7 +931,7 @@ export async function toTravelApplicationDto(
   application: TravelApplicationRecord
 ): Promise<TravelApplicationDto> {
   const segments = application.travel?.segments ?? [];
-  const counts = await getLinkedAttachmentCounts(
+  const attachmentsBySegment = await getSegmentAttachments(
     prisma,
     segments.map((s) => s.id)
   );
@@ -589,7 +943,7 @@ export async function toTravelApplicationDto(
     destination: s.destination,
     totalKm: s.totalKm !== null ? s.totalKm.toFixed(2) : null,
     highwayKm: s.highwayKm !== null ? s.highwayKm.toFixed(2) : null,
-    attachments: [], // TODO(PHASE-004-T11)
+    attachments: attachmentsBySegment.get(s.id) ?? [],
     snapshot: null, // TODO(PHASE-004-T8)
   }));
 
@@ -614,7 +968,7 @@ export async function toTravelApplicationDto(
             destination: s.destination,
             totalKm: s.totalKm,
             highwayKm: s.highwayKm,
-            attachmentCount: counts.get(s.id) ?? 0,
+            attachmentCount: attachmentsBySegment.get(s.id)?.length ?? 0,
           })),
           missingParameters: resolvedParameters.missing,
         })

@@ -1518,4 +1518,271 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
       }
     });
   });
+
+  // ===========================================================================
+  // PHASE-004-T11 — attachmentIds 對帳（AC-22/23/25/30、B-17/32、DTO 附件內容）
+  //
+  // 只新增（Packet 明文）：以下全部為新測試，既有測試一字未改。使用本檔既有的
+  // createLinkedAttachment（prisma 直建 LINKED 附件）與 putSegments 之外，另加
+  // 幾個小工具（uploadTemp／putSegmentsRaw）以驅動真實的 POST /attachments +
+  // PUT attachmentIds 流程（本組測試需要真實 TEMP → LINKED 轉換，非僅檢查
+  // detach，故不能只用 createLinkedAttachment）。
+  // ===========================================================================
+
+  describe("PHASE-004-T11 — attachmentIds 對帳（AC-22/23/25/30、B-17/32）", () => {
+    function buildMultipartBody(
+      filename: string,
+      content: Buffer
+    ): { body: Buffer; contentType: string } {
+      const boundary = `----FormBoundary${Date.now()}${Math.random().toString(36).slice(2)}`;
+      const CRLF = "\r\n";
+      const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
+      const footer = `${CRLF}--${boundary}--${CRLF}`;
+      return {
+        body: Buffer.concat([Buffer.from(header), content, Buffer.from(footer)]),
+        contentType: `multipart/form-data; boundary=${boundary}`,
+      };
+    }
+
+    function makeJpegBytes(size = 64): Buffer {
+      // Minimal legal JPEG magic header + padding (synthetic fixture, no real image).
+      const buf = Buffer.alloc(size, 0xaa);
+      buf[0] = 0xff;
+      buf[1] = 0xd8;
+      buf[2] = 0xff;
+      return buf;
+    }
+
+    /** Real upload (TEMP) via POST /attachments — needed because these tests
+     * exercise the real TEMP→LINKED transition through PUT attachmentIds. */
+    async function uploadTemp(cookie: string, filename: string): Promise<string> {
+      const { body, contentType } = buildMultipartBody(filename, makeJpegBytes());
+      const resp = await app.inject({
+        method: "POST",
+        url: "/attachments",
+        headers: { cookie, "content-type": contentType },
+        payload: body,
+      });
+      expect(resp.statusCode).toBe(201);
+      const id = resp.json<{ attachment: { id: string } }>().attachment.id;
+      createdAttachmentIds.push(id);
+      return id;
+    }
+
+    it("AC-22 某段已 3 張 → 第 4 張 → 409 TOO_MANY_ATTACHMENTS，關聯不成立（DB 仍為 3 張）", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "P", destination: "Q", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segmentId = createResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      const three = [
+        await uploadTemp(ownerCookie, "ac22-1.jpg"),
+        await uploadTemp(ownerCookie, "ac22-2.jpg"),
+        await uploadTemp(ownerCookie, "ac22-3.jpg"),
+      ];
+      const fillResp = await putSegments(ownerCookie, draft.id, [
+        { id: segmentId, attachmentIds: three },
+      ]);
+      expect(fillResp.statusCode).toBe(200);
+
+      const fourth = await uploadTemp(ownerCookie, "ac22-4.jpg");
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: segmentId, attachmentIds: [...three, fourth] },
+      ]);
+      expect(resp.statusCode).toBe(409);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("TOO_MANY_ATTACHMENTS");
+
+      const linkedCount = await prisma.attachment.count({
+        where: { refType: "TRIP_SEGMENT", refId: segmentId, status: "LINKED" },
+      });
+      expect(linkedCount).toBe(3);
+      const fourthRow = await prisma.attachment.findUniqueOrThrow({ where: { id: fourth } });
+      expect(fourthRow.status).toBe("TEMP");
+    });
+
+    it("AC-23 某段 0 張可存草稿（attachmentIds: []）→ 200", async () => {
+      const draft = await createOwnerDraft({});
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { origin: "R", destination: "S", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      expect(resp.statusCode).toBe(200);
+      const seg = resp.json<{ application: { segments: { attachments: unknown[] }[] } }>()
+        .application.segments[0];
+      expect(seg.attachments).toEqual([]);
+    });
+
+    it("AC-25 自 attachmentIds 移除 → detach 回 TEMP（逐欄斷言）", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "T", destination: "U", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segmentId = createResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      const attId = await uploadTemp(ownerCookie, "ac25.jpg");
+      await putSegments(ownerCookie, draft.id, [{ id: segmentId, attachmentIds: [attId] }]);
+
+      const beforeRow = await prisma.attachment.findUniqueOrThrow({ where: { id: attId } });
+      expect(beforeRow.status).toBe("LINKED");
+
+      const resp = await putSegments(ownerCookie, draft.id, [{ id: segmentId, attachmentIds: [] }]);
+      expect(resp.statusCode).toBe(200);
+
+      const afterRow = await prisma.attachment.findUniqueOrThrow({ where: { id: attId } });
+      expect(afterRow.status).toBe("TEMP");
+      expect(afterRow.refType).toBeNull();
+      expect(afterRow.refId).toBeNull();
+      expect(afterRow.linkedAt).toBeNull();
+    });
+
+    it("AC-30 跨擁有人鑑別力：他人的附件 id 放進自己的段落 → 403，整份儲存 rollback（其他段落未變）", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "Keep", destination: "Keep-to", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+        {
+          origin: "Target",
+          destination: "Target-to",
+          totalKm: "2",
+          highwayKm: "0",
+          attachmentIds: [],
+        },
+      ]);
+      const segs = createResp.json<{
+        application: { segments: { id: string; origin: string }[] };
+      }>().application.segments;
+      const keepSeg = mustFind(
+        segs.find((s) => s.origin === "Keep"),
+        "keep segment not found"
+      );
+      const targetSeg = mustFind(
+        segs.find((s) => s.origin === "Target"),
+        "target segment not found"
+      );
+      const keepAtt = await createLinkedAttachment(keepSeg.id, ownerId);
+
+      const foreignAttId = await uploadTemp(otherCookie, "ac30-foreign.jpg");
+
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: keepSeg.id },
+        { id: targetSeg.id, attachmentIds: [foreignAttId] },
+      ]);
+      expect(resp.statusCode).toBe(403);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("FORBIDDEN");
+
+      // Rollback verification: keep segment's pre-existing attachment untouched.
+      const keepAttRow = await prisma.attachment.findUniqueOrThrow({ where: { id: keepAtt.id } });
+      expect(keepAttRow.status).toBe("LINKED");
+      expect(keepAttRow.refId).toBe(keepSeg.id);
+      // Foreign attachment must remain TEMP, owned by other — never linked.
+      const foreignRow = await prisma.attachment.findUniqueOrThrow({ where: { id: foreignAttId } });
+      expect(foreignRow.status).toBe("TEMP");
+    });
+
+    it("B-17 已 LINKED 的附件再被另一段引用 → 409 CONFLICT，整份 rollback", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "SegA", destination: "SegA-to", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+        { origin: "SegB", destination: "SegB-to", totalKm: "2", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segs = createResp.json<{
+        application: { segments: { id: string; origin: string }[] };
+      }>().application.segments;
+      const segA = mustFind(
+        segs.find((s) => s.origin === "SegA"),
+        "SegA not found"
+      );
+      const segB = mustFind(
+        segs.find((s) => s.origin === "SegB"),
+        "SegB not found"
+      );
+
+      const attId = await uploadTemp(ownerCookie, "b17.jpg");
+      await putSegments(ownerCookie, draft.id, [
+        { id: segA.id, attachmentIds: [attId] },
+        { id: segB.id },
+      ]);
+
+      // SegA keeps it (attachmentIds omitted = unchanged); SegB tries to claim it too.
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: segA.id },
+        { id: segB.id, attachmentIds: [attId] },
+      ]);
+      expect(resp.statusCode).toBe(409);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("CONFLICT");
+
+      const attRow = await prisma.attachment.findUniqueOrThrow({ where: { id: attId } });
+      expect(attRow.status).toBe("LINKED");
+      expect(attRow.refId).toBe(segA.id);
+    });
+
+    it("B-32 attachmentIds 含不存在的 id → 404，整份 rollback", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "V", destination: "W", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segmentId = createResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: segmentId, attachmentIds: ["p4t11-nonexistent-attachment-id"] },
+      ]);
+      expect(resp.statusCode).toBe(404);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("NOT_FOUND");
+
+      const segRow = await prisma.tripSegment.findUniqueOrThrow({ where: { id: segmentId } });
+      expect(segRow).not.toBeNull(); // segment itself untouched by the rollback
+    });
+
+    it("TripSegmentDto.attachments 內容正確（含 previewUrl／downloadUrl）", async () => {
+      const draft = await createOwnerDraft({});
+      const createResp = await putSegments(ownerCookie, draft.id, [
+        { origin: "X1", destination: "Y1", totalKm: "1", highwayKm: "0", attachmentIds: [] },
+      ]);
+      const segmentId = createResp.json<{ application: { segments: { id: string }[] } }>()
+        .application.segments[0].id;
+
+      const attId = await uploadTemp(ownerCookie, "dto-check.jpg");
+      const resp = await putSegments(ownerCookie, draft.id, [
+        { id: segmentId, attachmentIds: [attId] },
+      ]);
+      expect(resp.statusCode).toBe(200);
+      const seg = resp.json<{
+        application: {
+          segments: {
+            attachments: {
+              id: string;
+              status: string;
+              mimeType: string;
+              byteSize: number;
+              originalFilename: string;
+              previewUrl: string;
+              downloadUrl: string;
+            }[];
+          }[];
+        };
+      }>().application.segments[0];
+
+      expect(seg.attachments).toHaveLength(1);
+      const dto = seg.attachments[0];
+      expect(dto.id).toBe(attId);
+      expect(dto.status).toBe("LINKED");
+      expect(dto.mimeType).toBe("image/jpeg");
+      expect(dto.originalFilename).toBe("dto-check.jpg");
+      expect(dto.previewUrl).toBe(`/attachments/${attId}/thumbnail`);
+      expect(dto.downloadUrl).toBe(`/attachments/${attId}/content`);
+
+      // Also verify via GET (re-read path uses the same DTO builder).
+      const getResp = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${draft.id}`,
+        headers: { cookie: ownerCookie },
+      });
+      const getSeg = getResp.json<{
+        application: { segments: { attachments: { id: string }[] }[] };
+      }>().application.segments[0];
+      expect(getSeg.attachments[0].id).toBe(attId);
+    });
+  });
 });
