@@ -37,16 +37,75 @@ import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 
 // ---------------------------------------------------------------------------
-// Prisma unique-constraint error detection (reused pattern, fuel-price-service.ts)
+// Prisma error detection (reused pattern, fuel-price-service.ts；T5 AR-3/AR-4
+// 擴充見下方兩個具名判定函式)
 // ---------------------------------------------------------------------------
 
-function isPrismaUniqueConstraintError(err: unknown): boolean {
+function isPrismaErrorWithCode(err: unknown, code: string): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
     "code" in err &&
-    (err as { code: unknown }).code === "P2002"
+    (err as { code: unknown }).code === code
   );
+}
+
+/**
+ * T5 AR-3：`userId` 存在性檢查（見 `createFuelConsumptionVersion` 步驟 6）發生於
+ * `$transaction` **之外**，故理論上存在極窄的 TOCTOU 競態視窗——檢查通過後、
+ * `create()` 執行前，該使用者列被刪除（`onDelete: Restrict` 通常會擋下有引用
+ * 的刪除，但本筆尚未建立引用前仍可能被刪）。
+ *
+ * 選擇「於 catch 加 P2003→404 映射」（Packet AR-3 兩擇一之一），而非把存在性
+ * 檢查移入交易：既有 T4 測試（AC-07 之 404 案例）已針對「交易外預檢查」路徑
+ * 撰寫斷言，移入交易將改變其可觀察行為並需同步修改該檔（不在本 Task
+ * Files Allowed 範圍內）；而 catch 端點加一道 P2003 映射為純粹的
+ * defense-in-depth，不改變任何既有測試之可觀察行為，diff 最小。
+ * `UserFuelConsumptionVersion.userId` 為外鍵，違反時 Prisma 回 P2003
+ * （foreign key constraint failed）。
+ */
+function isPrismaForeignKeyConstraintError(err: unknown): boolean {
+  return isPrismaErrorWithCode(err, "P2003");
+}
+
+/**
+ * T5 AR-4：本檔之 `create()` 於 T5 起與 `AuditLog.create()` 同在一個
+ * `$transaction` 內執行（稽核寫入失敗須使整筆建立回滾，見 route 層）。若未來
+ * `AuditLog` 或其他寫入新增唯一鍵，同一交易內任何 P2002 都會被本函式捕捉，
+ * 若不加區辨會被誤譯為 `PARAMETER_PERIOD_OVERLAP`（409）。
+ *
+ * 因此僅在錯誤 `meta` 明確指向本表之唯一鍵
+ * （`UserFuelConsumptionVersion_userId_effectiveFrom_key`，或 Postgres 連線下
+ * Prisma 回傳之欄位陣列 `["userId","effectiveFrom"]`）時才轉譯为 409；
+ * `meta` 缺失時（T4 既有 stub 測試之情境，見
+ * `test/integration/phase5a-fuel-consumption.test.ts` 之 P2002 stub）視為
+ * 「來源不明但目前系統中唯一會拋出 P2002 的路徑正是本表唯一鍵」，維持既有
+ * 行為（409），不弱化該既有測試；若 `meta` 存在但指向其他鍵，一律原樣拋出
+ * （不得誤譯為版本重疊）。
+ */
+const FUEL_CONSUMPTION_UNIQUE_CONSTRAINT_NAME =
+  "UserFuelConsumptionVersion_userId_effectiveFrom_key";
+
+function isFuelConsumptionUniqueConstraintError(err: unknown): boolean {
+  if (!isPrismaErrorWithCode(err, "P2002")) return false;
+
+  const meta = (err as { meta?: unknown }).meta;
+  if (meta === undefined || meta === null) {
+    // 無 meta 可供辨識——維持既有行為（409），見上方 JSDoc。
+    return true;
+  }
+
+  const target = (meta as { target?: unknown }).target;
+  if (typeof target === "string") {
+    return target.includes(FUEL_CONSUMPTION_UNIQUE_CONSTRAINT_NAME);
+  }
+  if (Array.isArray(target)) {
+    return target.includes("userId") && target.includes("effectiveFrom");
+  }
+
+  // 未知的 meta 形狀——保守處理，不轉譯（避免把不相關的唯一鍵違反誤判為
+  // 版本重疊）。
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,8 +334,16 @@ export async function createFuelConsumptionVersion(
   } catch (err) {
     if (err instanceof AppError) throw err;
 
+    // T5 AR-3：交易內 create() 之外鍵違反（userId 於預檢查之後、create() 之前
+    // 被刪除的窄競態視窗）→ 404，語意與步驟 6 之預檢查一致，絕不 500。
+    if (isPrismaForeignKeyConstraintError(err)) {
+      throw new AppError("NOT_FOUND", 404, "使用者不存在");
+    }
+
     // 併發最後防線（DB @@unique([userId, effectiveFrom]))）→ 409，絕不 500。
-    if (isPrismaUniqueConstraintError(err)) {
+    // T5 AR-4：僅在 meta 指向本表唯一鍵（或 meta 缺失，維持既有行為）時轉譯；
+    // 指向其他鍵之 P2002 原樣拋出（見 isFuelConsumptionUniqueConstraintError JSDoc）。
+    if (isFuelConsumptionUniqueConstraintError(err)) {
       throw new AppError(
         "PARAMETER_PERIOD_OVERLAP",
         409,

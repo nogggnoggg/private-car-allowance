@@ -44,6 +44,7 @@ const PHASE_005A_SRC_FILES = [
   "src/parameters/fuel-price-engine.ts",
   "src/parameters/fuel-price-service.ts", // PHASE-005a-T3
   "src/users/fuel-consumption-service.ts", // PHASE-005a-T4
+  "src/users/fuel-consumption-routes.ts", // PHASE-005a-T5
 ] as const;
 
 /**

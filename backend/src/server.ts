@@ -21,6 +21,7 @@ import { registerErrorHandlers } from "./platform/error-handler.js";
 import { healthPlugin, makeDefaultDbProbe } from "./platform/health.js";
 import type { DbProbe } from "./platform/health.js";
 import { LocalVolumeStorage } from "./storage/index.js";
+import { fuelConsumptionPlugin } from "./users/fuel-consumption-routes.js";
 
 export interface BuildServerOptions {
   /** Postgres connection URL; if omitted, reads from DATABASE_URL env var */
@@ -79,6 +80,10 @@ export async function buildServer(
 
   // Register parameters routes (POST/GET /parameters/fuel, /parameters/etc — PHASE-003a-T3)
   await fastify.register(parametersPlugin, { prisma });
+
+  // Register user fuel-consumption routes (POST/GET /users/:userId/fuel-consumption
+  // — PHASE-005a-T5, §7.2/§16 D7(a))
+  await fastify.register(fuelConsumptionPlugin, { prisma });
 
   // Register attachment routes (POST /attachments — T3)
   // Storage root resolution (Spec §8, NFR-US-07):
