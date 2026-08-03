@@ -2,6 +2,13 @@
 
 State: ACTIVE
 
+> **PHASE-005（區間公務里程統計）開工記錄（2026-08-03，使用者指令「繼續」）**
+> - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
+> - branch：`phase-005`（自 main @ `310bc39` 切出）。流程：spec-writer 產 Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate** → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
+> - Risk Level：Medium（PRD §PHASE-005；讀取統計，無 High Task）。惟統計引擎屬金額計算上游（006 保養、007 折舊複用），金額語意類約束一律引用 AC/Spec 原文（T8 教訓）。
+> - Spec 必納入決策點：①欄位溢位追蹤項（跨 Phase 追蹤節 2026-08-03 條目——unitPrice/vehiclePrice 容量溢位回 500、"0.0000001" 靜默存 0；納入 005 或獨立回合，供人類裁定）②AR-5 字串全保真合約變更宜同案。
+> - 前置約束提醒：不得以「一般使用者不知道單價」為安全前提（PHASE-004 D6 邊界擴張）；BE-US-22 作廢排除規則預留（依「未作廢」過濾）。
+
 > **CHORE-002：DONE（2026-08-03）**——PR #10 經人類批准合併（`9a9b289`）。基準線終值 **960/0/0**。欄位溢位追蹤項已提升至「跨 Phase 追蹤事項」節（PHASE-005 Spec 必納入）。**下一站：PHASE-005（區間統計）開工——第一步派 spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate。**
 >
 > **CHORE-002 開工記錄（2026-08-03，排程經人類批准「按照你的建議執行」）**
