@@ -397,7 +397,7 @@ describeWithDb("PHASE-005a-T5 — /users/:userId/fuel-consumption route layer", 
 
     // ---- Row: 管理員 ----
 
-    it("AC-36[管理員 × 油耗寫入(他人)] → 201", async () => {
+    it("AC-36[管理員 × 油耗寫入(他人)] → 201, body 為 { version } 且 version 鍵集合精確等於 §7.2 DTO + state（M-1 守門，非 GET 端點的鍵集合）", async () => {
       const resp = await app.inject({
         method: "POST",
         url: `/users/${users.user2Id}/fuel-consumption`,
@@ -410,6 +410,20 @@ describeWithDb("PHASE-005a-T5 — /users/:userId/fuel-consumption route layer", 
         },
       });
       expect(resp.statusCode).toBe(201);
+      const body = resp.json<{ version: Record<string, unknown> }>();
+      expect(Object.keys(body.version).sort()).toEqual(
+        [
+          "id",
+          "userId",
+          "fuelType",
+          "kmPerLiter",
+          "effectiveFrom",
+          "basisNote",
+          "createdAt",
+          "createdById",
+          "state",
+        ].sort()
+      );
     });
 
     it("AC-36[管理員 × 油耗寫入(自己)] → 201 (管理員可為自己建立)", async () => {
@@ -534,6 +548,17 @@ describeWithDb("PHASE-005a-T5 — /users/:userId/fuel-consumption route layer", 
       });
       expect(resp.statusCode).toBe(403);
       expect(resp.json<{ error: { code: string } }>().error.code).toBe("FORBIDDEN");
+    });
+
+    it("S-1 釘住測試：未登入 + 畸形 JSON body → 400 VALIDATION_ERROR（wire-level body parser 先於 preHandler／授權，屬 CHORE-001/002 已批准之全站行為，非本路由的授權側信道——見檔頭 JSDoc 更正後之說明）", async () => {
+      const resp = await app.inject({
+        method: "POST",
+        url: `/users/${users.user2Id}/fuel-consumption`,
+        headers: { "content-type": "application/json" },
+        payload: "{not valid json!!", // 畸形 JSON → Fastify FST_ERR_CTP_INVALID_JSON_BODY
+      });
+      expect(resp.statusCode).toBe(400);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("VALIDATION_ERROR");
     });
   });
 
@@ -838,7 +863,62 @@ describeWithDb("PHASE-005a-T5 — /users/:userId/fuel-consumption route layer", 
       await prisma.user.delete({ where: { id: targetUser.id } });
     });
 
-    it("stub: onCreated (audit) hook throwing aborts the whole create — transaction rolls back, error propagates (not swallowed)", async () => {
+    it("S-2 真交易回滾證據：真實 Prisma $transaction 下，onCreated（audit）hook 拋出 → create() reject、該 userId 版本列數不變、無對應 AuditLog 列（非 stub，證明真的有回滾）", async () => {
+      const rollbackHash = Date.now();
+      const rollbackLogin = `t5fuelconsumption_rollback_${rollbackHash}`;
+      const hash = await hashPassword(PASSWORD);
+      const rollbackUser = await prisma.user.create({
+        data: {
+          loginName: rollbackLogin,
+          displayName: "T5 Rollback Target",
+          passwordHash: hash,
+          role: "USER",
+          isActive: true,
+          mustChangePassword: false,
+        },
+      });
+
+      const countBefore = await prisma.userFuelConsumptionVersion.count({
+        where: { userId: rollbackUser.id },
+      });
+
+      const rollbackFailure = new Error("real-tx rollback probe");
+
+      await expect(
+        fuelConsumptionService.createFuelConsumptionVersion(
+          prisma,
+          {
+            userId: rollbackUser.id,
+            fuelType: "GASOLINE_95",
+            kmPerLiter: "10.0000",
+            effectiveFrom: "2026-07-01",
+            basisNote: "rollback real-tx probe",
+            createdById: users.adminId,
+          },
+          async () => {
+            throw rollbackFailure;
+          }
+        )
+      ).rejects.toThrow(rollbackFailure);
+
+      const countAfter = await prisma.userFuelConsumptionVersion.count({
+        where: { userId: rollbackUser.id },
+      });
+      expect(countAfter).toBe(countBefore);
+
+      const auditRows = await prisma.auditLog.findMany({
+        where: { targetId: rollbackUser.id },
+      });
+      expect(auditRows.length).toBe(0);
+
+      await prisma.userFuelConsumptionVersion.deleteMany({
+        where: { userId: rollbackUser.id },
+      });
+      await prisma.auditLog.deleteMany({ where: { targetId: rollbackUser.id } });
+      await prisma.user.delete({ where: { id: rollbackUser.id } });
+    });
+
+    it("stub: onCreated hook throwing propagates the error uncaught, and create() is invoked through the tx client passed to $transaction (not the top-level PrismaClient) — NOT a rollback proof (that is S-2's real-tx test above; this stub's $transaction shim runs its callback directly with no real transaction/rollback semantics)", async () => {
       const auditFailure = new Error("stub audit write failure");
 
       const fakeTx = {

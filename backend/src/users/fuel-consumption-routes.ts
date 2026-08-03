@@ -15,15 +15,28 @@
  *   runs strictly AFTER the preHandler chain above — so a normal user (or
  *   an unauthenticated caller, or a mustChangePassword=true admin) hitting
  *   POST with a malformed/legal body alike is rejected by the preHandler
- *   chain BEFORE any body parsing/validation ever runs. This route
- *   deliberately registers **no Fastify `schema.body`** for POST: a
+ *   chain BEFORE any schema/service-layer body validation ever runs. This
+ *   route deliberately registers **no Fastify `schema.body`** for POST: a
  *   `required`/`additionalProperties:false` schema is validated by Fastify
  *   at the "validation" lifecycle step, which runs BEFORE `preHandler` —
- *   using such a schema here would let a malformed body short-circuit to
- *   400 for an unauthenticated/non-admin caller, creating exactly the
- *   side-channel AC-13 forbids ("授權失敗之回應不得因輸入合法與否而有差異").
- *   `request.body` is therefore read as `unknown` and passed through
- *   untouched to the service layer.
+ *   using such a schema here would let a malformed-but-parseable body
+ *   short-circuit to 400 for an unauthenticated/non-admin caller, creating
+ *   exactly the side-channel AC-13 forbids ("授權失敗之回應不得因輸入合法與否
+ *   而有差異"). `request.body` is therefore read as `unknown` and passed
+ *   through untouched to the service layer — this eliminates the
+ *   **ajv schema-validation** side-channel specifically.
+ *
+ *   This does NOT claim authorization runs before ALL body handling: Fastify's
+ *   wire-level body PARSER (before either `schema.body`/ajv or `preHandler`
+ *   runs) still rejects malformed/oversized/wrong-content-type payloads with
+ *   its own `FST_ERR_CTP_*` errors, which CHORE-001/CHORE-002's global
+ *   error-handler hardening maps to 400 VALIDATION_ERROR (or 413/415) —
+ *   BEFORE this route's preHandler chain executes. That is pre-existing,
+ *   already-approved site-wide behavior (not specific to this route, not a
+ *   new side-channel introduced here: it fires identically for every caller
+ *   regardless of auth state, so it carries no authorization information),
+ *   pinned by an explicit unauth+malformed-JSON→400 test in
+ *   `phase5a-fuel-consumption-authz.test.ts` (S-1).
  *
  * AR-1（T4 複審，Packet 逐字義務）: `userId` 不存在（404）與 body 格式錯誤
  *   （400）同時成立時，`createFuelConsumptionVersion` 之驗證順序為
@@ -41,7 +54,8 @@
  * 嚴格早於，非 `findEffectiveVersion(otherVersions, effectiveFrom)` 之
  * `<=` 語意），寫入一列 `AuditLog`。若 `auditLog.create` 拋出，整個
  * `$transaction` 回呼會拋出，Prisma 互動式交易語意保證整筆 create() 一併
- * 回滾（見 `phase5a-fuel-consumption-authz.test.ts` 之 stub 測試）。
+ * 回滾（真實 DB 回滾證據見 `phase5a-fuel-consumption-authz.test.ts` 之
+ * S-2 真交易測試；stub 測試僅證明錯誤傳播與 tx client 呼叫路徑）。
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -222,7 +236,9 @@ export const fuelConsumptionPlugin: FastifyPluginAsync<FuelConsumptionPluginOpti
         }
       );
 
-      return reply.status(201).send({ version });
+      const versionWithState = withState([version], new Date())[0];
+
+      return reply.status(201).send({ version: versionWithState });
     }
   );
 
