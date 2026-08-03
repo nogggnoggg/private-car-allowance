@@ -61,7 +61,9 @@ State: ACTIVE
 > - **終審：REQUEST_CHANGES（0 Must/3 Should/7 AR；usage ~166k）→ T13R2 → 待輕量關閉確認**。T11R/T13/T13R 三修復本體全 closed；基準線獨立重現（1468×2/172×2/tsc/biome）、travel-calculation 全 Phase 零改動、無 secrets/新依賴/孤兒變更、八 docs commit 白名單合規、測試弱化掃描零 .only/.todo。**SF-2/SF-3（同源）**：T13 AR-4 去重使 AC-32 定稿文字主流程不可達＋粗粒度碼跨項誤抑制→大總管裁定**整體回退**（未批 Spec 之可見行為變更；文案並列問題回歸開放項交晨間人類裁定三選項，記 §18）。SF-1：抑制清單五碼僅一碼有護欄→it.each 補齊。
 > - **T13R2：DONE**（`7652f47`，3 檔 +69/-68；usage ~99k 含 API 中斷續派）。回退逐字復原 T11R 已審狀態（diff 核對）、SF-1 五碼護欄（AMOUNT_OUT_OF_RANGE 移除 mutant 2 紅實證）、終審 AR-1 註解更正。大總管獨立驗收：前端 **176/0/0** 兩輪（172−1+5）、tsc 0、biome 乾淨、E2E **23/23 親跑**。前端基準線 → **176**。§12 AC-32 補掛 T11R/T13R2。**執行事件**：T13R2 agent 首輪因 API 連線中斷於半途終止（src 已改、測試未動），SendMessage 續派原 agent 完成——工作區半成品狀態由大總管核對後續行，零污染。
 > - **終審 AR 記錄**：AR-2 **合併注意（PR 說明必載）**——main 有分岔 commit `0ee810d`（PHASE-005 retrospective），合併須 merge 不得 squash-reset；AR-6 完成失敗對話框不分缺項（PHASE-004 既有）→ PHASE-008/011 候選；AR-5 日期斷言冗餘（非假測試）記錄；AR-7 快照顯示缺口＝已記 §18 待人類追認。
-> - 下一步：T13R2 輕量關閉確認 → Draft PR + CI → 晨間人類 Gate（Mock/整合驗收、D1(a) Gate 資料重建、快照顯示缺口追認、AC-32 文案取向裁定、合併批准）。
+> - **T13R2 輕量關閉確認：APPROVE（0 Must/0 Should/2 低風險 AR；usage ~58k）**。SF-1/2/3 全 closed：src 對 T11R 空 diff（逐字復原）、去重符號全庫零殘留、五碼護欄 mutant 獨立重現（移除 AMOUNT_OUT_OF_RANGE 恰 1 紅且舊測試仍綠——反證原覆蓋缺口為真）、AR-5/T11R 覆蓋完整在場。AR-Low-1：fuel-model.spec.ts:447-453 陳舊「去重」註解殘留（無執行面影響，併下次 e2e 觸碰 commit 修正，記 PR 說明）；AR-Low-2：AC-32 文案並列開放項（晨間裁定）。**PHASE-005a Review 全數清零（2026-08-04 凌晨）。**
+> - 基準線終值：後端 **1468/0/0**、前端 **176/0/0**、E2E **23/23**（大總管親跑）。37/37 AC GREEN。
+> - 下一步：Draft PR + CI → 晨間人類 Gate（Mock/整合驗收、D1(a) Gate 資料重建、快照顯示缺口追認、AC-32 文案取向裁定、合併批准）。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
