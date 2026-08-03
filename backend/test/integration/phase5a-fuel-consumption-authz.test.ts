@@ -699,6 +699,65 @@ describeWithDb("PHASE-005a-T5 — /users/:userId/fuel-consumption route layer", 
       });
       await prisma.user.delete({ where: { id: stateUser.id } });
     });
+
+    it("POST 201 response's OWN version.state reflects the FULL version set, not just the just-created row (SF-1 regression: backfilling an older effectiveFrom after a recent one exists must report HISTORICAL, not CURRENT)", async () => {
+      const backfillHash = Date.now();
+      const backfillUserLogin = `t5fuelconsumption_backfill_${backfillHash}`;
+      const hash = await hashPassword(PASSWORD);
+      const backfillUser = await prisma.user.create({
+        data: {
+          loginName: backfillUserLogin,
+          displayName: "T5 Backfill User",
+          passwordHash: hash,
+          role: "USER",
+          isActive: true,
+          mustChangePassword: false,
+        },
+      });
+
+      const recentDate = isoDateOffset(-5); // effective as of today → CURRENT
+      const olderDate = isoDateOffset(-20); // effective BEFORE recentDate → HISTORICAL once recentDate exists
+
+      // 1st POST: only version in existence → correctly CURRENT (not the bug).
+      const firstResp = await app.inject({
+        method: "POST",
+        url: `/users/${backfillUser.id}/fuel-consumption`,
+        headers: { cookie: adminCookie },
+        payload: {
+          fuelType: "GASOLINE_92",
+          kmPerLiter: "10.0000",
+          effectiveFrom: recentDate,
+          basisNote: "recent",
+        },
+      });
+      expect(firstResp.statusCode).toBe(201);
+      expect(firstResp.json<{ version: { state: string } }>().version.state).toBe("CURRENT");
+
+      // 2nd POST: backfills an OLDER effectiveFrom. The recent version above
+      // remains the effective (CURRENT) one for today, so this newly-created
+      // row must be HISTORICAL. Pre-fix, `withState([version], today)` only
+      // ever saw this single row in isolation, so `findEffectiveVersion`
+      // trivially selected it as "the" effective version → wrongly CURRENT.
+      const secondResp = await app.inject({
+        method: "POST",
+        url: `/users/${backfillUser.id}/fuel-consumption`,
+        headers: { cookie: adminCookie },
+        payload: {
+          fuelType: "GASOLINE_95",
+          kmPerLiter: "11.0000",
+          effectiveFrom: olderDate,
+          basisNote: "backfilled",
+        },
+      });
+      expect(secondResp.statusCode).toBe(201);
+      expect(secondResp.json<{ version: { state: string } }>().version.state).toBe("HISTORICAL");
+
+      await prisma.userFuelConsumptionVersion.deleteMany({ where: { userId: backfillUser.id } });
+      await prisma.auditLog.deleteMany({
+        where: { OR: [{ actorId: backfillUser.id }, { targetId: backfillUser.id }] },
+      });
+      await prisma.user.delete({ where: { id: backfillUser.id } });
+    });
   });
 
   // -------------------------------------------------------------------------

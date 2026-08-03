@@ -31,7 +31,9 @@
  * 此逐鍵白名單透過**手動建構回傳物件**（而非展開整列 DTO 再挑選欄位）達成，
  * 避免未來 DTO 新增欄位時意外外洩。
  *
- * Auth (both endpoints): requireAuth + requirePasswordChanged + requireAdmin
+ * Auth（POST /users/:userId/fuel-consumption 與 GET /users/:userId/fuel-consumption
+ *   兩個管理端點；不含上方 GET /me/fuel-consumption——該端點無 requireAdmin，
+ *   見上方 T6 小節）: requireAuth + requirePasswordChanged + requireAdmin
  *   — this is the exact ordering AC-13 requires: 認證 → 強制改密 → 授權
  *   （requireAdmin）→ 格式驗證. Body validation (fuelType/kmPerLiter/
  *   effectiveFrom/basisNote format+range) is delegated entirely to
@@ -260,7 +262,20 @@ export const fuelConsumptionPlugin: FastifyPluginAsync<FuelConsumptionPluginOpti
         }
       );
 
-      const versionWithState = withState([version], new Date())[0];
+      // SF-1 修復（T6R 即審）: state 必須相對於該使用者「完整」版本集合計算，
+      // 不可只餵剛建立的單列 —— `findEffectiveVersion` 對單列輸入必選中自己
+      // （只要其 effectiveFrom ≤ today），使補登舊版本恆被誤判為 CURRENT。
+      // 交易完成後重查該使用者完整清單，再從中取出剛建立的這一列連同其
+      // 正確 state（真 DB 探針見 phase5a-fuel-consumption-authz.test.ts
+      // 之 SF-1 regression 測試）。
+      const allVersions = await listFuelConsumptionVersions(prisma, userId);
+      const versionWithState = withState(allVersions, new Date()).find((v) => v.id === version.id);
+
+      if (!versionWithState) {
+        // 結構上不可能發生（剛建立的版本必屬於該使用者的完整清單），此為
+        // 防禦性守門，避免靜默送出 undefined。
+        throw new AppError("INTERNAL_ERROR", 500, "版本建立後狀態計算失敗");
+      }
 
       return reply.status(201).send({ version: versionWithState });
     }

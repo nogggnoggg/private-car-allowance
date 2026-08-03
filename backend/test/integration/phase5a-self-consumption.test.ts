@@ -449,7 +449,15 @@ describeWithDb("PHASE-005a-T6 — GET /me/fuel-consumption", () => {
       expect(tampered.body).toBe(baseline.body);
     });
 
-    it("JSON body userId tampering (GET with a body payload) never returns another user's data — response identical to baseline", async () => {
+    // SF-2（T6R 即審澄清）: Fastify 不解析 GET 方法的 body（wire 探針證實：
+    // 未登入 + 此處同款畸形/夾帶 body 一律先被判 401，從未進入 body 解析或
+    // handler 邏輯）——本測試對「body 是否真的影響回應」這件事本身不具
+    // 鑑別力（對任何實作恆綠）。保留本測試僅為釘住「夾帶 body 不改變回應」
+    // 之現狀；此現狀的真正保證來源是**結構性**的兩層防線：(1) handler
+    // 完全不讀取 request.body 的任何欄位（見上方 handler 實作與檔頭 JSDoc），
+    // (2) Fastify 框架層對 GET 請求根本不解析 body——兩者疊加，而非本測試
+    // 提供的執行期驗證。
+    it("GET body 向量在 wire 層即不可達（Fastify 不解析 GET body）；本測試僅釘住『夾帶 body 不改變回應』之現狀", async () => {
       const baseline = await app.inject({
         method: "GET",
         url: "/me/fuel-consumption",
@@ -533,6 +541,7 @@ describeWithDb("PHASE-005a-T6 — GET /me/fuel-consumption", () => {
       expect(resp.statusCode).toBe(200);
       const body = resp.json<{ current: unknown }>();
       expect(Object.keys(body).sort()).toEqual(["current"]);
+      expect(body.current).toBeNull();
     });
 
     it("AC-36[停用帳號 × 自身唯讀] → 401 UNAUTHORIZED", async () => {
