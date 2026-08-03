@@ -2,6 +2,8 @@
 
 State: ACTIVE
 
+> **CHORE-002：DONE（2026-08-03）**——PR #10 經人類批准合併（`9a9b289`）。基準線終值 **960/0/0**。欄位溢位追蹤項已提升至「跨 Phase 追蹤事項」節（PHASE-005 Spec 必納入）。**下一站：PHASE-005（區間統計）開工——第一步派 spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate。**
+>
 > **CHORE-002 開工記錄（2026-08-03，排程經人類批准「按照你的建議執行」）**
 > - 範圍兩項（reviewer 於 CHORE-001 複審開立之追蹤項）：①**D4-Decimal-number**——4 處 `new Prisma.Decimal(<number 變數>)` 改字串化建構（`parameter-service.ts:171→208`、`:280→317`、`:466`、`depreciation-engine.ts:72`；routes accept-any 使 JSON 數字直達）②**wire-level 4xx 原始 status 對照表**——`error-handler.ts` 新分支由「一律 400」改為 `413→PAYLOAD_TOO_LARGE、415→UNSUPPORTED_MEDIA_TYPE、其餘 4xx→400 VALIDATION_ERROR`（三 code 均已在 ErrorCode 聯集）。
 > - branch：`chore-002`（自 main @ `9ac908d`）。流程：implementer TDD → 大總管驗收 → reviewer 輕量複審 → PR + CI → 人類批准合併。完成後開工 PHASE-005。
@@ -292,6 +294,8 @@ Updated: 2026-08-02
 - 無。
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
+
+- **【PHASE-005 Spec 必納入供裁定】參數欄位容量溢位回 500**（CHORE-002 reviewer 查出，2026-08-03）：`unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時 DB 層拋錯 → 500（string/number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）；另 `unitPrice:"0.0000001"` 靜默存為 0.0000。正解：比照 `trip-validation.ts:88/107` 綁欄位容量之範圍驗證（十進位字面 pattern + 量級上限）。屬新 AC，**spec-writer 產 PHASE-005 Spec 時必須列為決策點供人類裁定（納入 005 或獨立回合）**。關聯：AR-5 字串全保真（「不可解析→400」合約變更）宜同案處理。
 
 - AD-US-04「有歷史拒刪」完整語意於 PHASE-010 回歸驗證。
 - BE-US-25 的 24 小時暫存清理排程歸 PHASE-011；核心生命週期在 PHASE-003/004。
