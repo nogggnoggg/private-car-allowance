@@ -878,6 +878,59 @@ describe("TravelApplicationPage", () => {
       expect(within(dialog).queryByText("有未儲存的變更，請先儲存草稿")).not.toBeInTheDocument();
       expect(within(dialog).getByRole("button", { name: "確認完成" })).not.toBeDisabled();
     });
+
+    // T14R2 Lite（SF-1 mutant M6 補強）：completeError 一旦由伺服器缺項寫入，
+    // 不得在後續 dirty 分支的確認框中一併殘留顯示；dirty 分支只應顯示未儲存
+    // 提示，不得同時渲染舊的伺服器缺項紅字。
+    it("確認完成失敗顯示伺服器缺項紅字 → 取消後改欄位（dirty）→ 再開確認框只顯示未儲存提示、紅字不再出現", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            tripDate: "2026-03-01",
+            purpose: "台中出差",
+            completionBlockers: [],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("POST", isComplete, () =>
+        jsonRes(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "尚有缺項",
+              details: { blockers: [{ message: "請填寫出差日期" }] },
+            },
+          },
+          422
+        )
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "完成申請" }));
+      let dialog = screen.getByRole("dialog", { name: "確認完成申請" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "確認完成" }));
+
+      await waitFor(() => {
+        expect(within(dialog).getByText("請填寫出差日期")).toBeInTheDocument();
+      });
+
+      fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+      await waitFor(() => {
+        expect(screen.queryByRole("dialog", { name: "確認完成申請" })).not.toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByLabelText("出差日期"), { target: { value: "2026-03-06" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "完成申請" }));
+      dialog = screen.getByRole("dialog", { name: "確認完成申請" });
+
+      expect(within(dialog).getByText("有未儲存的變更，請先儲存草稿")).toBeInTheDocument();
+      expect(within(dialog).queryByText("請填寫出差日期")).not.toBeInTheDocument();
+    });
   });
 
   // ---- Responsive structure (AC-87): vertical stacked blocks, not a table ----
