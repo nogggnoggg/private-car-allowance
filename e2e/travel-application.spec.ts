@@ -64,6 +64,23 @@ const PARAM_EFFECTIVE_FROM = "2020-06-01";
 const PARAM_FUEL_UNIT_PRICE = 6.5;
 const PARAM_ETC_UNIT_PRICE = 1.8;
 
+// ---------------------------------------------------------------------------
+// PHASE-005a-T13R：新油資模型播種（AC-37(e)，後端 T7 起油資解析改為「擁有人
+// 油耗版本 → 對應油種油價版本」雙鏈解析，見
+// backend/src/applications/travel-parameters.ts）。本檔完成路徑（情境1）之
+// 出差日期 `SUCCESS_TRIP_DATE` 須額外有登入者（e2eadmin 本人，本檔草稿皆為
+// 自建自完成）的油耗版本，以及對應油種的油價版本，否則「油資無法計算」擋下
+// 完成。`NEW_MODEL_EFFECTIVE_FROM` 沿用既有 `PARAM_EFFECTIVE_FROM`（早於
+// `NO_PARAM_TRIP_DATE`），刻意**不**覆蓋情境2之出差日期，維持該情境「查無
+// 有效參數」之既有斷言不變。本檔未對完成金額做具體數字斷言（僅
+// `/合計金額：\d+/` 與 `>0`），故播種數值無需與任何舊制單價換算等值。
+// ---------------------------------------------------------------------------
+const NEW_MODEL_EFFECTIVE_FROM = PARAM_EFFECTIVE_FROM;
+const NEW_MODEL_FUEL_TYPE = "GASOLINE_92";
+const NEW_MODEL_KM_PER_LITER = "10.0000";
+const NEW_MODEL_PRICE_PER_LITER = "65.0000";
+const NEW_MODEL_BASIS_NOTE = "PHASE-005a-T13R E2E 合成資料（新油資模型播種）";
+
 /**
  * 確保油資／ETC 補助參數至少有一版本覆蓋 `dateStr`（若缺，於
  * `PARAM_EFFECTIVE_FROM` 建立一版）。先查後建（idempotent）——`backend`
@@ -101,6 +118,71 @@ async function ensureParametersCoverDate(page: Page, dateStr: string): Promise<v
     });
     if (!res.ok()) {
       throw new Error(`E2E 設定 ETC 參數失敗: ${res.status()} ${await res.text()}`);
+    }
+  }
+}
+
+/** 回傳目前登入者（`page` 之 cookie）的使用者 id（`GET /me`）。 */
+async function getCurrentUserId(page: Page): Promise<string> {
+  const res = await page.request.get(`${API_BASE}/me`);
+  if (!res.ok()) {
+    throw new Error(`E2E 讀取目前使用者失敗: ${res.status()} ${await res.text()}`);
+  }
+  const { user } = (await res.json()) as { user: { id: string } };
+  return user.id;
+}
+
+/**
+ * PHASE-005a-T13R：確保指定使用者（`userId`）於 `dateStr` 有新模型油資可解析
+ * ——擁有人之油耗版本，以及對應油種之油價版本，皆先查後建（idempotent，同
+ * `ensureParametersCoverDate` 之理由：跨檔共用持久化 dev DB、版本無 DELETE
+ * 端點）。呼叫端須先以管理員身分登入（兩個端點皆為 admin-only）。
+ */
+async function ensureFuelModelCoversDate(
+  page: Page,
+  userId: string,
+  dateStr: string
+): Promise<void> {
+  const consRes = await page.request.get(`${API_BASE}/users/${userId}/fuel-consumption`);
+  if (!consRes.ok()) {
+    throw new Error(`E2E 讀取油耗版本失敗: ${consRes.status()} ${await consRes.text()}`);
+  }
+  const { versions: consVersions } = (await consRes.json()) as {
+    versions: { effectiveFrom: string }[];
+  };
+  if (!consVersions.some((v) => v.effectiveFrom <= dateStr)) {
+    const res = await page.request.post(`${API_BASE}/users/${userId}/fuel-consumption`, {
+      data: {
+        fuelType: NEW_MODEL_FUEL_TYPE,
+        kmPerLiter: NEW_MODEL_KM_PER_LITER,
+        effectiveFrom: NEW_MODEL_EFFECTIVE_FROM,
+        basisNote: NEW_MODEL_BASIS_NOTE,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(`E2E 設定油耗版本失敗: ${res.status()} ${await res.text()}`);
+    }
+  }
+
+  const priceRes = await page.request.get(
+    `${API_BASE}/parameters/fuel-price?fuelType=${NEW_MODEL_FUEL_TYPE}`
+  );
+  if (!priceRes.ok()) {
+    throw new Error(`E2E 讀取油價版本失敗: ${priceRes.status()} ${await priceRes.text()}`);
+  }
+  const { versions: priceVersions } = (await priceRes.json()) as {
+    versions: { effectiveFrom: string }[];
+  };
+  if (!priceVersions.some((v) => v.effectiveFrom <= dateStr)) {
+    const res = await page.request.post(`${API_BASE}/parameters/fuel-price`, {
+      data: {
+        fuelType: NEW_MODEL_FUEL_TYPE,
+        pricePerLiter: NEW_MODEL_PRICE_PER_LITER,
+        effectiveFrom: NEW_MODEL_EFFECTIVE_FROM,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(`E2E 設定油價版本失敗: ${res.status()} ${await res.text()}`);
     }
   }
 }
@@ -277,6 +359,8 @@ test.describe("差旅補助申請 — PHASE-004 Gate E2E", () => {
   }) => {
     await login(page);
     await ensureParametersCoverDate(page, SUCCESS_TRIP_DATE);
+    const selfUserId = await getCurrentUserId(page);
+    await ensureFuelModelCoversDate(page, selfUserId, SUCCESS_TRIP_DATE);
 
     const id = await createDraftViaUI(page);
     await expect(page.locator("h1")).toContainText("差旅補助申請（草稿）");
