@@ -14,17 +14,18 @@ import { Link } from "react-router-dom";
 import {
   apiCreateDepreciationVersion,
   apiCreateEtcVersion,
-  apiCreateFuelVersion,
+  apiCreateFuelPriceVersion,
   apiGetDepreciationVersions,
   apiGetEtcVersions,
-  apiGetFuelVersions,
+  apiGetFuelPriceVersions,
 } from "../api/parameters.js";
 import { useAuth } from "../context/AuthContext.js";
 import type {
   ApiError,
   DepreciationParameterDto,
   EtcParameterDto,
-  FuelParameterDto,
+  FuelPriceVersionDto,
+  FuelType,
 } from "../types/api.js";
 
 // ---- Shared section states ----
@@ -63,13 +64,22 @@ function getConflictVersionInfo(err: ApiError): string | null {
   return null;
 }
 
-// ---- FuelSection ----
+// ---- FuelSection (PHASE-005a-T9／AC-29：油種＋每公升油價，取代舊制每公里單價模型) ----
+
+/** 固定四項油種（Q4／D2(a)），zh-TW 標籤逐字（AC-29）。 */
+const FUEL_TYPE_OPTIONS: ReadonlyArray<{ value: FuelType; label: string }> = [
+  { value: "GASOLINE_92", label: "92 無鉛汽油" },
+  { value: "GASOLINE_95", label: "95 無鉛汽油" },
+  { value: "GASOLINE_98", label: "98 無鉛汽油" },
+  { value: "DIESEL", label: "柴油" },
+];
 
 function FuelSection(): React.ReactElement {
-  const [sectionState, setSectionState] = useState<SectionState<FuelParameterDto>>({
+  const [sectionState, setSectionState] = useState<SectionState<FuelPriceVersionDto>>({
     kind: "loading",
   });
-  const [unitPrice, setUnitPrice] = useState("");
+  const [fuelType, setFuelType] = useState<FuelType>("GASOLINE_92");
+  const [pricePerLiter, setPricePerLiter] = useState("");
   const [effectiveFrom, setEffectiveFrom] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -79,7 +89,7 @@ function FuelSection(): React.ReactElement {
   const load = useCallback(async () => {
     setSectionState({ kind: "loading" });
     try {
-      const { versions } = await apiGetFuelVersions();
+      const { versions } = await apiGetFuelPriceVersions();
       setSectionState({ kind: "ready", versions });
     } catch (err) {
       const apiErr = err as ApiError;
@@ -105,9 +115,9 @@ function FuelSection(): React.ReactElement {
     setFormSuccess(null);
     setSubmitting(true);
     try {
-      await apiCreateFuelVersion({ unitPrice, effectiveFrom });
-      setFormSuccess("油資參數版本建立成功。");
-      setUnitPrice("");
+      await apiCreateFuelPriceVersion({ fuelType, pricePerLiter, effectiveFrom });
+      setFormSuccess("油價版本建立成功。");
+      setPricePerLiter("");
       setEffectiveFrom("");
       await load();
     } catch (err) {
@@ -135,11 +145,11 @@ function FuelSection(): React.ReactElement {
 
   return (
     <section className="param-section" aria-labelledby="fuel-heading">
-      <h2 id="fuel-heading">油資參數</h2>
+      <h2 id="fuel-heading">油資參數（油價）</h2>
 
       {/* Create form */}
       <div className="param-form-card">
-        <h3>新增油資參數版本</h3>
+        <h3>新增油價版本</h3>
         {formError && (
           <div className="error-block" role="alert">
             {formError}
@@ -148,21 +158,43 @@ function FuelSection(): React.ReactElement {
         {formSuccess && <output className="success-block">{formSuccess}</output>}
         <form onSubmit={handleSubmit} noValidate>
           <div className="form-group">
-            <label htmlFor="fuel-unitPrice">油資單價（元/公里）*</label>
+            <label htmlFor="fuel-fuelType">油種 *</label>
+            <select
+              id="fuel-fuelType"
+              value={fuelType}
+              onChange={(e) => setFuelType(e.target.value as FuelType)}
+              disabled={submitting}
+              required
+              aria-describedby={fieldErrors.fuelType ? "fuel-fuelType-err" : undefined}
+            >
+              {FUEL_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            {fieldErrors.fuelType && (
+              <span id="fuel-fuelType-err" className="field-error" role="alert">
+                {fieldErrors.fuelType}
+              </span>
+            )}
+          </div>
+          <div className="form-group">
+            <label htmlFor="fuel-pricePerLiter">每公升油價（元／公升）*</label>
             <input
-              id="fuel-unitPrice"
+              id="fuel-pricePerLiter"
               type="number"
               step="0.0001"
               min="0"
-              value={unitPrice}
-              onChange={(e) => setUnitPrice(e.target.value)}
+              value={pricePerLiter}
+              onChange={(e) => setPricePerLiter(e.target.value)}
               disabled={submitting}
               required
-              aria-describedby={fieldErrors.unitPrice ? "fuel-unitPrice-err" : undefined}
+              aria-describedby={fieldErrors.pricePerLiter ? "fuel-pricePerLiter-err" : undefined}
             />
-            {fieldErrors.unitPrice && (
-              <span id="fuel-unitPrice-err" className="field-error" role="alert">
-                {fieldErrors.unitPrice}
+            {fieldErrors.pricePerLiter && (
+              <span id="fuel-pricePerLiter-err" className="field-error" role="alert">
+                {fieldErrors.pricePerLiter}
               </span>
             )}
           </div>
@@ -191,9 +223,9 @@ function FuelSection(): React.ReactElement {
         </form>
       </div>
 
-      {/* Version list */}
+      {/* Version list — 依油種分組，各自時間軸可辨識（AC-29） */}
       <div className="param-list-card">
-        <h3>歷史版本</h3>
+        <h3>歷史版本（依油種）</h3>
         {sectionState.kind === "loading" && (
           <div className="loading-block" aria-busy="true">
             <span className="spinner" aria-label="載入中" />
@@ -213,30 +245,41 @@ function FuelSection(): React.ReactElement {
             <p>無權限存取此資料。</p>
           </div>
         )}
-        {sectionState.kind === "ready" && sectionState.versions.length === 0 && (
-          <div className="empty-block">
-            <p>尚無任何油資版本，請使用上方表單建立第一個版本。</p>
+        {sectionState.kind === "ready" && (
+          <div className="fuel-price-groups">
+            {FUEL_TYPE_OPTIONS.map((opt) => {
+              const groupVersions = sectionState.versions.filter((v) => v.fuelType === opt.value);
+              return (
+                <div className="fuel-price-group" key={opt.value}>
+                  <h4>{opt.label}</h4>
+                  {groupVersions.length === 0 ? (
+                    <div className="empty-block">
+                      <p>尚未建立此油種的油價版本</p>
+                    </div>
+                  ) : (
+                    <table className="param-table" aria-label={`${opt.label} 油價版本清單`}>
+                      <thead>
+                        <tr>
+                          <th>生效日期</th>
+                          <th className="num-col">每公升油價（元／公升）</th>
+                          <th>建立時間</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {groupVersions.map((v) => (
+                          <tr key={v.id}>
+                            <td>{v.effectiveFrom}</td>
+                            <td className="num-col">{v.pricePerLiter}</td>
+                            <td>{formatDateYmd(v.createdAt)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        )}
-        {sectionState.kind === "ready" && sectionState.versions.length > 0 && (
-          <table className="param-table" aria-label="油資參數版本清單">
-            <thead>
-              <tr>
-                <th>生效日期</th>
-                <th className="num-col">每公里單價（元）</th>
-                <th>建立時間</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sectionState.versions.map((v) => (
-                <tr key={v.id}>
-                  <td>{v.effectiveFrom}</td>
-                  <td className="num-col">{v.unitPrice}</td>
-                  <td>{formatDateYmd(v.createdAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         )}
       </div>
     </section>

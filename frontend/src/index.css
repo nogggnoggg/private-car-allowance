@@ -381,6 +381,16 @@ body {
   color: #999;
 }
 
+/* ===== Fuel Price Groups（PHASE-005a-T9／AC-29：依油種分組） ===== */
+.fuel-price-group + .fuel-price-group {
+  margin-top: 16px;
+}
+
+.fuel-price-group h4 {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
 .action-cell {
   display: flex;
   gap: 6px;

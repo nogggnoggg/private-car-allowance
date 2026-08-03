@@ -4,11 +4,16 @@ export type Role = "USER" | "ADMIN";
 
 // ---- PHASE-003a parameter types ----
 
-export interface FuelParameterDto {
+// ---- PHASE-005a-T3/T9 fuel price (油種＋每公升油價) ----
+
+export type FuelType = "GASOLINE_92" | "GASOLINE_95" | "GASOLINE_98" | "DIESEL";
+
+export interface FuelPriceVersionDto {
   id: string;
-  unitPrice: string; // Decimal as string (D8)
+  fuelType: FuelType;
+  pricePerLiter: string; // Decimal(10,4) as string, toFixed(4)
   effectiveFrom: string; // YYYY-MM-DD
-  createdAt: string;
+  createdAt: string; // ISO
 }
 
 export interface EtcParameterDto {

@@ -9,34 +9,36 @@
 import {
   type DepreciationParameterDto,
   type EtcParameterDto,
-  type FuelParameterDto,
+  type FuelPriceVersionDto,
+  type FuelType,
   parseApiResponse,
 } from "../types/api.js";
 
-// ---- Fuel ----
+// ---- Fuel price (PHASE-005a-T3/T9：油種＋每公升油價，取代舊制 /parameters/fuel) ----
 
-export interface CreateFuelVersionRequest {
-  unitPrice: string | number;
+export interface CreateFuelPriceVersionRequest {
+  fuelType: FuelType;
+  pricePerLiter: string | number;
   effectiveFrom: string; // YYYY-MM-DD
 }
 
-export async function apiCreateFuelVersion(
-  data: CreateFuelVersionRequest
-): Promise<{ version: FuelParameterDto }> {
-  const res = await fetch("/api/parameters/fuel", {
+export async function apiCreateFuelPriceVersion(
+  data: CreateFuelPriceVersionRequest
+): Promise<{ version: FuelPriceVersionDto }> {
+  const res = await fetch("/api/parameters/fuel-price", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify(data),
   });
-  return parseApiResponse<{ version: FuelParameterDto }>(res);
+  return parseApiResponse<{ version: FuelPriceVersionDto }>(res);
 }
 
-export async function apiGetFuelVersions(): Promise<{ versions: FuelParameterDto[] }> {
-  const res = await fetch("/api/parameters/fuel", {
+export async function apiGetFuelPriceVersions(): Promise<{ versions: FuelPriceVersionDto[] }> {
+  const res = await fetch("/api/parameters/fuel-price", {
     credentials: "include",
   });
-  return parseApiResponse<{ versions: FuelParameterDto[] }>(res);
+  return parseApiResponse<{ versions: FuelPriceVersionDto[] }>(res);
 }
 
 // ---- ETC ----
