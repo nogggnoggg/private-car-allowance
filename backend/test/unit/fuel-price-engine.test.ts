@@ -31,14 +31,19 @@ import { describe, expect, it } from "vitest";
 import { deriveFuelUnitPrice } from "../../src/parameters/fuel-price-engine.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ENGINE_SRC_PATH = path.resolve(
-  __dirname,
-  "..",
-  "..",
-  "src",
-  "parameters",
-  "fuel-price-engine.ts"
-);
+const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
+
+/**
+ * SF-3（Review）：AC-28 掃描範圍改由本清單驅動，不再寫死單一路徑常數。
+ * **T3/T4/T5/T7/T8 等後續 Task 於本 Phase 新增 `src` 檔案時，必須將其相對
+ * 路徑（相對於 `backend/`）加入本陣列**，否則新檔案不會被結構性掃描覆蓋。
+ * 清單中任何檔案不存在時，`fs.readFileSync` 會直接拋錯使測試紅（fail-loud），
+ * 不得靜默跳過。
+ */
+const PHASE_005A_SRC_FILES = ["src/parameters/fuel-price-engine.ts"] as const;
+
+/** 本 Phase 目前唯一的清單項目；供下方「檔案專屬」斷言（非泛用迴圈）取用。 */
+const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_005A_SRC_FILES[0]);
 
 // ---------------------------------------------------------------------------
 // §1 AC-18 八列精確驗表
@@ -160,10 +165,32 @@ describe("deriveFuelUnitPrice — AC-20 derived unit price at or beyond the colu
     expect(() => deriveFuelUnitPrice("30.0000", "0")).toThrow(RangeError);
     expect(() => deriveFuelUnitPrice("30.0000", "-1")).toThrow(RangeError);
   });
+
+  // SF-1 (Review): a non-finite divisor must not slip past the guard.
+  // `NaN.lessThanOrEqualTo(0)` is `false`, so the pre-fix guard let a `"NaN"`
+  // kmPerLiter through, yielding `{ status: "ok", unitPrice: NaN }`; an
+  // `"Infinity"` divisor silently produced a unit price of `0`. Both must now
+  // throw a RangeError instead of ever reaching the return statement.
+  it("defensive (SF-1): kmPerLiter of 'NaN' throws RangeError rather than yielding status 'ok' with a NaN unitPrice", () => {
+    expect(() => deriveFuelUnitPrice("30.0000", "NaN")).toThrow(RangeError);
+  });
+
+  it("defensive (SF-1): kmPerLiter of 'Infinity' throws RangeError rather than silently yielding a unit price of 0", () => {
+    expect(() => deriveFuelUnitPrice("30.0000", "Infinity")).toThrow(RangeError);
+  });
+
+  it("defensive (SF-1): a non-finite pricePerLiter ('NaN') throws RangeError via the post-derivation finiteness check, even though kmPerLiter itself is a valid finite positive divisor", () => {
+    expect(() => deriveFuelUnitPrice("NaN", "10.0000")).toThrow(RangeError);
+  });
+
+  it("defensive (SF-1): a non-finite pricePerLiter ('Infinity') throws RangeError via the post-derivation finiteness check", () => {
+    expect(() => deriveFuelUnitPrice("Infinity", "10.0000")).toThrow(RangeError);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// §3 AC-28 結構性掃描（僅本 Phase 新增檔案：fuel-price-engine.ts）
+// §3 AC-28 結構性掃描（清單驅動：PHASE_005A_SRC_FILES，目前僅
+// fuel-price-engine.ts 一項；T3/T4/T5/T7/T8 新增 src 檔案時必須加入清單）
 // ---------------------------------------------------------------------------
 
 /**
@@ -235,6 +262,31 @@ function findDecimalConstructorArgs(blankedCode: string): string[] {
 }
 
 describe("AC-28 零浮點中介 — PHASE-005a source files contain no Number()/parseFloat/parseInt on the amount path (date-parse whitelist only)", () => {
+  // SF-3（Review）：掃描迴圈逐檔驅動 PHASE_005A_SRC_FILES；清單目前僅一個
+  // 項目，但 describe.each 確保未來新增項目時自動被覆蓋，且任一路徑不存在
+  // 時 fs.readFileSync 會拋錯使該檔案的整組測試紅（不會靜默跳過）。
+  describe.each(PHASE_005A_SRC_FILES)("scanned file: %s", (relativePath) => {
+    const rawSource = fs.readFileSync(path.resolve(BACKEND_ROOT, relativePath), "utf8");
+    const blanked = blankCommentsAndStrings(rawSource);
+
+    it("scan sanity: blanking does not collapse the file to an empty/whitespace-only string (not scanning nothing)", () => {
+      expect(blanked.trim().length).toBeGreaterThan(0);
+    });
+
+    it("contains zero Number()/parseFloat/parseInt calls (no date-parse path exists in this file, so the whitelist is empty)", () => {
+      expect(findCoercionCalls(blanked)).toEqual([]);
+    });
+
+    it("contains no unary/binary `+` numeric coercion of a variable on the amount path", () => {
+      // Matches `+identifier` that is not `++`/`--` and not part of a numeric
+      // literal exponent — conservative pattern scoped to this small file.
+      const plusCoercionPattern = /(?<![+\-.\w])\+(?!\+)[a-zA-Z_$][\w$]*/g;
+      expect([...blanked.matchAll(plusCoercionPattern)]).toEqual([]);
+    });
+  });
+
+  // 檔案專屬（非泛用）斷言：僅適用於 fuel-price-engine.ts 之精確內容驗證，
+  // 取自 PHASE_005A_SRC_FILES[0]（本 Phase 目前唯一項目）。
   const rawSource = fs.readFileSync(ENGINE_SRC_PATH, "utf8");
   const blanked = blankCommentsAndStrings(rawSource);
 
@@ -243,17 +295,6 @@ describe("AC-28 零浮點中介 — PHASE-005a source files contain no Number()/
     expect(blanked).toContain("toDecimalPlaces");
     // Chinese prose that lives only in comments must not survive blanking.
     expect(blanked).not.toContain("欄位容量");
-  });
-
-  it("fuel-price-engine.ts contains zero Number()/parseFloat/parseInt calls (no date-parse path exists in this file, so the whitelist is empty)", () => {
-    expect(findCoercionCalls(blanked)).toEqual([]);
-  });
-
-  it("fuel-price-engine.ts contains no unary/binary `+` numeric coercion of a variable on the amount path", () => {
-    // Matches `+identifier` that is not `++`/`--` and not part of a numeric
-    // literal exponent — conservative pattern scoped to this small file.
-    const plusCoercionPattern = /(?<![+\-.\w])\+(?!\+)[a-zA-Z_$][\w$]*/g;
-    expect([...blanked.matchAll(plusCoercionPattern)]).toEqual([]);
   });
 
   it("every Prisma.Decimal construction in this file takes a string literal or an existing Prisma.Decimal-typed value (D4 bright-line)", () => {

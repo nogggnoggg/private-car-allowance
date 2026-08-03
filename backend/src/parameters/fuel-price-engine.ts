@@ -6,10 +6,15 @@
  * AC-28（零浮點中介之結構性守門）、§15 T2 列、§16 D4（推導處加容量守門，已批）。
  *
  * 本模組刻意「不接線」（不新增 route、不碰 DB、不改任何既有 service）—— 接線
- * 屬 T7/T8。本模組刻意「不做上游驗證」（`kmPerLiter > 0` 等已由既有參數驗證
- * 管線 `parameter-validation.ts` 於建立版本時把關；沿用 `travel-calculation.ts`
- * 「引擎假設輸入已合法」之既有慣例），僅對「除以零或負值」這種會使商無意義
- * 的輸入做防禦性拋錯（見 `assertPositiveDivisor`），不吞錯、不回傳 NaN。
+ * 屬 T7/T8。`kmPerLiter > 0` 之值域把關屬 AC-08／T4 之 service 層責任（**尚未
+ * 實作**——`parameter-validation.ts` 為格式層，目前刻意放行 0 與負值，不構成
+ * 值域把關）；本函式對「除以零、負值、非有限（`NaN`／`Infinity`）」等會使商
+ * 無意義或無法追蹤之輸入做防禦性拋錯（見 `assertPositiveDivisor` 與推導後之
+ * 有限性後置檢查），不吞錯、不回傳 `NaN`、不讓非有限值逃逸。
+ *
+ * T7/T8 接線義務：`deriveFuelUnitPrice` 之任何 `throw`（`RangeError`）代表資料
+ * 已毀損之防禦性失敗，不得以 500 面向使用者——接線處須攔截並轉為適當的
+ * 4xx／內部告警，不得讓例外直接穿透至 HTTP 回應。
  *
  * 計算語意（逐字實作，AC-18）：
  *   unitPrice = ROUND_HALF_UP(pricePerLiter ÷ kmPerLiter, 0)   （整數，NTD）
@@ -22,7 +27,8 @@
  *  （`details.missing` 追加 `FUEL_UNIT_PRICE_OUT_OF_RANGE`）。
  *
  * 浮點中介聲明（AC-28）：本檔全程僅使用 `Prisma.Decimal`（decimal.js）之
- * `.div()` / `.abs()` / `.toDecimalPlaces()` / `.greaterThanOrEqualTo()`；
+ * `.div()` / `.abs()` / `.toDecimalPlaces()` / `.greaterThanOrEqualTo()` /
+ * `.isFinite()` / `.isNaN()` / `.lessThanOrEqualTo()`；
  * `Prisma.Decimal` 建構僅發生於「輸入已為字串或既有 Decimal 實例」之處，
  * 從未以 `Number()`／`parseFloat`／`parseInt`／`+<變數>` 做數值脅制中介。
  */
@@ -61,14 +67,35 @@ function toDecimal(value: Prisma.Decimal | string): Prisma.Decimal {
 }
 
 /**
- * 防禦性守門：`kmPerLiter` 必須為正值，否則商無意義（除以零／負值）。
- * 上游 `parameter-validation.ts` 已在建立油耗版本時把關正值，本檢查僅為
- * 本引擎之最後一道防線，避免 decimal.js 之除以零直接拋出難以追蹤的錯誤。
+ * 防禦性守門：`kmPerLiter` 必須為「有限」且為正值，否則商無意義（除以零／
+ * 負值）或不可追蹤（`NaN`／`Infinity` 除數會使 decimal.js 靜默產出 `NaN`
+ * 或 `0`，穿透至呼叫端）。值域 `>0` 之業務驗證屬 AC-08／T4 之 service 層
+ * 責任（尚未實作）；本檢查是本引擎的最後一道防線，非上游把關的重複。
  */
 function assertPositiveDivisor(kmPerLiter: Prisma.Decimal): void {
-  if (kmPerLiter.lessThanOrEqualTo(0)) {
+  if (!kmPerLiter.isFinite() || kmPerLiter.lessThanOrEqualTo(0)) {
     throw new RangeError(
-      `deriveFuelUnitPrice: kmPerLiter must be positive, received "${kmPerLiter.toString()}"`
+      `deriveFuelUnitPrice: kmPerLiter must be a finite positive number, received "${kmPerLiter.toString()}"`
+    );
+  }
+}
+
+/**
+ * 防禦性後置檢查：推導結果 `unitPrice` 必須為有限數值。`kmPerLiter` 已由
+ * `assertPositiveDivisor` 把關為有限正值，但 `pricePerLiter` 本身若為非有限
+ * （`NaN`／`Infinity`）字串構造而成，除法仍會產出非有限商，且不觸發前述
+ * 守門。此處 fail-loud：非有限來源必為資料毀損（不是正常的「超出欄位容量」
+ * 情境，AC-20 的 `out_of_range` 僅處理有限但過大的商），故選擇 `throw` 而非
+ * 映射為 `out_of_range`，避免以捏造的 409 掩蓋真正的資料完整性問題。
+ */
+function assertFiniteResult(
+  unitPrice: Prisma.Decimal,
+  pricePerLiter: Prisma.Decimal,
+  kmPerLiter: Prisma.Decimal
+): void {
+  if (unitPrice.isNaN() || !unitPrice.isFinite()) {
+    throw new RangeError(
+      `deriveFuelUnitPrice: derived unitPrice is not finite (pricePerLiter="${pricePerLiter.toString()}", kmPerLiter="${kmPerLiter.toString()}")`
     );
   }
 }
@@ -84,7 +111,7 @@ function assertPositiveDivisor(kmPerLiter: Prisma.Decimal): void {
  * 從不 mutate 輸入。
  *
  * @param pricePerLiter 每公升油價（元/L），`Prisma.Decimal` 或字串
- * @param kmPerLiter 車輛油耗（km/L），`Prisma.Decimal` 或字串；必須為正值
+ * @param kmPerLiter 車輛油耗（km/L），`Prisma.Decimal` 或字串；必須為有限正值
  * @returns 成功時 `{ status: "ok", unitPrice }`（整數 Decimal）；
  *          推導後 `|unitPrice| ≥ 10^6`（欄位容量）時
  *          `{ status: "out_of_range", reason: "FUEL_UNIT_PRICE_OUT_OF_RANGE" }`
@@ -101,6 +128,8 @@ export function deriveFuelUnitPrice(
 
   // unitPrice = ROUND_HALF_UP(pricePerLiter ÷ kmPerLiter, 0)（AC-18；恰一處取整）
   const unitPrice = price.div(consumption).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+
+  assertFiniteResult(unitPrice, price, consumption);
 
   if (unitPrice.abs().greaterThanOrEqualTo(FUEL_UNIT_PRICE_CAPACITY_LIMIT)) {
     return { status: "out_of_range", reason: "FUEL_UNIT_PRICE_OUT_OF_RANGE" };
