@@ -32,6 +32,16 @@ export interface FuelConsumptionVersionDto {
   createdById: string;
 }
 
+/**
+ * PHASE-005a-T11: `GET /me/fuel-consumption` 之 `current`（backend T6 逐鍵
+ * 白名單，見 backend/src/users/fuel-consumption-routes.ts）——僅此三鍵。
+ */
+export interface MyFuelConsumptionDto {
+  fuelType: FuelType;
+  kmPerLiter: string;
+  effectiveFrom: string; // YYYY-MM-DD
+}
+
 export interface EtcParameterDto {
   id: string;
   unitPrice: string;

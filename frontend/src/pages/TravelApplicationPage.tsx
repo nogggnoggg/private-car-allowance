@@ -25,6 +25,7 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  type PreviewMissingCode,
   type SegmentInput,
   type TravelApplicationDto,
   type TravelComputedDto,
@@ -41,6 +42,41 @@ import type { ApiError } from "../types/api.js";
 
 const SEGMENT_ATTACHMENT_LIMIT = 3; // UI 提示用；後端上限為權威（AC-22）
 const PREVIEW_DEBOUNCE_MS = 300; // D8
+
+/**
+ * AC-32（PHASE-005a-T11）：依 `missingParameters` 之 wire 代碼（D5(a)/T7 複審
+ * SF-4 更名後之六碼權威清單，§18 T8R）逐碼對應之 zh-TW 文案。三個「缺參數」
+ * 代碼（FUEL_CONSUMPTION/FUEL_PRICE/ETC）之文案逐字互異（AC-32 明文要求）；
+ * 三個「不可計算」代碼（FUEL_DATA_CORRUPTED/FUEL_UNIT_PRICE_OUT_OF_RANGE/
+ * AMOUNT_OUT_OF_RANGE）之文案亦互異，且與前三者不重複（PROJECT_STATE T8R
+ * 移交 A-2 義務：不得洩漏技術細節、不得與 AC-32 三情境文字混淆）。
+ *
+ * 本函式純為代碼→固定字串查表，不含任何金額/單價計算（§11.3 不自算鑑別）。
+ */
+const MISSING_PARAMETER_MESSAGES: Record<PreviewMissingCode, string> = {
+  FUEL_CONSUMPTION: "請聯絡管理員建立油耗資料",
+  FUEL_PRICE: "請聯絡管理員設定參數",
+  ETC: "該出差日期缺少 ETC 補助參數，請聯絡管理員設定",
+  FUEL_DATA_CORRUPTED: "您的油耗資料異常，請聯絡管理員檢查",
+  FUEL_UNIT_PRICE_OUT_OF_RANGE: "油價與油耗組合超出可計算範圍，請聯絡管理員檢查參數設定",
+  AMOUNT_OUT_OF_RANGE: "計算金額超出可儲存範圍，請聯絡管理員檢查里程與參數設定",
+};
+
+/** 顯示順序固定（缺參數優先於不可計算，與 §9.2 解析順序一致）。 */
+const MISSING_PARAMETER_ORDER: PreviewMissingCode[] = [
+  "FUEL_CONSUMPTION",
+  "FUEL_PRICE",
+  "ETC",
+  "FUEL_DATA_CORRUPTED",
+  "FUEL_UNIT_PRICE_OUT_OF_RANGE",
+  "AMOUNT_OUT_OF_RANGE",
+];
+
+function missingParameterMessages(missing: PreviewMissingCode[]): string[] {
+  return MISSING_PARAMETER_ORDER.filter((code) => missing.includes(code)).map(
+    (code) => MISSING_PARAMETER_MESSAGES[code]
+  );
+}
 
 let localKeySeq = 0;
 function nextLocalKey(): string {
@@ -720,16 +756,22 @@ export default function TravelApplicationPage(): React.ReactElement {
 
                   <div className="preview-summary" aria-live="polite">
                     {previewState.kind === "loading" && <p>計算中…</p>}
-                    {previewState.kind === "ready" && preview && (
-                      <dl className="detail-list">
-                        <dt>油資補助（試算）</dt>
-                        <dd>{preview.fuelAmount}</dd>
-                        <dt>ETC 補助（試算）</dt>
-                        <dd>{preview.etcAmount}</dd>
-                        <dt>本段金額（試算）</dt>
-                        <dd>{preview.amount}</dd>
-                      </dl>
-                    )}
+                    {previewState.kind === "ready" &&
+                      preview &&
+                      (previewState.data.parameterAvailable ? (
+                        <dl className="detail-list">
+                          <dt>油資補助（試算）</dt>
+                          <dd>{preview.fuelAmount}</dd>
+                          <dt>ETC 補助（試算）</dt>
+                          <dd>{preview.etcAmount}</dd>
+                          <dt>本段金額（試算）</dt>
+                          <dd>{preview.amount}</dd>
+                        </dl>
+                      ) : (
+                        // AC-32（FE-US-10 第四條）：缺參數/不可計算時，本段金額
+                        // 不得以 0 呈現為最終值——顯示「油資無法計算」。
+                        <p className="warn-text">油資無法計算</p>
+                      ))}
                     {previewState.kind === "error" && (
                       <p className="field-error">{previewState.message}</p>
                     )}
@@ -743,23 +785,24 @@ export default function TravelApplicationPage(): React.ReactElement {
         <section aria-labelledby="preview-total-heading">
           <h2 id="preview-total-heading">金額預覽（試算，後端計算）</h2>
           {previewState.kind === "loading" && <p>計算中…</p>}
-          {previewState.kind === "ready" && (
-            <>
-              {!previewState.data.parameterAvailable && (
-                <p className="warn-text">
-                  該出差日期缺少
-                  {previewState.data.missingParameters.includes("FUEL") ? "油資" : ""}
-                  {previewState.data.missingParameters.length === 2 ? "、" : ""}
-                  {previewState.data.missingParameters.includes("ETC") ? "ETC" : ""}
-                  補助參數，暫以 0 試算，請聯絡管理員設定。
+          {previewState.kind === "ready" &&
+            (!previewState.data.parameterAvailable ? (
+              // AC-32：三種缺參數情境文字逐字互異（同時成立時同時顯示）；
+              // 且不得以「暫以 0 試算」之類文字暗示金額 0 為最終值。
+              <div className="warn-text">
+                <p>
+                  <strong>油資無法計算</strong>
                 </p>
-              )}
+                {missingParameterMessages(previewState.data.missingParameters).map((msg) => (
+                  <p key={msg}>{msg}</p>
+                ))}
+              </div>
+            ) : (
               <p>
                 <strong>合計金額：{previewState.data.totalAmount}</strong>（總里程：
                 {previewState.data.totalKm} 公里）
               </p>
-            </>
-          )}
+            ))}
           {previewState.kind === "error" && (
             <p className="field-error" role="alert">
               {previewState.message}

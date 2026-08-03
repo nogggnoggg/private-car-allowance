@@ -370,6 +370,157 @@ describe("TravelApplicationPage", () => {
     );
   });
 
+  // ---- AC-32（PHASE-005a-T11）：缺參數提示可區分 + 不可計算不得以 0 呈現 ----
+  // D5(a) 再定向：`missingParameters` wire 值域由 "FUEL"|"ETC" 改為六碼
+  // （FUEL_PRICE/FUEL_CONSUMPTION/ETC/FUEL_UNIT_PRICE_OUT_OF_RANGE/
+  // FUEL_DATA_CORRUPTED/AMOUNT_OUT_OF_RANGE，§18 T8R 權威清單）。修正前之
+  // `includes("FUEL")` 判斷恆為 false（wire 已無 "FUEL" 這個值）——下列四個
+  // 測試皆會在修正前的邏輯下失敗（看不到任何缺參數提示文字），驗證本次修正
+  // 確實接線正確的 wire 代碼。
+  describe("缺參數提示（PHASE-005a）", () => {
+    it("僅缺油耗 → 顯示「請聯絡管理員建立油耗資料」", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: ["FUEL_CONSUMPTION"],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+      await sleep(400);
+
+      expect(screen.getByText("請聯絡管理員建立油耗資料")).toBeInTheDocument();
+      expect(screen.queryByText("請聯絡管理員設定參數")).not.toBeInTheDocument();
+    });
+
+    it("僅缺油價 → 顯示「請聯絡管理員設定參數」", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: ["FUEL_PRICE"],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+      await sleep(400);
+
+      expect(screen.getByText("請聯絡管理員設定參數")).toBeInTheDocument();
+      expect(screen.queryByText("請聯絡管理員建立油耗資料")).not.toBeInTheDocument();
+    });
+
+    it("兩者皆缺 → 兩則訊息同時可見且逐字互異", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: ["FUEL_CONSUMPTION", "FUEL_PRICE"],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+      await sleep(400);
+
+      const consumptionMsg = screen.getByText("請聯絡管理員建立油耗資料");
+      const priceMsg = screen.getByText("請聯絡管理員設定參數");
+      expect(consumptionMsg).toBeInTheDocument();
+      expect(priceMsg).toBeInTheDocument();
+      expect(consumptionMsg.textContent).not.toBe(priceMsg.textContent);
+    });
+
+    // ---- §11.3 不自算鑑別：mock 之 totalAmount/segments 皆為前端不可能自算出
+    // 的implausible值——若前端曾自行計算或誤把 0 當最終值，本斷言必紅。 ----
+    it("缺油資依據時預覽顯示「油資無法計算」而非金額 0", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            segments: [
+              {
+                id: "seg-1",
+                sortOrder: 0,
+                origin: "台北",
+                destination: "台中",
+                totalKm: "100.00",
+                highwayKm: "0.00",
+                attachments: [],
+                snapshot: null,
+              },
+            ],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: ["FUEL_CONSUMPTION"],
+            totalAmount: 0,
+            totalKm: "100.00",
+            segments: [
+              {
+                segmentId: "seg-1",
+                segmentIndex: 0,
+                fuelAmount: "0.0000",
+                etcAmount: "0.0000",
+                rawAmount: "0.0000",
+                amount: 0,
+              },
+            ],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByDisplayValue("台北")).toBeInTheDocument());
+      await sleep(400);
+
+      expect(screen.getAllByText("油資無法計算").length).toBeGreaterThan(0);
+      expect(screen.queryByText(/合計金額：0/)).not.toBeInTheDocument();
+      expect(screen.queryByText("0")).not.toBeInTheDocument();
+    });
+
+    // ---- 三個「不可計算」代碼各自之文案呈現（PROJECT_STATE T8R 移交 A-2）----
+    it.each([
+      ["FUEL_DATA_CORRUPTED" as const, "您的油耗資料異常，請聯絡管理員檢查"],
+      [
+        "FUEL_UNIT_PRICE_OUT_OF_RANGE" as const,
+        "油價與油耗組合超出可計算範圍，請聯絡管理員檢查參數設定",
+      ],
+      ["AMOUNT_OUT_OF_RANGE" as const, "計算金額超出可儲存範圍，請聯絡管理員檢查里程與參數設定"],
+    ])("不可計算代碼 %s → 顯示對應文案", async (code, expectedText) => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: [code],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+      await sleep(400);
+
+      expect(screen.getByText(expectedText)).toBeInTheDocument();
+    });
+  });
+
   // ---- Preview debounce 300ms (D8) ----
   it("預覽 debounce 300ms：連續輸入僅觸發一次預覽請求", async () => {
     const router = installFetchRouter();
@@ -467,8 +618,13 @@ describe("TravelApplicationPage", () => {
           snapshot: {
             fuelUnitPrice: "5.0000",
             etcUnitPrice: "3.0000",
+            // D5(a) 再定向（PHASE-005a-T11 必要）：`fuelParameterVersionId`
+            // 改 nullable（新模型申請恆為 null，§8.4 判別欄位）；此為舊模型
+            // 已完成申請之既有測試場景，維持非 null，另補新模型雙欄位 null。
             fuelParameterVersionId: "fv-1",
             etcParameterVersionId: "ev-1",
+            fuelPriceVersionId: null,
+            fuelConsumptionVersionId: null,
             totalKm: "0.00",
             totalRawAmount: "0.0000",
             totalAmount: 0,

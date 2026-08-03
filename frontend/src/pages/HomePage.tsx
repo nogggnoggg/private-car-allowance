@@ -2,6 +2,7 @@ import type React from "react";
 import { Link } from "react-router-dom";
 import ApplicationListSection from "../components/ApplicationListSection.js";
 import MileageSummarySection from "../components/MileageSummarySection.js";
+import MyFuelConsumptionSection from "../components/MyFuelConsumptionSection.js";
 import { useAuth } from "../context/AuthContext.js";
 
 export default function HomePage(): React.ReactElement {
@@ -47,6 +48,7 @@ export default function HomePage(): React.ReactElement {
 
       <main className="page-main">
         <MileageSummarySection />
+        <MyFuelConsumptionSection />
         <h2>我的私車補助紀錄</h2>
         <ApplicationListSection />
       </main>
