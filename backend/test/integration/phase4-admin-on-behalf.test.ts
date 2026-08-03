@@ -26,7 +26,7 @@
  *     使用尚未被其他 phase4 測試檔占用的年份 2042（見既有測試檔慣例：T3=2032、
  *     preview=2031、T8=2034~2040、reference-protection=2045~2048）。
  */
-import { PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -110,6 +110,7 @@ describeWithDb("PHASE-004-T10 — 管理員代操作：代建立草稿 + 授權�
   const createdAttachmentIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
 
   function track(id: string): string {
     createdApplicationIds.push(id);
@@ -135,14 +136,33 @@ describeWithDb("PHASE-004-T10 — 管理員代操作：代建立草稿 + 授權�
     return att;
   }
 
+  /**
+   * PHASE-005a-T7: 新模型下油資單價依「擁有人（ownerId）油耗版本 → 該油種
+   * 油價版本」雙鏈推導（不再直讀 `FuelParameterVersion`，該表已由 D1(a) 凍結
+   * 為唯讀）。以 `kmPerLiter="1.0000"` 讓推導結果
+   * `ROUND_HALF_UP(pricePerLiter ÷ 1, 0)` 恰等於原「每公里單價」數值——刻意
+   * 的測試等價技巧，非改變 AC-18 公式本身（見 phase4-travel-complete.test.ts
+   * 同一慣例）。
+   */
   async function createParamVersions(
     effectiveFrom: string,
     fuelPrice: string,
     etcPrice: string
   ): Promise<void> {
-    const fuel = await prisma.fuelParameterVersion.create({
+    const consumption = await prisma.userFuelConsumptionVersion.create({
       data: {
-        unitPrice: fuelPrice,
+        userId: ownerId,
+        fuelType: FuelType.GASOLINE_95,
+        kmPerLiter: new Prisma.Decimal("1.0000"),
+        effectiveFrom: new Date(effectiveFrom),
+        basisNote: "p4t10 測試 fixture：kmPerLiter=1 使推導單價等於原每公里單價",
+        createdById: ownerId,
+      },
+    });
+    const fuel = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal(fuelPrice),
         effectiveFrom: new Date(effectiveFrom),
         createdById: ownerId,
       },
@@ -156,6 +176,7 @@ describeWithDb("PHASE-004-T10 — 管理員代操作：代建立草稿 + 授權�
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
+    createdConsumptionIds.push(consumption.id);
   }
 
   async function onBehalfCreate(
@@ -318,8 +339,13 @@ describeWithDb("PHASE-004-T10 — 管理員代操作：代建立草稿 + 授權�
       if (createdApplicationIds.length > 0) {
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
+      if (createdConsumptionIds.length > 0) {
+        await prisma.userFuelConsumptionVersion.deleteMany({
+          where: { id: { in: createdConsumptionIds } },
+        });
+      }
       if (createdFuelVersionIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({
+        await prisma.fuelPriceVersion.deleteMany({
           where: { id: { in: createdFuelVersionIds } },
         });
       }

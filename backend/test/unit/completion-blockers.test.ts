@@ -185,11 +185,33 @@ describe("computeCompletionBlockers — PHASE-004-T3", () => {
   // -------------------------------------------------------------------------
   // PARAMETER_NOT_AVAILABLE (AC-46)
   // -------------------------------------------------------------------------
-  it("missingParameters=['FUEL'] → PARAMETER_NOT_AVAILABLE mentioning 油資", () => {
-    const blockers = computeCompletionBlockers(baseInput({ missingParameters: ["FUEL"] }));
+  it("missingParameters=['FUEL_PRICE'] → PARAMETER_NOT_AVAILABLE mentioning 油資", () => {
+    const blockers = computeCompletionBlockers(baseInput({ missingParameters: ["FUEL_PRICE"] }));
     expect(blockers).toHaveLength(1);
     expect(blockers[0].code).toBe("PARAMETER_NOT_AVAILABLE");
     expect(blockers[0].message).toContain("油資");
+  });
+
+  // PHASE-005a-T7（Spec §2.D AC-21 明文：「completionBlockers 含
+  // FUEL_CONSUMPTION_NOT_AVAILABLE」）：缺油耗有獨立可區分的 blocker code，
+  // 與缺油價/ETC 之合併 PARAMETER_NOT_AVAILABLE 呈現不同（區分缺油耗 vs 缺
+  // 油價之逐字「訊息」則屬完成端點 409 之 AC-21/22 責任，見
+  // travel-parameters.test.ts）。
+  it("missingParameters=['FUEL_CONSUMPTION'] → 獨立的 FUEL_CONSUMPTION_NOT_AVAILABLE blocker（AC-21）", () => {
+    const blockers = computeCompletionBlockers(
+      baseInput({ missingParameters: ["FUEL_CONSUMPTION"] })
+    );
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0].code).toBe("FUEL_CONSUMPTION_NOT_AVAILABLE");
+    expect(blockers[0].message).toContain("油耗");
+  });
+
+  it("missingParameters=['FUEL_CONSUMPTION','FUEL_PRICE'] → 兩個獨立 blocker（缺油耗與缺油價互不合併）", () => {
+    const blockers = computeCompletionBlockers(
+      baseInput({ missingParameters: ["FUEL_CONSUMPTION", "FUEL_PRICE"] })
+    );
+    const codes = blockers.map((b) => b.code);
+    expect(codes).toEqual(["FUEL_CONSUMPTION_NOT_AVAILABLE", "PARAMETER_NOT_AVAILABLE"]);
   });
 
   it("missingParameters=['ETC'] → PARAMETER_NOT_AVAILABLE mentioning ETC", () => {
@@ -199,8 +221,10 @@ describe("computeCompletionBlockers — PHASE-004-T3", () => {
     expect(blockers[0].message).toContain("ETC");
   });
 
-  it("missingParameters=['FUEL','ETC'] → blocker(s) mention both categories", () => {
-    const blockers = computeCompletionBlockers(baseInput({ missingParameters: ["FUEL", "ETC"] }));
+  it("missingParameters=['FUEL_PRICE','ETC'] → blocker(s) mention both categories", () => {
+    const blockers = computeCompletionBlockers(
+      baseInput({ missingParameters: ["FUEL_PRICE", "ETC"] })
+    );
     const paramBlockers = blockers.filter((b) => b.code === "PARAMETER_NOT_AVAILABLE");
     expect(paramBlockers.length).toBeGreaterThanOrEqual(1);
     const combinedMessage = paramBlockers.map((b) => b.message).join(" ");
@@ -222,7 +246,7 @@ describe("computeCompletionBlockers — PHASE-004-T3", () => {
         tripDate: null,
         purpose: null,
         segments: [segment({ id: "s0", origin: null, attachmentCount: 0 })],
-        missingParameters: ["FUEL"],
+        missingParameters: ["FUEL_PRICE"],
       })
     );
     const codes = blockers.map((b) => b.code);
@@ -372,7 +396,12 @@ describe("computeCompletionBlockers — PHASE-004-T3", () => {
         }),
       ];
       const blockers = computeCompletionBlockers(
-        baseInput({ tripDate: null, purpose: null, segments: segs, missingParameters: ["FUEL"] })
+        baseInput({
+          tripDate: null,
+          purpose: null,
+          segments: segs,
+          missingParameters: ["FUEL_PRICE"],
+        })
       );
       const codes = blockers.map((b) => b.code);
       // Application-level blockers first, in fixed order; then per-segment

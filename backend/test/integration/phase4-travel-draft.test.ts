@@ -19,7 +19,7 @@
  *     prefix; NEVER deleteMany({}) globally.
  *   - synthetic data only (虛構人名、地名、出差目的)
  */
-import { Prisma, PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -1402,12 +1402,28 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
 
     let fuelVersionId: string;
     let etcVersionId: string;
+    let consumptionId: string;
 
+    // PHASE-005a-T7: 新模型下油資單價依「擁有人（ownerId）油耗版本 → 該油種
+    // 油價版本」雙鏈推導（不再直讀 `FuelParameterVersion`）。以
+    // kmPerLiter="1.0000" 保留原「每公里單價 6.0000」之測試等價（見
+    // phase4-travel-complete.test.ts 同一慣例）。
     beforeAll(async () => {
       if (!DB_URL) return;
-      const fuel = await prisma.fuelParameterVersion.create({
+      const consumption = await prisma.userFuelConsumptionVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal("6.0000"),
+          userId: ownerId,
+          fuelType: FuelType.GASOLINE_95,
+          kmPerLiter: new Prisma.Decimal("1.0000"),
+          effectiveFrom: new Date(PARAM_DATE),
+          basisNote: "p4t3 測試 fixture：kmPerLiter=1",
+          createdById: ownerId,
+        },
+      });
+      const fuel = await prisma.fuelPriceVersion.create({
+        data: {
+          fuelType: FuelType.GASOLINE_95,
+          pricePerLiter: new Prisma.Decimal("6.0000"),
           effectiveFrom: new Date(PARAM_DATE),
           createdById: ownerId,
         },
@@ -1421,13 +1437,17 @@ describeWithDb("PHASE-004-T3 — 差旅草稿 CRUD + 授權隔離", () => {
       });
       fuelVersionId = fuel.id;
       etcVersionId = etc.id;
+      consumptionId = consumption.id;
       BEFORE_PARAM_DATE = await dateBeforeAnyKnownParameterVersion(prisma);
     });
 
     afterAll(async () => {
       if (!DB_URL) return;
+      if (consumptionId) {
+        await prisma.userFuelConsumptionVersion.deleteMany({ where: { id: consumptionId } });
+      }
       if (fuelVersionId) {
-        await prisma.fuelParameterVersion.deleteMany({ where: { id: fuelVersionId } });
+        await prisma.fuelPriceVersion.deleteMany({ where: { id: fuelVersionId } });
       }
       if (etcVersionId) {
         await prisma.etcParameterVersion.deleteMany({ where: { id: etcVersionId } });

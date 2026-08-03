@@ -33,7 +33,7 @@
  *     並行執行的同檔案），嚴禁全域 deleteMany({})。
  *   - synthetic data only（虛構人名、地名、出差目的）。
  */
-import { PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTravelDraft, updateTravelDraft } from "../../src/applications/travel-service.js";
@@ -143,6 +143,7 @@ describeWithDb("PHASE-004-T12 — 代操作稽核（AC-82/83/86）", () => {
   const createdApplicationIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
   const createdAttachmentIds: string[] = [];
 
   function track(id: string): string {
@@ -201,15 +202,34 @@ describeWithDb("PHASE-004-T12 — 代操作稽核（AC-82/83/86）", () => {
     });
   }
 
+  // PHASE-005a-T7: 新模型下油資單價依「擁有人（ownerId）油耗版本 → 該油種
+  // 油價版本」雙鏈推導。以 kmPerLiter="1.0000" 保留原「每公里單價 5.0000」
+  // 之測試等價（見 phase4-travel-complete.test.ts 同一慣例）。
   async function createParamVersions(): Promise<void> {
-    const fuel = await prisma.fuelParameterVersion.create({
-      data: { unitPrice: "5.0000", effectiveFrom: new Date(FUEL_DATE), createdById: ownerId },
+    const consumption = await prisma.userFuelConsumptionVersion.create({
+      data: {
+        userId: ownerId,
+        fuelType: FuelType.GASOLINE_95,
+        kmPerLiter: new Prisma.Decimal("1.0000"),
+        effectiveFrom: new Date(FUEL_DATE),
+        basisNote: "p4t12 測試 fixture：kmPerLiter=1",
+        createdById: ownerId,
+      },
+    });
+    const fuel = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: "5.0000",
+        effectiveFrom: new Date(FUEL_DATE),
+        createdById: ownerId,
+      },
     });
     const etc = await prisma.etcParameterVersion.create({
       data: { unitPrice: "2.0000", effectiveFrom: new Date(FUEL_DATE), createdById: ownerId },
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
+    createdConsumptionIds.push(consumption.id);
   }
 
   async function createLinkedAttachment(segmentId: string, forOwnerId: string) {
@@ -305,8 +325,13 @@ describeWithDb("PHASE-004-T12 — 代操作稽核（AC-82/83/86）", () => {
       if (createdApplicationIds.length > 0) {
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
+      if (createdConsumptionIds.length > 0) {
+        await prisma.userFuelConsumptionVersion.deleteMany({
+          where: { id: { in: createdConsumptionIds } },
+        });
+      }
       if (createdFuelVersionIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({
+        await prisma.fuelPriceVersion.deleteMany({
           where: { id: { in: createdFuelVersionIds } },
         });
       }

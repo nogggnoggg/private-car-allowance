@@ -84,6 +84,7 @@ import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
 import { type CalcSegmentInput, calculateTravel } from "./travel-calculation.js";
 import {
+  type MissingParameter,
   type ResolvedParameters,
   assertParametersAvailable,
   resolveTravelParameters,
@@ -1171,16 +1172,21 @@ export async function completeTravelApplication(
           // see step② comment above for why this is NOT folded into the 400
           // response. `tx` passed through (resolveTravelParameters accepts
           // PrismaClientOrTx) so this reads inside the SAME transaction.
-          const resolved = await resolveTravelParameters(tx, tripDate);
+          // PHASE-005a-T7: 油耗一律以擁有人（`existing.ownerId`）解析——AC-23
+          // 代操作以擁有人資料為準，絕不可傳操作者本人 id。
+          const resolved = await resolveTravelParameters(tx, tripDate, existing.ownerId);
           assertParametersAvailable(resolved, tripDate);
 
-          // assertParametersAvailable already guarantees all four fields
-          // below are non-null (its `missing[]` check is exhaustive over
-          // exactly these four) — narrow here instead of a bare `!` assertion.
+          // assertParametersAvailable already guarantees fuelUnitPrice/
+          // etcUnitPrice/fuelPriceVersionId/fuelConsumptionVersionId/
+          // etcVersionId are non-null and fuelUnitPriceOutOfRange is false
+          // (its checks are exhaustive over exactly this state) — narrow
+          // here instead of a bare `!` assertion.
           if (
             resolved.fuelUnitPrice === null ||
             resolved.etcUnitPrice === null ||
-            resolved.fuelVersionId === null ||
+            resolved.fuelPriceVersionId === null ||
+            resolved.fuelConsumptionVersionId === null ||
             resolved.etcVersionId === null
           ) {
             // Unreachable — defensive only.
@@ -1229,12 +1235,19 @@ export async function completeTravelApplication(
           const calculatedAt = new Date();
 
           // Step ⑤b: TravelApplication snapshot (單價/版本 id/總里程/整筆取整前金額/計算時間).
+          // PHASE-005a-T7: 單價來源改為 resolveTravelParameters 之推導取整值；
+          // `fuelParameterVersionId`（舊模型，`FuelParameterVersion` 表）刻意
+          // 保持不寫（維持 null，§8.4 判別欄位）——新模型只寫
+          // `fuelPriceVersionId`/`fuelConsumptionVersionId`。
+          // 三項來源快照值（snapshotFuelType/PricePerLiter/Consumption）與
+          // AC-25 可重現性驗證屬 T8 範圍，本 Task 不在此寫入（Out of Scope）。
           await tx.travelApplication.update({
             where: { applicationId: id },
             data: {
               fuelUnitPrice,
               etcUnitPrice,
-              fuelParameterVersionId: resolved.fuelVersionId,
+              fuelPriceVersionId: resolved.fuelPriceVersionId,
+              fuelConsumptionVersionId: resolved.fuelConsumptionVersionId,
               etcParameterVersionId: resolved.etcVersionId,
               snapshotTotalKm: result.totalKm,
               snapshotRawAmount: result.totalRawAmount,
@@ -1370,8 +1383,17 @@ export interface TripSegmentDto {
 export interface TravelSnapshotDto {
   fuelUnitPrice: string;
   etcUnitPrice: string;
-  fuelParameterVersionId: string;
+  /**
+   * PHASE-005a-T7: 舊模型（`FuelParameterVersion`）引用；新模型完成之申請
+   * 恆為 `null`（§8.4 判別欄位——完成流程只寫新模型欄位）。既有舊模型已完成
+   * 申請仍回傳原值（AC-27 快照零影響）。
+   */
+  fuelParameterVersionId: string | null;
   etcParameterVersionId: string;
+  /** PHASE-005a-T7 新增：新模型（`FuelPriceVersion`）引用；舊模型申請為 `null`。 */
+  fuelPriceVersionId: string | null;
+  /** PHASE-005a-T7 新增：新模型（`UserFuelConsumptionVersion`）引用；舊模型申請為 `null`。 */
+  fuelConsumptionVersionId: string | null;
   totalKm: string;
   totalRawAmount: string;
   totalAmount: number;
@@ -1418,7 +1440,7 @@ export interface TravelComputedSegmentDto {
 
 export interface TravelComputedDto {
   parameterAvailable: boolean;
-  missingParameters: ("FUEL" | "ETC")[];
+  missingParameters: MissingParameter[];
   totalKm: string;
   segments: TravelComputedSegmentDto[];
   totalRawAmount: string;
@@ -1528,8 +1550,11 @@ export async function toTravelApplicationDto(
   // COMPLETED applications never resolve current parameters — computed=null
   // and completionBlockers=[] (they read the immutable snapshot instead, T8).
   const tripDate = application.travel?.tripDate ?? null;
+  // PHASE-005a-T7: 油耗一律以「該申請之擁有人」解析（AC-23），非讀取者本人。
   const resolvedParameters =
-    application.status === "DRAFT" ? await resolveTravelParameters(prisma, tripDate) : null;
+    application.status === "DRAFT"
+      ? await resolveTravelParameters(prisma, tripDate, application.ownerId)
+      : null;
 
   const completionBlockers: Blocker[] =
     application.status === "DRAFT" && resolvedParameters
@@ -1565,12 +1590,18 @@ export async function toTravelApplicationDto(
   // 的快照欄位 + `Application.totalAmount`，絕不重新查詢參數表或重算
   // （AC-48 快照不變性：即使日後新增更早生效日的參數版本，這裡讀到的仍是
   // 完成當下寫入的值，因為完全不呼叫 resolveTravelParameters/calculateTravel）。
+  //
+  // PHASE-005a-T7（§8.4 判別欄位）: 「油資版本引用」二擇一齊備即視為已有快照——
+  // 舊模型（`fuelParameterVersionId`，AC-27 既有已完成申請）或新模型
+  // （`fuelPriceVersionId`，本 Phase 起新完成之申請）。兩者恆不同時非 null。
   const travel = application.travel;
+  const hasLegacyFuelReference = travel?.fuelParameterVersionId != null;
+  const hasNewFuelReference = travel?.fuelPriceVersionId != null;
   const snapshot: TravelSnapshotDto | null =
     application.status === "COMPLETED" &&
     travel?.fuelUnitPrice != null &&
     travel?.etcUnitPrice != null &&
-    travel?.fuelParameterVersionId != null &&
+    (hasLegacyFuelReference || hasNewFuelReference) &&
     travel?.etcParameterVersionId != null &&
     travel?.snapshotTotalKm != null &&
     travel?.snapshotRawAmount != null &&
@@ -1581,6 +1612,8 @@ export async function toTravelApplicationDto(
           etcUnitPrice: travel.etcUnitPrice.toFixed(4),
           fuelParameterVersionId: travel.fuelParameterVersionId,
           etcParameterVersionId: travel.etcParameterVersionId,
+          fuelPriceVersionId: travel.fuelPriceVersionId,
+          fuelConsumptionVersionId: travel.fuelConsumptionVersionId,
           totalKm: travel.snapshotTotalKm.toFixed(2),
           totalRawAmount: travel.snapshotRawAmount.toFixed(4),
           totalAmount: application.totalAmount,

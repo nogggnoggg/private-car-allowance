@@ -32,7 +32,7 @@
  *     mirroring the existing per-file year-claiming convention in
  *     phase4-travel-complete.test.ts (2034~2040) etc.
  */
-import { Prisma, PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -89,6 +89,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
   const createdAttachmentIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
 
   function trackUser(id: string, loginName: string): string {
     createdUserIds.push(id);
@@ -135,14 +136,36 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     return att;
   }
 
+  /**
+   * PHASE-005a-T7: 新模型下油資單價依「擁有人油耗版本 → 該油種油價版本」雙鏈
+   * 推導（不再直讀 `FuelParameterVersion`）。呼叫端若之後要對某位使用者呼叫
+   * `/complete`，須傳入 `consumerId`（該使用者）以便同時建立其油耗版本；僅
+   * 建立版本、不完成任何申請的呼叫可省略。以 kmPerLiter="1.0000" 保留測試
+   * 等價（見 phase4-travel-complete.test.ts 同一慣例）。
+   */
   async function createParamVersions(
     effectiveFrom: string,
     fuelPrice: string,
-    etcPrice: string
+    etcPrice: string,
+    consumerId?: string
   ): Promise<{ fuelVersionId: string; etcVersionId: string }> {
-    const fuel = await prisma.fuelParameterVersion.create({
+    if (consumerId) {
+      const consumption = await prisma.userFuelConsumptionVersion.create({
+        data: {
+          userId: consumerId,
+          fuelType: FuelType.GASOLINE_95,
+          kmPerLiter: new Prisma.Decimal("1.0000"),
+          effectiveFrom: new Date(effectiveFrom),
+          basisNote: "p4rp 測試 fixture：kmPerLiter=1",
+          createdById: adminId,
+        },
+      });
+      createdConsumptionIds.push(consumption.id);
+    }
+    const fuel = await prisma.fuelPriceVersion.create({
       data: {
-        unitPrice: new Prisma.Decimal(fuelPrice),
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal(fuelPrice),
         effectiveFrom: new Date(effectiveFrom),
         createdById: adminId,
       },
@@ -266,8 +289,13 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
       if (createdApplicationIds.length > 0) {
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
+      if (createdConsumptionIds.length > 0) {
+        await prisma.userFuelConsumptionVersion.deleteMany({
+          where: { id: { in: createdConsumptionIds } },
+        });
+      }
       if (createdFuelVersionIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({
+        await prisma.fuelPriceVersion.deleteMany({
           where: { id: { in: createdFuelVersionIds } },
         });
       }
@@ -319,7 +347,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     it("使用者有已完成 Application → DELETE → 409 CONFLICT + 停用提示；使用者仍存在", async () => {
       const victim = await createUser(`${LOGIN_PREFIX}done_victim_${RUN_ID}`, "P4RP 已完成受測者");
       const victimCookie = await loginUser(app, victim.loginName, PASSWORD);
-      await createParamVersions("2045-01-01", "5.0000", "2.0000");
+      await createParamVersions("2045-01-01", "5.0000", "2.0000", victim.id);
       await buildAndCompleteTravelApplication(victimCookie, victim.id, {
         tripDate: "2045-06-01",
         purpose: "P4RP 已完成申請歷史測試",
@@ -367,7 +395,8 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
       const { fuelVersionId, etcVersionId } = await createParamVersions(
         "2046-01-01",
         "6.0000",
-        "3.0000"
+        "3.0000",
+        owner.id
       );
       await buildAndCompleteTravelApplication(ownerCookie, owner.id, {
         tripDate: "2046-06-01",

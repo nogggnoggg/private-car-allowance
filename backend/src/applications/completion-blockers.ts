@@ -46,12 +46,19 @@ export interface BlockerSegmentInput {
   attachmentCount: number;
 }
 
+/**
+ * PHASE-005a-T7（D5(a) 已批）：`"FUEL"` → `"FUEL_PRICE"`，並新增
+ * `"FUEL_CONSUMPTION"`。與 `travel-parameters.ts` 之 `MissingParameter`
+ * 同形（本檔為 pure function，刻意不 import 該模組以維持零耦合，見檔頭）。
+ */
+export type MissingParameter = "FUEL_PRICE" | "FUEL_CONSUMPTION" | "ETC";
+
 export interface BlockerInput {
   tripDate: Date | null;
   purpose: string | null;
   segments: ReadonlyArray<BlockerSegmentInput>;
   /** 缺少的參數類別；T7 之前呼叫端一律傳空陣列。 */
-  missingParameters: ReadonlyArray<"FUEL" | "ETC">;
+  missingParameters: ReadonlyArray<MissingParameter>;
 }
 
 export interface Blocker {
@@ -67,8 +74,9 @@ function isBlank(value: string | null | undefined): boolean {
   return value === null || value === undefined || value.trim().length === 0;
 }
 
-const PARAMETER_LABELS: Record<"FUEL" | "ETC", string> = {
-  FUEL: "油資",
+const PARAMETER_LABELS: Record<MissingParameter, string> = {
+  FUEL_PRICE: "油資",
+  FUEL_CONSUMPTION: "油資",
   ETC: "ETC",
 };
 
@@ -103,8 +111,20 @@ export function computeCompletionBlockers(input: BlockerInput): Blocker[] {
     });
   }
 
-  if (input.missingParameters.length > 0) {
-    const labels = input.missingParameters.map((p) => PARAMETER_LABELS[p]).join("、");
+  // PHASE-005a-T7（AC-21 明文要求）：缺油耗須有可區分的獨立 blocker code
+  // `FUEL_CONSUMPTION_NOT_AVAILABLE`（草稿階段之提示，與完成端點 409 的
+  // `details.missing` 是不同的層級/命名空間——各自獨立，互不影響）。其餘缺項
+  // （FUEL_PRICE／ETC）沿用既有合併呈現，維持既有測試之組合訊息行為不變。
+  if (input.missingParameters.includes("FUEL_CONSUMPTION")) {
+    blockers.push({
+      code: "FUEL_CONSUMPTION_NOT_AVAILABLE",
+      message: "出差日期缺少您的車輛油耗資料，請聯絡管理員建立",
+    });
+  }
+
+  const otherMissing = input.missingParameters.filter((p) => p !== "FUEL_CONSUMPTION");
+  if (otherMissing.length > 0) {
+    const labels = otherMissing.map((p) => PARAMETER_LABELS[p]).join("、");
     blockers.push({
       code: "PARAMETER_NOT_AVAILABLE",
       message: `出差日期缺少有效的${labels}補助參數，請聯絡管理員設定`,

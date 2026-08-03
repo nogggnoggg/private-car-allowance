@@ -92,6 +92,7 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
   const createdAttachmentIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
 
   async function cleanupSyntheticData() {
     if (createdAttachmentIds.length > 0) {
@@ -100,8 +101,13 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
     if (createdApplicationIds.length > 0) {
       await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
     }
+    if (createdConsumptionIds.length > 0) {
+      await prisma.userFuelConsumptionVersion.deleteMany({
+        where: { id: { in: createdConsumptionIds } },
+      });
+    }
     if (createdFuelVersionIds.length > 0) {
-      await prisma.fuelParameterVersion.deleteMany({
+      await prisma.fuelPriceVersion.deleteMany({
         where: { id: { in: createdFuelVersionIds } },
       });
     }
@@ -227,14 +233,33 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
   // 表，見 phase4-travel-complete.test.ts 檔頭同一教訓）。
   // -----------------------------------------------------------------------
 
+  /**
+   * PHASE-005a-T7: 新模型下油資單價依「擁有人（`ownerA`）油耗版本 → 該油種
+   * 油價版本」雙鏈推導（不再直讀 `FuelParameterVersion`，該表已由 D1(a) 凍結
+   * 為唯讀）。以 `kmPerLiter="1.0000"` 讓推導結果
+   * `ROUND_HALF_UP(pricePerLiter ÷ 1, 0)` 恰等於原「每公里單價」數值——刻意
+   * 的測試等價技巧，非改變 AC-18 公式本身（見 phase4-travel-complete.test.ts
+   * 同一慣例）。
+   */
   async function createParamVersions(
     effectiveFrom: string,
     fuelPrice: string,
     etcPrice: string
-  ): Promise<{ fuelVersionId: string; etcVersionId: string }> {
-    const fuel = await prisma.fuelParameterVersion.create({
+  ): Promise<{ fuelVersionId: string; etcVersionId: string; consumptionId: string }> {
+    const consumption = await prisma.userFuelConsumptionVersion.create({
       data: {
-        unitPrice: fuelPrice,
+        userId: ownerA.id,
+        fuelType: "GASOLINE_95",
+        kmPerLiter: "1.0000",
+        effectiveFrom: new Date(effectiveFrom),
+        basisNote: "p5t2 測試 fixture：kmPerLiter=1 使推導單價等於原每公里單價",
+        createdById: ownerA.id,
+      },
+    });
+    const fuel = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: "GASOLINE_95",
+        pricePerLiter: fuelPrice,
         effectiveFrom: new Date(effectiveFrom),
         createdById: ownerA.id,
       },
@@ -248,7 +273,8 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
-    return { fuelVersionId: fuel.id, etcVersionId: etc.id };
+    createdConsumptionIds.push(consumption.id);
+    return { fuelVersionId: fuel.id, etcVersionId: etc.id, consumptionId: consumption.id };
   }
 
   async function createLinkedAttachment(segmentId: string, forOwnerId: string) {
