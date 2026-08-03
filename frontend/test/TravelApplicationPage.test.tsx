@@ -520,46 +520,70 @@ describe("TravelApplicationPage", () => {
       expect(screen.getByText(expectedText)).toBeInTheDocument();
     });
 
-    // ---- AR-4（T9~T12 合併複審移交）：後端 completionBlockers 與前端本表
-    // 預覽缺項提示同碼時去重，避免同一狀態出現兩種近似措辭（例：
-    // AMOUNT_OUT_OF_RANGE 之「計算結果超出可儲存之金額範圍…」vs「計算金額
-    // 超出可儲存範圍…」，僅一字之差）----
-    it("AR-4 去重：completionBlockers 已含 AMOUNT_OUT_OF_RANGE 對應 blocker 時，預覽區不重複顯示自己的一份措辭", async () => {
-      const router = installFetchRouter();
-      router.on("GET", isGetDraft, () =>
-        jsonRes({
-          application: draftFixture({
-            completionBlockers: [
-              {
-                code: "AMOUNT_OUT_OF_RANGE",
-                message: "計算結果超出可儲存之金額範圍，請聯絡管理員檢查里程與參數設定",
-              },
-            ],
-          }),
-        })
-      );
-      router.on("POST", isPreview, () =>
-        jsonRes({
-          preview: previewFixture({
-            parameterAvailable: false,
-            missingParameters: ["AMOUNT_OUT_OF_RANGE"],
-          }),
-        })
-      );
+    // ---- 終審複審 SF-1 護欄：`FUEL_UNAVAILABLE_CODES`（油資無法計算之抑制
+    // 清單）五碼全覆蓋——每碼皆須讓「油資無法計算」可見、且合計/段金額不得
+    // 以 0 呈現為最終值（即便後端 totalAmount/amount 皆為 0）。mutant 實證：
+    // 若清單漏掉任一碼（例如移除 AMOUNT_OUT_OF_RANGE），對應那一列必紅。----
+    it.each([
+      "FUEL_CONSUMPTION",
+      "FUEL_PRICE",
+      "FUEL_DATA_CORRUPTED",
+      "FUEL_UNIT_PRICE_OUT_OF_RANGE",
+      "AMOUNT_OUT_OF_RANGE",
+    ] as const)(
+      "油資無法計算抑制清單覆蓋 %s → 「油資無法計算」可見、合計/段金額不顯示為 0 之最終值",
+      async (code) => {
+        const router = installFetchRouter();
+        router.on("GET", isGetDraft, () =>
+          jsonRes({
+            application: draftFixture({
+              segments: [
+                {
+                  id: "seg-1",
+                  sortOrder: 0,
+                  origin: "台北",
+                  destination: "台中",
+                  totalKm: "100.00",
+                  highwayKm: "0.00",
+                  attachments: [],
+                  snapshot: null,
+                },
+              ],
+            }),
+          })
+        );
+        router.on("POST", isPreview, () =>
+          jsonRes({
+            preview: previewFixture({
+              parameterAvailable: false,
+              missingParameters: [code],
+              totalAmount: 0,
+              totalKm: "100.00",
+              segments: [
+                {
+                  segmentId: "seg-1",
+                  segmentIndex: 0,
+                  fuelAmount: "0.0000",
+                  etcAmount: "0.0000",
+                  rawAmount: "0.0000",
+                  amount: 0,
+                },
+              ],
+            }),
+          })
+        );
 
-      renderPage();
-      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
-      await sleep(400);
+        renderPage();
+        await waitFor(() => expect(screen.getByDisplayValue("台北")).toBeInTheDocument());
+        await sleep(400);
 
-      // 後端 blocker 措辭仍照實顯示一次（D7 後端權威，不得動後端文案）。
-      expect(
-        screen.getByText("計算結果超出可儲存之金額範圍，請聯絡管理員檢查里程與參數設定")
-      ).toBeInTheDocument();
-      // 前端自己那份近似措辭不得重複出現。
-      expect(
-        screen.queryByText("計算金額超出可儲存範圍，請聯絡管理員檢查里程與參數設定")
-      ).not.toBeInTheDocument();
-    });
+        expect(screen.getAllByText("油資無法計算").length).toBeGreaterThan(0);
+        expect(screen.queryByText(/合計金額：0/)).not.toBeInTheDocument();
+      }
+    );
+
+    // ---- 終審複審 SF-1 補集：`ETC` 不在抑制清單——僅缺 ETC 時油資版本齊備，
+    // 合計金額仍須照後端已算出之值顯示（非 0 佔位），確認在場（T11R 既有）。----
 
     // ---- 合併複審 SF-1：僅缺 ETC 時，油資版本齊備，不得誤報「油資無法
     // 計算」並隱藏後端已算出之油資金額（FE-US-10 第一條、PHASE-004 行為

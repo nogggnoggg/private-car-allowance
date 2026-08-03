@@ -72,32 +72,10 @@ const MISSING_PARAMETER_ORDER: PreviewMissingCode[] = [
   "AMOUNT_OUT_OF_RANGE",
 ];
 
-/**
- * AR-4（T9~T12 合併複審移交）：同一畫面同時出現後端 completionBlockers
- * （逐字照後端呈現，D7）與前端本表之預覽缺項提示兩套近似措辭（例：
- * AMOUNT_OUT_OF_RANGE 之「計算結果超出可儲存之金額範圍…」vs「計算金額超出
- * 可儲存範圍…」，僅一字之差）。處置：前端去重——當後端 completionBlockers
- * 已用對應 code 呈現同一狀態時，本表不重複顯示自己的一份，避免同碼兩種
- * 措辭並存。不得動後端文案（僅本檔案內去重判斷）。
- */
-const BLOCKER_CODES_FOR_MISSING: Partial<Record<PreviewMissingCode, string[]>> = {
-  FUEL_CONSUMPTION: ["FUEL_CONSUMPTION_NOT_AVAILABLE"],
-  FUEL_PRICE: ["PARAMETER_NOT_AVAILABLE"],
-  ETC: ["PARAMETER_NOT_AVAILABLE"],
-  FUEL_DATA_CORRUPTED: ["FUEL_DATA_CORRUPTED"],
-  FUEL_UNIT_PRICE_OUT_OF_RANGE: ["FUEL_UNIT_PRICE_OUT_OF_RANGE"],
-  AMOUNT_OUT_OF_RANGE: ["AMOUNT_OUT_OF_RANGE"],
-};
-
-function missingParameterMessages(
-  missing: PreviewMissingCode[],
-  blockerCodes: ReadonlySet<string>
-): string[] {
-  return MISSING_PARAMETER_ORDER.filter((code) => {
-    if (!missing.includes(code)) return false;
-    const equivalentBlockerCodes = BLOCKER_CODES_FOR_MISSING[code] ?? [];
-    return !equivalentBlockerCodes.some((bc) => blockerCodes.has(bc));
-  }).map((code) => MISSING_PARAMETER_MESSAGES[code]);
+function missingParameterMessages(missing: PreviewMissingCode[]): string[] {
+  return MISSING_PARAMETER_ORDER.filter((code) => missing.includes(code)).map(
+    (code) => MISSING_PARAMETER_MESSAGES[code]
+  );
 }
 
 /**
@@ -834,8 +812,7 @@ export default function TravelApplicationPage(): React.ReactElement {
           {previewState.kind === "ready" &&
             (() => {
               const { missingParameters } = previewState.data;
-              const blockerCodes = new Set(application.completionBlockers.map((b) => b.code));
-              const messages = missingParameterMessages(missingParameters, blockerCodes);
+              const messages = missingParameterMessages(missingParameters);
               const fuelUnavailable = isFuelUnavailable(missingParameters);
               return (
                 <>

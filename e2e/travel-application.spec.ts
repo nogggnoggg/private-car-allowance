@@ -70,7 +70,7 @@ const PARAM_ETC_UNIT_PRICE = 1.8;
 // backend/src/applications/travel-parameters.ts）。本檔完成路徑（情境1）之
 // 出差日期 `SUCCESS_TRIP_DATE` 須額外有登入者（e2eadmin 本人，本檔草稿皆為
 // 自建自完成）的油耗版本，以及對應油種的油價版本，否則「油資無法計算」擋下
-// 完成。`NEW_MODEL_EFFECTIVE_FROM` 沿用既有 `PARAM_EFFECTIVE_FROM`（早於
+// 完成。`NEW_MODEL_EFFECTIVE_FROM` 沿用既有 `PARAM_EFFECTIVE_FROM`（晚於
 // `NO_PARAM_TRIP_DATE`），刻意**不**覆蓋情境2之出差日期，維持該情境「查無
 // 有效參數」之既有斷言不變。本檔未對完成金額做具體數字斷言（僅
 // `/合計金額：\d+/` 與 `>0`），故播種數值無需與任何舊制單價換算等值。
