@@ -30,3 +30,6 @@ logs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Claude Code agent scratch state (CHORE-001 AR-4 + T5 複審 AR-5)
+.claude/

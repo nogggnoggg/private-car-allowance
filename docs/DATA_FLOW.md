@@ -204,6 +204,41 @@ PHASE-003a 落地細節（已實作事實）：
   → 回傳總里程(無有效差旅→0)
 ```
 
+PHASE-005 落地細節（已實作事實）：
+
+```
+前端(個人首頁統計區塊 / 管理員使用者申請頁統計區塊)
+   │  query: dateFrom, dateTo, [ownerId]（日期兩者必填 D5(a)；統計不分頁，無 page/pageSize）
+   ▼
+GET /statistics/mileage（單一端點 + ownerId 參數，D4(a)；個人與管理員共用同一路徑）
+   ├─【授權】requireAuth ───────────────────── 未登入/Session 失效 → 401 UNAUTHORIZED
+   ├─【授權】requirePasswordChanged ────────── 需強制改密 → 403 PASSWORD_CHANGE_REQUIRED
+   ├─【結構】assertScalarQueryParams ───────── ownerId/dateFrom/dateTo 非單一字串(重複帶同名參數)
+   │                                          → 400 VALIDATION_ERROR（拒絕而非取首值，且不致 500）
+   ├─【授權】resolveOwnerId(actor, ownerId) ── 一般使用者自帶他人 → 403 FORBIDDEN（不靜默降級為自己）
+   ├─【驗證】parseMileageRange(dateFrom,dateTo) ─ 缺漏/格式非 YYYY-MM-DD/起>迄
+   │                                          → 400 VALIDATION_ERROR + 可定位 fields（回傳全部錯誤，非第一項即止）
+   ▼
+mileage 引擎 sumOfficialMileage(db, {ownerId,dateFrom,dateTo})（唯讀，可於交易內呼叫）
+   │  where: ownerId ∧ type=TRAVEL ∧ status=COMPLETED ∧ tripDate ∈ [dateFrom, dateTo]（gte/lte，含當日）
+   │  DB 層單一聚合：SUM(TravelApplication 完成快照總里程) + COUNT(*)
+   │  （不分頁、不將命中集合讀入記憶體相加、不 N+1）
+   ▼
+{ totalKm: Decimal, applicationCount: number }
+   │  Decimal → 字串，固定 2 位小數、不取整、不經浮點
+   ▼
+200 { totalKm, applicationCount, appliedFilters:{dateFrom,dateTo,ownerId} }
+   ▼
+前端僅顯示後端回傳值（不自算、不推導）
+```
+
+- **判定順序固定**：結構收斂(400) → 授權(403) → 日期格式與區間(400)。授權先於日期驗證，避免以 400／403 之差異，向無權查詢他人資料者洩漏「該日期是否合法」這條側信道。
+- **里程來源為完成快照**（D2(a)）：讀已完成差旅之快照總里程，不逐段重算；「加總各段總里程、不重複加高速里程」之語意由申請完成時寫入快照的定義保證（2.2）。
+- **精度**（D3(a)）：全程 `Decimal`，本層不取整，對外以字串固定 2 位小數傳輸；無有效差旅回 `"0.00"` 且**仍為 200**（非 404、非 `null`、非空字串）。
+- **回應鍵為封閉白名單**：僅 `totalKm`、`applicationCount`、`appliedFilters.{dateFrom,dateTo,ownerId}`；**不含**單價、金額、出差目的／地點、附件或他人顯示名稱／帳號；403 回應本身亦不含任何數值。
+- **不新增錯誤碼**：沿用既有結構化錯誤協定之錯誤碼聯集；日誌不含 Session／敏感值。
+- **引擎複用**：`sumOfficialMileage` 接受交易 client，供保養（期間公務里程）與折舊（年度公務里程）於各自完成流程之交易內呼叫（2.2），統計端點與完成流程共用同一份過濾與加總實作。
+
 綜合紀錄查詢（個人/管理員列表）：
 
 ```

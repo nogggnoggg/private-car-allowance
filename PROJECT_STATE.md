@@ -2,6 +2,42 @@
 
 State: ACTIVE
 
+> **PHASE-005（區間公務里程統計）開工記錄（2026-08-03，使用者指令「繼續」）**
+> - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
+> - branch：`phase-005`（自 main @ `310bc39` 切出）。流程：spec-writer 產 Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate** → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
+> - Risk Level：Medium（PRD §PHASE-005；讀取統計，無 High Task）。惟統計引擎屬金額計算上游（006 保養、007 折舊複用），金額語意類約束一律引用 AC/Spec 原文（T8 教訓）。
+> - Spec 必納入決策點：①欄位溢位追蹤項（跨 Phase 追蹤節 2026-08-03 條目——unitPrice/vehiclePrice 容量溢位回 500、"0.0000001" 靜默存 0；納入 005 或獨立回合，供人類裁定）②AR-5 字串全保真合約變更宜同案。
+> - 前置約束提醒：不得以「一般使用者不知道單價」為安全前提（PHASE-004 D6 邊界擴張）；BE-US-22 作廢排除規則預留（依「未作廢」過濾）。
+> - **SPEC-005：DONE**（`16ed237`，875 行，34 AC 全溯源、T1~T8、D1~D10）。**Spec Gate 通過（人類 leonchih 2026-08-03）：D1~D10 全數照建議批准**，Spec 轉 ACTIVE；**T4/T5 依 D10(a) 升 High，事前批准已於本 Gate 取得**。裁定要點：D1(b) 欄位溢位另開 **CHORE-003**（與 005 並行，含 AR-5「不可解析→400」同案）；D2(a) 引擎讀 `snapshotTotalKm`；D3(a) 字串 2 位小數未取整；D4(a) 單一端點 `GET /statistics/mileage?ownerId?`；D5(a) 起訖必填；D6(a) 嵌既有頁；D7(a) 里程+筆數；D8(a) 見下方跨 Phase 追蹤新條目；D9(a) 不加索引。衍生待辦：PRD「High 風險 Task：無」修正（派工）；CHORE-003 首步＝spec-writer 修訂 PHASE-003a Spec 錯誤合約。
+> - **派工模式變更（使用者 2026-08-03 裁定）**：subagent 一律背景派工（run_in_background），使用者可於任務清單看到 agent 獨立運行；依序執行原則不變。
+> - **T1：DONE**（`beecb8a`，31 單元測試）。大總管獨立驗收：全套兩輪 991/0/0（基準 960+31）、tsc 0、biome 乾淨。
+> - **T2：DONE**（`3f55a09`，7 整合測試）。驗收退回一項（`Decimal(0)` 數字建構違 D4 bright-line→改 `"0"`）後結案；全套兩輪 998/0/0（基準 991+7）+修正後補跑一輪、tsc 0、biome 乾淨。
+> - **CHORE-003-SPEC：DONE**（worktree 產出，chore-003 branch @ `7733dff`）：003a Spec 新增 §14（AC-21~32、行為對照表、T1~T3 拆分、受影響測試盤點；§1~§13 零改動）+ PRD D10(a) 兩列連動修正。**CD-1(a)/CD-2(a)/CD-3(a) 經人類 2026-08-03 裁定全採推薦**，已固化於 003a §13 修訂列。spec-writer 實測關鍵事實：`Decimal("Infinity")` 不拋錯且 `.decimalPlaces()` 回 NaN——單靠小數位檢查擋不住，須 pattern 攔截。
+> - **CHORE-003 實作排程（大總管裁定）**：**不與 PHASE-005 同時實作**——兩個 checkout 併跑 vitest 會共用同一測試 DB 之 per-worker schema 槽位（vitest_w1...），INFRA-001 隔離對「跨 checkout 併行」不設防，會互相污染；且 worktree 無 node_modules。故 CHORE-003-T1~T3（皆 High，事前批准已由 D1(b)+CD 裁定構成）排於 PHASE-005 後端鏈（T3~T6）完成後、或 Mock Gate 等待期間，於主工作區 checkout chore-003 執行。
+> - **T3：DONE**（`2c676ed`，+8 整合測試，引擎零改動）。大總管獨立驗收：全套兩輪 1006/0/0（基準 998+8）、tsc 0、biome 乾淨。
+> - **期中 Review（T1~T3 引擎層）：REQUEST_CHANGES**（2 Must / 3 Should / 7 AR）。引擎實作本體無正確性缺陷（reviewer 以唯讀 SQL 探針實測恰 1 次聚合 SQL、過濾條件與 Spec 逐字一致）；阻擋在**測試證據層**：**M-1** AC-01 四點邊界與 AC-02 歸屬日期行為測試缺席（fixture 之 primaryDate 恆等 tripDate，整合層分不出用錯欄位）；**M-2** AC-07/AC-13/D2(a)-null 三守門為套套邏輯（fixture 直寫快照值，35.75 鑑別不可能觸發；AC-13 兩邊同源——**此為人類批准 D2(a) 的前提條件被空置**；緩解：實質數值覆蓋存在於 phase4-travel-complete.test.ts:408，無已知實際數值缺陷）；**S-1** AC-33 未鑑別 findMany+reduce；**S-2** Spec §12 映射表未維護且三處與現實不符（AC-09 引擎/HTTP 層須拆列、兩列指向不存在檔案）；**S-3** 含當日語意隱含依賴 DB session TimeZone=UTC（reviewer 實測 Asia/Taipei session 下 dateFrom 當日被靜默排除），需守門測試。前瞻風險 5 項供 T4~T6（Decimal.toString() 去尾零須 toFixed(2)、快照 null 靜默低估、B-26 判定順序等）。
+> - **R1（修 M-1/M-2/S-1/S-3，僅測試）：DONE**（`7bbdc00`，測試 15→18、+353/-55）。大總管獨立驗收：全套兩輪 1009/0/0、tsc 0、biome 乾淨。diff 超預算 41% 經複核接受（M-2 真實完成流程之三個 helper 屬 Review 指定選項之必要基礎設施，記入 Phase 回顧校準）。S-3 僅顯式化環境假設（守門測試），非 UTC 行為修復屬 src 變更另立追蹤（見下）。A-6（.claude/ 未入 .gitignore/biome ignore）併 CHORE-001 AR-4 追蹤。
+> - **R1 輕量複審：APPROVE**（0 Must/0 Should/4 AR）。四項 finding 逐一鑑別力實證關閉（M-1② 雙向必紅、AC-07 生產路徑 53.75 必紅、S-1 reviewer 以唯讀探針證明 findMany 同為 1 次 SQL 故 SQL 文字斷言為必要鑑別）。AR-1 D2(a) 掃描缺正對照（一行補強）；**AR-2 TimeZone off-by-one（此主張後經 R2/R4 撤回——production 路徑無此缺陷，見下方 R2 條目）**；AR-3 AC-13 檔內順序耦合（fail-closed，記錄）；AR-4 toBe(1) 對 Prisma 版本敏感（有意收緊）。**期中 Review 全數清零**（S-2 由 SPEC-SYNC-1 `75e3ea9` 關閉，R1 複審 reviewer 順手抽查 GREEN 測試名逐字存在）。
+> - **R2：BLOCKED→結案為「已複核排除」（S-3 撤回，src 零變更）**。implementer 依 Packet 防呆條款先複核原斷言，實測 **production 路徑（Prisma 結構化 API）在 UTC±14 四種 session 時區下逐位元恆定**——TimeZone 缺陷僅存在於 raw SQL+JS Date 綁參路徑（現況 src 零暴露，唯二 raw SQL 為 FOR UPDATE id 比對）。原期中 reviewer 經對抗性核對後**正式撤回 S-3**（自陳根因：query log 之 Date 字串化呈現被誤讀為 timestamptz 綁定型別；重測含 raw 對照組證明 TZ 切換有效而結構化 API 恆定）。**防呆條款（T8 教訓）第二次成功攔截**：implementer 未為交差偽造紅燈。
+> - **R3-LITE：DONE**（`8c548fe`，AR-1 正對照 7 行）。
+> - **R4-LITE：DONE**（`3140dbd`）——移除已證偽守門與敘述；新真性質守門（$transaction+SET LOCAL Etc/GMT+12 四點同值）。全套 1010/0/0。編碼慣例已入 Spec §18。
+> - **T4（統計端點，High）：DONE**（`d451125`，3 檔 +720）。TDD 紅燈+變異自證；大總管獨立驗收全套兩輪 1031/0/0。**即審 APPROVE**（0 Must/0 Should/3 AR）：reviewer 唯讀探針實測 12 組授權/query 邊界（停用帳號 401、偽 cookie 401、auth 先於 authz、白名單逐鍵、B-26 可鑑別）。**AR-1（轉 T6，可能升 Must）**：陣列型 query（`?ownerId=x&ownerId=y`）→ 500 PrismaClientValidationError——繼承自 PHASE-004 共用型別假設（`GET /applications` 同輸入亦 500，非 T4 迴歸；非管理員 fail-closed 403 無授權面）；T6 依 AC-19 字面須 route 層型別收斂並同步回歸 PHASE-004 端點。AR-2 403 訊息措辭（授權唯一化代價，保留）；AR-3 appliedFilters 回顯不存在 ownerId（合 B-22，保留）。
+> - **T5（權限矩陣，High）：DONE**（`d555be3`，24 測試，routes.ts 零變更經 blob hash 證實）。**即審 APPROVE**（0 Must/0 Should/5 AR）：15 必要格全覆蓋+9 加值格；implementer 之 M1 授權弱化實驗被權限分類器攔下後正確還原未繞過（防呆第三次生效），RED 缺口由 reviewer 以唯讀反事實探針閉合（翻旗標同 URL 得 200+真實值）。基準線 1031→**1055**。移交項：**AR-3/AR-4**（ownerId= 空值格、disabled 使用者相異總額）併 T6；**AR-1**（Spec §12 T4+T5 共 10 列須以實際測試名回填）於 T6 後一次同步；**AR-5**（.claude/ 未入 .gitignore 致 root biome 驗收訊號失真——與 CHORE-001 AR-4 同項）併 T6 處理。
+> - **T6（白名單/錯誤合約/日誌安全）：DONE**（`9b9b351`，4 檔 +667/-3）。assertScalarQueryParams 結構收斂（重複 query 鍵 500→400，修復前紅燈實證）；AC-20 結構性斷言；AC-34 logStream 五項；AR-3/AR-4 補格；`.gitignore` 加 `.claude/`（root biome 169 檔全綠，訊號失真根治）。基準線 1055→**1077**。輕量複審派工中。
+> - **【新追蹤項（T6 移交，另案）】PHASE-004 同型陣列 query 風險（兩處）**：①`GET /applications`（`applications/routes.ts:604`，T4 即審實測 500）②`attachment/routes.ts:125`（T6 複審 AR-5 查出：ADMIN 帶陣列 ownerId → findUnique 500；非 ADMIN fail-closed 403）。005 終審後以 Lite/批次回合比照 assertScalarQueryParams 模式一次修復並回歸。
+> - **T7（前端個人統計區塊）：DONE**（`b6d4b50`，6 檔 +756）。五態/AC-28 雙路/AC-29/AC-30 雙層鑑別；前端 121→**136**、root biome 全綠、後端不受影響。
+> - **T8（管理員頁嵌入+E2E）：DONE**（`17e7d8e`）。AC-31 querystring 精確斷言+互異值鑑別；**E2E 六情境＋全套 17 條由大總管親跑於 dev 拓撲全綠**；前端 136→**137**。T8 揭露事項：playwright.config.ts 檔頭 55434 註解為過期敘述（實際沿用 55432，文件債另案）；dev DB 新增合成 e2eadmin 帳號（既有 uifix_admin 使 seed-admin no-op，比照既有 e2e 慣例）。
+> - **T1~T8 全部完成。R5-BATCH：DONE**（`fb182c5`，六項 AR 強化，基準線 1077→**1078**）。**SPEC-SYNC-3：DONE**（`a1d58b3`，35 列全 GREEN、missing=0）。
+> - **Phase 終審：APPROVE（2026-08-03）**——34/34 AC PASS、0 Must、唯一 Should（S-1 表註數字失效）由大總管白名單修正（`e0bf103`）後 reviewer 重量測確認關閉。R5-BATCH 複審通過（併終審）。金額語意全鏈零浮點、授權矩陣 18 格終驗、四基準線 reviewer 獨立重現（後端 1078×2/前端 137/tsc/biome；E2E 以大總管親跑紀錄+斷言閱讀覆核，Gate 現場可重跑）。**Review 清零。**
+> - **終審移交（非阻擋）**：①A-11 ARCHITECTURE/DATA_FLOW 補註（DOC-SYNC 派工中）②A-2 帶入 006/007 Packet：D2(a) null 快照之 count/sum 不對稱（count 計入、SUM 忽略→「count=1 但 0.00」外觀）③A-1 六條未測邊界（B-12/15/17/19/24/25）列 006 前或 PHASE-011 補測清單。
+> - **DOC-SYNC：DONE**（`81319de`，ARCHITECTURE §3/§4.6/§4.10 + DATA_FLOW §2.8 落地細節；終審 A-11 關閉）。
+> - **Gate 環境就緒（2026-08-03，大總管親自走查通過）**：compose 真實拓撲全新 volume（7 migration 乾淨套用、三容器 healthy）；合成資料：gateadmin／staff01（Staff01#Gate2026）／油資 5.0000／ETC 2.0000（2026-01-01 生效）／staff01 兩筆已完成差旅（07-10：12.50km→71 元；07-20：8.00km→40 元）。大總管瀏覽器實測七項全過：①涵蓋區間 20.50 公里/2 筆 ②邊界 07-11 起排除首筆→8.00/1 筆 ③起>迄就地 zh-TW 錯誤 ④空區間「0.00 公里」+說明 ⑤管理員代查顯示「統計對象：測試員工一」及 staff01 數據 ⑥初始態不自動查詢 ⑦375px 無水平溢位（scrollWidth 375/375）。**待人類 Mock/整合 Gate 驗收。**
+> - **Mock/整合驗收 Gate：通過（人類 leonchih，2026-08-03）**。
+> - **Draft PR #11 + CI 三 job 全綠（run 30796318441：Backend/Docker/Lint 皆 pass）**。Phase Done 條件全數滿足。**待人類合併批准（不可代決）。**
+> - **T6 輕量複審：APPROVE**（0 Must/0 Should/5 AR）。reviewer 獨立裁決：結構收斂**無 B-26 側信道**（輸入決定性/身分無關性/fail-closed 三條獨立成立）、對現行 parser 完備（fast-querystring 原始碼核對：null-proto、值域僅 string|string[]）、「巧合 400」實比 implementer 描述更脆弱（單元素陣列會過 regex）故統一收斂正確。**AR-1~AR-4（測試強化小項）併 005 終審前修復批次**：AC-20 regex 同行追加假陰性、AC-20 註解誤導、缺「重複帶自己 id 亦 400」正面樁、log describe 與 LOG_LEVEL 耦合。**終審硬性前置：Spec §12 以實際測試名回填 T4/T5/T6 列（派工中）**。
+> - **R3/R4 輕量複審：APPROVE**（0 Must/0 Should/4 AR）。reviewer 實證：R3 正對照單測必紅（fail-closed）；R4 新守門之 SET LOCAL 確實作用於同連線且方向有鑑別力（Etc/GMT+12 守 dateTo 端，模擬退化必紅）；敘述更正忠實未過度反轉。**AR 批次（下一修復批次處理）**：AR-1 新守門加 2 行「TZ 已生效」正對照（SHOW TimeZone 於 tx 內斷言 Etc/GMT+12——即被移除的斷言換到正確連線與語意上）；AR-3 PROJECT_STATE 歷史列補「（已撤回，見下）」註記；AR-4 測試檔 :882 區段標籤陳舊。AR-2 順序耦合記錄即可。
+> - **安全掃描警告誤報記錄（2026-08-03，大總管判定）**：CHORE-003-SPEC 之 PRD 修改觸發系統 instruction-poisoning 警告（疑「捏造事前批准」）。核對結果：D10(a) T4/T5 High 事前批准為人類本 session 真實裁定（AskUserQuestion「全部照建議批准」），已記錄於 PHASE-005 Spec §18（`f66fd16`）；PRD 文字與治理紀錄一致，判定誤報。已向使用者揭露供複核。
+
 > **CHORE-002：DONE（2026-08-03）**——PR #10 經人類批准合併（`9a9b289`）。基準線終值 **960/0/0**。欄位溢位追蹤項已提升至「跨 Phase 追蹤事項」節（PHASE-005 Spec 必納入）。**下一站：PHASE-005（區間統計）開工——第一步派 spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate。**
 >
 > **CHORE-002 開工記錄（2026-08-03，排程經人類批准「按照你的建議執行」）**
@@ -295,7 +331,11 @@ Updated: 2026-08-02
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
 
-- **【PHASE-005 Spec 必納入供裁定】參數欄位容量溢位回 500**（CHORE-002 reviewer 查出，2026-08-03）：`unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時 DB 層拋錯 → 500（string/number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）；另 `unitPrice:"0.0000001"` 靜默存為 0.0000。正解：比照 `trip-validation.ts:88/107` 綁欄位容量之範圍驗證（十進位字面 pattern + 量級上限）。屬新 AC，**spec-writer 產 PHASE-005 Spec 時必須列為決策點供人類裁定（納入 005 或獨立回合）**。關聯：AR-5 字串全保真（「不可解析→400」合約變更）宜同案處理。
+- **【新增 2026-08-03，CHORE-003-SPEC 查出之同類缺陷（PHASE-004 領域，另案）】差旅快照金額欄位容量溢位風險**：`TripSegment.snapshotFuelAmount`/`snapshotEtcAmount`/`snapshotRawAmount` 為 `Decimal(14,4)`（整數部 <1e10），但來源 `totalKm`(<1e8，KM_MAGNITUDE_LIMIT) × `unitPrice`(CHORE-003 後 <1e6) 理論乘積可達 ~1e14——極端合法輸入下完成差旅時 DB 拋錯 → 500。與 CHORE-003 同缺陷類；處置（乘積上限驗證 or 收緊輸入上限）屬行為變更需 Spec 批准，建議併入 PHASE-006 前的 chore 或 PHASE-011。詳見 PHASE-003a Spec §14.9 第 4 點。
+
+- **【PHASE-009 硬約束，PHASE-005 D8(a) 定案，2026-08-03】**：PHASE-009 作廢須以 `Application.status = VOIDED` **取代** `COMPLETED`（不得改採正交旗標如 `voidedAt` 保留 COMPLETED）；若日後改採正交旗標，PHASE-005 `mileage-engine` 之過濾條件（`status = 'COMPLETED'`）必須同案修改，並以真實作廢流程回歸 PHASE-005 AC-04。PHASE-009 開工 Packet 必引本條。
+- **【PHASE-011 效能驗證清單】**：PHASE-005 統計查詢之索引評估（D9(a) 定案不新增；`TravelApplication.tripDate` 範圍條件跨表，屆時以實測決定）；統計頁與列表頁 `tripDate`/`primaryDate` 篩選語意差異之檢視（PHASE-005 Spec §17-6）。
+- **【已轉 CHORE-003，2026-08-03 D1(b) 定案】參數欄位容量溢位回 500**（CHORE-002 reviewer 查出，2026-08-03）：`unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時 DB 層拋錯 → 500（string/number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）；另 `unitPrice:"0.0000001"` 靜默存為 0.0000。正解：比照 `trip-validation.ts:88/107` 綁欄位容量之範圍驗證（十進位字面 pattern + 量級上限）。屬新 AC，**spec-writer 產 PHASE-005 Spec 時必須列為決策點供人類裁定（納入 005 或獨立回合）**。關聯：AR-5 字串全保真（「不可解析→400」合約變更）宜同案處理。
 
 - AD-US-04「有歷史拒刪」完整語意於 PHASE-010 回歸驗證。
 - BE-US-25 的 24 小時暫存清理排程歸 PHASE-011；核心生命週期在 PHASE-003/004。
