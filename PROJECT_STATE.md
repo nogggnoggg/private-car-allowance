@@ -10,6 +10,11 @@ State: ACTIVE
 > - 前置約束提醒：不得以「一般使用者不知道單價」為安全前提（PHASE-004 D6 邊界擴張）；BE-US-22 作廢排除規則預留（依「未作廢」過濾）。
 > - **SPEC-005：DONE**（`16ed237`，875 行，34 AC 全溯源、T1~T8、D1~D10）。**Spec Gate 通過（人類 leonchih 2026-08-03）：D1~D10 全數照建議批准**，Spec 轉 ACTIVE；**T4/T5 依 D10(a) 升 High，事前批准已於本 Gate 取得**。裁定要點：D1(b) 欄位溢位另開 **CHORE-003**（與 005 並行，含 AR-5「不可解析→400」同案）；D2(a) 引擎讀 `snapshotTotalKm`；D3(a) 字串 2 位小數未取整；D4(a) 單一端點 `GET /statistics/mileage?ownerId?`；D5(a) 起訖必填；D6(a) 嵌既有頁；D7(a) 里程+筆數；D8(a) 見下方跨 Phase 追蹤新條目；D9(a) 不加索引。衍生待辦：PRD「High 風險 Task：無」修正（派工）；CHORE-003 首步＝spec-writer 修訂 PHASE-003a Spec 錯誤合約。
 > - **派工模式變更（使用者 2026-08-03 裁定）**：subagent 一律背景派工（run_in_background），使用者可於任務清單看到 agent 獨立運行；依序執行原則不變。
+> - **T1：DONE**（`beecb8a`，31 單元測試）。大總管獨立驗收：全套兩輪 991/0/0（基準 960+31）、tsc 0、biome 乾淨。
+> - **T2：DONE**（`3f55a09`，7 整合測試）。驗收退回一項（`Decimal(0)` 數字建構違 D4 bright-line→改 `"0"`）後結案；全套兩輪 998/0/0（基準 991+7）+修正後補跑一輪、tsc 0、biome 乾淨。
+> - **CHORE-003-SPEC：DONE**（worktree 產出，chore-003 branch @ `7733dff`）：003a Spec 新增 §14（AC-21~32、行為對照表、T1~T3 拆分、受影響測試盤點；§1~§13 零改動）+ PRD D10(a) 兩列連動修正。**CD-1(a)/CD-2(a)/CD-3(a) 經人類 2026-08-03 裁定全採推薦**，已固化於 003a §13 修訂列。spec-writer 實測關鍵事實：`Decimal("Infinity")` 不拋錯且 `.decimalPlaces()` 回 NaN——單靠小數位檢查擋不住，須 pattern 攔截。
+> - **CHORE-003 實作排程（大總管裁定）**：**不與 PHASE-005 同時實作**——兩個 checkout 併跑 vitest 會共用同一測試 DB 之 per-worker schema 槽位（vitest_w1...），INFRA-001 隔離對「跨 checkout 併行」不設防，會互相污染；且 worktree 無 node_modules。故 CHORE-003-T1~T3（皆 High，事前批准已由 D1(b)+CD 裁定構成）排於 PHASE-005 後端鏈（T3~T6）完成後、或 Mock Gate 等待期間，於主工作區 checkout chore-003 執行。
+> - **安全掃描警告誤報記錄（2026-08-03，大總管判定）**：CHORE-003-SPEC 之 PRD 修改觸發系統 instruction-poisoning 警告（疑「捏造事前批准」）。核對結果：D10(a) T4/T5 High 事前批准為人類本 session 真實裁定（AskUserQuestion「全部照建議批准」），已記錄於 PHASE-005 Spec §18（`f66fd16`）；PRD 文字與治理紀錄一致，判定誤報。已向使用者揭露供複核。
 
 > **CHORE-002：DONE（2026-08-03）**——PR #10 經人類批准合併（`9a9b289`）。基準線終值 **960/0/0**。欄位溢位追蹤項已提升至「跨 Phase 追蹤事項」節（PHASE-005 Spec 必納入）。**下一站：PHASE-005（區間統計）開工——第一步派 spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate。**
 >
