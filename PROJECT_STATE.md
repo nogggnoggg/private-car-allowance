@@ -19,7 +19,10 @@ State: ACTIVE
 > - **D1(a) 附帶（整合 Gate 前置）**：Gate 環境既有油資參數（每公里 5.0000）不換算；油價與油耗合成資料由人類於整合 Gate 時重新輸入。
 > - **T1（schema＋migration，High）：DONE**（`35b30e7`，5 檔 +677/-6）＋ **T1R-LITE**（`3a2c0a5`，infra001 自檢表數斷言 11→13 機械連動）。implementer 於 T1 正確觸發 Stop（禁改檔轉紅，未私改）——防呆第三次成功攔截。大總管獨立驗收：**測試計數差異親自查證**——stash 還原量測基準線 1211 逐檔零流失，新檔實為 6 測試（Handoff 自述 9/4 describe 為過時描述，實為 6 it/3 describe），1211+6=1217 精確吻合；全套 1217/0/0、單檔 6/6、tsc 0、biome 乾淨。基準線 1211 → **1217**。
 > - **新追蹤項（PHASE-011 加固候選）**：infra001-isolation-self-check 之業務表總數寫死斷言（今 13）——每個新增資料表的 Phase 都會再撞一次，候選改為動態計數（比照 countMigrationDirs 模式）。
-> - 下一步：T1+T1R reviewer 即審（High 節奏）→ T2（單價推導純函式，金額核心）→ T3/T4 → …
+> - **T1 即審：REQUEST_CHANGES**（0 Must/2 Should/7 AR；程式本體零缺陷）。S-1 AC-27 安全網僅比對單表→ **T1R2-LITE：DONE**（`255caed`，擴為 §8.6 五表逐欄比對＋突變自證 TripSegment 改寫必紅）；S-2 映射表→大總管白名單回填 AC-27 轉 GREEN（`30cdf54`）。AR 要點：enum 具名清單與表數計數不對稱（併 PHASE-011 動態化候選）、油耗版本使使用者永久不可刪（D8(a) 設計後果，PHASE-010 文件記載）、非 CONCURRENTLY 索引之部署註記。
+> - **T2（單價推導純函式，High）：DONE**（`39b71a9`，2 檔新增 22 單元測試）。八列驗表全綠、ROUND_HALF_EVEN mutant 實測恰 2 紅（45÷10 兩處）、AC-28 結構性掃描含掃描器自證。大總管獨立驗收：單檔 22/22、全套兩輪 1239/0/0、tsc 0、biome 乾淨。基準線 1217 → **1239**。diff +409 超預算 36%（AC 溯源註解＋四類必要測試，據實揭露接受，記回顧校準）。附帶：`kmPerLiter≤0` 防禦性拋錯超出 AC 字面（上游驗證層已擋，正常路徑不可達），交合併複審裁量。
+> - **排程事件（大總管自省）**：曾同時派 reviewer 複審與 T2 implementer——同 checkout 併跑 vitest 會共用 per-worker schema 槽位（INFRA-001 已知不設防），已即時停掉 reviewer 改序執行；T1R2 複審與 T2 即審合併為單一 Review Packet（比照 CHORE-003 先例）。
+> - 下一步：T1R2＋T2 合併複審 → T3（油價 service/route）→ T4（油耗 service）→ …
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
