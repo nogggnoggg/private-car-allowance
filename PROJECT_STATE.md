@@ -33,7 +33,7 @@ State: ACTIVE
 > - **DOC-SYNC：DONE**（`81319de`，ARCHITECTURE §3/§4.6/§4.10 + DATA_FLOW §2.8 落地細節；終審 A-11 關閉）。
 > - **Gate 環境就緒（2026-08-03，大總管親自走查通過）**：compose 真實拓撲全新 volume（7 migration 乾淨套用、三容器 healthy）；合成資料：gateadmin／staff01（Staff01#Gate2026）／油資 5.0000／ETC 2.0000（2026-01-01 生效）／staff01 兩筆已完成差旅（07-10：12.50km→71 元；07-20：8.00km→40 元）。大總管瀏覽器實測七項全過：①涵蓋區間 20.50 公里/2 筆 ②邊界 07-11 起排除首筆→8.00/1 筆 ③起>迄就地 zh-TW 錯誤 ④空區間「0.00 公里」+說明 ⑤管理員代查顯示「統計對象：測試員工一」及 staff01 數據 ⑥初始態不自動查詢 ⑦375px 無水平溢位（scrollWidth 375/375）。**待人類 Mock/整合 Gate 驗收。**
 > - **Mock/整合驗收 Gate：通過（人類 leonchih，2026-08-03）**。
-> - **下一步：Draft PR + CI 三 job 綠 → 人類合併批准（不可代決）。**
+> - **Draft PR #11 + CI 三 job 全綠（run 30796318441：Backend/Docker/Lint 皆 pass）**。Phase Done 條件全數滿足。**待人類合併批准（不可代決）。**
 > - **T6 輕量複審：APPROVE**（0 Must/0 Should/5 AR）。reviewer 獨立裁決：結構收斂**無 B-26 側信道**（輸入決定性/身分無關性/fail-closed 三條獨立成立）、對現行 parser 完備（fast-querystring 原始碼核對：null-proto、值域僅 string|string[]）、「巧合 400」實比 implementer 描述更脆弱（單元素陣列會過 regex）故統一收斂正確。**AR-1~AR-4（測試強化小項）併 005 終審前修復批次**：AC-20 regex 同行追加假陰性、AC-20 註解誤導、缺「重複帶自己 id 亦 400」正面樁、log describe 與 LOG_LEVEL 耦合。**終審硬性前置：Spec §12 以實際測試名回填 T4/T5/T6 列（派工中）**。
 > - **R3/R4 輕量複審：APPROVE**（0 Must/0 Should/4 AR）。reviewer 實證：R3 正對照單測必紅（fail-closed）；R4 新守門之 SET LOCAL 確實作用於同連線且方向有鑑別力（Etc/GMT+12 守 dateTo 端，模擬退化必紅）；敘述更正忠實未過度反轉。**AR 批次（下一修復批次處理）**：AR-1 新守門加 2 行「TZ 已生效」正對照（SHOW TimeZone 於 tx 內斷言 Etc/GMT+12——即被移除的斷言換到正確連線與語意上）；AR-3 PROJECT_STATE 歷史列補「（已撤回，見下）」註記；AR-4 測試檔 :882 區段標籤陳舊。AR-2 順序耦合記錄即可。
 > - **安全掃描警告誤報記錄（2026-08-03，大總管判定）**：CHORE-003-SPEC 之 PRD 修改觸發系統 instruction-poisoning 警告（疑「捏造事前批准」）。核對結果：D10(a) T4/T5 High 事前批准為人類本 session 真實裁定（AskUserQuestion「全部照建議批准」），已記錄於 PHASE-005 Spec §18（`f66fd16`）；PRD 文字與治理紀錄一致，判定誤報。已向使用者揭露供複核。
