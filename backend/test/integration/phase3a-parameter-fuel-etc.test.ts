@@ -140,6 +140,16 @@ async function cleanupAll(prisma: PrismaClient, userIds: string[]): Promise<void
       },
     },
   });
+  // PHASE-005a-T3b: AC-37(e) 移轉之並發／精度 it 改打 /parameters/fuel-price，
+  // 於同一哨兵日期區間（2099-01-*）寫入 FuelPriceVersion，須同步清理。
+  await prisma.fuelPriceVersion.deleteMany({
+    where: {
+      effectiveFrom: {
+        gte: FUEL_DATE_PREFIX_START,
+        lte: FUEL_DATE_PREFIX_END,
+      },
+    },
+  });
   await prisma.etcParameterVersion.deleteMany({
     where: {
       effectiveFrom: {
@@ -162,10 +172,16 @@ async function cleanupAll(prisma: PrismaClient, userIds: string[]): Promise<void
 }
 
 // ---------------------------------------------------------------------------
-// POST /parameters/fuel (AC-01, AC-03, AC-06, AC-07)
+// POST /parameters/fuel（D1(a) 凍結後）— AC-37(a)(b)
+//
+// PHASE-005a-T3b（§16 D1(a)、Spec §2.H AC-37）: route 已移除，故三種身分
+// （管理員／一般使用者／未登入）皆為 404，且零寫入。原 PHASE-003a 之
+// AC-01/03/06/07/09/16/17（寫入路徑覆蓋）由 PHASE-005a AC-01/02/03/05/06
+// （`/parameters/fuel-price`，§12 已 GREEN）承接；本 describe 僅保留
+// AC-37(a)(b) 之 404／零寫入斷言，見 Spec §2.H AC-37(e) 第一、二列。
 // ---------------------------------------------------------------------------
 
-describeWithDb("POST /parameters/fuel", () => {
+describeWithDb("POST /parameters/fuel（D1(a) 凍結後）", () => {
   let app: FastifyInstance;
   let prisma: PrismaClient;
   let users: TestUsers;
@@ -194,170 +210,72 @@ describeWithDb("POST /parameters/fuel", () => {
     }
   });
 
-  // AC-01: valid fuel parameter → 201 + DTO
-  it("AC-01: admin creates fuel parameter → 201 with DTO", async () => {
-    const resp = await app.inject({
+  // AC-37(a): route 不存在 → preHandler 鏈不執行 → 三種身分皆 404（無授權判定）
+  it("AC-37(a) 管理員／一般使用者／未登入三種身分皆回 404 NOT_FOUND（統一錯誤形狀，不新增 ErrorCode）", async () => {
+    const identities: { label: string; cookie?: string }[] = [
+      { label: "管理員", cookie: adminCookie },
+      { label: "一般使用者", cookie: userCookie },
+      { label: "未登入", cookie: undefined },
+    ];
+
+    for (const { cookie } of identities) {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/parameters/fuel",
+        headers: cookie ? { cookie } : {},
+        payload: { unitPrice: "3.5000", effectiveFrom: "2099-01-01" }, // 合法 body
+      });
+      expect(resp.statusCode).toBe(404);
+      const body = resp.json<{
+        error: { code: string; message: string; requestId?: string };
+      }>();
+      expect(body.error.code).toBe("NOT_FOUND");
+      expect(body.error.requestId).toBeDefined();
+    }
+
+    // 判定語意鑑別：畸形 body（含 mustChangePassword 身分）亦同為 404，
+    // 證明 preHandler 鏈（含 requirePasswordChanged）確實未執行。
+    const malformed = await app.inject({
+      method: "POST",
+      url: "/parameters/fuel",
+      headers: { cookie: mcpCookie },
+      payload: { totally: "malformed", nested: { x: 1 } },
+    });
+    expect(malformed.statusCode).toBe(404);
+    expect(malformed.json<{ error: { code: string } }>().error.code).toBe("NOT_FOUND");
+  });
+
+  // AC-37(b): 三種身分之請求前後，FuelParameterVersion 列數與最大 createdAt 全等
+  it("AC-37(b) 三種身分之請求前後 FuelParameterVersion 列數與最大 createdAt 全等（零寫入）", async () => {
+    async function snapshot(): Promise<{ count: number; maxCreatedAt: number }> {
+      const rows = await prisma.fuelParameterVersion.findMany({ select: { createdAt: true } });
+      const maxCreatedAt = rows.reduce((max, r) => Math.max(max, r.createdAt.getTime()), 0);
+      return { count: rows.length, maxCreatedAt };
+    }
+
+    const before = await snapshot();
+
+    await app.inject({
       method: "POST",
       url: "/parameters/fuel",
       headers: { cookie: adminCookie },
       payload: { unitPrice: "3.5000", effectiveFrom: "2099-01-01" },
     });
-    expect(resp.statusCode).toBe(201);
-    const body = resp.json<{ version: Record<string, unknown> }>();
-    expect(body.version).toBeDefined();
-    expect(body.version.id).toBeDefined();
-    expect(body.version.effectiveFrom).toBe("2099-01-01");
-    // unitPrice precision: should not be floating-point-imprecise
-    expect(String(body.version.unitPrice)).toBe("3.5000");
-    expect(body.version.createdAt).toBeDefined();
-    // DTO must NOT expose createdById or other internal fields
-    expect(body.version.createdById).toBeUndefined();
-  });
-
-  // AC-01 boundary: unitPrice = 0 is allowed
-  it("AC-01 boundary: unitPrice=0 → 201 allowed", async () => {
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 0, effectiveFrom: "2099-01-02" },
-    });
-    expect(resp.statusCode).toBe(201);
-    const body = resp.json<{ version: Record<string, unknown> }>();
-    expect(String(body.version.unitPrice)).toBe("0.0000");
-  });
-
-  // AC-03: unitPrice < 0 → 400 VALIDATION_ERROR, fields=[unitPrice]
-  it("AC-03: unitPrice=-1 → 400 VALIDATION_ERROR fields=[unitPrice]", async () => {
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: -1, effectiveFrom: "2099-01-10" },
-    });
-    expect(resp.statusCode).toBe(400);
-    const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
-    expect(body.error.code).toBe("VALIDATION_ERROR");
-    expect(body.error.fields).toBeDefined();
-    const fields = body.error.fields ?? [];
-    expect(fields.some((f) => f.field === "unitPrice")).toBe(true);
-  });
-
-  // AC-06: missing effectiveFrom → 400 VALIDATION_ERROR, fields=[effectiveFrom]
-  it("AC-06: missing effectiveFrom → 400 VALIDATION_ERROR fields=[effectiveFrom]", async () => {
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 5 },
-    });
-    expect(resp.statusCode).toBe(400);
-    const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
-    expect(body.error.code).toBe("VALIDATION_ERROR");
-    const fields = body.error.fields ?? [];
-    expect(fields.some((f) => f.field === "effectiveFrom")).toBe(true);
-  });
-
-  // AC-06: invalid effectiveFrom date string → 400
-  it("AC-06: invalid effectiveFrom='not-a-date' → 400 VALIDATION_ERROR", async () => {
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 5, effectiveFrom: "not-a-date" },
-    });
-    expect(resp.statusCode).toBe(400);
-    const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
-    expect(body.error.code).toBe("VALIDATION_ERROR");
-    const fields = body.error.fields ?? [];
-    expect(fields.some((f) => f.field === "effectiveFrom")).toBe(true);
-  });
-
-  // AC-07: same effectiveFrom → 409 PARAMETER_PERIOD_OVERLAP + conflictVersion
-  it("AC-07: duplicate effectiveFrom → 409 PARAMETER_PERIOD_OVERLAP with conflictVersion", async () => {
-    // First create
-    const first = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 4, effectiveFrom: "2099-01-05" },
-    });
-    expect(first.statusCode).toBe(201);
-
-    // Second create with same date → overlap
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 5, effectiveFrom: "2099-01-05" },
-    });
-    expect(resp.statusCode).toBe(409);
-    const body = resp.json<{
-      error: {
-        code: string;
-        details?: { conflictVersion?: { id: string; effectiveFrom: string } };
-      };
-    }>();
-    expect(body.error.code).toBe("PARAMETER_PERIOD_OVERLAP");
-    expect(body.error.details).toBeDefined();
-    expect(body.error.details?.conflictVersion).toBeDefined();
-    expect(body.error.details?.conflictVersion?.effectiveFrom).toBe("2099-01-05");
-  });
-
-  // AC-09 boundary: adjacent day (different date) → 201 allowed
-  it("AC-09: adjacent effectiveFrom (next day) → 201 allowed", async () => {
-    // Create 2099-01-20
-    const first = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 3, effectiveFrom: "2099-01-20" },
-    });
-    expect(first.statusCode).toBe(201);
-
-    // Create 2099-01-21 (adjacent, different day) → should be allowed
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 3.5, effectiveFrom: "2099-01-21" },
-    });
-    expect(resp.statusCode).toBe(201);
-  });
-
-  // AC-16: USER role → 403 FORBIDDEN
-  it("AC-16: USER role → 403 FORBIDDEN", async () => {
-    const resp = await app.inject({
+    await app.inject({
       method: "POST",
       url: "/parameters/fuel",
       headers: { cookie: userCookie },
-      payload: { unitPrice: 3, effectiveFrom: "2099-01-15" },
+      payload: { unitPrice: "3.5000", effectiveFrom: "2099-01-01" },
     });
-    expect(resp.statusCode).toBe(403);
-    expect(resp.json<{ error: { code: string } }>().error.code).toBe("FORBIDDEN");
-  });
-
-  // AC-17: unauthenticated → 401 UNAUTHORIZED
-  it("AC-17: unauthenticated → 401 UNAUTHORIZED", async () => {
-    const resp = await app.inject({
+    await app.inject({
       method: "POST",
       url: "/parameters/fuel",
-      payload: { unitPrice: 3, effectiveFrom: "2099-01-15" },
+      payload: { unitPrice: "3.5000", effectiveFrom: "2099-01-01" },
     });
-    expect(resp.statusCode).toBe(401);
-    expect(resp.json<{ error: { code: string } }>().error.code).toBe("UNAUTHORIZED");
-  });
 
-  // mustChangePassword admin → 403 PASSWORD_CHANGE_REQUIRED
-  it("mustChangePassword admin → 403 PASSWORD_CHANGE_REQUIRED", async () => {
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: mcpCookie },
-      payload: { unitPrice: 3, effectiveFrom: "2099-01-15" },
-    });
-    expect(resp.statusCode).toBe(403);
-    expect(resp.json<{ error: { code: string } }>().error.code).toBe("PASSWORD_CHANGE_REQUIRED");
+    const after = await snapshot();
+    expect(after.count).toBe(before.count);
+    expect(after.maxCreatedAt).toBe(before.maxCreatedAt);
   });
 });
 
@@ -396,18 +314,21 @@ describeWithDb("GET /parameters/fuel", () => {
 
   // AC-19: list returns all versions sorted by effectiveFrom; DTO excludes sensitive fields
   it("AC-19: admin gets 200 list sorted by effectiveFrom, no sensitive fields", async () => {
-    // Create two versions in reverse order to verify sort
-    await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 7, effectiveFrom: "2099-01-15" },
+    // AC-37(c): POST /parameters/fuel 已移除，播種改為直寫 FuelParameterVersion
+    // （繞過已移除之端點）；GET 之斷言以下逐字不變（AC-37(c) 主要證據）。
+    await prisma.fuelParameterVersion.create({
+      data: {
+        unitPrice: "7",
+        effectiveFrom: new Date("2099-01-15"),
+        createdById: users.adminId,
+      },
     });
-    await app.inject({
-      method: "POST",
-      url: "/parameters/fuel",
-      headers: { cookie: adminCookie },
-      payload: { unitPrice: 5, effectiveFrom: "2099-01-10" },
+    await prisma.fuelParameterVersion.create({
+      data: {
+        unitPrice: "5",
+        effectiveFrom: new Date("2099-01-10"),
+        createdById: users.adminId,
+      },
     });
 
     const resp = await app.inject({
@@ -770,19 +691,21 @@ describeWithDb("Concurrent defense: DB unique constraint → 409 not 500", () =>
 
   // Test: two sequential requests with same date — second must get 409, not 500
   // (This tests both service-layer overlap check and DB unique constraint fallback)
-  it("two sequential requests with same fuel date → second gets 409 PARAMETER_PERIOD_OVERLAP", async () => {
+  // AC-37(e): POST /parameters/fuel 已移除；同語意移轉至 /parameters/fuel-price
+  // （與 AC-02 之並發 it 覆蓋重複，屬淨增覆蓋，非重複刪減）。
+  it("two sequential requests with same fuel-price date → second gets 409 PARAMETER_PERIOD_OVERLAP", async () => {
     const [r1, r2] = await Promise.all([
       app.inject({
         method: "POST",
-        url: "/parameters/fuel",
+        url: "/parameters/fuel-price",
         headers: { cookie: adminCookie },
-        payload: { unitPrice: 1, effectiveFrom: "2099-01-25" },
+        payload: { fuelType: "GASOLINE_95", pricePerLiter: 1, effectiveFrom: "2099-01-25" },
       }),
       app.inject({
         method: "POST",
-        url: "/parameters/fuel",
+        url: "/parameters/fuel-price",
         headers: { cookie: adminCookie },
-        payload: { unitPrice: 2, effectiveFrom: "2099-01-25" },
+        payload: { fuelType: "GASOLINE_95", pricePerLiter: 2, effectiveFrom: "2099-01-25" },
       }),
     ]);
 
@@ -848,35 +771,39 @@ describeWithDb("Precision: unitPrice Decimal round-trip", () => {
     }
   });
 
-  it("unitPrice=1.2345 stored and returned without float imprecision", async () => {
+  // AC-37(e): POST /parameters/fuel 已移除，播種移轉至 /parameters/fuel-price；
+  // 精度斷言逐字保留（欄位名 unitPrice → pricePerLiter）。
+  it("pricePerLiter=1.2345 stored and returned without float imprecision", async () => {
     const resp = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: { unitPrice: "1.2345", effectiveFrom: "2099-01-28" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: "1.2345", effectiveFrom: "2099-01-28" },
     });
     expect(resp.statusCode).toBe(201);
-    const body = resp.json<{ version: { unitPrice: string } }>();
-    expect(String(body.version.unitPrice)).toBe("1.2345");
+    const body = resp.json<{ version: { pricePerLiter: string } }>();
+    expect(String(body.version.pricePerLiter)).toBe("1.2345");
   });
 
-  it("GET list: unitPrice precision is preserved after round-trip", async () => {
+  it("GET list: pricePerLiter precision is preserved after round-trip", async () => {
     await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: { unitPrice: "3.1415", effectiveFrom: "2099-01-29" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: "3.1415", effectiveFrom: "2099-01-29" },
     });
 
     const listResp = await app.inject({
       method: "GET",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
     });
     expect(listResp.statusCode).toBe(200);
-    const body = listResp.json<{ versions: { unitPrice: string; effectiveFrom: string }[] }>();
+    const body = listResp.json<{
+      versions: { pricePerLiter: string; effectiveFrom: string }[];
+    }>();
     const v = body.versions.find((x) => x.effectiveFrom === "2099-01-29");
     expect(v).toBeDefined();
-    expect(String(v?.unitPrice)).toBe("3.1415");
+    expect(String(v?.pricePerLiter)).toBe("3.1415");
   });
 });

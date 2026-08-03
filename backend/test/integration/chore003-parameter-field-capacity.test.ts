@@ -49,7 +49,9 @@ const REASON_INT_CAPACITY = "數值超出可儲存範圍（最大 2147483647）"
 const REASON_UNIT_PRICE_NEGATIVE = "單價不得小於 0";
 const REASON_GT_ZERO = "必須大於 0";
 const REASON_INT_GT_ZERO = "必須為整數且大於 0";
-const REASON_UNIT_PRICE_REQUIRED = "單價為必填";
+// REASON_UNIT_PRICE_REQUIRED（"單價為必填"）已隨 AC-37(e) 移除：該文案由舊
+// POST /parameters/fuel route 之就地必填檢查產生，/parameters/fuel-price 無
+// 此分支（見下方 pricePerLiter 缺欄位／null／'' it 之更新說明）。
 
 // ---------------------------------------------------------------------------
 // 共用 helper
@@ -130,7 +132,9 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     if (app) await app.close();
     if (prisma) {
       const range = { effectiveFrom: { gte: SENTINEL_START, lte: SENTINEL_END } };
-      await prisma.fuelParameterVersion.deleteMany({ where: range });
+      // PHASE-005a-T3b（AC-37(e)）: postFuel 改指 /parameters/fuel-price，
+      // 寫入表由 FuelParameterVersion 改為 FuelPriceVersion。
+      await prisma.fuelPriceVersion.deleteMany({ where: range });
       await prisma.etcParameterVersion.deleteMany({ where: range });
       await prisma.depreciationParameterVersion.deleteMany({ where: range });
       if (adminId) {
@@ -148,12 +152,18 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
   // 請求 helper
   // -------------------------------------------------------------------------
 
+  /**
+   * PHASE-005a-T3b（Spec §2.H AC-37(e)）: POST /parameters/fuel 已移除
+   * （§16 D1(a)）；本 helper 改指 POST /parameters/fuel-price。payload 之
+   * `unitPrice` 欄位已由呼叫端全數改為 `pricePerLiter`；`fuelType` 於此
+   * 統一補上預設值 "GASOLINE_95"，除非呼叫端自行覆寫。
+   */
   async function postFuel(payload: unknown) {
     return app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: payload as Record<string, unknown>,
+      payload: { fuelType: "GASOLINE_95", ...(payload as Record<string, unknown>) },
     });
   }
 
@@ -186,8 +196,12 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     };
   }
 
+  // PHASE-005a-T3b（AC-37(e)）: postFuel 改指 /parameters/fuel-price；
+  // 零寫入斷言改查 FuelPriceVersion（固定 fuelType "GASOLINE_95"，見 postFuel）。
   async function countFuelAt(dateStr: string): Promise<number> {
-    return prisma.fuelParameterVersion.count({ where: { effectiveFrom: new Date(dateStr) } });
+    return prisma.fuelPriceVersion.count({
+      where: { fuelType: "GASOLINE_95", effectiveFrom: new Date(dateStr) },
+    });
   }
   async function countEtcAt(dateStr: string): Promise<number> {
     return prisma.etcParameterVersion.count({ where: { effectiveFrom: new Date(dateStr) } });
@@ -218,31 +232,31 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
   describe("AC-21 unitPrice ≥1e6 → 400（含 999999.9999 → 201 上界鑑別）", () => {
     it("上界內最大值 '999999.9999' → 201 且原值存入（B-16，證明上限非寫小一個數量級）", async () => {
-      const resp = await postFuel({ unitPrice: "999999.9999", effectiveFrom: "2097-01-01" });
+      const resp = await postFuel({ pricePerLiter: "999999.9999", effectiveFrom: "2097-01-01" });
       expect(resp.statusCode).toBe(201);
-      expect(String(resp.json<VersionBody>().version.unitPrice)).toBe("999999.9999");
+      expect(String(resp.json<VersionBody>().version.pricePerLiter)).toBe("999999.9999");
     });
 
     it("上界 '1000000'（1e6）→ 400 量級文案 且 DB 無新增列（B-17，原為 500）", async () => {
-      const resp = await postFuel({ unitPrice: "1000000", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_MAGNITUDE_6);
+      const resp = await postFuel({ pricePerLiter: "1000000", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_MAGNITUDE_6);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
     });
 
     it("number 型別 1000000 → 400 量級文案（string／number 同一管線）", async () => {
-      const resp = await postFuel({ unitPrice: 1000000, effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_MAGNITUDE_6);
+      const resp = await postFuel({ pricePerLiter: 1000000, effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_MAGNITUDE_6);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
     });
 
     it("'12345678.9' → 400 量級文案（AC-21 明列案例）", async () => {
-      const resp = await postFuel({ unitPrice: "12345678.9", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_MAGNITUDE_6);
+      const resp = await postFuel({ pricePerLiter: "12345678.9", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_MAGNITUDE_6);
     });
 
     it("'-1000000' → 400 **量級**文案而非「單價不得小於 0」（AC-21／AC-32：格式層先於值域層）", async () => {
-      const resp = await postFuel({ unitPrice: "-1000000", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_MAGNITUDE_6);
+      const resp = await postFuel({ pricePerLiter: "-1000000", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_MAGNITUDE_6);
       const fields = resp.json<ErrorBody>().error.fields ?? [];
       expect(fields.some((f) => f.reason === REASON_UNIT_PRICE_NEGATIVE)).toBe(false);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
@@ -287,31 +301,31 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
   describe("AC-23 unitPrice >4 位小數 → 400；尾隨零 '19.90000' → 201", () => {
     it("'0.0000001' → 400 小數位文案 且 DB 無新增列（B-15，原為靜默存 0.0000）", async () => {
-      const resp = await postFuel({ unitPrice: "0.0000001", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_SCALE_4);
+      const resp = await postFuel({ pricePerLiter: "0.0000001", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_SCALE_4);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
     });
 
     it("'1.23456' → 400 小數位文案", async () => {
-      const resp = await postFuel({ unitPrice: "1.23456", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_SCALE_4);
+      const resp = await postFuel({ pricePerLiter: "1.23456", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_SCALE_4);
     });
 
     it("number 0.00001 → 400 小數位文案（number 路徑同守門）", async () => {
-      const resp = await postFuel({ unitPrice: 0.00001, effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_SCALE_4);
+      const resp = await postFuel({ pricePerLiter: 0.00001, effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_SCALE_4);
     });
 
     it("尾隨零 '19.90000' → 201 且存 19.9000（鑑別關鍵：小數位以正規化後的值判定，非字面字元數）", async () => {
-      const resp = await postFuel({ unitPrice: "19.90000", effectiveFrom: "2097-01-02" });
+      const resp = await postFuel({ pricePerLiter: "19.90000", effectiveFrom: "2097-01-02" });
       expect(resp.statusCode).toBe(201);
-      expect(String(resp.json<VersionBody>().version.unitPrice)).toBe("19.9000");
+      expect(String(resp.json<VersionBody>().version.pricePerLiter)).toBe("19.9000");
     });
 
     it("恰為上界 4 位小數 '1.2345' → 201（證明用的是 > 而非 >=）", async () => {
-      const resp = await postFuel({ unitPrice: "1.2345", effectiveFrom: "2097-01-03" });
+      const resp = await postFuel({ pricePerLiter: "1.2345", effectiveFrom: "2097-01-03" });
       expect(resp.statusCode).toBe(201);
-      expect(String(resp.json<VersionBody>().version.unitPrice)).toBe("1.2345");
+      expect(String(resp.json<VersionBody>().version.pricePerLiter)).toBe("1.2345");
     });
   });
 
@@ -368,36 +382,37 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
     for (const literal of literals) {
       it(`unitPrice ${JSON.stringify(literal)} → 400 字面文案 且 DB 無新增列`, async () => {
-        const resp = await postFuel({ unitPrice: literal, effectiveFrom: FUEL_REJECT_DATE });
-        expectValidationError(resp, "unitPrice", REASON_LITERAL);
+        const resp = await postFuel({ pricePerLiter: literal, effectiveFrom: FUEL_REJECT_DATE });
+        expectValidationError(resp, "pricePerLiter", REASON_LITERAL);
         expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
       });
     }
 
     it("number 1e-7 → 400 字面文案（toString() 為 '1e-7'，指數記號）", async () => {
-      const resp = await postFuel({ unitPrice: 1e-7, effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_LITERAL);
+      const resp = await postFuel({ pricePerLiter: 1e-7, effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_LITERAL);
     });
 
     it("number 1e21 → 400 字面文案（toString() 為 '1e+21'）", async () => {
-      const resp = await postFuel({ unitPrice: 1e21, effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_LITERAL);
+      const resp = await postFuel({ pricePerLiter: 1e21, effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_LITERAL);
     });
 
     it("JSON number 1e400（解析為 Infinity）→ **400 而非 500**（B-14 消滅 500 的核心證據）", async () => {
+      // AC-37(e): POST /parameters/fuel 已移除，直打 /parameters/fuel-price。
       const resp = await app.inject({
         method: "POST",
-        url: "/parameters/fuel",
+        url: "/parameters/fuel-price",
         headers: { cookie: adminCookie, "content-type": "application/json" },
-        payload: `{"unitPrice":1e400,"effectiveFrom":"${FUEL_REJECT_DATE}"}`,
+        payload: `{"fuelType":"GASOLINE_95","pricePerLiter":1e400,"effectiveFrom":"${FUEL_REJECT_DATE}"}`,
       });
       expect(resp.statusCode).not.toBe(500);
-      expectValidationError(resp, "unitPrice", REASON_LITERAL);
+      expectValidationError(resp, "pricePerLiter", REASON_LITERAL);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
     });
 
     it("'Infinity' → **400 而非 500**（B-14；小數位檢查單獨擋不住它，須靠字面／isFinite 守門）", async () => {
-      const resp = await postFuel({ unitPrice: "Infinity", effectiveFrom: FUEL_REJECT_DATE });
+      const resp = await postFuel({ pricePerLiter: "Infinity", effectiveFrom: FUEL_REJECT_DATE });
       expect(resp.statusCode).not.toBe(500);
       expect(resp.statusCode).toBe(400);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
@@ -430,8 +445,8 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
     for (const { label, value } of cases) {
       it(`unitPrice ${label} → 400 型別文案 且 DB 無新增列`, async () => {
-        const resp = await postFuel({ unitPrice: value, effectiveFrom: FUEL_REJECT_DATE });
-        expectValidationError(resp, "unitPrice", REASON_TYPE);
+        const resp = await postFuel({ pricePerLiter: value, effectiveFrom: FUEL_REJECT_DATE });
+        expectValidationError(resp, "pricePerLiter", REASON_TYPE);
         expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
       });
     }
@@ -449,9 +464,9 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
   describe("AC-27 前後空白字串處置（CD-1(a)）；全空白 → 400", () => {
     it("unitPrice ' 19.9 ' → 201 存 19.9000（B-06 不變，trim 後值完全保真）", async () => {
-      const resp = await postFuel({ unitPrice: " 19.9 ", effectiveFrom: "2097-01-04" });
+      const resp = await postFuel({ pricePerLiter: " 19.9 ", effectiveFrom: "2097-01-04" });
       expect(resp.statusCode).toBe(201);
-      expect(String(resp.json<VersionBody>().version.unitPrice)).toBe("19.9000");
+      expect(String(resp.json<VersionBody>().version.pricePerLiter)).toBe("19.9000");
     });
 
     it("vehiclePrice ' 600000 ' → 201 存 600000.00（B-20，CD-1(a) 明文批准之放寬）", async () => {
@@ -463,14 +478,14 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     });
 
     it("unitPrice '   '（全空白）→ 400 空值文案 且 DB 無新增列（B-07，原 Number('   ')===0 靜默存 0.0000）", async () => {
-      const resp = await postFuel({ unitPrice: "   ", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_EMPTY);
+      const resp = await postFuel({ pricePerLiter: "   ", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_EMPTY);
       expect(await countFuelAt(FUEL_REJECT_DATE)).toBe(0);
     });
 
     it("unitPrice ' abc ' → 400 字面文案（trim 後仍非十進位字面）", async () => {
-      const resp = await postFuel({ unitPrice: " abc ", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_LITERAL);
+      const resp = await postFuel({ pricePerLiter: " abc ", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_LITERAL);
     });
   });
 
@@ -531,51 +546,57 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
   describe("AC-30 既有成功／值域／必填行為零回歸（補充鑑別）", () => {
     it("unitPrice = 0（值域下界）→ 201 存 0.0000，不得被新的格式層誤擋", async () => {
-      const resp = await postFuel({ unitPrice: 0, effectiveFrom: "2097-01-05" });
+      const resp = await postFuel({ pricePerLiter: 0, effectiveFrom: "2097-01-05" });
       expect(resp.statusCode).toBe(201);
-      expect(String(resp.json<VersionBody>().version.unitPrice)).toBe("0.0000");
+      expect(String(resp.json<VersionBody>().version.pricePerLiter)).toBe("0.0000");
     });
 
     it("unitPrice '3.5000' → 201 存 3.5000（精度上界內）", async () => {
-      const resp = await postFuel({ unitPrice: "3.5000", effectiveFrom: "2097-01-06" });
+      const resp = await postFuel({ pricePerLiter: "3.5000", effectiveFrom: "2097-01-06" });
       expect(resp.statusCode).toBe(201);
-      expect(String(resp.json<VersionBody>().version.unitPrice)).toBe("3.5000");
+      expect(String(resp.json<VersionBody>().version.pricePerLiter)).toBe("3.5000");
     });
 
     it("Decimal round-trip：'3.1415' 建立後由 GET 列表取回仍為 3.1415", async () => {
-      const created = await postFuel({ unitPrice: "3.1415", effectiveFrom: "2097-01-07" });
+      // AC-37(e): 播種與讀取皆改指 /parameters/fuel-price
+      // （GET /parameters/fuel 唯讀查舊表，本測試資料已不在該表）。
+      const created = await postFuel({ pricePerLiter: "3.1415", effectiveFrom: "2097-01-07" });
       expect(created.statusCode).toBe(201);
       const listResp = await app.inject({
         method: "GET",
-        url: "/parameters/fuel",
+        url: "/parameters/fuel-price?fuelType=GASOLINE_95",
         headers: { cookie: adminCookie },
       });
       expect(listResp.statusCode).toBe(200);
       const versions = listResp.json<{ versions: Record<string, unknown>[] }>().versions;
       const row = versions.find((v) => v.effectiveFrom === "2097-01-07");
       expect(row).toBeDefined();
-      expect(String(row?.unitPrice)).toBe("3.1415");
+      expect(String(row?.pricePerLiter)).toBe("3.1415");
     });
 
-    it("unitPrice = -1 → 400 且 field/reason 為既有值域層之「單價不得小於 0」（不變）", async () => {
-      const resp = await postFuel({ unitPrice: -1, effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_UNIT_PRICE_NEGATIVE);
+    it("pricePerLiter = -1 → 400 且 field/reason 為既有值域層之「單價不得小於 0」（不變）", async () => {
+      const resp = await postFuel({ pricePerLiter: -1, effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_UNIT_PRICE_NEGATIVE);
     });
 
-    it("unitPrice = -0.5 → 400「單價不得小於 0」（負值且格式合法者仍走值域層）", async () => {
-      const resp = await postFuel({ unitPrice: "-0.5", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_UNIT_PRICE_NEGATIVE);
+    it("pricePerLiter = -0.5 → 400「單價不得小於 0」（負值且格式合法者仍走值域層）", async () => {
+      const resp = await postFuel({ pricePerLiter: "-0.5", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_UNIT_PRICE_NEGATIVE);
     });
 
-    it("unitPrice 缺欄位／null／'' → 400「單價為必填」（B-03，必填檢查仍在格式層之前）", async () => {
+    // AC-37(e) 唯一文案例外：「單價為必填」由舊 route 之就地必填檢查（routes.ts:156-160）
+    // 產生；/parameters/fuel-price 無此分支，缺／null／'' 一律走
+    // parseParameterDecimalField（已批准之 AC-06 文案，見 phase5a-fuel-price.test.ts
+    // 之 ordered gate table）。嚴禁為了讓舊斷言通過而在新端點加回必填分支。
+    it("pricePerLiter 缺欄位／null → 400「必須為有效的數值（字串或數字）」；'' → 400「必須為有效的數值」（AC-06 文案；B-03 舊必填分支已隨端點凍結移除）", async () => {
       const missing = await postFuel({ effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(missing, "unitPrice", REASON_UNIT_PRICE_REQUIRED);
+      expectValidationError(missing, "pricePerLiter", REASON_TYPE);
 
-      const nullResp = await postFuel({ unitPrice: null, effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(nullResp, "unitPrice", REASON_UNIT_PRICE_REQUIRED);
+      const nullResp = await postFuel({ pricePerLiter: null, effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(nullResp, "pricePerLiter", REASON_TYPE);
 
-      const emptyResp = await postFuel({ unitPrice: "", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(emptyResp, "unitPrice", REASON_UNIT_PRICE_REQUIRED);
+      const emptyResp = await postFuel({ pricePerLiter: "", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(emptyResp, "pricePerLiter", REASON_EMPTY);
     });
 
     it("vehiclePrice = 0 / -100 → 400「必須大於 0」（既有值域層文案不變）", async () => {
@@ -595,9 +616,9 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     });
 
     it("重疊 effectiveFrom 仍為 409 PARAMETER_PERIOD_OVERLAP + details.conflictVersion（不變）", async () => {
-      const first = await postFuel({ unitPrice: "2.5", effectiveFrom: "2097-01-09" });
+      const first = await postFuel({ pricePerLiter: "2.5", effectiveFrom: "2097-01-09" });
       expect(first.statusCode).toBe(201);
-      const dup = await postFuel({ unitPrice: "2.6", effectiveFrom: "2097-01-09" });
+      const dup = await postFuel({ pricePerLiter: "2.6", effectiveFrom: "2097-01-09" });
       expect(dup.statusCode).toBe(409);
       const body = dup.json<{ error: { code: string; details?: Record<string, unknown> } }>();
       expect(body.error.code).toBe("PARAMETER_PERIOD_OVERLAP");
@@ -605,18 +626,20 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     });
 
     it("未登入 → 401；成功路徑之稽核列仍寫入（不變）", async () => {
+      // AC-37(e): 未登入呼叫改打 /parameters/fuel-price（授權鏈與 401 行為不變）。
       const anon = await app.inject({
         method: "POST",
-        url: "/parameters/fuel",
-        payload: { unitPrice: "1.0", effectiveFrom: "2097-01-10" },
+        url: "/parameters/fuel-price",
+        payload: { fuelType: "GASOLINE_95", pricePerLiter: "1.0", effectiveFrom: "2097-01-10" },
       });
       expect(anon.statusCode).toBe(401);
 
-      const created = await postFuel({ unitPrice: "1.0", effectiveFrom: "2097-01-10" });
+      const created = await postFuel({ pricePerLiter: "1.0", effectiveFrom: "2097-01-10" });
       expect(created.statusCode).toBe(201);
       const versionId = String(created.json<VersionBody>().version.id);
+      // targetLabel 隨端點遷移由 FUEL#<id> 改為 FUEL_PRICE#<id>（routes.ts 稽核 hook 實查）。
       const auditCount = await prisma.auditLog.count({
-        where: { actorId: adminId, targetLabel: `FUEL#${versionId}` },
+        where: { actorId: adminId, targetLabel: `FUEL_PRICE#${versionId}` },
       });
       expect(auditCount).toBe(1);
     });
@@ -628,8 +651,8 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
 
   describe("AC-32（I 層補充）多重違規之順序決定性；折舊多欄位彙總", () => {
     it("unitPrice '-0.0000001'（負值＋超精度）→ 小數位文案（順序：小數位先於值域）", async () => {
-      const resp = await postFuel({ unitPrice: "-0.0000001", effectiveFrom: FUEL_REJECT_DATE });
-      expectValidationError(resp, "unitPrice", REASON_SCALE_4);
+      const resp = await postFuel({ pricePerLiter: "-0.0000001", effectiveFrom: FUEL_REJECT_DATE });
+      expectValidationError(resp, "pricePerLiter", REASON_SCALE_4);
     });
 
     it("vehiclePrice '600000.005' 且 usefulLifeYears = 0 → fields 同時含兩欄位（AC-05 彙總行為不變）", async () => {
@@ -675,7 +698,7 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     }
 
     it("B-14 'Infinity'：400，body 為統一形狀且不含驅動層訊息片段", async () => {
-      const resp = await postFuel({ unitPrice: "Infinity", effectiveFrom: FUEL_REJECT_DATE });
+      const resp = await postFuel({ pricePerLiter: "Infinity", effectiveFrom: FUEL_REJECT_DATE });
       expect(resp.statusCode).toBe(400);
       const body = resp.json<ErrorBody>();
       expect(Object.keys(body)).toEqual(["error"]);
@@ -686,7 +709,7 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
     });
 
     it("B-17 '1000000'：400，body 不含驅動層訊息片段", async () => {
-      const resp = await postFuel({ unitPrice: "1000000", effectiveFrom: FUEL_REJECT_DATE });
+      const resp = await postFuel({ pricePerLiter: "1000000", effectiveFrom: FUEL_REJECT_DATE });
       expect(resp.statusCode).toBe(400);
       expectNoLeak(resp.body);
     });
@@ -717,7 +740,7 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
         1e-7,
       ];
       for (const value of fuelInputs) {
-        const fuelResp = await postFuel({ unitPrice: value, effectiveFrom: FUEL_REJECT_DATE });
+        const fuelResp = await postFuel({ pricePerLiter: value, effectiveFrom: FUEL_REJECT_DATE });
         expect({ value, status: fuelResp.statusCode }).toEqual({ value, status: 400 });
         const etcResp = await postEtc({ unitPrice: value, effectiveFrom: ETC_REJECT_DATE });
         expect({ value, status: etcResp.statusCode }).toEqual({ value, status: 400 });
@@ -790,17 +813,18 @@ describeWithDb("CHORE-003-T2 AC-31 日誌不外洩 DB／驅動層原文", () => 
     logLines = []; // 只看下列三個錯誤路徑的 log
 
     // B-14 / B-17 / B-23 三個原 500 情境
+    // AC-37(e): POST /parameters/fuel 已移除，改打 /parameters/fuel-price。
     await logApp.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: logCookie },
-      payload: { unitPrice: "Infinity", effectiveFrom: "2097-01-25" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: "Infinity", effectiveFrom: "2097-01-25" },
     });
     await logApp.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: logCookie },
-      payload: { unitPrice: "1000000", effectiveFrom: "2097-01-26" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: "1000000", effectiveFrom: "2097-01-26" },
     });
     await logApp.inject({
       method: "POST",
@@ -819,7 +843,9 @@ describeWithDb("CHORE-003-T2 AC-31 日誌不外洩 DB／驅動層原文", () => 
     if (logApp) await logApp.close();
     if (prisma) {
       const range = { effectiveFrom: { gte: SENTINEL_START, lte: SENTINEL_END } };
-      await prisma.fuelParameterVersion.deleteMany({ where: range });
+      // PHASE-005a-T3b（AC-37(e)）: postFuel 改指 /parameters/fuel-price，
+      // 寫入表由 FuelParameterVersion 改為 FuelPriceVersion。
+      await prisma.fuelPriceVersion.deleteMany({ where: range });
       await prisma.depreciationParameterVersion.deleteMany({ where: range });
       if (logAdminId) {
         await prisma.session.deleteMany({ where: { userId: logAdminId } });

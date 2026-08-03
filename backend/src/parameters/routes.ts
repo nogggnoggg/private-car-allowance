@@ -2,8 +2,13 @@
  * Parameters routes — PHASE-003a-T3 / T5 (audit)
  *
  * Endpoints (backend routes; nginx strips /api prefix):
- *   POST /parameters/fuel         → 201 { version: FuelParameterDto }
- *   GET  /parameters/fuel         → 200 { versions: FuelParameterDto[] }
+ *   POST /parameters/fuel         → REMOVED (PHASE-005a-T3b, §16 D1(a), AC-37):
+ *                                    route no longer registered → 404 NOT_FOUND
+ *                                    for all identities (admin/user/unauthenticated);
+ *                                    preHandler chain does not run; zero writes.
+ *                                    Superseded by POST /parameters/fuel-price.
+ *   GET  /parameters/fuel         → 200 { versions: FuelParameterDto[] } (read-only,
+ *                                    kept for audit trail / PHASE-008 legacy snapshots)
  *   POST /parameters/etc          → 201 { version: EtcParameterDto }
  *   GET  /parameters/etc          → 200 { versions: EtcParameterDto[] }
  *   POST /parameters/depreciation → 201 { version: DepreciationParameterDto }
@@ -36,7 +41,6 @@ import { createFuelPriceVersion, listFuelPriceVersions } from "./fuel-price-serv
 import {
   createDepreciationVersion,
   createEtcVersion,
-  createFuelVersion,
   listDepreciationVersions,
   listEtcVersions,
   listFuelVersions,
@@ -135,62 +139,19 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
   const adminPreHandlers = [requireAuth(prisma), requirePasswordChanged, requireAdmin];
 
   // -------------------------------------------------------------------------
-  // POST /parameters/fuel — create a fuel parameter version (AC-01/03/06/07)
+  // POST /parameters/fuel — REMOVED (PHASE-005a-T3b, §16 D1(a), AC-37).
+  // The handler is intentionally not registered: Fastify's 404 handler
+  // (setNotFoundHandler, backend/src/platform/error-handler.ts) answers
+  // every request to this path with 404 NOT_FOUND, for every identity
+  // (admin/user/unauthenticated) — the preHandler chain never runs, so
+  // there is no authorization decision and zero writes ever occur here.
+  // The only remaining write path for fuel prices is
+  // POST /parameters/fuel-price (below).
   // -------------------------------------------------------------------------
 
-  fastify.post(
-    "/parameters/fuel",
-    {
-      preHandler: adminPreHandlers,
-      schema: { body: createParameterBodySchema },
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const body = request.body as {
-        unitPrice?: number | string;
-        effectiveFrom: string;
-      };
-
-      // unitPrice is required — schema marks it optional (not in required[]) to get
-      // a nicer validation error from service layer; but we must check presence.
-      if (body.unitPrice === undefined || body.unitPrice === null || body.unitPrice === "") {
-        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
-          { field: "unitPrice", reason: "單價為必填" },
-        ]);
-      }
-
-      const actorId = request.currentUser.id;
-
-      const version = await createFuelVersion(
-        prisma,
-        {
-          unitPrice: body.unitPrice,
-          effectiveFrom: body.effectiveFrom,
-          createdById: actorId,
-        },
-        // T5 audit hook: write AuditLog inside same transaction (AC-18, D6)
-        async (tx: TxClient, dto) => {
-          await (tx as PrismaClient).auditLog.create({
-            data: {
-              action: "PARAMETER_VERSION_CREATED",
-              actorId,
-              targetId: null,
-              targetLabel: `FUEL#${dto.id}`,
-              summary: {
-                parameterType: "FUEL",
-                unitPrice: dto.unitPrice,
-                effectiveFrom: dto.effectiveFrom,
-              },
-            },
-          });
-        }
-      );
-
-      return reply.status(201).send({ version });
-    }
-  );
-
   // -------------------------------------------------------------------------
-  // GET /parameters/fuel — list all fuel parameter versions (AC-19)
+  // GET /parameters/fuel — list all fuel parameter versions (AC-19; read-only,
+  // kept for audit trail / PHASE-008 legacy snapshot display, §16 D1(a))
   // -------------------------------------------------------------------------
 
   fastify.get(
