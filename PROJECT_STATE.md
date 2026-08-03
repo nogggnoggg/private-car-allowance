@@ -340,6 +340,8 @@ Updated: 2026-08-02
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
 
+- **【新增 2026-08-03，CHORE-003-T3 確認】AR-1 `toDecimalConstructorArg` 同形雙拷貝仍存**：`parameter-service.ts` 與 `depreciation-engine.ts` 各有同形實作；T3 評估不改用共用 helper（會改變 deriveDepreciation 契約——其接受 Decimal 實例且僅規定 ≤0 無效）。收斂須抽第三個共用葉節點模組，**PHASE-011 重構候選**。詳見 003a Spec §14.7 未採用註記。
+
 - **【新增 2026-08-03，CHORE-003-SPEC 查出之同類缺陷（PHASE-004 領域，另案）】差旅快照金額欄位容量溢位風險**：`TripSegment.snapshotFuelAmount`/`snapshotEtcAmount`/`snapshotRawAmount` 為 `Decimal(14,4)`（整數部 <1e10），但來源 `totalKm`(<1e8，KM_MAGNITUDE_LIMIT) × `unitPrice`(CHORE-003 後 <1e6) 理論乘積可達 ~1e14——極端合法輸入下完成差旅時 DB 拋錯 → 500。與 CHORE-003 同缺陷類；處置（乘積上限驗證 or 收緊輸入上限）屬行為變更需 Spec 批准，建議併入 PHASE-006 前的 chore 或 PHASE-011。詳見 PHASE-003a Spec §14.9 第 4 點。
 
 - **【PHASE-009 硬約束，PHASE-005 D8(a) 定案，2026-08-03】**：PHASE-009 作廢須以 `Application.status = VOIDED` **取代** `COMPLETED`（不得改採正交旗標如 `voidedAt` 保留 COMPLETED）；若日後改採正交旗標，PHASE-005 `mileage-engine` 之過濾條件（`status = 'COMPLETED'`）必須同案修改，並以真實作廢流程回歸 PHASE-005 AC-04。PHASE-009 開工 Packet 必引本條。
