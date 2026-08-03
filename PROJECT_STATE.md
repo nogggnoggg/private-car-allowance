@@ -27,8 +27,9 @@ State: ACTIVE
 > - **T3（油價 service/route，High）：DONE**（`cce6a9d`，4 檔：service 新建 273 行、routes +93 純新增、48 整合測試、掃描清單入列）。四油種同生效日組合、併發雙寫恰 201+409（非 500）、AC-06 十七列逐字 reason＋三邊界正例、複用實證 import 斷言。大總管獨立驗收：全套兩輪 **1295/0/0**（基準 1244+48+3 結構掃描）、tsc 0、biome 乾淨。基準線 → **1295**。diff ~2x 預算（Packet 自身 Done When 所驅動之測試矩陣，接受，記回顧）。**交複審關注**：①`REASON_FUEL_TYPE` zh-TW 文案為 implementer 自選（Spec 僅釘 fields[].field），T9 前端接用前須複審 ②重複 query key（?fuelType=a&fuelType=b）為安全 400 但無專測（B-11 屬 T6 慣例）。
 > - **T3 即審：REQUEST_CHANGES**（1 Must/2 Should/7 AR；行為面全對）。**M-1** 複用實證為假測試（僅斷言 export 存在＋不實註解）→ **T3R-LITE：DONE**（`642b500`，改為讀原始碼斷言 import 接線＋負向控制＋活體突變自證「刪 import 改私有複製必紅」；併修 AR-2 P2002 stub、AR-4 重複 query key 400、AR-6 過期註解）。**S-1** 映射表→大總管回填 AC-01/02/03/05/06 GREEN（`e59d071`）。**S-2（排程缺口）**：已批 D1(a) 舊端點移除在 36 AC/13 Task 無歸屬→ **SPEC-REV1：DONE**（`4fc813c`，AC-37「舊油資端點凍結」＋T3b 列＋§7.1.1，受影響測試逐檔 grep 實查含 chore003 postFuel 34 處與「單價為必填」文案陷阱之處置禁令）。AR-1 REASON_FUEL_TYPE 文案列 T9 對齊義務；AR-5 同形雙拷貝併既有 PHASE-011 條目。基準線 1301。
 > - 並行事件：T3R-LITE（測試檔）與 SPEC-REV1（Spec 檔）並行派工，兩 agent 各自於 Handoff 主動回報「工作區有非我造成之異動」——互相守望有效，零交叉污染，分檔 commit 乾淨。
-> - **T3b（舊端點凍結，High）：IN_PROGRESS**——依 AC-37(a)~(e) 封閉清單執行，T9 前必須完成。
-> - 下一步：T3b → T3b+T3R 複審 → T4（油耗 service，High）→ T5/T6 → T7/T8 → 前端。vitest 併跑限制持續有效。
+> - **T3b BLOCKED 事件（防呆第四次攔截）**：implementer 發現 AC-37(e) 封閉清單漏列 `phase3a-parameter-audit.test.ts`（5 條 it 直打舊端點），正確 Stop 並還原試探修改。**SPEC-REV2：DONE**（`e5fefbd`）——補列＋處置定案「移轉至新端點」（實查新端點稽核僅一條成功路徑，移轉為淨增覆蓋：敏感鍵掃描／403／401／409 原子性四項）＋三道窮盡 grep 指令落檔（61 行/11 檔全歸類）＋「service 函式不得移除」硬性約束（27 處直呼依賴）。**根因**：REV1 之 grep 被工具截斷於 100 筆未察覺——已立「grep 指令原文＋命中計數落檔」規則。
+> - **T3b（舊端點凍結，High）：DONE**（`5f43214`，4 檔 +265/-333）。大總管獨立驗收：全套兩輪 **1293/0/0**（帳目精確 1301−10＋2：舊 POST describe 10 條合併為 AC-37(a)(b) 2 條，授權語意併入 404 判定）、chore003 it 數 59/59 零流失、GET 授權三條 git diff 實證零改動、播種改直寫斷言逐字保留、tsc 0、biome 乾淨。修復前紅燈（stash 復舊 route → `expected 201 to be 404`）實證。基準線 → **1293**。映射表 AC-37 轉 GREEN（實名回填）。
+> - 下一步：T3R＋T3b 合併複審 → T4（油耗 service，High）→ T5/T6 → T7/T8 → 前端。vitest 併跑限制持續有效。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
