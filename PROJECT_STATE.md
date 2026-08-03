@@ -6,6 +6,8 @@ State: ACTIVE
 > - 範圍兩項（reviewer 於 CHORE-001 複審開立之追蹤項）：①**D4-Decimal-number**——4 處 `new Prisma.Decimal(<number 變數>)` 改字串化建構（`parameter-service.ts:171→208`、`:280→317`、`:466`、`depreciation-engine.ts:72`；routes accept-any 使 JSON 數字直達）②**wire-level 4xx 原始 status 對照表**——`error-handler.ts` 新分支由「一律 400」改為 `413→PAYLOAD_TOO_LARGE、415→UNSUPPORTED_MEDIA_TYPE、其餘 4xx→400 VALIDATION_ERROR`（三 code 均已在 ErrorCode 聯集）。
 > - branch：`chore-002`（自 main @ `9ac908d`）。流程：implementer TDD → 大總管驗收 → reviewer 輕量複審 → PR + CI → 人類批准合併。完成後開工 PHASE-005。
 > - §15 重錨定：大總管零程式修改。①屬金額欄位建構路徑——**金額語意類，Packet 約束逐條引用 AC/Spec 原文**（T8 教訓）；行為預期零變更（字串化不改值），但 reviewer 必驗精度等價。
+> - **T1：DONE**（`1d17868`）→ 複審 REQUEST_CHANGES（0 Must）→ **R1：DONE**（`d8d5e2c`）。reviewer 亮點：以 20 萬組隨機掃描證明本版 decimal.js 建構子對 number 內部已先 toString()——4 處字串化為**恆等變換**（金額零風險）；抓出 T1 夾帶的極端量級防呆超出「行為零變更」批准範圍且前提為假（實測 decimal.js 支援科學記號），已依 S-1(i) 移除。修項② 4xx 對照表乾淨（413→PAYLOAD_TOO_LARGE、415→UNSUPPORTED_MEDIA_TYPE，修復前紅燈實證）。基準線 946 → **957**。
+> - **新追蹤項（reviewer S-1 查出之真缺陷，需 Spec 批准後另案）**：參數值落在欄位容量溢位區間（unitPrice ≥1e6、vehiclePrice ≥1e10 至 Decimal 欄位上限外）時 DB 層拋錯 → **500**（string 與 number 輸入皆然）；`unitPrice:"0.0000001"` 靜默存為 0.0000。正解為比照 `trip-validation.ts` 綁欄位容量的範圍驗證——屬新 AC，建議併入 PHASE-005 或獨立小回合，需人類批准。另 AR-2：error-handler 對照表新增 4xx 來源時須同步擴充（已註記於程式）。
 
 > **INFRA-001b：DONE（2026-08-03）**——PR #9 經人類批准合併（`8d28291`）;冷路徑 AC-23 經人類裁定收為 Accepted Risk;**INFRA-001 Spec 轉 COMPLETED**（26 AC 全關,基準線 946/0/0）。下一站:CHORE-002 → PHASE-005。
 >
