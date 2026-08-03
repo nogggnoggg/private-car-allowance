@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `DRAFT` |
+| **Spec 狀態** | `ACTIVE`（Spec Gate 通過：人類 leonchih 2026-08-03 裁定 D1~D10 全數照建議批准，見 §18） |
 | **Phase ID** | PHASE-005 |
 | **Task ID（本文件產出）** | SPEC-005 |
 | **Base Commit** | main @ `310bc39`；工作 branch `phase-005` |
@@ -871,5 +871,6 @@ PRD 目標句寫「提供個人與管理員的區間統計查詢**頁**」，但
 | 日期 | 版本／Task | 變更 | 依據 |
 |---|---|---|---|
 | 2026-08-03 | SPEC-005（初稿） | 建立 PHASE-005 Spec，狀態 `DRAFT`；AC-01~34、Task Graph T1~T8、AC↔測試映射表、決策點 D1~D10 | Task Context Packet SPEC-005；PRD §5 PHASE-005 節；`userstory.md` FE-US-06／AD-US-06／BE-US-30／BE-US-20；PHASE-004 Spec；PROJECT_STATE 跨 Phase 追蹤事項（2026-08-03 條目） |
+| 2026-08-03 | Spec Gate（大總管固化） | **D1~D10 全數照 §16 推薦選項批准**：D1(b) 獨立回合 CHORE-003 與 005 並行（含 AR-5 同案）、D2(a) 讀 `snapshotTotalKm`＋AC-13 不變式＋COMPLETED 快照非 null 斷言、D3(a) 字串／2 位小數／未取整／`"0.00"`、D4(a) 單一端點 `GET /statistics/mileage`、D5(a) `dateFrom`/`dateTo` 皆必填、D6(a) 既有頁內共用區塊不新增路由、D7(a) 里程＋筆數、D8(a) 固化「VOIDED 取代 COMPLETED」並寫入跨 Phase 追蹤、D9(a) 不新增索引（索引評估列 PHASE-011）、D10(a) **T4/T5 升 High 且事前批准已於本 Gate 一併取得**。§7/§12/§15 之「推薦」形狀即定案形狀，無需連動改寫。狀態 `DRAFT`→`ACTIVE`。衍生待辦：PRD PHASE-005 節「High 風險 Task：無」須修正（派工處理）；CHORE-003 回合另開（PHASE-003a Spec 錯誤合約修訂）。 | 人類 leonchih 2026-08-03 Spec Gate 批准（「全部照建議批准」） |
 
 > **狀態轉換條件**：人類於 Spec Gate 裁定 D1~D10 → 大總管以修訂紀錄固化裁定結果（引用批准與日期）並將受影響條文（§7 API contract、§15 Task Graph、§12 映射表）連動更新 → 狀態改為 `ACTIVE` → 方可派 T1 開工。

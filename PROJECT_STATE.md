@@ -8,6 +8,8 @@ State: ACTIVE
 > - Risk Level：Medium（PRD §PHASE-005；讀取統計，無 High Task）。惟統計引擎屬金額計算上游（006 保養、007 折舊複用），金額語意類約束一律引用 AC/Spec 原文（T8 教訓）。
 > - Spec 必納入決策點：①欄位溢位追蹤項（跨 Phase 追蹤節 2026-08-03 條目——unitPrice/vehiclePrice 容量溢位回 500、"0.0000001" 靜默存 0；納入 005 或獨立回合，供人類裁定）②AR-5 字串全保真合約變更宜同案。
 > - 前置約束提醒：不得以「一般使用者不知道單價」為安全前提（PHASE-004 D6 邊界擴張）；BE-US-22 作廢排除規則預留（依「未作廢」過濾）。
+> - **SPEC-005：DONE**（`16ed237`，875 行，34 AC 全溯源、T1~T8、D1~D10）。**Spec Gate 通過（人類 leonchih 2026-08-03）：D1~D10 全數照建議批准**，Spec 轉 ACTIVE；**T4/T5 依 D10(a) 升 High，事前批准已於本 Gate 取得**。裁定要點：D1(b) 欄位溢位另開 **CHORE-003**（與 005 並行，含 AR-5「不可解析→400」同案）；D2(a) 引擎讀 `snapshotTotalKm`；D3(a) 字串 2 位小數未取整；D4(a) 單一端點 `GET /statistics/mileage?ownerId?`；D5(a) 起訖必填；D6(a) 嵌既有頁；D7(a) 里程+筆數；D8(a) 見下方跨 Phase 追蹤新條目；D9(a) 不加索引。衍生待辦：PRD「High 風險 Task：無」修正（派工）；CHORE-003 首步＝spec-writer 修訂 PHASE-003a Spec 錯誤合約。
+> - **派工模式變更（使用者 2026-08-03 裁定）**：subagent 一律背景派工（run_in_background），使用者可於任務清單看到 agent 獨立運行；依序執行原則不變。
 
 > **CHORE-002：DONE（2026-08-03）**——PR #10 經人類批准合併（`9a9b289`）。基準線終值 **960/0/0**。欄位溢位追蹤項已提升至「跨 Phase 追蹤事項」節（PHASE-005 Spec 必納入）。**下一站：PHASE-005（區間統計）開工——第一步派 spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate。**
 >
@@ -302,7 +304,9 @@ Updated: 2026-08-02
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
 
-- **【PHASE-005 Spec 必納入供裁定】參數欄位容量溢位回 500**（CHORE-002 reviewer 查出，2026-08-03）：`unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時 DB 層拋錯 → 500（string/number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）；另 `unitPrice:"0.0000001"` 靜默存為 0.0000。正解：比照 `trip-validation.ts:88/107` 綁欄位容量之範圍驗證（十進位字面 pattern + 量級上限）。屬新 AC，**spec-writer 產 PHASE-005 Spec 時必須列為決策點供人類裁定（納入 005 或獨立回合）**。關聯：AR-5 字串全保真（「不可解析→400」合約變更）宜同案處理。
+- **【PHASE-009 硬約束，PHASE-005 D8(a) 定案，2026-08-03】**：PHASE-009 作廢須以 `Application.status = VOIDED` **取代** `COMPLETED`（不得改採正交旗標如 `voidedAt` 保留 COMPLETED）；若日後改採正交旗標，PHASE-005 `mileage-engine` 之過濾條件（`status = 'COMPLETED'`）必須同案修改，並以真實作廢流程回歸 PHASE-005 AC-04。PHASE-009 開工 Packet 必引本條。
+- **【PHASE-011 效能驗證清單】**：PHASE-005 統計查詢之索引評估（D9(a) 定案不新增；`TravelApplication.tripDate` 範圍條件跨表，屆時以實測決定）；統計頁與列表頁 `tripDate`/`primaryDate` 篩選語意差異之檢視（PHASE-005 Spec §17-6）。
+- **【已轉 CHORE-003，2026-08-03 D1(b) 定案】參數欄位容量溢位回 500**（CHORE-002 reviewer 查出，2026-08-03）：`unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時 DB 層拋錯 → 500（string/number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）；另 `unitPrice:"0.0000001"` 靜默存為 0.0000。正解：比照 `trip-validation.ts:88/107` 綁欄位容量之範圍驗證（十進位字面 pattern + 量級上限）。屬新 AC，**spec-writer 產 PHASE-005 Spec 時必須列為決策點供人類裁定（納入 005 或獨立回合）**。關聯：AR-5 字串全保真（「不可解析→400」合約變更）宜同案處理。
 
 - AD-US-04「有歷史拒刪」完整語意於 PHASE-010 回歸驗證。
 - BE-US-25 的 24 小時暫存清理排程歸 PHASE-011；核心生命週期在 PHASE-003/004。
