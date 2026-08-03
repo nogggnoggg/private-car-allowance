@@ -303,7 +303,17 @@ describe("PHASE-005a-T3 複用實證 — service must import shared validation/o
   });
 
   it("Scanner self-proof (M-1 discriminating power): a synthetic mutation that deletes both imports and inlines a private decimal-parsing copy fails every structural-proof assertion above", () => {
-    const mutatedSource = blankCommentsAndStrings(
+    // Use the same blanking pipeline as the real structural proofs above
+    // (blankCommentsOnly, via importCheckSource) — not blankCommentsAndStrings.
+    // blankCommentsAndStrings erases string/template literal CONTENTS, which
+    // would blank out the `"./parameter-validation.js"` /
+    // `"./parameter-version-engine.js"` module-specifier text inside ANY
+    // import statement (mutated or genuine), making IMPORT_VALIDATION_PATTERN
+    // and IMPORT_OVERLAP_PATTERN structurally unmatchable regardless of
+    // mutation — the two `not.toMatch` assertions below would then pass
+    // vacuously for every possible source, including the real (unmutated)
+    // service source, and would carry zero discriminating power.
+    const mutatedSource = blankCommentsOnly(
       [
         'import type { Prisma, PrismaClient } from "@prisma/client";',
         'import { FuelType } from "@prisma/client";',
@@ -321,6 +331,15 @@ describe("PHASE-005a-T3 複用實證 — service must import shared validation/o
     expect(mutatedSource).not.toMatch(IMPORT_VALIDATION_PATTERN);
     expect(mutatedSource).not.toMatch(IMPORT_OVERLAP_PATTERN);
     expect([...mutatedSource.matchAll(ANCHORED_REGEX_LITERAL_PATTERN)].length).toBeGreaterThan(0);
+
+    // Positive control (paired with the negative assertions above): the real,
+    // unmutated service source — run through the identical blankCommentsOnly
+    // pipeline (importCheckSource, defined above from rawServiceSource) —
+    // MUST match both import patterns. Without this paired positive control,
+    // the negative assertions on mutatedSource alone cannot prove the patterns
+    // are discriminating (they could be assertions that never match anything).
+    expect(importCheckSource).toMatch(IMPORT_VALIDATION_PATTERN);
+    expect(importCheckSource).toMatch(IMPORT_OVERLAP_PATTERN);
   });
 });
 
