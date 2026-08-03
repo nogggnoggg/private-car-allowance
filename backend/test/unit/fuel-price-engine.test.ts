@@ -45,7 +45,11 @@ const PHASE_005A_SRC_FILES = [
   "src/parameters/fuel-price-service.ts", // PHASE-005a-T3
 ] as const;
 
-/** 本 Phase 目前唯一的清單項目；供下方「檔案專屬」斷言（非泛用迴圈）取用。 */
+/**
+ * 清單目前有兩個項目（`fuel-price-engine.ts`、`fuel-price-service.ts`），並會
+ * 隨 T4~T8 陸續擴充；此常數固定指向清單第一項（`fuel-price-engine.ts`），
+ * 供下方「檔案專屬」斷言（非泛用迴圈）取用。
+ */
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_005A_SRC_FILES[0]);
 
 // ---------------------------------------------------------------------------
@@ -265,8 +269,9 @@ function findDecimalConstructorArgs(blankedCode: string): string[] {
 }
 
 describe("AC-28 零浮點中介 — PHASE-005a source files contain no Number()/parseFloat/parseInt on the amount path (date-parse whitelist only)", () => {
-  // SF-3（Review）：掃描迴圈逐檔驅動 PHASE_005A_SRC_FILES；清單目前僅一個
-  // 項目，但 describe.each 確保未來新增項目時自動被覆蓋，且任一路徑不存在
+  // SF-3（Review）：掃描迴圈逐檔驅動 PHASE_005A_SRC_FILES；清單目前有兩個
+  // 項目（`fuel-price-engine.ts`、`fuel-price-service.ts`）且會隨 T4~T8 陸續
+  // 擴充，describe.each 確保未來新增項目時自動被覆蓋，且任一路徑不存在
   // 時 fs.readFileSync 會拋錯使該檔案的整組測試紅（不會靜默跳過）。
   describe.each(PHASE_005A_SRC_FILES)("scanned file: %s", (relativePath) => {
     const rawSource = fs.readFileSync(path.resolve(BACKEND_ROOT, relativePath), "utf8");

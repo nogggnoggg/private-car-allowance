@@ -23,6 +23,9 @@
  * "t3fuelprice_"; cleanup is scoped to these, no global deleteMany.
  */
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -31,6 +34,105 @@ import * as fuelPriceService from "../../src/parameters/fuel-price-service.js";
 import * as parameterValidation from "../../src/parameters/parameter-validation.js";
 import * as parameterVersionEngine from "../../src/parameters/parameter-version-engine.js";
 import { buildServer } from "../../src/server.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
+
+/**
+ * Blank comments and string/template literals to equal-length whitespace
+ * (newlines preserved) so the structural regexes below only ever see real
+ * code. Same convention as `test/unit/fuel-price-engine.test.ts` §3
+ * (originally `chore003-string-fidelity.test.ts` §1).
+ */
+function blankCommentsAndStrings(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  const blank = (ch: string) => (ch === "\n" ? "\n" : " ");
+  while (i < n) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === "/" && next === "/") {
+      while (i < n && src[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      out += "  ";
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        out += blank(src[i]);
+        i++;
+      }
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      out += " ";
+      i++;
+      while (i < n && src[i] !== quote) {
+        if (src[i] === "\\") {
+          out += "  ";
+          i += 2;
+          continue;
+        }
+        out += blank(src[i]);
+        i++;
+      }
+      out += " ";
+      i++;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Like `blankCommentsAndStrings` but leaves string/template literal CONTENTS
+ * intact — only comments are blanked. Needed for the import-wiring structural
+ * checks below: an `import { x } from "./y.js"` line's module-specifier is a
+ * string literal, so fully blanking strings (as `blankCommentsAndStrings`
+ * does) would erase the very path text `"./parameter-validation.js"` those
+ * checks need to see. Comments are still stripped so a stray comment
+ * mentioning the same identifiers cannot false-positive the match.
+ */
+function blankCommentsOnly(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  const blank = (ch: string) => (ch === "\n" ? "\n" : " ");
+  while (i < n) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === "/" && next === "/") {
+      while (i < n && src[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      out += "  ";
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        out += blank(src[i]);
+        i++;
+      }
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -145,15 +247,38 @@ const FOUR_FUEL_TYPES = ["GASOLINE_92", "GASOLINE_95", "GASOLINE_98", "DIESEL"] 
 // ---------------------------------------------------------------------------
 
 describe("PHASE-005a-T3 複用實證 — service must import shared validation/overlap functions, not reimplement them", () => {
+  const SERVICE_SRC_PATH = path.resolve(BACKEND_ROOT, "src/parameters/fuel-price-service.ts");
+  const rawServiceSource = fs.readFileSync(SERVICE_SRC_PATH, "utf8");
+  // Comments-only blanking: import module-specifiers are string literals, so
+  // fully blanking strings (blankCommentsAndStrings) would erase the very
+  // path text these checks need to see; blankCommentsOnly strips comments
+  // (avoiding false positives from a stray comment mentioning the same
+  // identifiers) while preserving the real import statement text.
+  const importCheckSource = blankCommentsOnly(rawServiceSource);
+  const blankedServiceSource = blankCommentsAndStrings(rawServiceSource);
+
+  // Import-wiring proof: the SOURCE TEXT of fuel-price-service.ts must itself
+  // contain an `import { parseParameterDecimalField, ... } from
+  // "./parameter-validation.js"` (and equivalently for checkNoOverlap). This
+  // is a real structural check on the file's own code — unlike the
+  // pre-fix version of this test, it actually reads and parses
+  // fuel-price-service.ts's source rather than only checking runtime
+  // module exports (which cannot distinguish "imports the shared function"
+  // from "happens to export a same-named private copy").
+  const IMPORT_VALIDATION_PATTERN =
+    /import\s*(?:type\s*)?\{[^}]*\bparseParameterDecimalField\b[^}]*\}\s*from\s*"\.\/parameter-validation\.js"/;
+  const IMPORT_OVERLAP_PATTERN =
+    /import\s*(?:type\s*)?\{[^}]*\bcheckNoOverlap\b[^}]*\}\s*from\s*"\.\/parameter-version-engine\.js"/;
+  // A private reimplementation of the format gate would need its own
+  // anchored decimal-format regex literal (e.g. /^\d{1,6}(\.\d{1,4})?$/-shaped).
+  // The real file must contain none — the format gate is entirely delegated
+  // to parseParameterDecimalField.
+  const ANCHORED_REGEX_LITERAL_PATTERN = /\/\^[^/\n]*\$\//g;
+
   it("fuel-price-service.ts re-exports/uses parameter-validation.ts's parseParameterDecimalField and UNIT_PRICE_CAPACITY (not a private reimplementation)", () => {
     expect(typeof parameterValidation.parseParameterDecimalField).toBe("function");
     expect(parameterValidation.UNIT_PRICE_CAPACITY).toEqual({ scale: 4, integerDigits: 6 });
-
-    // Structural proof: the compiled service module's source references the
-    // shared module's exports by name (grep-level proof that import wiring exists).
-    // This is a stronger signal than "the reason strings happen to match" —
-    // it fails if someone deletes the import and copies the literal strings instead.
-    expect(Object.keys(fuelPriceService)).toContain("createFuelPriceVersion");
+    expect(typeof fuelPriceService.createFuelPriceVersion).toBe("function");
   });
 
   it("checkNoOverlap (parameter-version-engine.ts) is a pure function usable independently — sanity import check", () => {
@@ -163,6 +288,76 @@ describe("PHASE-005a-T3 複用實證 — service must import shared validation/o
       "2098-06-01"
     );
     expect(result.ok).toBe(false);
+  });
+
+  it("Structural proof (M-1): fuel-price-service.ts's own source imports parseParameterDecimalField from parameter-validation.ts (not a private copy)", () => {
+    expect(importCheckSource).toMatch(IMPORT_VALIDATION_PATTERN);
+  });
+
+  it("Structural proof (M-1): fuel-price-service.ts's own source imports checkNoOverlap from parameter-version-engine.ts (not a private copy)", () => {
+    expect(importCheckSource).toMatch(IMPORT_OVERLAP_PATTERN);
+  });
+
+  it("Negative control (M-1): fuel-price-service.ts defines no anchored decimal-format regex literal of its own (would indicate a private reimplementation of the format gate)", () => {
+    expect([...blankedServiceSource.matchAll(ANCHORED_REGEX_LITERAL_PATTERN)]).toEqual([]);
+  });
+
+  it("Scanner self-proof (M-1 discriminating power): a synthetic mutation that deletes both imports and inlines a private decimal-parsing copy fails every structural-proof assertion above", () => {
+    const mutatedSource = blankCommentsAndStrings(
+      [
+        'import type { Prisma, PrismaClient } from "@prisma/client";',
+        'import { FuelType } from "@prisma/client";',
+        "// import removed: parseParameterDecimalField/UNIT_PRICE_CAPACITY reimplemented privately below",
+        "const UNIT_PRICE_CAPACITY = { scale: 4, integerDigits: 6 };",
+        "function parseParameterDecimalField(value, field, capacity) {",
+        "  const DECIMAL_PATTERN = /^\\d{1,6}(\\.\\d{1,4})?$/;",
+        "  return { ok: true, value };",
+        "}",
+        "function checkNoOverlap(existing, effectiveFrom) {",
+        "  return { ok: true };",
+        "}",
+      ].join("\n")
+    );
+    expect(mutatedSource).not.toMatch(IMPORT_VALIDATION_PATTERN);
+    expect(mutatedSource).not.toMatch(IMPORT_OVERLAP_PATTERN);
+    expect([...mutatedSource.matchAll(ANCHORED_REGEX_LITERAL_PATTERN)].length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AR-2（Review）: P2002 branch is not guaranteed to be hit by the concurrent
+// HTTP test below (race outcome is non-deterministic under `Promise.all`).
+// This stub test forces the branch deterministically via a fake `prisma`
+// whose `tx.fuelPriceVersion.create` throws a P2002-shaped error, and
+// asserts `createFuelPriceVersion` translates it to 409
+// PARAMETER_PERIOD_OVERLAP rather than letting it propagate as a 500.
+// ---------------------------------------------------------------------------
+
+describe("PHASE-005a-T3 AR-2 stub — P2002 unique-constraint branch is deterministically covered", () => {
+  it("tx.fuelPriceVersion.create() rejecting with a P2002-shaped error is translated to AppError PARAMETER_PERIOD_OVERLAP (httpStatus 409), never left to propagate as a 500", async () => {
+    const fakeTx = {
+      fuelPriceVersion: {
+        findMany: async () => [],
+        create: async () => {
+          throw { code: "P2002" };
+        },
+      },
+    };
+    const fakePrisma = {
+      $transaction: async (fn: (tx: typeof fakeTx) => Promise<unknown>) => fn(fakeTx),
+    } as unknown as PrismaClient;
+
+    await expect(
+      fuelPriceService.createFuelPriceVersion(fakePrisma, {
+        fuelType: "GASOLINE_95",
+        pricePerLiter: "30.0000",
+        effectiveFrom: "2098-03-01",
+        createdById: "stub-user-id",
+      })
+    ).rejects.toMatchObject({
+      code: "PARAMETER_PERIOD_OVERLAP",
+      httpStatus: 409,
+    });
   });
 });
 
@@ -694,6 +889,16 @@ describeWithDb("GET /parameters/fuel-price", () => {
     const resp = await app.inject({
       method: "GET",
       url: "/parameters/fuel-price?fuelType=GASOLINE_91",
+      headers: { cookie: adminCookie },
+    });
+    expect(resp.statusCode).toBe(400);
+    expect(resp.json<{ error: { code: string } }>().error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("AR-4 duplicate fuelType query key (?fuelType=GASOLINE_95&fuelType=DIESEL) → 400 VALIDATION_ERROR (never 500)", async () => {
+    const resp = await app.inject({
+      method: "GET",
+      url: "/parameters/fuel-price?fuelType=GASOLINE_95&fuelType=DIESEL",
       headers: { cookie: adminCookie },
     });
     expect(resp.statusCode).toBe(400);
