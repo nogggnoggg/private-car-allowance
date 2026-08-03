@@ -9,6 +9,8 @@ State: ACTIVE
 > - Risk Level：**High**（金額模型變更＋管理員維護員工屬性之授權面；依 CLAUDE.md 授權相關一律 High）。Spec 需人類事前批准 Gate。
 > - branch：`phase-005a`（自 main @ `1444771` 切出）。流程：spec-writer 產 **US 修訂提案（DRAFT，不動 userstory.md）** → **人類逐字確認 US Gate** → userstory.md 修訂落地 → spec-writer 產 Phase Spec（DRAFT）→ 人類 Spec Gate → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
 > - 006/007 開工 Packet 必引事項（見 PHASE-005 結案列）於 005a 不適用（005a 不觸統計引擎），但差旅計算引擎（PHASE-004 T6/T7）之單價解析為本 Phase 核心觸點。
+> - **US-DRAFT：DONE**（`207895c`，PHASE-005a-US-PROPOSAL.md 309 行；零越權修改、編號接續實證 FE-27/AD-14/BE-31/NFR-16）。**US Gate 通過（人類 leonchih，2026-08-03）：提案全文＋Q1–Q10 全數照推薦批准；Q3 明確裁定「僅擋完成申請、草稿可存」**（與既有 BE-US-09 缺參數行為一致）。要點：Q1 每油種各自時間軸、Q2 車輛主檔維持 Out of Scope 加註、Q4 油種固定四項列舉、Q6 依據備註必填、Q7 油價≥0／油耗>0、Q8 快照保存油種＋油價＋油耗三項來源值、Q9 段金額取整規則不變、Q10 沿用 D6 授權邊界。
+> - 下一步：US-LAND（spec-writer 落地 userstory.md＋PRD.md，獨立 commit 引用本批准）→ Phase Spec（DRAFT）→ 人類 Spec Gate。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。

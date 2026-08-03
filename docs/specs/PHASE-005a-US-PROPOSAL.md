@@ -1,6 +1,6 @@
 # PHASE-005a — User Story 修訂提案（油資模型修正）
 
-- **Status: DRAFT — 待人類 US Gate 逐字確認**
+- **Status: APPROVED — US Gate 通過（人類 leonchih，2026-08-03）：§1.2＋§2 全文、§3 連動修訂方向、Q1–Q10 全數照推薦批准；Q3 明確裁定「僅擋完成申請，草稿可存」。落地 Task：PHASE-005a-US-LAND。**
 - Task ID：PHASE-005a-US-DRAFT
 - 建立日期：2026-08-03
 - 產出角色：spec-writer（依大總管 Task Context Packet 派工）
