@@ -1,6 +1,14 @@
 # PROJECT_STATE
 
 State: ACTIVE
+
+> **INFRA-001b 開工記錄（2026-08-03，人類批准第四選項）**
+> - 三項裁定（使用者「按照你的建議執行」）：①AC-23 第四選項（globalSetup 按需重建，D3/AC-09 修訂已入 Spec §17）②NFR-3 追認選項 A（每檔一條共用連線，25/100）③CHORE-002（D4-Decimal-number ×4 + 4xx status 對照表）排本回合後、PHASE-005 前。
+> - branch：`infra-001b`（自 main @ `917d91c`）。流程：implementer TDD → 大總管驗收 → reviewer 輕量複審 → PR + CI → **人類批准合併（白天，回常規）**。
+> - §15 重錨定：大總管零程式修改。
+> - **T1（按需重建）：DONE**（`255e24e`）+ **R1（S-1 超集突變殺手+AR-1 計數斷言）：DONE**（`d97d468`）+ S-2/M-1 文件（`0651462`/`e745437`）。checksum=sha256(migration.sql) 實證 7/7；fail-safe 九情境矩陣零誤沿用；CRLF 疑慮雙重排除。**輕量複審終局 APPROVE**（歷經 REQUEST_CHANGES ×2：S-1 存活突變體→殺掉且唯一命中；M-1 reviewer 自我更正冷路徑 n=1 離群值 +20.2%→正規重測 **+35.7% 明確超標**）。
+> - **成效定稿**：熱路徑（本機常態）供裝 2.7s→~40ms、增幅 **+5.2~5.4% 達標**（批准標的達成）；冷路徑（全新 DB/每次 CI）**+35.7% 超標**——與修訂前同量級,非本回合回歸（AR-8:此結論依據為程式路徑推理+歷史數據,非同 session A/B）。全套 **946/0/0** 兩模式;PR #9 CI 三 job 綠（CI 即冷路徑實證）。
+> - **待人類雙裁定**：①PR #9 合併批准 ②冷路徑 AC-23 是否收為 Accepted Risk（大總管建議收——CI 多 ~3s 供裝換結構性隔離,絕對值可忽略）。
 Governance-Version: 2026-08-01.2
 Updated: 2026-08-02
 

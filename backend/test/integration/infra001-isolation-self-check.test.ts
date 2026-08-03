@@ -30,8 +30,17 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { updateTravelDraft } from "../../src/applications/travel-service.js";
-import { WORKER_SCHEMA_PATTERN, shouldSkipIsolationOnlyTests } from "../setup/db-isolation.js";
-import { countMigrationDirs, readInfra001IsolationState } from "../setup/global-setup.js";
+import {
+  WORKER_SCHEMA_PATTERN,
+  shouldSkipIsolationOnlyTests,
+  withSchema,
+} from "../setup/db-isolation.js";
+import globalSetup, {
+  countMigrationDirs,
+  provisionWorkerSchema,
+  readInfra001IsolationState,
+  readMigrationDirsWithChecksum,
+} from "../setup/global-setup.js";
 import { computeMaxForks } from "../setup/max-forks.js";
 import { verifyWorkerSchemaExists } from "../setup/setup-file.js";
 
@@ -241,5 +250,201 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
       }
       await prisma.user.delete({ where: { id: owner.id } }).catch(() => {});
     }
+  });
+
+  /**
+   * INFRA-001b-T1 — AC-09（2026-08-03 修訂，人類批准第四選項「按需重建」）。
+   *
+   * 設計取捨（Handoff 亦有記載）：test (b)（不吻合 ⇒ 重建）刻意**不對
+   * 1..maxForks 範圍內的真實 worker schema 動手**——那些 schema 在預設並行度
+   * 下可能正被其他同時執行的測試檔使用中，若對它們動 `_prisma_migrations`
+   * 後觸發真正的 `globalSetup()`，會把其他檔案正在使用的資料整個 drop 掉。
+   * 因此改為建立一個**超出 maxForks 範圍、只有本測試自己知道**的 scratch
+   * schema（`vitest_w900000+poolId`，poolId 已排除 1..maxForks 之外），直接
+   * 呼叫 `provisionWorkerSchema()`——這正是 `globalSetup()` 對 `1..maxForks`
+   * 逐一呼叫的同一段生產程式碼，只是這裡把它對準一個不會被任何併發測試檔
+   * 觸碰的 schema，practice 同一條邏輯路徑而不冒摧毀別人資料的風險。
+   *
+   * test (a)（吻合 ⇒ 沿用）與 test (c)（孤兒移除）則相反：因為它們的正確性
+   * 定義就是「不對其他 schema 做任何 DDL」，呼叫真正的 `globalSetup()`（會遍
+   * 歷所有 1..maxForks）是安全的——只要沒人在測試期間把某個正在用的 schema
+   * 的 `_prisma_migrations` 弄壞，`globalSetup()` 對它們全部只會做唯讀比對。
+   */
+  describe("INFRA-001b-T1 — AC-09 按需重建（migration 狀態比對）", () => {
+    it("(a) 吻合 ⇒ 沿用：本 worker schema 內種一筆標記資料，重跑 globalSetup 後標記仍在、schema 未被 drop", async () => {
+      const marker = await prisma.user.create({
+        data: {
+          loginName: "infra001_ac09_reuse_marker",
+          displayName: "INFRA-001 AC-09 沿用標記",
+          passwordHash: "infra001-synthetic-not-a-real-hash",
+          role: "USER",
+        },
+      });
+
+      const namespaceOidBefore = await prisma.$queryRawUnsafe<Array<{ oid: string }>>(
+        "SELECT oid::text AS oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()"
+      );
+
+      try {
+        // 呼叫真正的生產進入點：由它自己決定「哪些 schema 吻合、哪些不吻
+        // 合」，而不是我們代它決定。本 worker schema 的 migration 狀態未被
+        // 動過，理應被判定為吻合而沿用。
+        await globalSetup();
+
+        // INFRA-001b-R1 (AR-1)：mid-run 呼叫真正的 globalSetup() 是編排層
+        // （globalSetup 本身遍歷 1..maxForks 並逐一判斷重建/沿用/孤兒移除）
+        // 的第一次覆蓋——若本次 run 期間任何其他正在使用中的 worker schema
+        // 被誤判為不吻合而重建、或被誤判為孤兒而移除，這裡必須紅燈，而不是
+        // 靜默地把別的測試檔正在用的資料整個毀掉。讀取方式比照本檔既有
+        // AC-09 斷言（readInfra001IsolationState()）。
+        const stateAfterReuseCall = readInfra001IsolationState();
+        expect(stateAfterReuseCall?.rebuiltSchemaCount).toBe(0);
+        expect(stateAfterReuseCall?.orphanSchemaRemovedCount).toBe(0);
+
+        const namespaceOidAfter = await prisma.$queryRawUnsafe<Array<{ oid: string }>>(
+          "SELECT oid::text AS oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()"
+        );
+        // DROP SCHEMA ... CASCADE 接著重建，會產生一個全新的 pg_namespace
+        // row（新 oid）——oid 不變是「這個 schema 物件本身從未被 drop 過」的
+        // 直接證據，比「資料還在」更強（後者理論上也可能被某種巧合的 rebuild
+        // + 重新插入相同資料造成偽陽性，oid 不會）。
+        expect(namespaceOidAfter[0]?.oid).toBe(namespaceOidBefore[0]?.oid);
+
+        // 「殘留交給 per-file 清空承擔」的新語意：沿用不等於清空，標記資料必
+        // 須原封不動地還在——它不是被 globalSetup 清掉的，是留給下一個測試檔
+        // 的 root beforeAll TRUNCATE 處理。
+        const found = await prisma.user.findUnique({ where: { id: marker.id } });
+        expect(found).not.toBeNull();
+        expect(found?.loginName).toBe("infra001_ac09_reuse_marker");
+
+        const state = readInfra001IsolationState();
+        expect(state?.reusedSchemaCount).toBeGreaterThan(0);
+      } finally {
+        await prisma.user.delete({ where: { id: marker.id } }).catch(() => {});
+      }
+    });
+
+    it("(b) 不吻合 ⇒ 重建：動一筆 checksum 後,該 schema 被重建、資料消失、migration 筆數恢復", async () => {
+      const poolId = Number(process.env.VITEST_POOL_ID ?? "0");
+      const scratchSchema = `vitest_w${900000 + poolId}`;
+      const expectedDirs = readMigrationDirsWithChecksum();
+
+      try {
+        // 先供裝一個全新、乾淨的 scratch schema（此時必定「不吻合」——根本
+        // 不存在——所以第一次呼叫必然是 rebuilt，這一步只是準備測試夾具）。
+        const initial = await provisionWorkerSchema(
+          prisma,
+          DB_URL as string,
+          scratchSchema,
+          expectedDirs
+        );
+        expect(initial.action).toBe("rebuilt");
+
+        const scratchPrisma = new PrismaClient({
+          datasources: { db: { url: withSchema(DB_URL as string, scratchSchema) } },
+        });
+        try {
+          // 種一筆業務資料，證明重建後資料真的消失（而非碰巧本來就是空的）。
+          await scratchPrisma.user.create({
+            data: {
+              loginName: "infra001_ac09_rebuild_residue",
+              displayName: "INFRA-001 AC-09 重建前殘留",
+              passwordHash: "infra001-synthetic-not-a-real-hash",
+              role: "USER",
+            },
+          });
+          const residueCountBefore = await scratchPrisma.user.count();
+          expect(residueCountBefore).toBe(1);
+
+          // 動一筆 checksum：把其中一筆 migration 的 checksum 改成明顯錯誤的
+          // 值 —— 這模擬「migration.sql 內容與資料庫記錄的版本不一致」。
+          await scratchPrisma.$executeRawUnsafe(
+            `UPDATE "_prisma_migrations" SET checksum = 'deadbeef_infra001_corrupted_checksum' WHERE migration_name = $1`,
+            expectedDirs[0].name
+          );
+        } finally {
+          await scratchPrisma.$disconnect();
+        }
+
+        // 重跑同一段生產邏輯：這次必須判定為不吻合 ⇒ drop + migrate deploy 重建。
+        const rebuilt = await provisionWorkerSchema(
+          prisma,
+          DB_URL as string,
+          scratchSchema,
+          expectedDirs
+        );
+        expect(rebuilt.action).toBe("rebuilt");
+
+        const afterPrisma = new PrismaClient({
+          datasources: { db: { url: withSchema(DB_URL as string, scratchSchema) } },
+        });
+        try {
+          // 資料消失：schema 是被整個 drop 掉重建的，不是被清空。
+          const residueCountAfter = await afterPrisma.user.count();
+          expect(residueCountAfter).toBe(0);
+
+          // migration 筆數恢復到與目錄數一致，且每一筆的 checksum 都回到正
+          // 確值（不再是被動過手腳的 deadbeef）。
+          const migrationRows = await afterPrisma.$queryRawUnsafe<
+            Array<{ migration_name: string; checksum: string; finished_at: Date | null }>
+          >('SELECT migration_name, checksum, finished_at FROM "_prisma_migrations"');
+          expect(migrationRows.length).toBe(expectedDirs.length);
+          for (const dir of expectedDirs) {
+            const row = migrationRows.find((r) => r.migration_name === dir.name);
+            expect(row, `migration ${dir.name} 應存在於重建後的 schema`).toBeDefined();
+            expect(row?.finished_at).not.toBeNull();
+            expect(row?.checksum).toBe(dir.checksum);
+          }
+        } finally {
+          await afterPrisma.$disconnect();
+        }
+      } finally {
+        // 測試自我清理：scratch schema 編號遠超出任何合理的 maxForks，下一次
+        // 完整 run 的孤兒清理也會把它掃掉，但這裡主動清理，不依賴那個安全網。
+        await prisma
+          .$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${scratchSchema}" CASCADE`)
+          .catch(() => {});
+      }
+    });
+
+    it("(c) 孤兒（編號超出 maxForks）仍被移除", async () => {
+      const maxForks = computeMaxForks();
+      const poolId = Number(process.env.VITEST_POOL_ID ?? "0");
+      // 遠超出任何合理 maxForks 的編號，同時以本 worker 的 poolId 錯開，避免
+      // 與其他並行執行中的測試檔挑到同一個孤兒 schema 名稱。
+      const orphanSchema = `vitest_w${800000 + poolId}`;
+      expect(Number(orphanSchema.slice("vitest_w".length))).toBeGreaterThan(maxForks);
+
+      await prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${orphanSchema}"`);
+      const existsBefore = await prisma.$queryRawUnsafe<Array<{ exists: boolean }>>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1) AS exists",
+        orphanSchema
+      );
+      expect(existsBefore[0]?.exists).toBe(true);
+
+      await globalSetup();
+
+      const existsAfter = await prisma.$queryRawUnsafe<Array<{ exists: boolean }>>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1) AS exists",
+        orphanSchema
+      );
+      expect(existsAfter[0]?.exists).toBe(false);
+    });
+
+    it("(d) public 表數在 globalSetup 重跑前後不變", async () => {
+      const countPublicTables = async () => {
+        const rows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+          `SELECT count(*)::bigint AS count FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
+        );
+        return Number(rows[0]?.count ?? -1);
+      };
+
+      const before = await countPublicTables();
+      await globalSetup();
+      const after = await countPublicTables();
+
+      expect(after).toBe(before);
+    });
   });
 });
