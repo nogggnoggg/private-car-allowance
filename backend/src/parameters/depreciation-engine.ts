@@ -42,21 +42,29 @@ import { Prisma } from "@prisma/client";
  * - `Prisma.Decimal` instance / string: passed through unchanged — no float
  *   mediation occurs for either.
  * - number: converted via `String(value)` rather than handed directly to the
- *   constructor, which would otherwise read the number's exact binary value
- *   and can expand it into a long, unintended decimal tail. Numbers whose
- *   magnitude forces JS's exponential notation (>= 1e21, or non-zero with
- *   |value| < 1e-6) are rejected (thrown), matching parameter-service.ts's
- *   guard — deriveDepreciation's caller (createDepreciationVersion) already
- *   treats any construction failure here as { ok: false } / a validation
- *   error, so this simply folds into that existing path.
+ *   constructor.
+ *
+ * 本版 decimal.js 的建構子對 number 引數內部已先做 toString() 才解析，
+ * 因此 `new Decimal(value)` 與 `new Decimal(String(value))` 對所有 number
+ * 皆為恆等變換（含科學記號輸入 —— decimal.js 完整支援解析 "1e+21" 這類
+ * 字面值）。此函式仍保留「一律先字串化」這一步，不是為了修正當前版本的
+ * 行為差異（沒有差異），而是讓 D4 bright-line（一律非浮點）不依賴這個
+ * 實作細節本身 —— 未來若更換十進位運算函式庫或升版、且新版建構子改為
+ * 直接讀取 number 的二進位值，這裡的轉換仍會保護既有行為不變。
+ *
+ * 可重跑驗證（本版 decimal.js 對 number 與 String(number) 恆等）：
+ *   node -e "const {Decimal}=require('decimal.js'); const v=0.1; console.log(new Decimal(v).toString()===new Decimal(String(v)).toString())"
+ *   → true
+ *
+ * 同形雙拷貝說明（AR-1）：此 helper 與 parameter-service.ts 的
+ * toDecimalConstructorArg 邏輯相同但各自持有一份，理由是 import 環——
+ * parameter-service.ts 已 import 本檔（depreciation-engine.ts）的
+ * deriveDepreciation，若本檔反向 import parameter-service.ts 的共用邏輯會
+ * 形成循環依賴。修改任一份的轉換邏輯時，須同步檢查並修改另一份。
  */
 function toDecimalConstructorArg(value: Prisma.Decimal | string | number): Prisma.Decimal | string {
   if (typeof value !== "number") return value;
-  const str = String(value);
-  if (/e/i.test(str)) {
-    throw new Error(`數值超出合理範圍，無法轉換為十進位字面值: ${str}`);
-  }
-  return str;
+  return String(value);
 }
 
 // ---------------------------------------------------------------------------

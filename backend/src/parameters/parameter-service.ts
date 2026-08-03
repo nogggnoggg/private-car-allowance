@@ -138,29 +138,23 @@ export function toEtcDto(row: EtcRow): EtcParameterDto {
  * - string input: returned as-is — already a decimal literal, no float
  *   mediation ever occurs for the string path.
  * - number input: converted via `String(value)` rather than handed directly
- *   to `new Prisma.Decimal(value)`. decimal.js reads a JS number by its exact
- *   binary value, which can expand into a long, unintended decimal tail
- *   (e.g. 0.1 → 0.1000000000000000055511151231257827021181583404541015625).
- *   `String(value)` instead reproduces the same shortest round-trip digits
- *   `Number()`-based range validation already looked at, so behaviour for
- *   every value that survives the ≤15-significant-digit range this system
- *   deals with is unchanged — this only removes the theoretical break.
+ *   to `new Prisma.Decimal(value)`.
  *
- * Guard: numbers whose magnitude forces JS's default exponential notation
- * (>= 1e21, or non-zero with |value| < 1e-6) are rejected — `String()` would
- * hand decimal.js a scientific-notation literal ("1e+21") instead of a plain
- * decimal literal, and no domain quantity here (unit price / vehicle price)
- * legitimately reaches such a magnitude. Existing ≥0 / >0 range validation do
- * NOT already block this (they only check sign/NaN), so this guard is the
- * only thing standing between such input and the constructor.
+ * 本版 decimal.js 的建構子對 number 引數內部已先做 toString() 才解析，
+ * 因此 `new Decimal(value)` 與 `new Decimal(String(value))` 對所有 number
+ * 皆為恆等變換（含科學記號輸入 —— decimal.js 完整支援解析 "1e+21" 這類
+ * 字面值）。此函式仍保留「一律先字串化」這一步，不是為了修正當前版本的
+ * 行為差異（沒有差異），而是讓 D4 bright-line（一律非浮點）不依賴這個
+ * 實作細節本身 —— 未來若更換十進位運算函式庫或升版、且新版建構子改為
+ * 直接讀取 number 的二進位值，這裡的轉換仍會保護既有行為不變。
+ *
+ * 可重跑驗證（本版 decimal.js 對 number 與 String(number) 恆等）：
+ *   node -e "const {Decimal}=require('decimal.js'); const v=0.1; console.log(new Decimal(v).toString()===new Decimal(String(v)).toString())"
+ *   → true
  */
 export function toDecimalConstructorArg(value: number | string): string {
   if (typeof value === "string") return value;
-  const str = String(value);
-  if (/e/i.test(str)) {
-    throw new Error(`數值超出合理範圍，無法轉換為十進位字面值: ${str}`);
-  }
-  return str;
+  return String(value);
 }
 
 // ---------------------------------------------------------------------------

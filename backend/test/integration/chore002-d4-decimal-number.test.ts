@@ -18,19 +18,16 @@
  *   - 既有 phase3a 參數測試（含 4-dp 精度往返）不修改、须全綠 —— 本檔僅新增覆蓋，
  *     不重複驗證既有 AC。
  *
- * 新增防線：String(number) 對極端量級（>= 1e21 或非 0 且 |value| < 1e-6）會落入 JS
- * 指數記號（如 "1e+21"），現有 Number() 值域驗證（僅檢查 NaN / 正負）並不會擋下這類
- * 輸入。本次在建構前新增防呆（拒絕非十進位字面形式），下方 (c) 組測試即為此防線的
- * 修復前紅燈證據 + 修復後綠燈證據。
- *
  * DB 需求：
  *   (a)(b) 組（字串輸入與數字輸入建構結果一致）需要真實 DB 才能走完整個
  *   create*Version 流程（含 transaction），DATABASE_URL 未設定時 skip。
- *   (c) 組（極端量級防呆）在進入 transaction 之前即拋出，不需要 DB
- *   （比照 chore001-d4-decimal-placeholder.test.ts 的假 prisma 手法）。
  *   (d) 組（deriveDepreciation 字串/數字等價）為 pure function，不需要 DB。
+ *
+ * CHORE-002-R1 修訂（reviewer 裁定採 S-1 選項 (i) 最小回歸）：
+ *   移除「極端量級防呆」（>= 1e21 / < 1e-6 拋錯）與對應 (c) 組測試——該防呆是
+ *   核准範圍（「行為零變更」）外的新增行為，且其前提（String() 會產生 decimal.js
+ *   無法解析的字面值）經 reviewer 實測為假：decimal.js 完整支援解析科學記號字串。
  */
-import type { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { getPrismaClient } from "../../src/db/prisma.js";
 import { deriveDepreciation } from "../../src/parameters/depreciation-engine.js";
@@ -40,7 +37,6 @@ import {
   createFuelVersion,
   toDecimalConstructorArg,
 } from "../../src/parameters/parameter-service.js";
-import { AppError } from "../../src/platform/errors.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -62,14 +58,6 @@ describe("CHORE-002-T1 ①: toDecimalConstructorArg 單元測試", () => {
     expect(toDecimalConstructorArg(12.34)).toBe("12.34");
     expect(toDecimalConstructorArg(0)).toBe("0");
     expect(toDecimalConstructorArg(19.9)).toBe("19.9");
-  });
-
-  it("極端大量級數字（>= 1e21，String() 會產生指數記號）→ 拋錯", () => {
-    expect(() => toDecimalConstructorArg(1e21)).toThrow();
-  });
-
-  it("極端小量級數字（非 0 且 < 1e-6，String() 會產生指數記號）→ 拋錯", () => {
-    expect(() => toDecimalConstructorArg(1e-7)).toThrow();
   });
 });
 
@@ -117,60 +105,6 @@ describe("CHORE-002-T1 ①-(d): deriveDepreciation number/string vehiclePrice �
     expect(
       deriveDepreciation({ vehiclePrice: -5, usefulLifeYears: 3, estimatedAnnualKm: 3 })
     ).toEqual({ ok: false });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// (c) 極端量級輸入 → 400 VALIDATION_ERROR（在 transaction 之前即拋出，不需 DB）
-// ---------------------------------------------------------------------------
-
-// Never actually invoked: the extreme-magnitude guard throws before prisma.$transaction
-// is reached (mirrors chore001-d4-decimal-placeholder.test.ts's approach).
-const unusedPrisma = {} as PrismaClient;
-
-describe("CHORE-002-T1 ①-(c): 極端量級輸入建構前防呆（不需 DB）", () => {
-  it("createFuelVersion：unitPrice = 1e21 → 400 VALIDATION_ERROR, fields=[unitPrice]", async () => {
-    await expect(
-      createFuelVersion(unusedPrisma, {
-        unitPrice: 1e21,
-        effectiveFrom: "2026-01-01",
-        createdById: CREATED_BY,
-      })
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR", httpStatus: 400 });
-  });
-
-  it("createEtcVersion：unitPrice = 1e21 → 400 VALIDATION_ERROR, fields=[unitPrice]", async () => {
-    try {
-      await createEtcVersion(unusedPrisma, {
-        unitPrice: 1e21,
-        effectiveFrom: "2026-01-01",
-        createdById: CREATED_BY,
-      });
-      expect.unreachable("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(AppError);
-      const appErr = err as AppError;
-      expect(appErr.code).toBe("VALIDATION_ERROR");
-      expect(appErr.fields).toContainEqual({ field: "unitPrice", reason: "數值超出合理範圍" });
-    }
-  });
-
-  it("createDepreciationVersion：vehiclePrice = 1e21 → 400 VALIDATION_ERROR, fields 含 vehiclePrice", async () => {
-    try {
-      await createDepreciationVersion(unusedPrisma, {
-        vehiclePrice: 1e21,
-        usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
-        effectiveFrom: "2026-01-01",
-        createdById: CREATED_BY,
-      });
-      expect.unreachable("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(AppError);
-      const appErr = err as AppError;
-      expect(appErr.code).toBe("VALIDATION_ERROR");
-      expect(appErr.fields?.some((f) => f.field === "vehiclePrice")).toBe(true);
-    }
   });
 });
 
