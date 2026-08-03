@@ -64,6 +64,9 @@ State: ACTIVE
 > - **T13R2 輕量關閉確認：APPROVE（0 Must/0 Should/2 低風險 AR；usage ~58k）**。SF-1/2/3 全 closed：src 對 T11R 空 diff（逐字復原）、去重符號全庫零殘留、五碼護欄 mutant 獨立重現（移除 AMOUNT_OUT_OF_RANGE 恰 1 紅且舊測試仍綠——反證原覆蓋缺口為真）、AR-5/T11R 覆蓋完整在場。AR-Low-1：fuel-model.spec.ts:447-453 陳舊「去重」註解殘留（無執行面影響，併下次 e2e 觸碰 commit 修正，記 PR 說明）；AR-Low-2：AC-32 文案並列開放項（晨間裁定）。**PHASE-005a Review 全數清零（2026-08-04 凌晨）。**
 > - 基準線終值：後端 **1468/0/0**、前端 **176/0/0**、E2E **23/23**（大總管親跑）。37/37 AC GREEN。
 > - **Draft PR #13 + CI 三 job 全綠（run 30845730929：Backend/Lint/Docker 皆 success）**。dev 拓撲服務已停。Phase Done 條件除人類 Gate 外全數滿足。
+> - **Gate 反饋（人類 leonchih，2026-08-04 上午，驗收進行中）**：
+>   ① **裁定（本 Phase 內修，T14 候選）**：完成確認框在「表單有未儲存變更」時顯示的紅字誤導（拿伺服器舊狀態說「請填寫出差日期…」，實際欄位已填未存）——應改為「有未儲存的變更，請先儲存草稿」語意。PHASE-004 既有行為，經人類本次裁定修正。流程：Spec 修訂（引本裁定）→ implementer TDD → reviewer 輕審 → 併 PR #13。
+>   ② **待辦（記錄，未定時程）**：「我的車輛油耗」個人檢視區塊應加顯「推導後每公里補助金額」（油價÷油耗取整）。涉及後端 `/me/fuel-consumption` 回傳擴充（前端不得自算，§11.3）＋日期語意（油價版本化，顯示「目前生效」之推導值）。候選落點：PHASE-008 或獨立小 Phase，待人類定時程。
 > - **★ 停等晨間人類 Gate（2026-08-04 凌晨完成夜間自主推進）★** 四項待決：①Mock/整合驗收（Gate 環境油價＋油耗資料依 D1(a) 附款由人類重新輸入）②快照三來源值顯示缺口追認（併 PHASE-008 D10(a)，§18）③AC-32 文案取向三選項裁定（§18 T13R2 列）④PR #13 合併批准（**須 merge 不得 squash-reset**——main 分岔 `0ee810d`）。
 > - **本 session usage 追蹤（Phase 結案彙整義務累記）**：T9 ~167k/59、T10 ~191k/75、T11 ~221k/93、T12 ~143k/43、T9~T12 合併複審 ~208k/90、T11R ~91k/37、T13 ~214k/114、T13R ~258k/102、終審 ~166k/60、T13R2 ~99k/60（含 API 中斷續派）、T13R2 輕量複審 ~58k/37。型態補充：⑥E2E 類 Task（T13/T13R）因 playwright 迭代與環境探索居高；⑦API 中斷續派（T13R2）以 SendMessage 原 agent 續行成功，成本低於重派。Phase 結案（合併後）時彙整全 Phase 數據交 workflow 設計 agent。
 
