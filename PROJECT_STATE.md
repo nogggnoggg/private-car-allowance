@@ -2,6 +2,13 @@
 
 State: ACTIVE
 
+> **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
+> - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
+> - **PHASE-008 開工必引（005a 移交）**：D10(a) 報表條件呈現硬約束＋快照三來源值顯示與 `TravelSnapshotDto` 三欄接線（追認裁定）＋AC-32 文案並列整理（裁定 c）＋完成對話框不分缺項（終審 AR-6）＋頁面層 stale 紅字（T14 複審 AR-2）。
+> - **待辦（未定時程）**：個人油耗區塊加顯推導每公里補助（Gate 反饋②，涉後端 /me 回傳擴充）。
+> - **環境註記**：compose 建置因中文路徑須於 `C:\temp\oilexpense-gate` ASCII worktree 執行（RUNBOOK 候選）；Gate 容器現為 `e18ae91` 版、gateadmin 密碼已由人類重設。
+> - usage 彙整報告（交 workflow 設計 agent）：見 `docs/retrospective/PHASE-005a-usage.md`（結案時產出）。
+
 > **PHASE-005a（油資模型修正）開工記錄（2026-08-03，使用者裁定開工）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
 > - **排程裁定（使用者 2026-08-03）**：PHASE-005a 插於 PHASE-006 之前（理由：008 報表前定案避免版型重工、上線前改模型零成本、006/007 不依賴油資單價模型）。PHASE-006 續延後。

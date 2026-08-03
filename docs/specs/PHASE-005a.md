@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `ACTIVE`（Spec Gate 通過：人類 leonchih 2026-08-03，D1~D11 全數照建議批准；T1~T8 High 之事前批准已於本 Gate 一併取得。見 §18 修訂紀錄） |
+| **Spec 狀態** | `COMPLETED`（PR #13 經人類批准以 Merge 合併：`9af414a`，2026-08-04。Mock/整合 Gate 通過、37/37 AC GREEN、Review 清零。開放項移交：快照三來源值顯示＋TravelSnapshotDto 三欄接線→PHASE-008 D10(a)；AC-32 文案並列（裁定 c）→PHASE-008 文案總整理；個人油耗區塊加顯推導每公里補助→待辦（PROJECT_STATE Gate 反饋②）。見 §18） |
 | **Phase ID** | PHASE-005a |
 | **Task ID（本文件產出）** | PHASE-005a-SPEC |
 | **Base Commit** | `e7f2860`；工作 branch `phase-005a` |
