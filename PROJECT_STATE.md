@@ -2,6 +2,14 @@
 
 State: ACTIVE
 
+> **PHASE-005a（油資模型修正）開工記錄（2026-08-03，使用者裁定開工）**
+> - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
+> - **排程裁定（使用者 2026-08-03）**：PHASE-005a 插於 PHASE-006 之前（理由：008 報表前定案避免版型重工、上線前改模型零成本、006/007 不依賴油資單價模型）。PHASE-006 續延後。
+> - **產品裁定（使用者 2026-08-03，本 session AskUserQuestion）**：①油資參數由「每公里單價」改為「**每公升油價，按油種維護**（92/95/98/柴油），生效日期版本化」②新增「員工車輛油耗（km/L）＋油種」屬性，**僅管理員可維護**（與員工人工核對後 key in），生效日期版本化、依出差日期取值③每公里油資單價＝油價÷油耗，**取整數**（一般四捨五入）④員工未建油耗資料時**擋油資申請**並提示洽管理員，不設 fallback ⑤油耗維護留依據備註與異動紀錄（稽核）。
+> - Risk Level：**High**（金額模型變更＋管理員維護員工屬性之授權面；依 CLAUDE.md 授權相關一律 High）。Spec 需人類事前批准 Gate。
+> - branch：`phase-005a`（自 main @ `1444771` 切出）。流程：spec-writer 產 **US 修訂提案（DRAFT，不動 userstory.md）** → **人類逐字確認 US Gate** → userstory.md 修訂落地 → spec-writer 產 Phase Spec（DRAFT）→ 人類 Spec Gate → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
+> - 006/007 開工 Packet 必引事項（見 PHASE-005 結案列）於 005a 不適用（005a 不觸統計引擎），但差旅計算引擎（PHASE-004 T6/T7）之單價解析為本 Phase 核心觸點。
+
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
 > - Gate 環境（compose oilexpense stack + gateadmin/staff01 合成資料）保留供後續 Phase 驗收沿用；dev DB 另有 e2eadmin（T8）。
