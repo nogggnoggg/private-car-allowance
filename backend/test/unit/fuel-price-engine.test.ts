@@ -40,7 +40,10 @@ const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
  * 清單中任何檔案不存在時，`fs.readFileSync` 會直接拋錯使測試紅（fail-loud），
  * 不得靜默跳過。
  */
-const PHASE_005A_SRC_FILES = ["src/parameters/fuel-price-engine.ts"] as const;
+const PHASE_005A_SRC_FILES = [
+  "src/parameters/fuel-price-engine.ts",
+  "src/parameters/fuel-price-service.ts", // PHASE-005a-T3
+] as const;
 
 /** 本 Phase 目前唯一的清單項目；供下方「檔案專屬」斷言（非泛用迴圈）取用。 */
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_005A_SRC_FILES[0]);

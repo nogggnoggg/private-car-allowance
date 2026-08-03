@@ -32,6 +32,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { requireAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { AppError } from "../platform/errors.js";
+import { createFuelPriceVersion, listFuelPriceVersions } from "./fuel-price-service.js";
 import {
   createDepreciationVersion,
   createEtcVersion,
@@ -69,6 +70,25 @@ const createParameterBodySchema = {
   required: ["effectiveFrom"],
   properties: {
     unitPrice: {}, // accept any value — service validates type and range (AC-03)
+    effectiveFrom: { type: "string", minLength: 1 },
+  },
+  additionalProperties: false,
+} as const;
+
+/**
+ * Body schema for POST /parameters/fuel-price (PHASE-005a-T3).
+ * fuelType / pricePerLiter pass through untyped so the service layer performs
+ * the full validation (AC-05 enum gate, AC-06 format+range layers) and returns
+ * proper field-level 400s rather than a generic Fastify schema-validation error.
+ * effectiveFrom is required at the schema layer (AC-06 missing-field case).
+ * additionalProperties:false prevents unexpected fields.
+ */
+const createFuelPriceBodySchema = {
+  type: "object",
+  required: ["effectiveFrom"],
+  properties: {
+    fuelType: {}, // accept any — service validates enum closure (AC-05)
+    pricePerLiter: {}, // accept any — service validates format+range (AC-06)
     effectiveFrom: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
@@ -179,6 +199,79 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
     async (_request: FastifyRequest, reply: FastifyReply) => {
       const versions = await listFuelVersions(prisma);
       return reply.status(200).send({ versions });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /parameters/fuel-price — create a fuel price version by fuel type
+  //   (PHASE-005a-T3, AC-01/02/03/05/06, §7.1/§16 D2(a)/D3(a-1)/D7(a))
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/parameters/fuel-price",
+    {
+      preHandler: adminPreHandlers,
+      schema: { body: createFuelPriceBodySchema },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = request.body as {
+        fuelType?: unknown;
+        pricePerLiter?: unknown;
+        effectiveFrom: string;
+      };
+
+      const actorId = request.currentUser.id;
+
+      const version = await createFuelPriceVersion(
+        prisma,
+        {
+          fuelType: body.fuelType,
+          pricePerLiter: body.pricePerLiter,
+          effectiveFrom: body.effectiveFrom,
+          createdById: actorId,
+        },
+        // Audit hook: write AuditLog inside same transaction, reusing the
+        // existing PARAMETER_VERSION_CREATED action (parameterType=FUEL_PRICE
+        // distinguishes it from the legacy FUEL/ETC/DEPRECIATION rows, §3.1).
+        async (tx: TxClient, dto) => {
+          await (tx as PrismaClient).auditLog.create({
+            data: {
+              action: "PARAMETER_VERSION_CREATED",
+              actorId,
+              targetId: null,
+              targetLabel: `FUEL_PRICE#${dto.id}`,
+              summary: {
+                parameterType: "FUEL_PRICE",
+                fuelType: dto.fuelType,
+                pricePerLiter: dto.pricePerLiter,
+                effectiveFrom: dto.effectiveFrom,
+              },
+            },
+          });
+        }
+      );
+
+      return reply.status(201).send({ version });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /parameters/fuel-price[?fuelType=] — list fuel price versions
+  //   (PHASE-005a-T3, §7.1)
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/parameters/fuel-price",
+    { preHandler: adminPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = request.query as { fuelType?: unknown };
+      const result = await listFuelPriceVersions(prisma, query.fuelType);
+      if (!result.ok) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
+          result.error,
+        ]);
+      }
+      return reply.status(200).send({ versions: result.versions });
     }
   );
 
