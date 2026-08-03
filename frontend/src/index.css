@@ -713,4 +713,35 @@ body {
   .detail-list {
     grid-template-columns: 1fr;
   }
+
+  .mileage-summary-section {
+    padding: 12px;
+  }
+}
+
+/* ===== PHASE-005-T7: MileageSummarySection（區間公務總里程統計） ===== */
+.mileage-summary-section {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 24px;
+  max-width: 100%;
+}
+
+.mileage-summary-section .filter-bar {
+  margin-bottom: 12px;
+}
+
+.mileage-summary-hint {
+  color: #666;
+}
+
+.mileage-summary-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.mileage-summary-meta {
+  color: #666;
+  font-size: 0.9rem;
 }

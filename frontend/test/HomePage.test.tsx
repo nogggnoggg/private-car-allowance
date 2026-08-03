@@ -9,7 +9,7 @@
  * 沿用 AdminUsersPage.test.tsx 風格（MemoryRouter + AuthProvider + mock fetch）。
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -170,5 +170,135 @@ describe("HomePage — 補助參數維護導覽連結", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /登出/ })).toBeInTheDocument();
     });
+  });
+});
+
+// ============================================================
+// PHASE-005-T7: MileageSummarySection 嵌入首頁（D6(a)——不新增路由）
+// ============================================================
+
+describe("HomePage — MileageSummarySection 嵌入（D6(a) 共用元件）", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("一般使用者登入 → 首頁顯示區間公務總里程統計區塊，且掛載時不自動查詢（D5(a)）", async () => {
+    mockMeAs(regularUser);
+    mockEmptyApplicationsList();
+
+    renderHomePage();
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "區間公務總里程統計" })).toBeInTheDocument();
+    });
+    expect(screen.getByText("請選擇日期區間後查詢")).toBeInTheDocument();
+
+    // 僅 /me 與 /applications 兩次 fetch；統計區塊掛載時不得多打一次 fetch。
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("AC-30 鑑別力：統計端點回 999.99、申請列表 3 筆合計 30.00 → 畫面顯示 999.99（前端不自算）", async () => {
+    mockMeAs(regularUser);
+
+    // 申請列表：3 筆，totalKm 合計恰為 30.00（若元件誤自行加總，會顯示 30.00）。
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "app-1",
+              type: "TRAVEL",
+              status: "COMPLETED",
+              primaryDate: "2026-03-01",
+              tripDate: "2026-03-01",
+              title: "案件一",
+              totalKm: "10.00",
+              totalAmount: 100,
+              segmentCount: 1,
+              ownerId: "user-id-1",
+              ownerDisplayName: "使用者一",
+              onBehalf: false,
+              createdAt: "2026-03-01T00:00:00.000Z",
+              updatedAt: "2026-03-01T00:00:00.000Z",
+            },
+            {
+              id: "app-2",
+              type: "TRAVEL",
+              status: "COMPLETED",
+              primaryDate: "2026-03-05",
+              tripDate: "2026-03-05",
+              title: "案件二",
+              totalKm: "10.00",
+              totalAmount: 100,
+              segmentCount: 1,
+              ownerId: "user-id-1",
+              ownerDisplayName: "使用者一",
+              onBehalf: false,
+              createdAt: "2026-03-05T00:00:00.000Z",
+              updatedAt: "2026-03-05T00:00:00.000Z",
+            },
+            {
+              id: "app-3",
+              type: "TRAVEL",
+              status: "COMPLETED",
+              primaryDate: "2026-03-10",
+              tripDate: "2026-03-10",
+              title: "案件三",
+              totalKm: "10.00",
+              totalAmount: 100,
+              segmentCount: 1,
+              ownerId: "user-id-1",
+              ownerDisplayName: "使用者一",
+              onBehalf: false,
+              createdAt: "2026-03-10T00:00:00.000Z",
+              updatedAt: "2026-03-10T00:00:00.000Z",
+            },
+          ],
+          page: 1,
+          pageSize: 20,
+          total: 3,
+          appliedFilters: {
+            dateFrom: "2025-01-01",
+            dateTo: null,
+            type: null,
+            status: null,
+            keyword: null,
+            ownerId: "self",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    renderHomePage();
+
+    await waitFor(() => {
+      expect(screen.getByText("案件一")).toBeInTheDocument();
+    });
+
+    // 統計端點回 999.99（鑑別值——與列表合計 30.00 刻意不同）。
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          totalKm: "999.99",
+          applicationCount: 3,
+          appliedFilters: { dateFrom: "2026-03-01", dateTo: "2026-03-31", ownerId: "user-id-1" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    fireEvent.change(screen.getByLabelText("起日 *"), { target: { value: "2026-03-01" } });
+    fireEvent.change(screen.getByLabelText("迄日 *"), { target: { value: "2026-03-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "查詢" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("公務總里程 999.99 公里")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/30\.00/)).not.toBeInTheDocument();
   });
 });
