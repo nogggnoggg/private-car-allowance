@@ -90,10 +90,14 @@ describe("AC-20 結構性斷言：本 Phase 不新增 ErrorCode", () => {
     const unionMatch = /export type ErrorCode =([\s\S]*?";)/.exec(errorsSrc);
     expect(unionMatch, "ErrorCode union declaration not found").toBeTruthy();
     const unionBody = unionMatch?.[1] ?? "";
-    // 只認「行首縮排後緊接 `|` 與字面量」為聯集成員——排除行內註解中出現的
-    // 其他引號字串（如 PARAMETER_NOT_AVAILABLE 註解裡的 `("FUEL"|"ETC")[]`，
-    // 那是範例資料，其 `|` 出現在註解文字中間、非行首，不會被下方 `^` 錨定）。
-    const members = [...unionBody.matchAll(/^\s*\|\s*"([A-Z_]+)"/gm)].map((m) => m[1]).sort();
+    // R5-B1（T6 複審 AR-1）：原本以「行首縮排後緊接 `|` 與字面量」為錨定
+    // （`^\s*\|\s*"..."`），但同一行追加成員（如 `| "A" | "B";`）時，第二個
+    // 起的成員不在行首，會被漏數（假陰性）。改法：先去除行內註解（`//...`），
+    // 再不設行首錨定、直接掃全 unionBody 中每一個 `"(A-Z_)"` 字面量——聯集
+    // 本體內唯一會出現大寫加底線字串字面量的地方就是成員本身（範例資料如
+    // `("FUEL"|"ETC")[]` 在行內註解中，已被去註解移除，不會誤入）。
+    const unionBodyNoComments = unionBody.replace(/\/\/.*$/gm, "");
+    const members = [...unionBodyNoComments.matchAll(/"([A-Z_]+)"/g)].map((m) => m[1]).sort();
     expect(members).toEqual(KNOWN_ERROR_CODES);
   });
 
@@ -109,8 +113,12 @@ describe("AC-20 結構性斷言：本 Phase 不新增 ErrorCode", () => {
         usedCodes.add(m[1]);
       }
     }
-    // 本 Phase 至少用到 FORBIDDEN（授權）與 VALIDATION_ERROR（格式）——若這行紅了
-    // 表示掃描邏輯本身失效（假陰性防呆），而非「沒有新碼」這件事真的成立。
+    // R5-B2（T6 複審 AR-2）：本掃描目錄僅 `src/mileage/**`，實際只涵蓋
+    // VALIDATION_ERROR（`routes.ts` 兩處字面量）；授權相關的 FORBIDDEN 拋出點
+    // 在 `src/applications/application-query.ts`（`resolveOwnerId`，被
+    // `routes.ts` 引用執行），不在本掃描目錄內、故不會被此處收集到
+    // `usedCodes`。此斷言僅證明「掃描邏輯本身有掃到東西」（非假陰性防呆），
+    // 不代表涵蓋 FORBIDDEN。
     expect(usedCodes.size).toBeGreaterThan(0);
     for (const code of usedCodes) {
       expect(KNOWN_ERROR_CODES, `unexpected new ErrorCode literal: ${code}`).toContain(code);
@@ -392,6 +400,21 @@ describeWithDb("PHASE-005-T6 — GET /statistics/mileage 契約：白名單／�
       expect((resp.json() as MileageSummaryBody).error?.code).toBe("VALIDATION_ERROR");
     });
 
+    it("R5-B3: duplicate ownerId key with the SAME value twice (?ownerId=self&ownerId=self) as USER → still 400, not 200 — proves the rejection is about the array shape itself, independent of the ownerId value(s) carried", async () => {
+      const url = buildUrlWithDuplicateKey({ dateFrom: RANGE_FROM, dateTo: RANGE_TO }, "ownerId", [
+        ownerId,
+        ownerId,
+      ]);
+      const resp = await app.inject({ method: "GET", url, headers: { cookie: ownerCookie } });
+      expect(resp.statusCode).toBe(400);
+      expect(resp.statusCode).not.toBe(500);
+      const body = resp.json() as MileageSummaryBody;
+      expect(body.error?.code).toBe("VALIDATION_ERROR");
+      expect(body.error?.fields).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: "ownerId" })])
+      );
+    });
+
     it("duplicate dateFrom key → 400 with fields[].field === 'dateFrom', never 500", async () => {
       const url = buildUrlWithDuplicateKey({ dateFrom: RANGE_FROM, dateTo: RANGE_TO }, "dateFrom", [
         "2049-05-01",
@@ -503,7 +526,12 @@ describeWithDb("PHASE-005-T6 — GET /statistics/mileage 契約：白名單／�
         },
       });
       logLines = [];
-      logApp = await buildServer({ databaseUrl: DB_URL, logStream: stream });
+      // R5-B4（T6 複審 AR-4）：本 describe 斷言「log 不含敏感資訊」，其前提是
+      // log 確實有輸出可供檢查；若執行環境未設 `LOG_LEVEL`（預設 "info"）
+      // 以外的值，測試仍會通過，但一旦環境變數被設為更安靜的層級，log 產出
+      // 減少甚至為零，斷言會在「無假警訊」的假象下失去偵測力。顯式傳入
+      // `logLevel: "info"` 消除對執行環境 `LOG_LEVEL` 的隱性依賴。
+      logApp = await buildServer({ databaseUrl: DB_URL, logStream: stream, logLevel: "info" });
       await logApp.ready();
 
       const loginResp = await logApp.inject({

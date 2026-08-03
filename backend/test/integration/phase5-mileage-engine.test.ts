@@ -879,7 +879,9 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
 
   // ===========================================================================
   // PHASE-005-R1 M-1 — AC-01 四點邊界 + AC-02 歸屬日期（tripDate vs
-  // primaryDate/createdAt）+ S-3 TimeZone 守門
+  // primaryDate/createdAt）+ @db.Date 綁參真性質守門（R5-B6：S-3 原始
+  // TimeZone 假設已撤回並證偽，此標籤反映現狀——守護的是「Prisma 對
+  // @db.Date 欄位以 date 型別綁參、與 session TimeZone 無關」這個行為本身）
   //
   // Review 原文：現況整合層無法分辨「以 `Application.primaryDate` 過濾」與
   // 「以 `TravelApplication.tripDate` 過濾」（既有 fixture 之 primaryDate 恆等於
@@ -984,6 +986,10 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
         // （非 UTC 會使 off-by-one 若存在則暴露）。POSIX 語意：Etc/GMT+12 之
         // 偏移為 UTC−12。
         await tx.$executeRawUnsafe("SET LOCAL TimeZone = 'Etc/GMT+12'");
+        // R5-B5（R3/R4 複審 AR-1）：正對照——先證明 SET LOCAL 真的生效，避免
+        // 「本測試其實一直跑在 UTC 下、TimeZone 設定被忽略」的偽陽性守門。
+        const tzRows = (await tx.$queryRawUnsafe("SHOW TimeZone")) as Array<{ TimeZone: string }>;
+        expect(tzRows[0].TimeZone).toBe("Etc/GMT+12");
         return sumOfficialMileage(tx, { ownerId: ownerA.id, dateFrom, dateTo });
       });
 
