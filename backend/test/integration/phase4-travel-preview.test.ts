@@ -20,12 +20,18 @@
  *     loginName 前綴；嚴禁 deleteMany({}) 全域刪除。
  *   - synthetic data only。
  */
-import { Prisma, PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
 import { dateBeforeAnyKnownParameterVersion } from "./_param-version-floor-date.js";
+
+// PHASE-005a-T7: 新模型下油資單價依「擁有人油耗版本 → 該油種油價版本」雙鏈
+// 推導（不再直讀 FuelParameterVersion）。為保留本檔既有精確金額斷言
+// （10km × 單價 5 → 50.0000 等），以 kmPerLiter="1.0000" 讓推導結果
+// ROUND_HALF_UP(pricePerLiter ÷ 1, 0) 恰等於原「每公里單價」數值——這是
+// 刻意的測試等價技巧，非改變 AC-18 推導公式本身。
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -79,6 +85,7 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
   let userCookie: string;
   let mcpCookie: string;
 
+  let consumptionId: string;
   let fuelV1Id: string;
   let fuelV2Id: string;
   let etcV1Id: string;
@@ -123,16 +130,31 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
     mcpId = mcp.id;
 
     // createdById 無外鍵（PHASE-003a T1 定案），此處沿用自建使用者 id 即可。
-    const fuelV1 = await prisma.fuelParameterVersion.create({
+    // PHASE-005a-T7: 新模型改讀 UserFuelConsumptionVersion(擁有人) →
+    // FuelPriceVersion(該油種)，不再讀 FuelParameterVersion（保留舊表 create
+    // 已無實際效果，故移除，避免誤導——舊表由 D1(a) 凍結為唯讀）。
+    const consumption = await prisma.userFuelConsumptionVersion.create({
       data: {
-        unitPrice: new Prisma.Decimal("5.0000"),
+        userId,
+        fuelType: FuelType.GASOLINE_95,
+        kmPerLiter: new Prisma.Decimal("1.0000"),
+        effectiveFrom: new Date(FUEL_V1_DATE),
+        basisNote: "p4t7 測試 fixture：kmPerLiter=1 使推導單價等於 pricePerLiter",
+        createdById: userId,
+      },
+    });
+    const fuelV1 = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal("5.0000"),
         effectiveFrom: new Date(FUEL_V1_DATE),
         createdById: userId,
       },
     });
-    const fuelV2 = await prisma.fuelParameterVersion.create({
+    const fuelV2 = await prisma.fuelPriceVersion.create({
       data: {
-        unitPrice: new Prisma.Decimal("8.0000"),
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal("8.0000"),
         effectiveFrom: new Date(FUEL_V2_DATE),
         createdById: userId,
       },
@@ -144,6 +166,7 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
         createdById: userId,
       },
     });
+    consumptionId = consumption.id;
     fuelV1Id = fuelV1.id;
     fuelV2Id = fuelV2.id;
     etcV1Id = etcV1.id;
@@ -160,7 +183,10 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
     if (prisma) {
       const fuelIds = [fuelV1Id, fuelV2Id].filter(Boolean);
       if (fuelIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({ where: { id: { in: fuelIds } } });
+        await prisma.fuelPriceVersion.deleteMany({ where: { id: { in: fuelIds } } });
+      }
+      if (consumptionId) {
+        await prisma.userFuelConsumptionVersion.deleteMany({ where: { id: consumptionId } });
       }
       const etcIds = [etcV1Id].filter(Boolean);
       if (etcIds.length > 0) {
@@ -217,7 +243,7 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
       expect(body.preview.totalAmount).toBe(90);
     });
 
-    it("tripDate 早於全域現存所有版本（B-11）→ 查無，missingParameters=['FUEL','ETC']，仍 200", async () => {
+    it("tripDate 早於全域現存所有版本（B-11）→ 查無，missingParameters=['FUEL_CONSUMPTION','ETC']（B-05：油種未知不回報油價缺項），仍 200", async () => {
       // PHASE-004-R3（機制 B 修復）：不再寫死一個「猜測早於所有版本」的日期
       // （原 "2030-12-31" 假設不成立——`phase3a-parameter-model.test.ts` 建立
       // 的 2026 年版本 <= 2030-12-31，若該檔平行執行中尚未 afterAll 清理，
@@ -240,9 +266,9 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
         };
       }>();
       expect(body.preview.parameterAvailable).toBe(false);
-      expect(body.preview.missingParameters).toEqual(["FUEL", "ETC"]);
+      expect(body.preview.missingParameters).toEqual(["FUEL_CONSUMPTION", "ETC"]);
       // 缺參數呈現選擇（見 travel-service.ts formatTravelComputed 文件註解）：
-      // 缺少的單價視為 0 計算 —— 此案例 FUEL 與 ETC 皆缺，故金額為 0。
+      // 缺少的單價視為 0 計算 —— 此案例油耗與 ETC 皆缺，故金額為 0。
       expect(body.preview.segments[0].amount).toBe(0);
     });
   });
@@ -375,7 +401,7 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
   // ===========================================================================
 
   describe("缺參數與邊界輸入", () => {
-    it("tripDate 缺席（undefined）→ 視為兩者皆缺，仍 200（不查 DB 亦不拋錯）", async () => {
+    it("tripDate 缺席（undefined）→ 視為三者皆缺（B-07），仍 200（不查 DB 亦不拋錯）", async () => {
       const resp = await preview(userCookie, {
         segments: [{ totalKm: "10", highwayKm: "5" }],
       });
@@ -384,7 +410,7 @@ describeWithDb("PHASE-004-T7 — POST /applications/travel/preview（stateless �
         preview: { parameterAvailable: boolean; missingParameters: string[] };
       }>();
       expect(body.preview.parameterAvailable).toBe(false);
-      expect(body.preview.missingParameters).toEqual(["FUEL", "ETC"]);
+      expect(body.preview.missingParameters).toEqual(["FUEL_CONSUMPTION", "FUEL_PRICE", "ETC"]);
     });
 
     it("tripDate=null（清空）→ 視為兩者皆缺，仍 200", async () => {

@@ -59,6 +59,18 @@ const PARAM_EFFECTIVE_FROM = "2021-01-01";
 const PARAM_FUEL_UNIT_PRICE = 6.0;
 const PARAM_ETC_UNIT_PRICE = 1.5;
 
+// ---------------------------------------------------------------------------
+// PHASE-005a-T13R：新油資模型播種（AC-37(e)，同 travel-application.spec.ts／
+// admin-applications.spec.ts 之理由）——本檔統計數值以「里程」為準（totalKm
+// 加總），與油資金額無關，故播種數值無需與任何舊制單價換算等值，僅需使
+// 完成流程之油資解析不再缺項即可。刻意選用與另二檔不同的油種（DIESEL）。
+// ---------------------------------------------------------------------------
+const NEW_MODEL_EFFECTIVE_FROM = PARAM_EFFECTIVE_FROM;
+const NEW_MODEL_FUEL_TYPE = "DIESEL";
+const NEW_MODEL_KM_PER_LITER = "10.0000";
+const NEW_MODEL_PRICE_PER_LITER = "50.0000";
+const NEW_MODEL_BASIS_NOTE = "PHASE-005a-T13R E2E 合成資料（新油資模型播種）";
+
 // Trip 1: totalKm 50.00；Trip 2: totalKm 70.00 → 合計 120.00（情境1）。
 const TRIP_1_TOTAL_KM = "50.00";
 const TRIP_1_HIGHWAY_KM = "30.00";
@@ -163,6 +175,61 @@ async function createCompletedTrip(
   return appId;
 }
 
+/**
+ * PHASE-005a-T13R：確保指定使用者於 `dateStr` 有新模型油資可解析——擁有人之
+ * 油耗版本，以及對應油種之油價版本，皆先查後建（idempotent，同
+ * `ensureParametersCoverDate` 之理由）。呼叫端須先以管理員身分登入（兩個端點
+ * 皆為 admin-only）。
+ */
+async function ensureFuelModelCoversDate(
+  page: Page,
+  userId: string,
+  dateStr: string
+): Promise<void> {
+  const consRes = await page.request.get(`${API_BASE}/users/${userId}/fuel-consumption`);
+  if (!consRes.ok()) {
+    throw new Error(`E2E 讀取油耗版本失敗: ${consRes.status()} ${await consRes.text()}`);
+  }
+  const { versions: consVersions } = (await consRes.json()) as {
+    versions: { effectiveFrom: string }[];
+  };
+  if (!consVersions.some((v) => v.effectiveFrom <= dateStr)) {
+    const res = await page.request.post(`${API_BASE}/users/${userId}/fuel-consumption`, {
+      data: {
+        fuelType: NEW_MODEL_FUEL_TYPE,
+        kmPerLiter: NEW_MODEL_KM_PER_LITER,
+        effectiveFrom: NEW_MODEL_EFFECTIVE_FROM,
+        basisNote: NEW_MODEL_BASIS_NOTE,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(`E2E 設定油耗版本失敗: ${res.status()} ${await res.text()}`);
+    }
+  }
+
+  const priceRes = await page.request.get(
+    `${API_BASE}/parameters/fuel-price?fuelType=${NEW_MODEL_FUEL_TYPE}`
+  );
+  if (!priceRes.ok()) {
+    throw new Error(`E2E 讀取油價版本失敗: ${priceRes.status()} ${await priceRes.text()}`);
+  }
+  const { versions: priceVersions } = (await priceRes.json()) as {
+    versions: { effectiveFrom: string }[];
+  };
+  if (!priceVersions.some((v) => v.effectiveFrom <= dateStr)) {
+    const res = await page.request.post(`${API_BASE}/parameters/fuel-price`, {
+      data: {
+        fuelType: NEW_MODEL_FUEL_TYPE,
+        pricePerLiter: NEW_MODEL_PRICE_PER_LITER,
+        effectiveFrom: NEW_MODEL_EFFECTIVE_FROM,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(`E2E 設定油價版本失敗: ${res.status()} ${await res.text()}`);
+    }
+  }
+}
+
 /** 於（已登入之）`page` 上，於區間公務總里程查詢區塊填入日期並送出查詢。 */
 async function queryMileageSummary(page: Page, dateFrom: string, dateTo: string): Promise<void> {
   await page.fill("#mileage-dateFrom", dateFrom);
@@ -196,6 +263,12 @@ test.describe("區間公務里程統計 — PHASE-005 Gate E2E（Spec §11.4）"
     }
     const { user } = (await createUserRes.json()) as { user: { id: string } };
     targetUserId = user.id;
+
+    // PHASE-005a-T13R：完成流程之油資解析改為擁有人（此為 targetUserId，非
+    // 管理員本人）之新模型油耗＋對應油種油價（AC-23）。
+    await ensureFuelModelCoversDate(adminPage, targetUserId, TRIP_DATE_1);
+    await ensureFuelModelCoversDate(adminPage, targetUserId, TRIP_DATE_2);
+
     await adminContext.close();
 
     // 2. 以該使用者身分（獨立 context，強制改密後）建立 2 筆已完成差旅

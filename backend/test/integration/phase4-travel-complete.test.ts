@@ -30,7 +30,7 @@
  *     deterministically regardless of what other test files concurrently
  *     have in the shared table.
  */
-import { Prisma, PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { completeTravelApplication } from "../../src/applications/travel-service.js";
@@ -111,8 +111,10 @@ interface SegmentJson {
 interface TravelSnapshotJson {
   fuelUnitPrice: string;
   etcUnitPrice: string;
-  fuelParameterVersionId: string;
+  fuelParameterVersionId: string | null;
   etcParameterVersionId: string;
+  fuelPriceVersionId: string | null;
+  fuelConsumptionVersionId: string | null;
   totalKm: string;
   totalRawAmount: string;
   totalAmount: number;
@@ -148,6 +150,7 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
   const createdAttachmentIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
 
   function track(id: string): string {
     createdApplicationIds.push(id);
@@ -173,14 +176,32 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
     return att;
   }
 
+  /**
+   * PHASE-005a-T7: 新模型下油資單價依「擁有人（`ownerId`）油耗版本 → 該油種
+   * 油價版本」雙鏈推導（不再直讀 `FuelParameterVersion`，該表已由 D1(a) 凍結
+   * 為唯讀）。為保留本檔既有精確金額斷言（單價 5 → 段金額 = km × 5 等），
+   * 以 `kmPerLiter="1.0000"` 讓推導結果 `ROUND_HALF_UP(pricePerLiter ÷ 1, 0)`
+   * 恰等於原「每公里單價」數值——刻意的測試等價技巧，非改變 AC-18 公式本身。
+   */
   async function createParamVersions(
     effectiveFrom: string,
     fuelPrice: string,
     etcPrice: string
-  ): Promise<{ fuelVersionId: string; etcVersionId: string }> {
-    const fuel = await prisma.fuelParameterVersion.create({
+  ): Promise<{ fuelVersionId: string; etcVersionId: string; consumptionId: string }> {
+    const consumption = await prisma.userFuelConsumptionVersion.create({
       data: {
-        unitPrice: new Prisma.Decimal(fuelPrice),
+        userId: ownerId,
+        fuelType: FuelType.GASOLINE_95,
+        kmPerLiter: new Prisma.Decimal("1.0000"),
+        effectiveFrom: new Date(effectiveFrom),
+        basisNote: "p4t8 測試 fixture：kmPerLiter=1 使推導單價等於原每公里單價",
+        createdById: ownerId,
+      },
+    });
+    const fuel = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal(fuelPrice),
         effectiveFrom: new Date(effectiveFrom),
         createdById: ownerId,
       },
@@ -194,7 +215,8 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
-    return { fuelVersionId: fuel.id, etcVersionId: etc.id };
+    createdConsumptionIds.push(consumption.id);
+    return { fuelVersionId: fuel.id, etcVersionId: etc.id, consumptionId: consumption.id };
   }
 
   async function createDraft(cookie: string, payload: Record<string, unknown> = {}) {
@@ -342,13 +364,18 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
       if (createdFuelVersionIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({
+        await prisma.fuelPriceVersion.deleteMany({
           where: { id: { in: createdFuelVersionIds } },
         });
       }
       if (createdEtcVersionIds.length > 0) {
         await prisma.etcParameterVersion.deleteMany({
           where: { id: { in: createdEtcVersionIds } },
+        });
+      }
+      if (createdConsumptionIds.length > 0) {
+        await prisma.userFuelConsumptionVersion.deleteMany({
+          where: { id: { in: createdConsumptionIds } },
         });
       }
       const userIds = [ownerId, otherId, adminId, mcpId].filter(Boolean);
@@ -371,12 +398,14 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
     const FUEL_DATE = "2034-01-01";
     let fuelVersionId: string;
     let etcVersionId: string;
+    let consumptionId: string;
 
     beforeAll(async () => {
       if (!DB_URL) return;
       const v = await createParamVersions(FUEL_DATE, "5.0000", "2.0000");
       fuelVersionId = v.fuelVersionId;
       etcVersionId = v.etcVersionId;
+      consumptionId = v.consumptionId;
     });
 
     it("200，status=COMPLETED，回傳後端正式計算結果並正確保存所有快照欄位", async () => {
@@ -403,7 +432,12 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
       const snap = application.snapshot as TravelSnapshotJson;
       expect(snap.fuelUnitPrice).toBe("5.0000");
       expect(snap.etcUnitPrice).toBe("2.0000");
-      expect(snap.fuelParameterVersionId).toBe(fuelVersionId);
+      // PHASE-005a-T7（§8.4 判別欄位）：新模型完成之申請，舊模型引用
+      // 恆為 null；新模型引用（fuelPriceVersionId/fuelConsumptionVersionId）
+      // 才是本次完成實際使用的來源版本。
+      expect(snap.fuelParameterVersionId).toBeNull();
+      expect(snap.fuelPriceVersionId).toBe(fuelVersionId);
+      expect(snap.fuelConsumptionVersionId).toBe(consumptionId);
       expect(snap.etcParameterVersionId).toBe(etcVersionId);
       expect(snap.totalKm).toBe("150.00");
       expect(snap.totalRawAmount).toBe("850.0000");
@@ -448,7 +482,7 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
   // ===========================================================================
 
   describe("AC-47 — 缺參數不得完成", () => {
-    it("出差日期無任何有效油資/ETC 版本 → 409 PARAMETER_NOT_AVAILABLE，details.missing=[FUEL,ETC]，狀態不變", async () => {
+    it("出差日期無任何有效油資/ETC 版本 → 409 PARAMETER_NOT_AVAILABLE，details.missing=[FUEL_CONSUMPTION,ETC]（B-05），狀態不變", async () => {
       // PHASE-004-R3（機制 B 修復）：原寫死 "2020-01-01"（註解自承「早於全域
       // 任何已知版本」——一個從未被驗證過的假設，見 Task Handoff「機制 B 根因
       // 與證據」）改為當場查詢 DB 真實狀態動態算出，恆早於現存所有版本，不論
@@ -464,7 +498,9 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
       expect(resp.statusCode).toBe(409);
       const body = resp.json<ErrorJson>();
       expect(body.error.code).toBe("PARAMETER_NOT_AVAILABLE");
-      expect(body.error.details?.missing).toEqual(expect.arrayContaining(["FUEL", "ETC"]));
+      expect(body.error.details?.missing).toEqual(
+        expect.arrayContaining(["FUEL_CONSUMPTION", "ETC"])
+      );
 
       const dbApp = await prisma.application.findUniqueOrThrow({ where: { id: applicationId } });
       expect(dbApp.status).toBe("DRAFT");
@@ -512,7 +548,8 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
 
       expect(after.snapshot?.fuelUnitPrice).toBe("5.0000"); // 非 9.9999
       expect(after.snapshot?.etcUnitPrice).toBe("2.0000"); // 非 8.8888
-      expect(after.snapshot?.fuelParameterVersionId).toBe(v1.fuelVersionId);
+      expect(after.snapshot?.fuelParameterVersionId).toBeNull(); // 新模型：舊欄位恆 null
+      expect(after.snapshot?.fuelPriceVersionId).toBe(v1.fuelVersionId);
       expect(after.snapshot?.etcParameterVersionId).toBe(v1.etcVersionId);
       expect(after.snapshot?.totalAmount).toBe(120); // 非重算後的值
       const seg = after.segments.find((s) => s.id === segmentIds[0]);
@@ -875,6 +912,20 @@ describeWithDb("PHASE-004-T8 — 差旅完成流程 + 快照", () => {
     beforeAll(async () => {
       if (!DB_URL) return;
       await createParamVersions(FUEL_DATE, "5.0000", "2.0000");
+      // PHASE-005a-T7: 本 describe 有一條案例是「管理員完成自己擁有的申請」
+      // （非代操作），故 adminId 本身也需要一筆油耗版本（createParamVersions
+      // 只為共用的 ownerId 建立）。
+      const adminConsumption = await prisma.userFuelConsumptionVersion.create({
+        data: {
+          userId: adminId,
+          fuelType: FuelType.GASOLINE_95,
+          kmPerLiter: new Prisma.Decimal("1.0000"),
+          effectiveFrom: new Date(FUEL_DATE),
+          basisNote: "p4t8 D17 fixture：管理員完成自己擁有的申請",
+          createdById: adminId,
+        },
+      });
+      createdConsumptionIds.push(adminConsumption.id);
     });
 
     it("他人一般使用者呼叫 complete → 403 FORBIDDEN，狀態不變", async () => {

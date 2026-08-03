@@ -4,11 +4,42 @@ export type Role = "USER" | "ADMIN";
 
 // ---- PHASE-003a parameter types ----
 
-export interface FuelParameterDto {
+// ---- PHASE-005a-T3/T9 fuel price (油種＋每公升油價) ----
+
+export type FuelType = "GASOLINE_92" | "GASOLINE_95" | "GASOLINE_98" | "DIESEL";
+
+export interface FuelPriceVersionDto {
   id: string;
-  unitPrice: string; // Decimal as string (D8)
+  fuelType: FuelType;
+  pricePerLiter: string; // Decimal(10,4) as string, toFixed(4)
   effectiveFrom: string; // YYYY-MM-DD
-  createdAt: string;
+  createdAt: string; // ISO
+}
+
+// ---- PHASE-005a-T4/T5/T10 fuel consumption (使用者車輛油種＋油耗版本) ----
+
+export type FuelConsumptionVersionState = "HISTORICAL" | "CURRENT" | "FUTURE";
+
+export interface FuelConsumptionVersionDto {
+  id: string;
+  userId: string;
+  fuelType: FuelType;
+  kmPerLiter: string; // Decimal(10,4) as string, toFixed(4)
+  effectiveFrom: string; // YYYY-MM-DD
+  basisNote: string;
+  state: FuelConsumptionVersionState;
+  createdAt: string; // ISO
+  createdById: string;
+}
+
+/**
+ * PHASE-005a-T11: `GET /me/fuel-consumption` 之 `current`（backend T6 逐鍵
+ * 白名單，見 backend/src/users/fuel-consumption-routes.ts）——僅此三鍵。
+ */
+export interface MyFuelConsumptionDto {
+  fuelType: FuelType;
+  kmPerLiter: string;
+  effectiveFrom: string; // YYYY-MM-DD
 }
 
 export interface EtcParameterDto {

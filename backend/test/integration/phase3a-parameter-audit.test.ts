@@ -80,7 +80,9 @@ const DEP_DATE_START = new Date("2099-07-01");
 const DEP_DATE_END = new Date("2099-07-31");
 
 // targetLabel prefixes used by this test (for audit cleanup)
-const AUDIT_LABEL_PREFIXES = ["FUEL#", "ETC#", "DEPRECIATION#"];
+// PHASE-005a-T3b（AC-37(e)）: fuel 稽核覆蓋移轉至 /parameters/fuel-price，
+// targetLabel 由 FUEL#<id> 改為 FUEL_PRICE#<id>（routes.ts 稽核 hook 實查）。
+const AUDIT_LABEL_PREFIXES = ["FUEL_PRICE#", "ETC#", "DEPRECIATION#"];
 
 interface TestUsers {
   adminId: string;
@@ -124,6 +126,11 @@ async function cleanupAll(prisma: PrismaClient, userIds: string[]): Promise<void
   await prisma.fuelParameterVersion.deleteMany({
     where: { effectiveFrom: { gte: FUEL_DATE_START, lte: FUEL_DATE_END } },
   });
+  // PHASE-005a-T3b (Spec §2.H AC-37(e), REV2): AC-18 稽核覆蓋移轉至
+  // POST /parameters/fuel-price，於同一哨兵日期區間寫入 FuelPriceVersion，須同步清理。
+  await prisma.fuelPriceVersion.deleteMany({
+    where: { effectiveFrom: { gte: FUEL_DATE_START, lte: FUEL_DATE_END } },
+  });
   await prisma.etcParameterVersion.deleteMany({
     where: { effectiveFrom: { gte: ETC_DATE_START, lte: ETC_DATE_END } },
   });
@@ -150,10 +157,21 @@ async function cleanupAll(prisma: PrismaClient, userIds: string[]): Promise<void
 }
 
 // ---------------------------------------------------------------------------
-// AC-18: Fuel parameter version create → AuditLog
+// AC-18: Fuel price version create → AuditLog
+//
+// PHASE-005a-T3b（Spec §2.H AC-37(e) REV2）: POST /parameters/fuel 已移除
+// （§16 D1(a)）。本 describe 之稽核契約覆蓋（AC-18：成功建立稽核列、敏感鍵
+// 掃描、非管理員／未登入零稽核列、重疊 409 原子性）移轉至
+// POST /parameters/fuel-price（不改寫為 404 —— 該端點之稽核形狀為淨增覆蓋，
+// 非重複；理由見 AC-37(e) 表列）：
+//   payload   { unitPrice, effectiveFrom } → { fuelType: "GASOLINE_95", pricePerLiter, effectiveFrom }
+//   targetLabel FUEL#<id> → FUEL_PRICE#<id>
+//   summary.parameterType "FUEL" → "FUEL_PRICE"；summary.unitPrice → summary.pricePerLiter
+//   action 仍為 PARAMETER_VERSION_CREATED（不變）
+//   409 原子性之第二次 POST 須用同一 fuelType ＋ 同一 effectiveFrom（新表唯一鍵 [fuelType, effectiveFrom]）
 // ---------------------------------------------------------------------------
 
-describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
+describeWithDb("POST /parameters/fuel-price → AuditLog (AC-18)", () => {
   let app: FastifyInstance;
   let prisma: PrismaClient;
   let users: TestUsers;
@@ -177,13 +195,13 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
     }
   });
 
-  it("AC-18 fuel: create success → one AuditLog row with correct fields", async () => {
+  it("AC-18 fuel-price: create success → one AuditLog row with correct fields", async () => {
     const effectiveFrom = "2099-05-01";
     const resp = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: { unitPrice: 3.5, effectiveFrom },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: 3.5, effectiveFrom },
     });
     expect(resp.statusCode).toBe(201);
     const versionId = resp.json<{ version: { id: string } }>().version.id;
@@ -193,29 +211,29 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
       where: {
         actorId: users.adminId,
         action: "PARAMETER_VERSION_CREATED",
-        targetLabel: `FUEL#${versionId}`,
+        targetLabel: `FUEL_PRICE#${versionId}`,
       },
     });
 
     expect(log).not.toBeNull();
     expect(log?.actorId).toBe(users.adminId);
     expect(log?.action).toBe("PARAMETER_VERSION_CREATED");
-    expect(log?.targetLabel).toBe(`FUEL#${versionId}`);
+    expect(log?.targetLabel).toBe(`FUEL_PRICE#${versionId}`);
 
-    // summary must contain parameterType, unitPrice, effectiveFrom
+    // summary must contain parameterType, pricePerLiter, effectiveFrom
     const summary = log?.summary as Record<string, unknown>;
-    expect(summary?.parameterType).toBe("FUEL");
+    expect(summary?.parameterType).toBe("FUEL_PRICE");
     expect(summary?.effectiveFrom).toBe(effectiveFrom);
-    expect(summary?.unitPrice).toBeDefined();
+    expect(summary?.pricePerLiter).toBeDefined();
   });
 
-  it("AC-18 fuel security: summary and targetLabel must not contain sensitive keys", async () => {
+  it("AC-18 fuel-price security: summary and targetLabel must not contain sensitive keys", async () => {
     const effectiveFrom = "2099-05-02";
     const resp = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: { unitPrice: 2.0, effectiveFrom },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: 2.0, effectiveFrom },
     });
     expect(resp.statusCode).toBe(201);
     const versionId = resp.json<{ version: { id: string } }>().version.id;
@@ -223,7 +241,7 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
     const log = await prisma.auditLog.findFirst({
       where: {
         actorId: users.adminId,
-        targetLabel: `FUEL#${versionId}`,
+        targetLabel: `FUEL_PRICE#${versionId}`,
       },
     });
     expect(log).not.toBeNull();
@@ -238,7 +256,7 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
     expect(serialized).not.toMatch(/secret/i);
   });
 
-  it("AC-18 fuel: non-admin USER create → 403, no audit row created", async () => {
+  it("AC-18 fuel-price: non-admin USER create → 403, no audit row created", async () => {
     const userCookie = await loginUser(app, USER_LOGIN, PASSWORD);
     const countBefore = await prisma.auditLog.count({
       where: { actorId: users.userId, action: "PARAMETER_VERSION_CREATED" },
@@ -246,9 +264,9 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
 
     const resp = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: userCookie },
-      payload: { unitPrice: 1.0, effectiveFrom: "2099-05-10" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: 1.0, effectiveFrom: "2099-05-10" },
     });
     expect(resp.statusCode).toBe(403);
 
@@ -258,7 +276,7 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
     expect(countAfter).toBe(countBefore);
   });
 
-  it("AC-18 fuel: unauthenticated create → 401, no audit row", async () => {
+  it("AC-18 fuel-price: unauthenticated create → 401, no audit row", async () => {
     // Scope to our admin user to avoid cross-test interference
     const countBefore = await prisma.auditLog.count({
       where: { actorId: users.adminId, action: "PARAMETER_VERSION_CREATED" },
@@ -266,8 +284,8 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
 
     const resp = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
-      payload: { unitPrice: 1.0, effectiveFrom: "2099-05-11" },
+      url: "/parameters/fuel-price",
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: 1.0, effectiveFrom: "2099-05-11" },
     });
     expect(resp.statusCode).toBe(401);
 
@@ -278,13 +296,13 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
     expect(countAfter).toBe(countBefore);
   });
 
-  it("AC-18 fuel atomicity: overlap → 409, no audit row added", async () => {
+  it("AC-18 fuel-price atomicity: overlap → 409, no audit row added", async () => {
     // Create one version first
     const resp1 = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: { unitPrice: 1.5, effectiveFrom: "2099-05-15" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: 1.5, effectiveFrom: "2099-05-15" },
     });
     expect(resp1.statusCode).toBe(201);
 
@@ -292,12 +310,12 @@ describeWithDb("POST /parameters/fuel → AuditLog (AC-18)", () => {
       where: { actorId: users.adminId, action: "PARAMETER_VERSION_CREATED" },
     });
 
-    // Duplicate effectiveFrom → overlap (409)
+    // Duplicate fuelType + effectiveFrom → overlap (409)
     const resp2 = await app.inject({
       method: "POST",
-      url: "/parameters/fuel",
+      url: "/parameters/fuel-price",
       headers: { cookie: adminCookie },
-      payload: { unitPrice: 2.0, effectiveFrom: "2099-05-15" },
+      payload: { fuelType: "GASOLINE_95", pricePerLiter: 2.0, effectiveFrom: "2099-05-15" },
     });
     expect(resp2.statusCode).toBe(409);
 

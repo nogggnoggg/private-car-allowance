@@ -36,6 +36,7 @@ enum AuditAction {
   PARAMETER_VERSION_CREATED
   APPLICATION_CREATED_ON_BEHALF
   APPLICATION_UPDATED_ON_BEHALF
+  USER_FUEL_CONSUMPTION_VERSION_CREATED // PHASE-005a-T1（§8.1）
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,7 @@ model User {
   attachmentsAsOwner     Attachment[] @relation("AttachmentOwner")
   applicationsAsOwner    Application[] @relation("ApplicationOwner")
   applicationsAsCreator  Application[] @relation("ApplicationCreatedBy")
+  fuelConsumptionVersions UserFuelConsumptionVersion[] @relation("UserFuelConsumption")
 
   @@index([loginName])
 }
@@ -201,6 +203,49 @@ model Attachment {
 }
 
 // ---------------------------------------------------------------------------
+// PHASE-005a enums / models（§8.1/§8.2）
+// ---------------------------------------------------------------------------
+
+/// 固定四項油種（Q4），不提供自訂；zh-TW 標籤由前端映射，不入 DB（D2）。
+enum FuelType {
+  GASOLINE_92
+  GASOLINE_95
+  GASOLINE_98
+  DIESEL
+}
+
+/// PHASE-005a：按油種之每公升油價版本。取代 FuelParameterVersion 之油資角色（D1）。
+model FuelPriceVersion {
+  id            String   @id @default(cuid())
+  fuelType      FuelType
+  pricePerLiter Decimal  @db.Decimal(10, 4) // 元／公升，≥0；沿用 UNIT_PRICE_CAPACITY
+  effectiveFrom DateTime @db.Date // 日粒度，含當日
+  createdById   String // 建立之管理員 id（無 FK，沿用 003a 慣例）
+  createdAt     DateTime @default(now())
+
+  @@unique([fuelType, effectiveFrom]) // Q1：每油種各自一條時間軸；併發最後防線
+  @@index([fuelType, effectiveFrom])
+}
+
+/// PHASE-005a：按使用者之車輛油種與油耗版本。僅管理員可寫（AD-US-15）。
+/// onDelete: Restrict — AD-US-04「有歷史資料之帳號拒絕永久刪除」之既有語意延伸；
+/// `userHasHistory`（backend/src/users/history.ts）須同步納入本表（T1 Done When）。
+model UserFuelConsumptionVersion {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation("UserFuelConsumption", fields: [userId], references: [id], onDelete: Restrict)
+  fuelType      FuelType
+  kmPerLiter    Decimal  @db.Decimal(10, 4) // km/L，>0（容量見 D3(b)）
+  effectiveFrom DateTime @db.Date
+  basisNote     String // 必填核對依據（Q6；長度上限見 D3(c)）
+  createdById   String // 操作管理員 id
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, effectiveFrom]) // 同使用者不重疊；跨使用者互不干涉
+  @@index([userId, effectiveFrom])
+}
+
+// ---------------------------------------------------------------------------
 // PHASE-004 models
 // ---------------------------------------------------------------------------
 
@@ -268,11 +313,20 @@ model TravelApplication {
   snapshotRawAmount      Decimal? @db.Decimal(14, 4)  // Σ 各段取整前金額
   calculatedAt           DateTime?
 
+  // ── PHASE-005a 新增（§8.3；全部 nullable，無 default，零回填）──
+  snapshotFuelType          FuelType?
+  snapshotFuelPricePerLiter Decimal?  @db.Decimal(10, 4)
+  snapshotFuelConsumption   Decimal?  @db.Decimal(10, 4)
+  fuelPriceVersionId        String?
+  fuelConsumptionVersionId  String?
+
   segments TripSegment[]
 
   @@index([tripDate])
   @@index([fuelParameterVersionId])
   @@index([etcParameterVersionId])
+  @@index([fuelPriceVersionId])
+  @@index([fuelConsumptionVersionId])
 }
 
 // ── 行程段 ─────────────────────────────────────────────────────────

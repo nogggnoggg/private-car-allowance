@@ -57,6 +57,21 @@ function mockMeAs(user: UserDto) {
 // component would fall through to a real (failing) fetch call for the list —
 // this queues a deterministic empty-list response so those unrelated
 // assertions keep passing. Not a modification of any existing assertion.
+// PHASE-005a-T11: HomePage now also renders <MyFuelConsumptionSection />,
+// which fires a GET /api/me/fuel-consumption on mount (before
+// <ApplicationListSection />'s GET /api/applications, per JSX/mount order).
+// Mirrors the `mockEmptyApplicationsList` precedent above (PHASE-004-T13) —
+// a queued mock for a newly-embedded component's own fetch, not a
+// modification of any existing assertion's intent.
+function mockMyFuelConsumptionEmpty() {
+  (fetch as Mock).mockResolvedValueOnce(
+    new Response(JSON.stringify({ current: null }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+}
+
 function mockEmptyApplicationsList() {
   (fetch as Mock).mockResolvedValueOnce(
     new Response(
@@ -109,6 +124,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁顯示「補助參數維護」連結，指向 /admin/parameters", async () => {
     mockMeAs(adminUser);
+    mockMyFuelConsumptionEmpty();
     mockEmptyApplicationsList();
 
     renderHomePage();
@@ -122,6 +138,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("一般使用者（role=USER）登入 → 首頁不顯示「補助參數維護」連結", async () => {
     mockMeAs(regularUser);
+    mockMyFuelConsumptionEmpty();
     mockEmptyApplicationsList();
 
     renderHomePage();
@@ -137,6 +154,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁仍顯示既有「使用者管理」連結", async () => {
     mockMeAs(adminUser);
+    mockMyFuelConsumptionEmpty();
     mockEmptyApplicationsList();
 
     renderHomePage();
@@ -150,6 +168,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁仍顯示「變更密碼」連結", async () => {
     mockMeAs(adminUser);
+    mockMyFuelConsumptionEmpty();
     mockEmptyApplicationsList();
 
     renderHomePage();
@@ -163,6 +182,7 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 
   it("管理員登入 → 首頁仍顯示「登出」按鈕", async () => {
     mockMeAs(adminUser);
+    mockMyFuelConsumptionEmpty();
     mockEmptyApplicationsList();
 
     renderHomePage();
@@ -188,6 +208,7 @@ describe("HomePage — MileageSummarySection 嵌入（D6(a) 共用元件）", ()
 
   it("一般使用者登入 → 首頁顯示區間公務總里程統計區塊，且掛載時不自動查詢（D5(a)）", async () => {
     mockMeAs(regularUser);
+    mockMyFuelConsumptionEmpty();
     mockEmptyApplicationsList();
 
     renderHomePage();
@@ -197,12 +218,15 @@ describe("HomePage — MileageSummarySection 嵌入（D6(a) 共用元件）", ()
     });
     expect(screen.getByText("請選擇日期區間後查詢")).toBeInTheDocument();
 
-    // 僅 /me 與 /applications 兩次 fetch；統計區塊掛載時不得多打一次 fetch。
-    expect(fetch).toHaveBeenCalledTimes(2);
+    // 僅 /me、/me/fuel-consumption 與 /applications 三次 fetch（PHASE-005a-T11
+    // 新增 <MyFuelConsumptionSection /> 之自動查詢，見上方 mockMyFuelConsumptionEmpty
+    // 註解）；統計區塊掛載時仍不得多打一次 fetch。
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("AC-30 鑑別力：統計端點回 999.99、申請列表 3 筆合計 30.00 → 畫面顯示 999.99（前端不自算）", async () => {
     mockMeAs(regularUser);
+    mockMyFuelConsumptionEmpty();
 
     // 申請列表：3 筆，totalKm 合計恰為 30.00（若元件誤自行加總，會顯示 30.00）。
     (fetch as Mock).mockResolvedValueOnce(

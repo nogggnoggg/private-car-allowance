@@ -32,7 +32,7 @@
  *     mirroring the existing per-file year-claiming convention in
  *     phase4-travel-complete.test.ts (2034~2040) etc.
  */
-import { Prisma, PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -89,6 +89,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
   const createdAttachmentIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
 
   function trackUser(id: string, loginName: string): string {
     createdUserIds.push(id);
@@ -135,14 +136,38 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     return att;
   }
 
+  /**
+   * PHASE-005a-T7: 新模型下油資單價依「擁有人油耗版本 → 該油種油價版本」雙鏈
+   * 推導（不再直讀 `FuelParameterVersion`）。呼叫端若之後要對某位使用者呼叫
+   * `/complete`，須傳入 `consumerId`（該使用者）以便同時建立其油耗版本；僅
+   * 建立版本、不完成任何申請的呼叫可省略。以 kmPerLiter="1.0000" 保留測試
+   * 等價（見 phase4-travel-complete.test.ts 同一慣例）。
+   */
   async function createParamVersions(
     effectiveFrom: string,
     fuelPrice: string,
-    etcPrice: string
-  ): Promise<{ fuelVersionId: string; etcVersionId: string }> {
-    const fuel = await prisma.fuelParameterVersion.create({
+    etcPrice: string,
+    consumerId?: string
+  ): Promise<{ fuelVersionId: string; etcVersionId: string; consumptionVersionId: string | null }> {
+    let consumptionVersionId: string | null = null;
+    if (consumerId) {
+      const consumption = await prisma.userFuelConsumptionVersion.create({
+        data: {
+          userId: consumerId,
+          fuelType: FuelType.GASOLINE_95,
+          kmPerLiter: new Prisma.Decimal("1.0000"),
+          effectiveFrom: new Date(effectiveFrom),
+          basisNote: "p4rp 測試 fixture：kmPerLiter=1",
+          createdById: adminId,
+        },
+      });
+      createdConsumptionIds.push(consumption.id);
+      consumptionVersionId = consumption.id;
+    }
+    const fuel = await prisma.fuelPriceVersion.create({
       data: {
-        unitPrice: new Prisma.Decimal(fuelPrice),
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal(fuelPrice),
         effectiveFrom: new Date(effectiveFrom),
         createdById: adminId,
       },
@@ -156,7 +181,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
-    return { fuelVersionId: fuel.id, etcVersionId: etc.id };
+    return { fuelVersionId: fuel.id, etcVersionId: etc.id, consumptionVersionId };
   }
 
   async function createDraft(cookie: string) {
@@ -266,8 +291,13 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
       if (createdApplicationIds.length > 0) {
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
+      if (createdConsumptionIds.length > 0) {
+        await prisma.userFuelConsumptionVersion.deleteMany({
+          where: { id: { in: createdConsumptionIds } },
+        });
+      }
       if (createdFuelVersionIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({
+        await prisma.fuelPriceVersion.deleteMany({
           where: { id: { in: createdFuelVersionIds } },
         });
       }
@@ -319,7 +349,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     it("使用者有已完成 Application → DELETE → 409 CONFLICT + 停用提示；使用者仍存在", async () => {
       const victim = await createUser(`${LOGIN_PREFIX}done_victim_${RUN_ID}`, "P4RP 已完成受測者");
       const victimCookie = await loginUser(app, victim.loginName, PASSWORD);
-      await createParamVersions("2045-01-01", "5.0000", "2.0000");
+      await createParamVersions("2045-01-01", "5.0000", "2.0000", victim.id);
       await buildAndCompleteTravelApplication(victimCookie, victim.id, {
         tripDate: "2045-06-01",
         purpose: "P4RP 已完成申請歷史測試",
@@ -361,21 +391,33 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
   // ===========================================================================
 
   describe("AC-93 — 被已完成差旅引用之參數版本回報有引用", () => {
-    it("已完成差旅引用 v1 → parameterHasReferences('FUEL'/'ETC', v1.id) 皆回 true", async () => {
+    it("已完成差旅引用 v1 → parameterHasReferences('FUEL_PRICE'/'FUEL_CONSUMPTION'/'ETC', v1.id) 皆回 true", async () => {
       const owner = await createUser(`${LOGIN_PREFIX}ref_owner_${RUN_ID}`, "P4RP 引用擁有人");
       const ownerCookie = await loginUser(app, owner.loginName, PASSWORD);
-      const { fuelVersionId, etcVersionId } = await createParamVersions(
+      const { fuelVersionId, etcVersionId, consumptionVersionId } = await createParamVersions(
         "2046-01-01",
         "6.0000",
-        "3.0000"
+        "3.0000",
+        owner.id
       );
       await buildAndCompleteTravelApplication(ownerCookie, owner.id, {
         tripDate: "2046-06-01",
         purpose: "P4RP AC-93 正向引用測試",
       });
 
-      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(true);
+      // PHASE-005a-T7 起，completeTravelApplication 寫入新模型雙鏈欄位
+      // （fuelPriceVersionId／fuelConsumptionVersionId），不再寫入舊模型
+      // 單一欄位 fuelParameterVersionId（D11(a)）。
+      await expect(parameterHasReferences(prisma, "FUEL_PRICE", fuelVersionId)).resolves.toBe(true);
+      expect(consumptionVersionId).not.toBeNull();
+      await expect(
+        parameterHasReferences(prisma, "FUEL_CONSUMPTION", consumptionVersionId as string)
+      ).resolves.toBe(true);
       await expect(parameterHasReferences(prisma, "ETC", etcVersionId)).resolves.toBe(true);
+
+      // 舊型別 "FUEL" 保留其舊列語意（查 fuelParameterVersionId）：新模型完成
+      // 之申請從未寫入該欄位，因此對新模型版本 id 正確回 false（不是「永遠 true」）。
+      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(false);
     });
 
     it("從未被任何完成申請引用的版本 → parameterHasReferences 回 false", async () => {
@@ -385,7 +427,9 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
         "4.0000"
       );
 
-      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(false);
+      await expect(parameterHasReferences(prisma, "FUEL_PRICE", fuelVersionId)).resolves.toBe(
+        false
+      );
       await expect(parameterHasReferences(prisma, "ETC", etcVersionId)).resolves.toBe(false);
     });
 
@@ -401,14 +445,16 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
         "5.0000"
       );
       // tripDate 落在 v1 生效區間內（2048-01-01 起生效，無下一版本 → 永遠生效），
-      // 但這是草稿：從未呼叫 /complete，因此 fuelParameterVersionId/etcParameterVersionId
-      // 從未被寫入（T8 completeTravelApplication 才會寫）。
+      // 但這是草稿：從未呼叫 /complete，因此 fuelPriceVersionId/fuelConsumptionVersionId/
+      // etcParameterVersionId 從未被寫入（completeTravelApplication 才會寫）。
       await buildDraftTravelApplication(ownerCookie, {
         tripDate: "2048-06-01",
         purpose: "P4RP AC-93 邊界測試：草稿不算引用",
       });
 
-      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(false);
+      await expect(parameterHasReferences(prisma, "FUEL_PRICE", fuelVersionId)).resolves.toBe(
+        false
+      );
       await expect(parameterHasReferences(prisma, "ETC", etcVersionId)).resolves.toBe(false);
     });
   });

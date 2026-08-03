@@ -25,6 +25,7 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  type PreviewMissingCode,
   type SegmentInput,
   type TravelApplicationDto,
   type TravelComputedDto,
@@ -41,6 +42,64 @@ import type { ApiError } from "../types/api.js";
 
 const SEGMENT_ATTACHMENT_LIMIT = 3; // UI 提示用；後端上限為權威（AC-22）
 const PREVIEW_DEBOUNCE_MS = 300; // D8
+
+/**
+ * AC-32（PHASE-005a-T11）：依 `missingParameters` 之 wire 代碼（D5(a)/T7 複審
+ * SF-4 更名後之六碼權威清單，§18 T8R）逐碼對應之 zh-TW 文案。三個「缺參數」
+ * 代碼（FUEL_CONSUMPTION/FUEL_PRICE/ETC）之文案逐字互異（AC-32 明文要求）；
+ * 三個「不可計算」代碼（FUEL_DATA_CORRUPTED/FUEL_UNIT_PRICE_OUT_OF_RANGE/
+ * AMOUNT_OUT_OF_RANGE）之文案亦互異，且與前三者不重複（PROJECT_STATE T8R
+ * 移交 A-2 義務：不得洩漏技術細節、不得與 AC-32 三情境文字混淆）。
+ *
+ * 本函式純為代碼→固定字串查表，不含任何金額/單價計算（§11.3 不自算鑑別）。
+ */
+const MISSING_PARAMETER_MESSAGES: Record<PreviewMissingCode, string> = {
+  FUEL_CONSUMPTION: "請聯絡管理員建立油耗資料",
+  FUEL_PRICE: "請聯絡管理員設定參數",
+  ETC: "該出差日期缺少 ETC 補助參數，請聯絡管理員設定",
+  FUEL_DATA_CORRUPTED: "您的油耗資料異常，請聯絡管理員檢查",
+  FUEL_UNIT_PRICE_OUT_OF_RANGE: "油價與油耗組合超出可計算範圍，請聯絡管理員檢查參數設定",
+  AMOUNT_OUT_OF_RANGE: "計算金額超出可儲存範圍，請聯絡管理員檢查里程與參數設定",
+};
+
+/** 顯示順序固定（缺參數優先於不可計算，與 §9.2 解析順序一致）。 */
+const MISSING_PARAMETER_ORDER: PreviewMissingCode[] = [
+  "FUEL_CONSUMPTION",
+  "FUEL_PRICE",
+  "ETC",
+  "FUEL_DATA_CORRUPTED",
+  "FUEL_UNIT_PRICE_OUT_OF_RANGE",
+  "AMOUNT_OUT_OF_RANGE",
+];
+
+function missingParameterMessages(missing: PreviewMissingCode[]): string[] {
+  return MISSING_PARAMETER_ORDER.filter((code) => missing.includes(code)).map(
+    (code) => MISSING_PARAMETER_MESSAGES[code]
+  );
+}
+
+/**
+ * 合併複審 SF-1 修復：「油資無法計算」標題與金額抑制僅繫於「油資相關」代碼
+ * ——僅缺 `ETC` 時，油資版本本就齊備，後端仍會算出正確的油資試算金額
+ * （`formatTravelComputed`，travel-service.ts 明文設計：只缺 ETC 版本時 ETC
+ * 部分以 0 佔位、油資部分照實呈現），此時應維持顯示各段與合計金額（後端為
+ * 準）＋ETC 缺項提示，而非誤報「油資無法計算」並隱藏已算出的金額
+ * （FE-US-10 第一條、AC-32 字面僅涵蓋缺油耗/缺油價，未涵蓋僅缺 ETC）。
+ * `AMOUNT_OUT_OF_RANGE` 必須保留在抑制清單——該情境下後端已把段金額歸零
+ * （travel-service.ts 之 `amountOutOfRange` 分支），顯示歸零值即為 AC-32
+ * 禁止之「金額 0 為最終值」。
+ */
+const FUEL_UNAVAILABLE_CODES: PreviewMissingCode[] = [
+  "FUEL_PRICE",
+  "FUEL_CONSUMPTION",
+  "FUEL_DATA_CORRUPTED",
+  "FUEL_UNIT_PRICE_OUT_OF_RANGE",
+  "AMOUNT_OUT_OF_RANGE",
+];
+
+function isFuelUnavailable(missing: PreviewMissingCode[]): boolean {
+  return missing.some((code) => FUEL_UNAVAILABLE_CODES.includes(code));
+}
 
 let localKeySeq = 0;
 function nextLocalKey(): string {
@@ -720,16 +779,23 @@ export default function TravelApplicationPage(): React.ReactElement {
 
                   <div className="preview-summary" aria-live="polite">
                     {previewState.kind === "loading" && <p>計算中…</p>}
-                    {previewState.kind === "ready" && preview && (
-                      <dl className="detail-list">
-                        <dt>油資補助（試算）</dt>
-                        <dd>{preview.fuelAmount}</dd>
-                        <dt>ETC 補助（試算）</dt>
-                        <dd>{preview.etcAmount}</dd>
-                        <dt>本段金額（試算）</dt>
-                        <dd>{preview.amount}</dd>
-                      </dl>
-                    )}
+                    {previewState.kind === "ready" &&
+                      preview &&
+                      (isFuelUnavailable(previewState.data.missingParameters) ? (
+                        // AC-32（FE-US-10 第四條）：油資無法計算時，本段金額
+                        // 不得以 0 呈現為最終值——顯示「油資無法計算」。
+                        // SF-1：僅缺 ETC 時油資本可算出，不落入此分支。
+                        <p className="warn-text">油資無法計算</p>
+                      ) : (
+                        <dl className="detail-list">
+                          <dt>油資補助（試算）</dt>
+                          <dd>{preview.fuelAmount}</dd>
+                          <dt>ETC 補助（試算）</dt>
+                          <dd>{preview.etcAmount}</dd>
+                          <dt>本段金額（試算）</dt>
+                          <dd>{preview.amount}</dd>
+                        </dl>
+                      ))}
                     {previewState.kind === "error" && (
                       <p className="field-error">{previewState.message}</p>
                     )}
@@ -743,23 +809,45 @@ export default function TravelApplicationPage(): React.ReactElement {
         <section aria-labelledby="preview-total-heading">
           <h2 id="preview-total-heading">金額預覽（試算，後端計算）</h2>
           {previewState.kind === "loading" && <p>計算中…</p>}
-          {previewState.kind === "ready" && (
-            <>
-              {!previewState.data.parameterAvailable && (
-                <p className="warn-text">
-                  該出差日期缺少
-                  {previewState.data.missingParameters.includes("FUEL") ? "油資" : ""}
-                  {previewState.data.missingParameters.length === 2 ? "、" : ""}
-                  {previewState.data.missingParameters.includes("ETC") ? "ETC" : ""}
-                  補助參數，暫以 0 試算，請聯絡管理員設定。
-                </p>
-              )}
-              <p>
-                <strong>合計金額：{previewState.data.totalAmount}</strong>（總里程：
-                {previewState.data.totalKm} 公里）
-              </p>
-            </>
-          )}
+          {previewState.kind === "ready" &&
+            (() => {
+              const { missingParameters } = previewState.data;
+              const messages = missingParameterMessages(missingParameters);
+              const fuelUnavailable = isFuelUnavailable(missingParameters);
+              return (
+                <>
+                  {fuelUnavailable ? (
+                    // AC-32：三種缺參數情境文字逐字互異（同時成立時同時顯示）；
+                    // 且不得以「暫以 0 試算」之類文字暗示金額 0 為最終值。
+                    <div className="warn-text">
+                      <p>
+                        <strong>油資無法計算</strong>
+                      </p>
+                      {messages.map((msg) => (
+                        <p key={msg}>{msg}</p>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      {messages.length > 0 && (
+                        // SF-1：僅缺 ETC 時，油資部分仍可算出，維持顯示合計
+                        // 金額（後端為準）＋ETC 缺項提示，不誤報「油資無法
+                        // 計算」（FE-US-10 第一條、PHASE-004 既有行為）。
+                        <div className="warn-text">
+                          {messages.map((msg) => (
+                            <p key={msg}>{msg}</p>
+                          ))}
+                        </div>
+                      )}
+                      <p>
+                        <strong>合計金額：{previewState.data.totalAmount}</strong>（總里程：
+                        {previewState.data.totalKm} 公里）
+                      </p>
+                    </>
+                  )}
+                </>
+              );
+            })()}
           {previewState.kind === "error" && (
             <p className="field-error" role="alert">
               {previewState.message}
@@ -819,18 +907,27 @@ export default function TravelApplicationPage(): React.ReactElement {
         <div className="dialog-overlay">
           <dialog open className="dialog-box" aria-label="確認完成申請">
             <h3>確認完成申請</h3>
-            <p>完成後將無法修改，且無法復原。確定要完成這筆申請嗎？</p>
-            {completeError && (
-              <div className="error-block" role="alert">
-                {completeError}
-              </div>
+            {dirty ? (
+              // PHASE-005a-T14（Gate 反饋①）：表單存在未儲存變更時，確認框不得
+              // 以伺服器舊狀態渲染 completionBlockers 衍生之誤導紅字（該狀態
+              // 尚未反映使用者的未儲存編輯），改顯示本提示並停用確認送出。
+              <p className="warn-text">有未儲存的變更，請先儲存草稿</p>
+            ) : (
+              <>
+                <p>完成後將無法修改，且無法復原。確定要完成這筆申請嗎？</p>
+                {completeError && (
+                  <div className="error-block" role="alert">
+                    {completeError}
+                  </div>
+                )}
+              </>
             )}
             <div className="btn-row">
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={handleComplete}
-                disabled={completing}
+                disabled={completing || dirty}
               >
                 {completing ? "處理中…" : "確認完成"}
               </button>

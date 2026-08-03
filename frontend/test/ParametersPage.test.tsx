@@ -11,7 +11,7 @@
  * 沿用 AdminUsersPage.test.tsx 風格（MemoryRouter + AuthProvider + mock fetch）。
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,7 +96,8 @@ function renderPage() {
 // Sample DTOs
 const fuelVersion = {
   id: "fuel-v1",
-  unitPrice: "3.5000",
+  fuelType: "GASOLINE_92",
+  pricePerLiter: "30.5000",
   effectiveFrom: "2026-01-01",
   createdAt: "2026-01-01T00:00:00.000Z",
 };
@@ -199,7 +200,7 @@ describe("ParametersPage — Empty 態（各類無版本）", () => {
     vi.restoreAllMocks();
   });
 
-  it("Fuel Empty：無版本時顯示空狀態與建立入口", async () => {
+  it("Fuel Empty：四油種皆無版本時各自顯示空狀態", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", []);
     mockGetVersions("etc", [etcVersion]);
@@ -208,7 +209,7 @@ describe("ParametersPage — Empty 態（各類無版本）", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByText(/尚無任何油資版本/)).toBeInTheDocument();
+      expect(screen.getAllByText(/尚未建立此油種的油價版本/).length).toBe(4);
     });
   });
 
@@ -266,7 +267,7 @@ describe("ParametersPage — Error 態", () => {
     });
   });
 
-  it("Fuel: 值域錯（unitPrice < 0）→ fields 標示 unitPrice 欄位", async () => {
+  it("Fuel: 值域錯（pricePerLiter < 0）→ fields 標示 pricePerLiter 欄位", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", []);
     mockGetVersions("etc", []);
@@ -275,12 +276,12 @@ describe("ParametersPage — Error 態", () => {
     renderPage();
 
     await waitFor(() => {
-      // 頁面就緒，找到油資表單
-      expect(screen.getByLabelText(/油資單價/)).toBeInTheDocument();
+      // 頁面就緒，找到油價表單
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
     });
 
     // Fill form with invalid price
-    fireEvent.change(screen.getByLabelText(/油資單價/), { target: { value: "-1" } });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "-1" } });
 
     const [firstDateInput] = screen.getAllByLabelText(/生效日期/);
     if (firstDateInput) fireEvent.change(firstDateInput, { target: { value: "2026-02-01" } });
@@ -292,7 +293,7 @@ describe("ParametersPage — Error 態", () => {
           error: {
             code: "VALIDATION_ERROR",
             message: "輸入資料有誤，請檢查標示欄位。",
-            fields: [{ field: "unitPrice", reason: "單價不得小於 0" }],
+            fields: [{ field: "pricePerLiter", reason: "單價不得小於 0" }],
           },
         }),
         { status: 400, headers: { "Content-Type": "application/json" } }
@@ -316,10 +317,10 @@ describe("ParametersPage — Error 態", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/油資單價/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByLabelText(/油資單價/), { target: { value: "3.5" } });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "30.5" } });
 
     const [firstDateInput] = screen.getAllByLabelText(/生效日期/);
     if (firstDateInput) fireEvent.change(firstDateInput, { target: { value: "2026-01-01" } });
@@ -449,10 +450,10 @@ describe("ParametersPage — Success 態", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/油資單價/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByLabelText(/油資單價/), { target: { value: "3.5" } });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "30.5" } });
 
     const [firstDateInput] = screen.getAllByLabelText(/生效日期/);
     if (firstDateInput) fireEvent.change(firstDateInput, { target: { value: "2026-02-01" } });
@@ -601,17 +602,20 @@ describe("ParametersPage — 防重複提交", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/油資單價/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
     });
 
-    fireEvent.change(screen.getByLabelText(/油資單價/), { target: { value: "3.5" } });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "30.5" } });
 
     const [firstDateInput] = screen.getAllByLabelText(/生效日期/);
     if (firstDateInput) fireEvent.change(firstDateInput, { target: { value: "2026-02-01" } });
 
-    // Mock slow POST (never resolves for fuel endpoint)
+    // Mock slow POST (never resolves for the fuel-price endpoint).
+    // PHASE-005a-T9 附帶必辦：改用精確比對 "/api/parameters/fuel-price"，
+    // 不得再用寬鬆的 "/api/parameters/fuel"（後者亦會命中已凍結的舊制端點，
+    // 兩端點之 mock 因而無法區辨）。
     (fetch as Mock).mockImplementation((url: string) => {
-      if (typeof url === "string" && url.includes("/api/parameters/fuel")) {
+      if (typeof url === "string" && url.includes("/api/parameters/fuel-price")) {
         return new Promise(() => {}); // never resolves
       }
       return Promise.resolve(
@@ -677,7 +681,7 @@ describe("ParametersPage — 版本列表渲染", () => {
     vi.restoreAllMocks();
   });
 
-  it("Fuel: 列表顯示版本 unitPrice 與 effectiveFrom", async () => {
+  it("Fuel: 列表顯示版本 pricePerLiter 與 effectiveFrom（於對應油種分組下）", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", [fuelVersion]);
     mockGetVersions("etc", []);
@@ -686,9 +690,13 @@ describe("ParametersPage — 版本列表渲染", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByText(/3\.5000/)).toBeInTheDocument();
+      expect(screen.getByText(/30\.5000/)).toBeInTheDocument();
       expect(screen.getAllByText(/2026-01-01/).length).toBeGreaterThanOrEqual(1);
     });
+
+    // fuelVersion 為 GASOLINE_92 → 應出現在該油種的表格內
+    const table = screen.getByLabelText("92 無鉛汽油 油價版本清單");
+    expect(table).toBeInTheDocument();
   });
 
   it("ETC: 列表顯示版本 unitPrice 與 effectiveFrom", async () => {
@@ -824,7 +832,7 @@ describe("ParametersPage — 折舊表包在 .table-scroll wrapper 內", () => {
     expect(table.parentElement).toHaveClass("table-scroll");
   });
 
-  it("油資表格不需要 .table-scroll wrapper（僅 3 欄）", async () => {
+  it("油資（油價）表格不需要 .table-scroll wrapper（僅 3 欄）", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", [fuelVersion]);
     mockGetVersions("etc", []);
@@ -833,10 +841,10 @@ describe("ParametersPage — 折舊表包在 .table-scroll wrapper 內", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByLabelText("油資參數版本清單")).toBeInTheDocument();
+      expect(screen.getByLabelText("92 無鉛汽油 油價版本清單")).toBeInTheDocument();
     });
 
-    const table = screen.getByLabelText("油資參數版本清單");
+    const table = screen.getByLabelText("92 無鉛汽油 油價版本清單");
     expect(table.parentElement).not.toHaveClass("table-scroll");
   });
 });
@@ -853,7 +861,7 @@ describe("ParametersPage — 數值欄具備靠右對齊 class", () => {
     vi.restoreAllMocks();
   });
 
-  it("Fuel: 每公里單價欄（th 與 td）具備 num-col class", async () => {
+  it("Fuel: 每公升油價欄（th 與 td）具備 num-col class", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", [fuelVersion]);
     mockGetVersions("etc", []);
@@ -862,12 +870,12 @@ describe("ParametersPage — 數值欄具備靠右對齊 class", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByText(/3\.5000/)).toBeInTheDocument();
+      expect(screen.getByText(/30\.5000/)).toBeInTheDocument();
     });
 
-    const th = screen.getByRole("columnheader", { name: "每公里單價（元）" });
+    const th = screen.getByRole("columnheader", { name: "每公升油價（元／公升）" });
     expect(th).toHaveClass("num-col");
-    const td = screen.getByText("3.5000");
+    const td = screen.getByText("30.5000");
     expect(td).toHaveClass("num-col");
   });
 
@@ -917,5 +925,285 @@ describe("ParametersPage — 數值欄具備靠右對齊 class", () => {
     expect(screen.getByText("15000")).toHaveClass("num-col");
     expect(screen.getByText("100000.00")).toHaveClass("num-col");
     expect(screen.getByText("6.6667")).toHaveClass("num-col");
+  });
+});
+
+// ============================================================
+// PHASE-005a-T9（AC-29）— 油價維護：油種選擇、每公升油價、依油種分組列表、五態
+// ============================================================
+
+describe("油價維護（PHASE-005a）", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("表單含油種選擇與「每公升油價（元／公升）」欄位", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/油種/)).toBeInTheDocument();
+    });
+
+    // 四項 zh-TW 標籤逐字（AC-29）
+    const select = screen.getByLabelText(/油種/) as HTMLSelectElement;
+    const optionLabels = Array.from(select.options).map((o) => o.textContent);
+    expect(optionLabels).toEqual(["92 無鉛汽油", "95 無鉛汽油", "98 無鉛汽油", "柴油"]);
+
+    // 每公升油價欄位標籤明示單位「元／公升」
+    expect(screen.getByLabelText(/每公升油價（元／公升）/)).toBeInTheDocument();
+  });
+
+  it("版本列表依油種分組呈現，四油種各自時間軸可辨識", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", [
+      {
+        id: "f-92-a",
+        fuelType: "GASOLINE_92",
+        pricePerLiter: "30.1000",
+        effectiveFrom: "2026-01-01",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "f-92-b",
+        fuelType: "GASOLINE_92",
+        pricePerLiter: "31.2000",
+        effectiveFrom: "2026-03-01",
+        createdAt: "2026-03-01T00:00:00.000Z",
+      },
+      {
+        id: "f-95-a",
+        fuelType: "GASOLINE_95",
+        pricePerLiter: "32.5000",
+        effectiveFrom: "2026-02-01",
+        createdAt: "2026-02-01T00:00:00.000Z",
+      },
+      {
+        id: "f-diesel-a",
+        fuelType: "DIESEL",
+        pricePerLiter: "28.0000",
+        effectiveFrom: "2026-01-15",
+        createdAt: "2026-01-15T00:00:00.000Z",
+      },
+    ]);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("92 無鉛汽油 油價版本清單")).toBeInTheDocument();
+    });
+
+    // 92 無鉛汽油：兩筆版本同組時間軸皆可見
+    const table92 = screen.getByLabelText("92 無鉛汽油 油價版本清單");
+    expect(within(table92).getByText("30.1000")).toBeInTheDocument();
+    expect(within(table92).getByText("31.2000")).toBeInTheDocument();
+    expect(within(table92).queryByText("32.5000")).not.toBeInTheDocument();
+
+    // 95 無鉛汽油：僅一筆，且與 92 分組互不干涉
+    const table95 = screen.getByLabelText("95 無鉛汽油 油價版本清單");
+    expect(within(table95).getByText("32.5000")).toBeInTheDocument();
+    expect(within(table95).queryByText("30.1000")).not.toBeInTheDocument();
+
+    // 98 無鉛汽油：尚無版本 → 空狀態（getByRole 排除下拉選單中的同名 option）
+    expect(
+      screen.getByRole("heading", { level: 4, name: "98 無鉛汽油" }).nextElementSibling
+    ).toHaveTextContent("尚未建立此油種的油價版本");
+
+    // 柴油：一筆，且與其他油種互不干涉
+    const tableDiesel = screen.getByLabelText("柴油 油價版本清單");
+    expect(within(tableDiesel).getByText("28.0000")).toBeInTheDocument();
+    expect(within(tableDiesel).queryByText("30.1000")).not.toBeInTheDocument();
+  });
+
+  it("五態：Loading／Empty／400 就地標示／409 衝突／Success", async () => {
+    // ---- Loading ----
+    (fetch as Mock).mockImplementation(() => new Promise(() => {}));
+    const loadingRender = renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/載入中/)).toBeInTheDocument();
+    });
+    loadingRender.unmount();
+    (fetch as Mock).mockReset();
+
+    // ---- Empty ----
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+    const emptyRender = renderPage();
+    await waitFor(() => {
+      expect(screen.getAllByText(/尚未建立此油種的油價版本/).length).toBe(4);
+    });
+    emptyRender.unmount();
+    (fetch as Mock).mockReset();
+
+    // ---- 400 就地標示 ----
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+    const errorRender = renderPage();
+    await waitFor(() => {
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "-5" } });
+    {
+      const [dateInput] = screen.getAllByLabelText(/生效日期/);
+      if (dateInput) fireEvent.change(dateInput, { target: { value: "2026-05-01" } });
+    }
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "輸入資料有誤，請檢查標示欄位。",
+            fields: [{ field: "pricePerLiter", reason: "單價不得小於 0" }],
+          },
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    {
+      const [submitBtn] = screen.getAllByRole("button", { name: /^建立$/ });
+      if (submitBtn) fireEvent.click(submitBtn);
+    }
+    await waitFor(() => {
+      expect(screen.getByText(/單價不得小於 0/)).toBeInTheDocument();
+    });
+    errorRender.unmount();
+    (fetch as Mock).mockReset();
+
+    // ---- 409 衝突 ----
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+    const conflictRender = renderPage();
+    await waitFor(() => {
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "30" } });
+    {
+      const [dateInput] = screen.getAllByLabelText(/生效日期/);
+      if (dateInput) fireEvent.change(dateInput, { target: { value: "2026-01-01" } });
+    }
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "PARAMETER_PERIOD_OVERLAP",
+            message: "新版本的生效期間與現有版本重疊，請調整生效日期。",
+            details: { conflictVersion: { id: "fuel-v1", effectiveFrom: "2026-01-01" } },
+          },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    {
+      const [submitBtn] = screen.getAllByRole("button", { name: /^建立$/ });
+      if (submitBtn) fireEvent.click(submitBtn);
+    }
+    await waitFor(() => {
+      expect(screen.getByText(/重疊|衝突|2026-01-01/)).toBeInTheDocument();
+    });
+    conflictRender.unmount();
+    (fetch as Mock).mockReset();
+
+    // ---- Success ----
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+    const successRender = renderPage();
+    await waitFor(() => {
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "30.5" } });
+    {
+      const [dateInput] = screen.getAllByLabelText(/生效日期/);
+      if (dateInput) fireEvent.change(dateInput, { target: { value: "2026-02-01" } });
+    }
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          version: { ...fuelVersion, id: "fuel-v3", effectiveFrom: "2026-02-01" },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    mockGetVersions("fuel", [{ ...fuelVersion, id: "fuel-v3", effectiveFrom: "2026-02-01" }]);
+    {
+      const [submitBtn] = screen.getAllByRole("button", { name: /^建立$/ });
+      if (submitBtn) fireEvent.click(submitBtn);
+    }
+    await waitFor(() => {
+      expect(screen.getByText(/建立成功|已建立/)).toBeInTheDocument();
+    });
+    successRender.unmount();
+  });
+
+  it("Permission denied：非管理員不呼叫寫入 API（POST /parameters/fuel-price 從未被呼叫）", async () => {
+    mockMeAs(regularUser);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/存取被拒/)).toBeInTheDocument();
+    });
+
+    // 僅 /api/me 一次呼叫；頁面級權限守門阻擋所有區塊渲染與 API 呼叫
+    expect((fetch as Mock).mock.calls.length).toBe(1);
+    const calledUrls = (fetch as Mock).mock.calls.map((c) => c[0]);
+    expect(
+      calledUrls.some((u) => typeof u === "string" && u.includes("/api/parameters/fuel"))
+    ).toBe(false);
+  });
+
+  it("鑑別力：建立呼叫精確命中 /api/parameters/fuel-price，而非已凍結之舊制 /api/parameters/fuel", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/每公升油價/)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/每公升油價/), { target: { value: "30.5" } });
+    const [dateInput] = screen.getAllByLabelText(/生效日期/);
+    if (dateInput) fireEvent.change(dateInput, { target: { value: "2026-02-01" } });
+
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          version: { ...fuelVersion, id: "fuel-v9", effectiveFrom: "2026-02-01" },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      )
+    );
+    mockGetVersions("fuel", [{ ...fuelVersion, id: "fuel-v9", effectiveFrom: "2026-02-01" }]);
+
+    const [submitBtn] = screen.getAllByRole("button", { name: /^建立$/ });
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/建立成功|已建立/)).toBeInTheDocument();
+    });
+
+    const calledUrls = (fetch as Mock).mock.calls.map((c) => c[0]);
+    // 精確比對：必須命中新端點，且從未命中舊端點的精確路徑
+    expect(calledUrls).toContain("/api/parameters/fuel-price");
+    expect(calledUrls).not.toContain("/api/parameters/fuel");
   });
 });

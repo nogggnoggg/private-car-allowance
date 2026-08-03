@@ -2,6 +2,7 @@
 
 - Governance-Version: 2026-08-01.2
 - 狀態：**COMPLETED**（High 風險 Spec；D1~D10 事前批准並實作，Review APPROVE、20/20 AC、Mock UI+整合驗收通過；PR #4 經人類批准合併至 main @ 94a87a8，2026-08-02。見 §13 修訂紀錄）
+- **部分取代註記（2026-08-03，大總管依 US Gate 批准記錄）**：本 Spec 之「油資參數（每公里單價）」模型已由 **PHASE-005a（油資模型修正）** 取代——改為「按油種維護之每公升油價 ＋ 按使用者維護之車輛油耗，推導取整每公里單價」（人類 US Gate 批准 2026-08-03；見 `docs/specs/PHASE-005a-US-PROPOSAL.md`）。油資參數之權威規格以 PHASE-005a Spec 為準；本 Spec 之 ETC、折舊參數與 §14 錯誤合約**不受影響、維持有效**。本 Spec 整體維持 `COMPLETED`（非全文 SUPERSEDED）。
 - Task ID（產出本 Spec）：SPEC-003a
 - 更新日期：2026-08-01
 - Phase ID：PHASE-003a

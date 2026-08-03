@@ -48,7 +48,7 @@
  *   - cleanup scoped to this suite's own tracked ids; never deleteMany({}).
  *   - synthetic data only.
  */
-import { Prisma, PrismaClient } from "@prisma/client";
+import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assertApplicationMutable } from "../../src/applications/application-state-machine.js";
@@ -129,6 +129,7 @@ describeWithDb("PHASE-004-R4 — 已完成申請與附件的併發凍結（M-2/S
   const createdAttachmentIds: string[] = [];
   const createdFuelVersionIds: string[] = [];
   const createdEtcVersionIds: string[] = [];
+  const createdConsumptionIds: string[] = [];
 
   function track(id: string): string {
     createdApplicationIds.push(id);
@@ -154,11 +155,26 @@ describeWithDb("PHASE-004-R4 — 已完成申請與附件的併發凍結（M-2/S
     return att;
   }
 
+  // PHASE-005a-T7: 新模型下油資單價依「擁有人（ownerId）油耗版本 → 該油種
+  // 油價版本」雙鏈推導（不再直讀 `FuelParameterVersion`）。本檔完全不斷言
+  // 實際單價/金額數值（只測狀態機/併發不變式），故 kmPerLiter="1.0000" 之
+  // 測試等價技巧在此同樣安全。
   async function createParamVersionsOnce() {
     if (createdFuelVersionIds.length > 0) return; // idempotent — one set for the whole file
-    const fuel = await prisma.fuelParameterVersion.create({
+    const consumption = await prisma.userFuelConsumptionVersion.create({
       data: {
-        unitPrice: new Prisma.Decimal("3.5"),
+        userId: ownerId,
+        fuelType: FuelType.GASOLINE_95,
+        kmPerLiter: new Prisma.Decimal("1.0000"),
+        effectiveFrom: new Date("2033-01-01"),
+        basisNote: "p4r4 測試 fixture：kmPerLiter=1",
+        createdById: ownerId,
+      },
+    });
+    const fuel = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: FuelType.GASOLINE_95,
+        pricePerLiter: new Prisma.Decimal("3.5"),
         effectiveFrom: new Date("2033-01-01"),
         createdById: ownerId,
       },
@@ -172,6 +188,7 @@ describeWithDb("PHASE-004-R4 — 已完成申請與附件的併發凍結（M-2/S
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
+    createdConsumptionIds.push(consumption.id);
   }
 
   async function createDraft(): Promise<string> {
@@ -271,8 +288,13 @@ describeWithDb("PHASE-004-R4 — 已完成申請與附件的併發凍結（M-2/S
         await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       }
       await prisma.attachment.deleteMany({ where: { ownerId } });
+      if (createdConsumptionIds.length > 0) {
+        await prisma.userFuelConsumptionVersion.deleteMany({
+          where: { id: { in: createdConsumptionIds } },
+        });
+      }
       if (createdFuelVersionIds.length > 0) {
-        await prisma.fuelParameterVersion.deleteMany({
+        await prisma.fuelPriceVersion.deleteMany({
           where: { id: { in: createdFuelVersionIds } },
         });
       }

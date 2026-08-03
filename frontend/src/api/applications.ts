@@ -65,12 +65,26 @@ export interface TravelComputedSegmentDto {
 }
 
 /**
+ * PHASE-005a-T7 複審 SF-4 必辦：wire 值域自 `"FUEL"|"ETC"` 改為下列六碼
+ * （§16 D5(a)、§18 T8R 權威清單）。前三者為「查無版本」缺參數；後三者為
+ * 版本齊備但無法計算（AC-20 單價超容量／T7R SF-1 資料毀損／AR-2 金額超容量）。
+ * 與 backend `travel-parameters.ts`（`MissingParameter`）/`travel-service.ts`
+ * （`PreviewMissingCode`）同形，本檔為前端獨立副本（無共用 package）。
+ */
+export type MissingParameterCode = "FUEL_PRICE" | "FUEL_CONSUMPTION" | "ETC";
+export type PreviewMissingCode =
+  | MissingParameterCode
+  | "FUEL_UNIT_PRICE_OUT_OF_RANGE"
+  | "FUEL_DATA_CORRUPTED"
+  | "AMOUNT_OUT_OF_RANGE";
+
+/**
  * D6(c): draft/preview `computed` deliberately has NO unit-price fields —
  * only the已完成 snapshot (`TravelSnapshotDto` below) carries them.
  */
 export interface TravelComputedDto {
   parameterAvailable: boolean;
-  missingParameters: ("FUEL" | "ETC")[];
+  missingParameters: PreviewMissingCode[];
   totalKm: string;
   segments: TravelComputedSegmentDto[];
   totalRawAmount: string;
@@ -81,8 +95,16 @@ export interface TravelComputedDto {
 export interface TravelSnapshotDto {
   fuelUnitPrice: string;
   etcUnitPrice: string;
-  fuelParameterVersionId: string;
+  /**
+   * PHASE-005a-T7 複審 SF-4：舊模型（`FuelParameterVersion`）引用；新模型
+   * 完成之申請恆為 `null`（§8.4 判別欄位）。既有舊模型已完成申請仍回傳原值。
+   */
+  fuelParameterVersionId: string | null;
   etcParameterVersionId: string;
+  /** 新模型（`FuelPriceVersion`）引用；舊模型申請為 `null`。 */
+  fuelPriceVersionId: string | null;
+  /** 新模型（`UserFuelConsumptionVersion`）引用；舊模型申請為 `null`。 */
+  fuelConsumptionVersionId: string | null;
   totalKm: string;
   totalRawAmount: string;
   totalAmount: number;

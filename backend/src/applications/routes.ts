@@ -481,14 +481,16 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
   );
 
   // -------------------------------------------------------------------------
-  // POST /applications/travel/preview (PHASE-004-T7)
+  // POST /applications/travel/preview (PHASE-004-T7；PHASE-005a-T7 改造)
   // AC-31~36, AC-45~47（部分：呈現 parameterAvailable/missingParameters，
-  // 不擋任何請求 — 完成端點才擋，見 travel-parameters.ts assertParametersAvailable
-  // 供 T8 使用）, D6/D8, §9「金額預覽（stateless）」。
+  // 不擋任何請求 — 完成端點才擋，見 travel-parameters.ts assertParametersAvailable）,
+  // D6/D8, §9「金額預覽」。
   //
-  // Stateless：無資料擁有權判定（§6.1 授權矩陣「無資料擁有權（stateless）；
-  // 不回傳他人資料」）——不查詢/寫入任何 Application/TripSegment/Attachment
-  // 資料列（AC-36），只讀參數版本表（resolveTravelParameters 的 findMany）。
+  // PHASE-005a §16 D6(a)（已批）：本端點自此**具有資料擁有權語意**——新模型下
+  // 油資單價依擁有人而異，body 可選 `ownerId`（未帶→自己；一般使用者帶他人→
+  // 403 fail-closed；管理員帶他人→用該人資料），沿用既有 `resolveOwnerId`。
+  // 仍不查詢/寫入任何 Application/TripSegment/Attachment 資料列（AC-36）——
+  // 只讀油耗／油價／ETC 參數版本表（resolveTravelParameters 的 findMany）。
   // -------------------------------------------------------------------------
 
   fastify.post(
@@ -496,6 +498,13 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
     { preHandler: authPreHandlers },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = (request.body ?? {}) as Record<string, unknown>;
+
+      // PHASE-005a-T7（§16 D6(a) 已批）：可選 ownerId，走既有 resolveOwnerId——
+      // 未帶 → 自己；一般使用者帶他人 → 403（fail-closed，不靜默降級）；管理員
+      // 帶他人 → 用該人資料。授權先於格式驗證（同 AC-74/84 既定順序）。
+      const rawOwnerId = typeof body.ownerId === "string" ? body.ownerId : undefined;
+      const ownerId = resolveOwnerId(request.currentUser, rawOwnerId);
+
       const fieldErrors: FieldError[] = [];
 
       let tripDate: Date | null = null;
@@ -514,8 +523,9 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
       }
 
-      // 唯一的 DB 存取：讀取（AC-36 唯讀鑑別力）。
-      const resolved = await resolveTravelParameters(prisma, tripDate);
+      // 唯一的資料寫入面：無（AC-36 唯讀鑑別力）。PHASE-005a-T7 起，油耗查詢
+      // 已具資料擁有權語意（D6(a)），但仍不寫入/查詢任何 Application 列。
+      const resolved = await resolveTravelParameters(prisma, tripDate, ownerId);
 
       const preview = formatTravelComputed(
         resolved,

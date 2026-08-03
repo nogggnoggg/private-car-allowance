@@ -47,6 +47,22 @@ const COMPLETE_GAP_PARAM_EFFECTIVE_FROM = "2021-01-01";
 const COMPLETE_GAP_FUEL_UNIT_PRICE = 5.5;
 const COMPLETE_GAP_ETC_UNIT_PRICE = 1.2;
 
+// ---------------------------------------------------------------------------
+// PHASE-005a-T13R：新油資模型播種（AC-37(e)，同 travel-application.spec.ts
+// 之理由——後端 T7 起完成流程之油資解析改為「擁有人油耗版本→對應油種油價
+// 版本」雙鏈解析，見 backend/src/applications/travel-parameters.ts）。本檔
+// 情境4（管理員代建立→使用者本人完成）之目標使用者需有油耗版本，otherwise
+// 「油資無法計算」擋下完成。本檔完成後之斷言僅驗證唯讀文案／無編輯入口，
+// 不涉及具體金額數字，播種數值無需與任何舊制單價換算等值。刻意選用與
+// travel-application.spec.ts 不同的油種（GASOLINE_98），避免兩檔各自「先查
+// 後建」在理論上對同一油種＋同一天產生非預期互相影響（各自獨立即可）。
+// ---------------------------------------------------------------------------
+const NEW_MODEL_EFFECTIVE_FROM = COMPLETE_GAP_PARAM_EFFECTIVE_FROM;
+const NEW_MODEL_FUEL_TYPE = "GASOLINE_98";
+const NEW_MODEL_KM_PER_LITER = "10.0000";
+const NEW_MODEL_PRICE_PER_LITER = "55.0000";
+const NEW_MODEL_BASIS_NOTE = "PHASE-005a-T13R E2E 合成資料（新油資模型播種）";
+
 let targetUserId = "";
 let targetDisplayName = "";
 const createdApplicationIds: string[] = [];
@@ -91,6 +107,61 @@ async function ensureCompleteGapParametersCovered(page: Page): Promise<void> {
       },
     });
     if (!res.ok()) throw new Error(`E2E 設定 ETC 參數失敗: ${res.status()} ${await res.text()}`);
+  }
+}
+
+/**
+ * PHASE-005a-T13R：確保指定使用者於 `dateStr` 有新模型油資可解析——擁有人之
+ * 油耗版本，以及對應油種之油價版本，皆先查後建（idempotent，同
+ * `ensureCompleteGapParametersCovered` 之理由）。呼叫端須先以管理員身分登入
+ * （兩個端點皆為 admin-only）。
+ */
+async function ensureFuelModelCoversDate(
+  page: Page,
+  userId: string,
+  dateStr: string
+): Promise<void> {
+  const consRes = await page.request.get(`${API_BASE}/users/${userId}/fuel-consumption`);
+  if (!consRes.ok()) {
+    throw new Error(`E2E 讀取油耗版本失敗: ${consRes.status()} ${await consRes.text()}`);
+  }
+  const { versions: consVersions } = (await consRes.json()) as {
+    versions: { effectiveFrom: string }[];
+  };
+  if (!consVersions.some((v) => v.effectiveFrom <= dateStr)) {
+    const res = await page.request.post(`${API_BASE}/users/${userId}/fuel-consumption`, {
+      data: {
+        fuelType: NEW_MODEL_FUEL_TYPE,
+        kmPerLiter: NEW_MODEL_KM_PER_LITER,
+        effectiveFrom: NEW_MODEL_EFFECTIVE_FROM,
+        basisNote: NEW_MODEL_BASIS_NOTE,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(`E2E 設定油耗版本失敗: ${res.status()} ${await res.text()}`);
+    }
+  }
+
+  const priceRes = await page.request.get(
+    `${API_BASE}/parameters/fuel-price?fuelType=${NEW_MODEL_FUEL_TYPE}`
+  );
+  if (!priceRes.ok()) {
+    throw new Error(`E2E 讀取油價版本失敗: ${priceRes.status()} ${await priceRes.text()}`);
+  }
+  const { versions: priceVersions } = (await priceRes.json()) as {
+    versions: { effectiveFrom: string }[];
+  };
+  if (!priceVersions.some((v) => v.effectiveFrom <= dateStr)) {
+    const res = await page.request.post(`${API_BASE}/parameters/fuel-price`, {
+      data: {
+        fuelType: NEW_MODEL_FUEL_TYPE,
+        pricePerLiter: NEW_MODEL_PRICE_PER_LITER,
+        effectiveFrom: NEW_MODEL_EFFECTIVE_FROM,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(`E2E 設定油價版本失敗: ${res.status()} ${await res.text()}`);
+    }
   }
 }
 
@@ -220,6 +291,10 @@ test.describe("管理員：使用者申請紀錄 + 代操作 — PHASE-004-T14 G
     expect(createUserRes.ok()).toBe(true);
     const { user } = (await createUserRes.json()) as { user: { id: string } };
     const targetId = user.id;
+
+    // PHASE-005a-T13R：油耗以「擁有人」（此代操作情境之目標使用者，非管理員
+    // 本人）解析（AC-23）——完成流程需要此目標使用者的新模型油資資料。
+    await ensureFuelModelCoversDate(page, targetId, COMPLETE_GAP_TRIP_DATE);
 
     // 2. 管理員代建立草稿（AC-78）。
     const createDraftRes = await page.request.post(
