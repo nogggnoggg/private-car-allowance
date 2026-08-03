@@ -251,5 +251,25 @@ describe("INFRA-001-T1 db-isolation pure functions", () => {
     it("returns false for an empty actualRows array against a non-empty expected set (the fail-safe default for 'schema not provisioned')", () => {
       expect(schemaMigrationStateMatches(dirs, [])).toBe(false);
     });
+
+    it("returns false when the DB has every expected row PLUS one extra unknown row (superset, not just subset check)", () => {
+      // All expected rows line up exactly, but there is one additional row the
+      // directory doesn't know about. A comparison that only checks "every
+      // expected dir has a matching row" (subset direction) would wrongly
+      // return true here — this is the sole discriminating test for the
+      // length-gate `actualRows.length !== expectedDirs.length` in
+      // db-isolation.ts, since none of the length-equal cases above cover an
+      // actualRows that is strictly longer than expectedDirs.
+      const rows = [
+        ...rowsFromDirs(),
+        {
+          migration_name: "29999999999999_extra",
+          checksum: "any-checksum-value",
+          finished_at: new Date("2026-01-01T00:00:00Z"),
+          rolled_back_at: null,
+        },
+      ];
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(false);
+    });
   });
 });

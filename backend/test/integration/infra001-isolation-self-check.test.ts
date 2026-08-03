@@ -291,6 +291,16 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
         // 動過，理應被判定為吻合而沿用。
         await globalSetup();
 
+        // INFRA-001b-R1 (AR-1)：mid-run 呼叫真正的 globalSetup() 是編排層
+        // （globalSetup 本身遍歷 1..maxForks 並逐一判斷重建/沿用/孤兒移除）
+        // 的第一次覆蓋——若本次 run 期間任何其他正在使用中的 worker schema
+        // 被誤判為不吻合而重建、或被誤判為孤兒而移除，這裡必須紅燈，而不是
+        // 靜默地把別的測試檔正在用的資料整個毀掉。讀取方式比照本檔既有
+        // AC-09 斷言（readInfra001IsolationState()）。
+        const stateAfterReuseCall = readInfra001IsolationState();
+        expect(stateAfterReuseCall?.rebuiltSchemaCount).toBe(0);
+        expect(stateAfterReuseCall?.orphanSchemaRemovedCount).toBe(0);
+
         const namespaceOidAfter = await prisma.$queryRawUnsafe<Array<{ oid: string }>>(
           "SELECT oid::text AS oid FROM pg_catalog.pg_namespace WHERE nspname = current_schema()"
         );
