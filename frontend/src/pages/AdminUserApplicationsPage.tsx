@@ -33,6 +33,13 @@
  *     `ApplicationListSection.tsx` 該 prop 的文件註解）並改用
  *     `emptyMessage` 覆寫為 Spec §4 指定的「該使用者尚無申請紀錄」文案。
  *
+ * 統計區塊（PHASE-005-T8，AC-31/32）：已選使用者時，於清單上方嵌入
+ * `MileageSummarySection`，並顯式傳入 `ownerId={selectedUserId}`（`:userId`，
+ * 非管理員自己；T7 已於元件內把 `ownerId` 逐字帶入
+ * `apiGetMileageSummary` 的查詢字串，本頁不重複實作查詢邏輯）＋
+ * `title` 覆寫為「統計對象：<displayName>」，以與 HomePage 的「查詢自己」
+ * 語意區隔。未選使用者時不渲染（沒有 `:userId` 可查）。
+ *
  * 代操作入口（「代建立差旅草稿」按鈕）：
  *   - 未選使用者 → `disabled`（`aria-describedby` 指向提示文字，C4）。
  *   - 已選使用者 → 啟用；送出中防重複提交（`creating` guard）。
@@ -53,6 +60,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiCreateTravelDraftOnBehalf } from "../api/applications.js";
 import { apiGetUsers } from "../api/users.js";
 import ApplicationListSection from "../components/ApplicationListSection.js";
+import MileageSummarySection from "../components/MileageSummarySection.js";
 import { useAuth } from "../context/AuthContext.js";
 import type { ApiError, UserDto } from "../types/api.js";
 
@@ -223,11 +231,18 @@ export default function AdminUserApplicationsPage(): React.ReactElement {
         )}
 
         {selectedUserId ? (
-          <ApplicationListSection
-            ownerId={selectedUserId}
-            showCreateLink={false}
-            emptyMessage="該使用者尚無申請紀錄。"
-          />
+          <>
+            <MileageSummarySection
+              key={selectedUserId}
+              ownerId={selectedUserId}
+              title={`統計對象：${selectedUser ? selectedUser.displayName : ""}`}
+            />
+            <ApplicationListSection
+              ownerId={selectedUserId}
+              showCreateLink={false}
+              emptyMessage="該使用者尚無申請紀錄。"
+            />
+          </>
         ) : (
           <div className="empty-block">
             <p>請先於上方選擇使用者，以檢視其申請紀錄。</p>

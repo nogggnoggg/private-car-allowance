@@ -16,6 +16,7 @@ import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import type { ApplicationListResponse, TravelApplicationDto } from "../src/api/applications.js";
+import type { MileageSummaryResponse } from "../src/api/statistics.js";
 import { AuthProvider } from "../src/context/AuthContext.js";
 import AdminUserApplicationsPage from "../src/pages/AdminUserApplicationsPage.js";
 import type { UserDto } from "../src/types/api.js";
@@ -146,6 +147,15 @@ function mockErrorResponse(code: string, message: string, status: number) {
   (fetch as Mock).mockResolvedValueOnce(
     new Response(JSON.stringify({ error: { code, message } }), {
       status,
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+}
+
+function mockMileageSummary(res: MileageSummaryResponse) {
+  (fetch as Mock).mockResolvedValueOnce(
+    new Response(JSON.stringify(res), {
+      status: 200,
       headers: { "Content-Type": "application/json" },
     })
   );
@@ -335,7 +345,7 @@ describe("AdminUserApplicationsPage", () => {
     });
 
     expect(
-      screen.getByRole("heading", { name: new RegExp(userA.displayName) })
+      screen.getByRole("heading", { level: 1, name: new RegExp(userA.displayName) })
     ).toBeInTheDocument();
   });
 
@@ -361,6 +371,75 @@ describe("AdminUserApplicationsPage", () => {
     const calls = (fetch as Mock).mock.calls;
     const createCall = calls.find(([u]) => String(u).includes("/admin/users/"));
     expect(createCall?.[0]).toBe(`/api/admin/users/${userA.id}/applications/travel`);
+  });
+
+  // ---- 管理員統計區塊：ownerId 精確等於路由 :userId，顯示值非管理員自己的（AC-31） ----
+  it("admin statistics request carries ownerId equal to route :userId", async () => {
+    // --- Part 1：路由預選 userA ---
+    mockMeAsAdmin();
+    mockGetUsers([userA, userB]);
+    mockApplicationsList(emptyListResponse(userA.id));
+    const { unmount } = renderPage(`/admin/users/${userA.id}/applications`);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("起日 *")).toBeInTheDocument();
+    });
+
+    mockMileageSummary({
+      totalKm: "247.10",
+      applicationCount: 3,
+      appliedFilters: { dateFrom: "2026-03-01", dateTo: "2026-03-31", ownerId: userA.id },
+    });
+    fireEvent.change(screen.getByLabelText("起日 *"), { target: { value: "2026-03-01" } });
+    fireEvent.change(screen.getByLabelText("迄日 *"), { target: { value: "2026-03-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "查詢" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("公務總里程 247.10 公里")).toBeInTheDocument();
+    });
+
+    const callsA = (fetch as Mock).mock.calls;
+    const statsCallA = callsA.find(([u]) => String(u).includes("/statistics/mileage"));
+    expect(statsCallA?.[0]).toContain(`ownerId=${userA.id}`);
+    expect(statsCallA?.[0]).not.toContain(`ownerId=${adminUser.id}`);
+
+    unmount();
+
+    // --- Part 2：路由改選 userB，統計端點回傳與 Part 1 互異之值（247.10 vs
+    // 88.88）——鑑別「顯示值非管理員自己的」，也防止實作誤把 ownerId 寫死或
+    // 遺漏（若遺漏，後端會依 AC-25 預設為呼叫者=管理員自己，數值必然不符）。
+    mockMeAsAdmin();
+    mockGetUsers([userA, userB]);
+    mockApplicationsList(emptyListResponse(userB.id));
+    renderPage(`/admin/users/${userB.id}/applications`);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("起日 *")).toBeInTheDocument();
+    });
+
+    mockMileageSummary({
+      totalKm: "88.88",
+      applicationCount: 1,
+      appliedFilters: { dateFrom: "2026-03-01", dateTo: "2026-03-31", ownerId: userB.id },
+    });
+    fireEvent.change(screen.getByLabelText("起日 *"), { target: { value: "2026-03-01" } });
+    fireEvent.change(screen.getByLabelText("迄日 *"), { target: { value: "2026-03-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "查詢" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("公務總里程 88.88 公里")).toBeInTheDocument();
+    });
+
+    const callsB = (fetch as Mock).mock.calls;
+    // 用 findLast：兩個 render 共用同一支 spy，calls 累積了 Part 1（userA）的
+    // 呼叫紀錄——必須取「最後一筆」統計請求，才是 Part 2（userB）之查詢。
+    const statsCallB = [...callsB]
+      .reverse()
+      .find(([u]) => String(u).includes("/statistics/mileage"));
+    expect(statsCallB?.[0]).toContain(`ownerId=${userB.id}`);
+    expect(statsCallB?.[0]).not.toContain(`ownerId=${adminUser.id}`);
+    // 反向鑑別：不得殘留/誤顯示 Part 1（userA）之數值。
+    expect(screen.queryByText("公務總里程 247.10 公里")).not.toBeInTheDocument();
   });
 
   // ---- 代操作失敗（使用者已停用）→ 顯示後端錯誤 ----
