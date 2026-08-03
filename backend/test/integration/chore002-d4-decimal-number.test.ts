@@ -163,6 +163,34 @@ describeWithDb(
       expect(byNumber.unitPrice).toBe(byString.unitPrice);
     });
 
+    it("createFuelVersion：unitPrice 帶前後空白字串 ' 19.9 ' → 201 且存 19.9000（S-3 鑑別①：accept-any route 讓 Number() 能吃、Decimal() 字串建構不能吃的輸入必須仍走 priceNum）", async () => {
+      const result = await createFuelVersion(prisma, {
+        unitPrice: " 19.9 ",
+        effectiveFrom: "2098-01-03",
+        createdById: CREATED_BY,
+      });
+      expect(result.unitPrice).toBe("19.9000");
+    });
+
+    it("createFuelVersion：unitPrice boolean true → 201 且存 1.0000（S-3 鑑別②：既有 accept-any 寬鬆行為如實保留，本回合不改值語意）", async () => {
+      const result = await createFuelVersion(prisma, {
+        // @ts-expect-error — accept-any route, deliberately exercising a non-declared runtime input
+        unitPrice: true,
+        effectiveFrom: "2098-01-04",
+        createdById: CREATED_BY,
+      });
+      expect(result.unitPrice).toBe("1.0000");
+    });
+
+    it("createEtcVersion：unitPrice 帶前後空白字串 ' 5.5 ' → 201 且存 5.5000（S-3 鑑別①）", async () => {
+      const result = await createEtcVersion(prisma, {
+        unitPrice: " 5.5 ",
+        effectiveFrom: "2098-02-03",
+        createdById: CREATED_BY,
+      });
+      expect(result.unitPrice).toBe("5.5000");
+    });
+
     it("createDepreciationVersion：vehiclePrice number 600000 與 string '600000' 建構出相同的 DTO + derived", async () => {
       const byNumber = await createDepreciationVersion(prisma, {
         vehiclePrice: 600000,

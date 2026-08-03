@@ -130,6 +130,8 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
       // CHORE-002 修項②: wire-level 4xx 對照表 — 413/415 保留原始語意與 statusCode,
       // 其餘（畸形 JSON、Content-Length 不符等）維持既有 400 VALIDATION_ERROR 壓平。
       // （reviewer 實測：CHORE-001 舊版把 413/415 也壓成 400，語意流失。）
+      // CHORE-002-R2 (AR-4): 新增 4xx 錯誤來源（如 429 rate-limit plugin、405 method-not-allowed
+      // plugin）時，須同步在此對照表擴充對應分支，否則會被下方的 400 fallback 壓平語意。
       let wireStatus = 400;
       let wireCode: "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_MEDIA_TYPE" | "VALIDATION_ERROR" =
         "VALIDATION_ERROR";

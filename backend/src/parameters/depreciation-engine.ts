@@ -52,8 +52,9 @@ import { Prisma } from "@prisma/client";
  * 實作細節本身 —— 未來若更換十進位運算函式庫或升版、且新版建構子改為
  * 直接讀取 number 的二進位值，這裡的轉換仍會保護既有行為不變。
  *
- * 可重跑驗證（本版 decimal.js 對 number 與 String(number) 恆等）：
- *   node -e "const {Decimal}=require('decimal.js'); const v=0.1; console.log(new Decimal(v).toString()===new Decimal(String(v)).toString())"
+ * 可重跑驗證（直擊實際建構子 Prisma.Decimal，而非其底層 decimal.js，
+ * 確保驗證的是本專案實際使用的路徑）：
+ *   node -e "const {Prisma}=require('@prisma/client'); console.log(new Prisma.Decimal(0.1).toString()===new Prisma.Decimal('0.1').toString())"
  *   → true
  *
  * 同形雙拷貝說明（AR-1）：此 helper 與 parameter-service.ts 的

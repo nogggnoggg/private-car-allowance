@@ -148,8 +148,9 @@ export function toEtcDto(row: EtcRow): EtcParameterDto {
  * 實作細節本身 —— 未來若更換十進位運算函式庫或升版、且新版建構子改為
  * 直接讀取 number 的二進位值，這裡的轉換仍會保護既有行為不變。
  *
- * 可重跑驗證（本版 decimal.js 對 number 與 String(number) 恆等）：
- *   node -e "const {Decimal}=require('decimal.js'); const v=0.1; console.log(new Decimal(v).toString()===new Decimal(String(v)).toString())"
+ * 可重跑驗證（直擊實際建構子 Prisma.Decimal，而非其底層 decimal.js，
+ * 確保驗證的是本專案實際使用的路徑）：
+ *   node -e "const {Prisma}=require('@prisma/client'); console.log(new Prisma.Decimal(0.1).toString()===new Prisma.Decimal('0.1').toString())"
  *   → true
  */
 export function toDecimalConstructorArg(value: number | string): string {
@@ -206,15 +207,14 @@ export async function createFuelVersion(
     ]);
   }
 
-  // D4: build the Decimal constructor arg from a string, never a raw number (see helper doc)
-  let unitPriceArg: string;
-  try {
-    unitPriceArg = toDecimalConstructorArg(input.unitPrice);
-  } catch {
-    throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
-      { field: "unitPrice", reason: "數值超出合理範圍" },
-    ]);
-  }
+  // D4: build the Decimal constructor arg from priceNum (already validated non-NaN, ≥0
+  // above) — never from the raw accept-any input.unitPrice. CHORE-002-R2 (S-3): the route
+  // accepts any JSON value for unitPrice; passing input.unitPrice straight through let
+  // values Number() can coerce but Decimal()'s string constructor cannot parse (e.g.
+  // " 19.9 " with whitespace, or booleans) reach `new Prisma.Decimal(...)` inside the
+  // transaction and throw an uncaught DecimalError → 500, instead of the intended 400/201
+  // contract. `String(priceNum)` can never throw (priceNum is a validated finite number).
+  const unitPriceArg = toDecimalConstructorArg(priceNum);
 
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
@@ -325,15 +325,14 @@ export async function createEtcVersion(
     ]);
   }
 
-  // D4: build the Decimal constructor arg from a string, never a raw number (see helper doc)
-  let unitPriceArg: string;
-  try {
-    unitPriceArg = toDecimalConstructorArg(input.unitPrice);
-  } catch {
-    throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
-      { field: "unitPrice", reason: "數值超出合理範圍" },
-    ]);
-  }
+  // D4: build the Decimal constructor arg from priceNum (already validated non-NaN, ≥0
+  // above) — never from the raw accept-any input.unitPrice. CHORE-002-R2 (S-3): the route
+  // accepts any JSON value for unitPrice; passing input.unitPrice straight through let
+  // values Number() can coerce but Decimal()'s string constructor cannot parse (e.g.
+  // " 5.5 " with whitespace, or booleans) reach `new Prisma.Decimal(...)` inside the
+  // transaction and throw an uncaught DecimalError → 500, instead of the intended 400/201
+  // contract. `String(priceNum)` can never throw (priceNum is a validated finite number).
+  const unitPriceArg = toDecimalConstructorArg(priceNum);
 
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
