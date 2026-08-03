@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `ACTIVE`（Spec Gate 通過：人類 leonchih 2026-08-03 裁定 D1~D10 全數照建議批准，見 §18） |
+| **Spec 狀態** | `COMPLETED`（PR #11 經人類批准合併至 main `df36f75`，2026-08-03；34/34 AC PASS、終審 APPROVE、Mock/整合 Gate 通過） |
 | **Phase ID** | PHASE-005 |
 | **Task ID（本文件產出）** | SPEC-005 |
 | **Base Commit** | main @ `310bc39`；工作 branch `phase-005` |

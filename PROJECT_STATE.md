@@ -2,6 +2,10 @@
 
 State: ACTIVE
 
+> **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
+> - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
+> - Gate 環境（compose oilexpense stack + gateadmin/staff01 合成資料）保留供後續 Phase 驗收沿用；dev DB 另有 e2eadmin（T8）。
+
 > **PHASE-005（區間公務里程統計）開工記錄（2026-08-03，使用者指令「繼續」）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
 > - branch：`phase-005`（自 main @ `310bc39` 切出）。流程：spec-writer 產 Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate** → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
