@@ -63,7 +63,9 @@ State: ACTIVE
 > - **終審 AR 記錄**：AR-2 **合併注意（PR 說明必載）**——main 有分岔 commit `0ee810d`（PHASE-005 retrospective），合併須 merge 不得 squash-reset；AR-6 完成失敗對話框不分缺項（PHASE-004 既有）→ PHASE-008/011 候選；AR-5 日期斷言冗餘（非假測試）記錄；AR-7 快照顯示缺口＝已記 §18 待人類追認。
 > - **T13R2 輕量關閉確認：APPROVE（0 Must/0 Should/2 低風險 AR；usage ~58k）**。SF-1/2/3 全 closed：src 對 T11R 空 diff（逐字復原）、去重符號全庫零殘留、五碼護欄 mutant 獨立重現（移除 AMOUNT_OUT_OF_RANGE 恰 1 紅且舊測試仍綠——反證原覆蓋缺口為真）、AR-5/T11R 覆蓋完整在場。AR-Low-1：fuel-model.spec.ts:447-453 陳舊「去重」註解殘留（無執行面影響，併下次 e2e 觸碰 commit 修正，記 PR 說明）；AR-Low-2：AC-32 文案並列開放項（晨間裁定）。**PHASE-005a Review 全數清零（2026-08-04 凌晨）。**
 > - 基準線終值：後端 **1468/0/0**、前端 **176/0/0**、E2E **23/23**（大總管親跑）。37/37 AC GREEN。
-> - 下一步：Draft PR + CI → 晨間人類 Gate（Mock/整合驗收、D1(a) Gate 資料重建、快照顯示缺口追認、AC-32 文案取向裁定、合併批准）。
+> - **Draft PR #13 + CI 三 job 全綠（run 30845730929：Backend/Lint/Docker 皆 success）**。dev 拓撲服務已停。Phase Done 條件除人類 Gate 外全數滿足。
+> - **★ 停等晨間人類 Gate（2026-08-04 凌晨完成夜間自主推進）★** 四項待決：①Mock/整合驗收（Gate 環境油價＋油耗資料依 D1(a) 附款由人類重新輸入）②快照三來源值顯示缺口追認（併 PHASE-008 D10(a)，§18）③AC-32 文案取向三選項裁定（§18 T13R2 列）④PR #13 合併批准（**須 merge 不得 squash-reset**——main 分岔 `0ee810d`）。
+> - **本 session usage 追蹤（Phase 結案彙整義務累記）**：T9 ~167k/59、T10 ~191k/75、T11 ~221k/93、T12 ~143k/43、T9~T12 合併複審 ~208k/90、T11R ~91k/37、T13 ~214k/114、T13R ~258k/102、終審 ~166k/60、T13R2 ~99k/60（含 API 中斷續派）、T13R2 輕量複審 ~58k/37。型態補充：⑥E2E 類 Task（T13/T13R）因 playwright 迭代與環境探索居高；⑦API 中斷續派（T13R2）以 SendMessage 原 agent 續行成功，成本低於重派。Phase 結案（合併後）時彙整全 Phase 數據交 workflow 設計 agent。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
