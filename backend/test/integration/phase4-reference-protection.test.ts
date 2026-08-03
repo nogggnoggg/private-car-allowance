@@ -148,7 +148,8 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     fuelPrice: string,
     etcPrice: string,
     consumerId?: string
-  ): Promise<{ fuelVersionId: string; etcVersionId: string }> {
+  ): Promise<{ fuelVersionId: string; etcVersionId: string; consumptionVersionId: string | null }> {
+    let consumptionVersionId: string | null = null;
     if (consumerId) {
       const consumption = await prisma.userFuelConsumptionVersion.create({
         data: {
@@ -161,6 +162,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
         },
       });
       createdConsumptionIds.push(consumption.id);
+      consumptionVersionId = consumption.id;
     }
     const fuel = await prisma.fuelPriceVersion.create({
       data: {
@@ -179,7 +181,7 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
     });
     createdFuelVersionIds.push(fuel.id);
     createdEtcVersionIds.push(etc.id);
-    return { fuelVersionId: fuel.id, etcVersionId: etc.id };
+    return { fuelVersionId: fuel.id, etcVersionId: etc.id, consumptionVersionId };
   }
 
   async function createDraft(cookie: string) {
@@ -389,10 +391,10 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
   // ===========================================================================
 
   describe("AC-93 — 被已完成差旅引用之參數版本回報有引用", () => {
-    it("已完成差旅引用 v1 → parameterHasReferences('FUEL'/'ETC', v1.id) 皆回 true", async () => {
+    it("已完成差旅引用 v1 → parameterHasReferences('FUEL_PRICE'/'FUEL_CONSUMPTION'/'ETC', v1.id) 皆回 true", async () => {
       const owner = await createUser(`${LOGIN_PREFIX}ref_owner_${RUN_ID}`, "P4RP 引用擁有人");
       const ownerCookie = await loginUser(app, owner.loginName, PASSWORD);
-      const { fuelVersionId, etcVersionId } = await createParamVersions(
+      const { fuelVersionId, etcVersionId, consumptionVersionId } = await createParamVersions(
         "2046-01-01",
         "6.0000",
         "3.0000",
@@ -403,8 +405,19 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
         purpose: "P4RP AC-93 正向引用測試",
       });
 
-      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(true);
+      // PHASE-005a-T7 起，completeTravelApplication 寫入新模型雙鏈欄位
+      // （fuelPriceVersionId／fuelConsumptionVersionId），不再寫入舊模型
+      // 單一欄位 fuelParameterVersionId（D11(a)）。
+      await expect(parameterHasReferences(prisma, "FUEL_PRICE", fuelVersionId)).resolves.toBe(true);
+      expect(consumptionVersionId).not.toBeNull();
+      await expect(
+        parameterHasReferences(prisma, "FUEL_CONSUMPTION", consumptionVersionId as string)
+      ).resolves.toBe(true);
       await expect(parameterHasReferences(prisma, "ETC", etcVersionId)).resolves.toBe(true);
+
+      // 舊型別 "FUEL" 保留其舊列語意（查 fuelParameterVersionId）：新模型完成
+      // 之申請從未寫入該欄位，因此對新模型版本 id 正確回 false（不是「永遠 true」）。
+      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(false);
     });
 
     it("從未被任何完成申請引用的版本 → parameterHasReferences 回 false", async () => {
@@ -414,7 +427,9 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
         "4.0000"
       );
 
-      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(false);
+      await expect(parameterHasReferences(prisma, "FUEL_PRICE", fuelVersionId)).resolves.toBe(
+        false
+      );
       await expect(parameterHasReferences(prisma, "ETC", etcVersionId)).resolves.toBe(false);
     });
 
@@ -430,14 +445,16 @@ describeWithDb("PHASE-004-T15 — 引用保護閉環（AC-92/93）", () => {
         "5.0000"
       );
       // tripDate 落在 v1 生效區間內（2048-01-01 起生效，無下一版本 → 永遠生效），
-      // 但這是草稿：從未呼叫 /complete，因此 fuelParameterVersionId/etcParameterVersionId
-      // 從未被寫入（T8 completeTravelApplication 才會寫）。
+      // 但這是草稿：從未呼叫 /complete，因此 fuelPriceVersionId/fuelConsumptionVersionId/
+      // etcParameterVersionId 從未被寫入（completeTravelApplication 才會寫）。
       await buildDraftTravelApplication(ownerCookie, {
         tripDate: "2048-06-01",
         purpose: "P4RP AC-93 邊界測試：草稿不算引用",
       });
 
-      await expect(parameterHasReferences(prisma, "FUEL", fuelVersionId)).resolves.toBe(false);
+      await expect(parameterHasReferences(prisma, "FUEL_PRICE", fuelVersionId)).resolves.toBe(
+        false
+      );
       await expect(parameterHasReferences(prisma, "ETC", etcVersionId)).resolves.toBe(false);
     });
   });
