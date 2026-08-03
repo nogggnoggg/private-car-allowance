@@ -127,6 +127,43 @@ export function toEtcDto(row: EtcRow): EtcParameterDto {
 }
 
 // ---------------------------------------------------------------------------
+// D4 bright-line: number → Decimal-safe string conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a `number | string` amount into a string suitable for the
+ * `Prisma.Decimal` constructor, closing the last "number 變數建構" gap of the
+ * D4 bright-line (Spec D8: 一律非浮點).
+ *
+ * - string input: returned as-is — already a decimal literal, no float
+ *   mediation ever occurs for the string path.
+ * - number input: converted via `String(value)` rather than handed directly
+ *   to `new Prisma.Decimal(value)`. decimal.js reads a JS number by its exact
+ *   binary value, which can expand into a long, unintended decimal tail
+ *   (e.g. 0.1 → 0.1000000000000000055511151231257827021181583404541015625).
+ *   `String(value)` instead reproduces the same shortest round-trip digits
+ *   `Number()`-based range validation already looked at, so behaviour for
+ *   every value that survives the ≤15-significant-digit range this system
+ *   deals with is unchanged — this only removes the theoretical break.
+ *
+ * Guard: numbers whose magnitude forces JS's default exponential notation
+ * (>= 1e21, or non-zero with |value| < 1e-6) are rejected — `String()` would
+ * hand decimal.js a scientific-notation literal ("1e+21") instead of a plain
+ * decimal literal, and no domain quantity here (unit price / vehicle price)
+ * legitimately reaches such a magnitude. Existing ≥0 / >0 range validation do
+ * NOT already block this (they only check sign/NaN), so this guard is the
+ * only thing standing between such input and the constructor.
+ */
+export function toDecimalConstructorArg(value: number | string): string {
+  if (typeof value === "string") return value;
+  const str = String(value);
+  if (/e/i.test(str)) {
+    throw new Error(`數值超出合理範圍，無法轉換為十進位字面值: ${str}`);
+  }
+  return str;
+}
+
+// ---------------------------------------------------------------------------
 // T5 audit hook type
 // ---------------------------------------------------------------------------
 
@@ -175,6 +212,16 @@ export async function createFuelVersion(
     ]);
   }
 
+  // D4: build the Decimal constructor arg from a string, never a raw number (see helper doc)
+  let unitPriceArg: string;
+  try {
+    unitPriceArg = toDecimalConstructorArg(input.unitPrice);
+  } catch {
+    throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
+      { field: "unitPrice", reason: "數值超出合理範圍" },
+    ]);
+  }
+
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
   if (!effectiveFromDate) {
@@ -205,7 +252,7 @@ export async function createFuelVersion(
       // Create
       const version = await tx.fuelParameterVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal(priceNum),
+          unitPrice: new Prisma.Decimal(unitPriceArg),
           effectiveFrom: effectiveFromDate,
           createdById: input.createdById,
         },
@@ -284,6 +331,16 @@ export async function createEtcVersion(
     ]);
   }
 
+  // D4: build the Decimal constructor arg from a string, never a raw number (see helper doc)
+  let unitPriceArg: string;
+  try {
+    unitPriceArg = toDecimalConstructorArg(input.unitPrice);
+  } catch {
+    throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
+      { field: "unitPrice", reason: "數值超出合理範圍" },
+    ]);
+  }
+
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
   if (!effectiveFromDate) {
@@ -314,7 +371,7 @@ export async function createEtcVersion(
       // Create
       const version = await tx.etcParameterVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal(priceNum),
+          unitPrice: new Prisma.Decimal(unitPriceArg),
           effectiveFrom: effectiveFromDate,
           createdById: input.createdById,
         },
@@ -463,7 +520,9 @@ export async function createDepreciationVersion(
   // Validate vehiclePrice > 0 (AC-05)
   let vehiclePriceDecimal: Prisma.Decimal;
   try {
-    vehiclePriceDecimal = new Prisma.Decimal(input.vehiclePrice as string | number);
+    // D4: route through toDecimalConstructorArg — same string-only construction as
+    // unitPrice above, closing the last "number 變數建構" gap (see helper doc).
+    vehiclePriceDecimal = new Prisma.Decimal(toDecimalConstructorArg(input.vehiclePrice));
     if (vehiclePriceDecimal.lte(0)) {
       fieldErrors.push({ field: "vehiclePrice", reason: "必須大於 0" });
     }

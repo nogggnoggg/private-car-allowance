@@ -31,6 +31,35 @@
 import { Prisma } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
+// D4 bright-line: number → Decimal-safe constructor arg
+// ---------------------------------------------------------------------------
+
+/**
+ * Prepares the `new Prisma.Decimal(...)` constructor argument for
+ * `input.vehiclePrice`, closing the "number 變數建構" D4 gap (Spec D8:
+ * 一律非浮點) — mirrors `toDecimalConstructorArg` in parameter-service.ts.
+ *
+ * - `Prisma.Decimal` instance / string: passed through unchanged — no float
+ *   mediation occurs for either.
+ * - number: converted via `String(value)` rather than handed directly to the
+ *   constructor, which would otherwise read the number's exact binary value
+ *   and can expand it into a long, unintended decimal tail. Numbers whose
+ *   magnitude forces JS's exponential notation (>= 1e21, or non-zero with
+ *   |value| < 1e-6) are rejected (thrown), matching parameter-service.ts's
+ *   guard — deriveDepreciation's caller (createDepreciationVersion) already
+ *   treats any construction failure here as { ok: false } / a validation
+ *   error, so this simply folds into that existing path.
+ */
+function toDecimalConstructorArg(value: Prisma.Decimal | string | number): Prisma.Decimal | string {
+  if (typeof value !== "number") return value;
+  const str = String(value);
+  if (/e/i.test(str)) {
+    throw new Error(`數值超出合理範圍，無法轉換為十進位字面值: ${str}`);
+  }
+  return str;
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -69,7 +98,7 @@ export function deriveDepreciation(input: DepreciationInput): DepreciationResult
   // Convert vehiclePrice to Decimal
   let price: Prisma.Decimal;
   try {
-    price = new Prisma.Decimal(input.vehiclePrice as string | number);
+    price = new Prisma.Decimal(toDecimalConstructorArg(input.vehiclePrice));
   } catch {
     return { ok: false };
   }
