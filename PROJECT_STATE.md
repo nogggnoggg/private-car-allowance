@@ -2,6 +2,13 @@
 
 State: ACTIVE
 
+> **PHASE-006（保養費用分攤）開工記錄（2026-08-04，使用者指令「開工」）**
+> - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、格式化、單行修改）一律派 implementer。
+> - branch：`phase-006`（自 main @ `9fa0913` 切出）。流程：spec-writer 產 Phase Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate（含 T5/T6/T7 High 事前批准）** → implementer TDD → reviewer → Mock Gate → 整合 Gate → Draft PR + CI → 人類合併批准。
+> - Risk Level：**High**（PRD：完成鎖定/快照/附件權限；金額計算〔分攤＝費用×比例整筆一次四捨五入〕）。
+> - Packet 必引（開工前提清單）：①PHASE-005 結案列——D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單 B-12/15/17/19/24/25 ②005a T7 之雙鏈解析與統計引擎現況（期間公務里程複用 PHASE-005 引擎）③INFRA-001 vitest 併跑限制持續有效 ④基準線：後端 1468/前端 180/E2E 23。
+> - 派工模式沿用：subagent 一律背景派工；依序執行；Review 節奏（High 即審/期中/終審）照 §19。
+
 > **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
 > - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
 > - **PHASE-008 開工必引（005a 移交）**：D10(a) 報表條件呈現硬約束＋快照三來源值顯示與 `TravelSnapshotDto` 三欄接線（追認裁定）＋AC-32 文案並列整理（裁定 c）＋完成對話框不分缺項（終審 AR-6）＋頁面層 stale 紅字（T14 複審 AR-2）。
