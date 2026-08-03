@@ -13,7 +13,11 @@ State: ACTIVE
 > - **US-LAND：DONE**（`e7e2c34`，userstory.md +156/-21、PRD +27/-12）。大總管獨立驗收：US 總數 91（FE28/AD15/BE32/NFR16）、無重複編號、Q3「僅擋完成」零走樣（擋草稿語意掃描 0 命中）、「不受影響」條目零改動、PRD 14 項齊備（Phase 總數 13、覆蓋確認 91 條）。spec-writer 自我攔截一處越權（AD-US-14 列非批准範圍，已還原）。
 > - **PHASE-003a Spec 狀態處置（大總管裁定）**：整體維持 COMPLETED、於狀態欄加「部分取代註記」指向 PHASE-005a（僅油資參數模型被取代；ETC／折舊／§14 錯誤合約維持有效）。非全文 SUPERSEDED。
 > - 已知缺口（spec-writer 回報，交下一 Task）：PRD §5 尚無 PHASE-005a 段落本體——併入 Phase Spec Task 補齊。
-> - 下一步：SPEC-005a（spec-writer 產 docs/specs/PHASE-005a.md DRAFT，含 AC↔測試映射表、Q4/Q7 落 Spec 層細節、PRD §5 段落補齊）→ 人類 Spec Gate（High，事前批准）。
+> - **SPEC-005a：DONE**（`b9959d0`，1062 行：36 AC 全溯源、映射表 36 列、13 Task（T1~T8 High）規模上限全合規、D1~D11 決策點＋PRD §5 段落補齊）。大總管驗收：僅二檔變更、金額鑑別力設計實質（銀行家取整 kill case 45÷10、先取整 kill case 0.50/0.25）。spec-writer 關鍵發現：**D4 推導單價無上界 vs 快照欄位 Decimal(10,4) 容量**（US 層未預見之結構性風險）；`userHasHistory` 未納新表會致刪除守門後 FK 500（已入 T1）。
+> - **Spec Gate 通過（人類 leonchih，2026-08-03）：D1~D11 全數照建議批准**（要點：D1(a) 舊表凍結寫入不換算、D4(a) 409 守門、D5(a) FUEL→FUEL_PRICE 更名、D6(a) 預覽加 ownerId、D8(a) append-only；完整固化於 Spec §18）；兩項自主判斷追認；**T1~T8 High 事前批准已於本 Gate 取得**。Spec 轉 **ACTIVE**。
+> - **D10(a) 跨 Phase 追蹤（PHASE-008 硬約束）**：報表版型須條件呈現——新模型顯示油種／每公升油價／油耗／每公里單價四列，舊模型僅每公里單價一列＋「（舊制參數）」註記，判別依 `fuelPriceVersionId` 是否 null。PHASE-008 開工 Packet 必引本條。
+> - **D1(a) 附帶（整合 Gate 前置）**：Gate 環境既有油資參數（每公里 5.0000）不換算；油價與油耗合成資料由人類於整合 Gate 時重新輸入。
+> - 下一步：依 TDD 順序開工 T1（schema＋migration，High）→ T2（單價推導純函式）→ …；T1~T8 每 Task 完成即審（High 即審節奏）。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。

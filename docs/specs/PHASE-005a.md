@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `DRAFT`（待人類 Spec Gate；本 Phase Risk = High，須**事前批准**方可開工） |
+| **Spec 狀態** | `ACTIVE`（Spec Gate 通過：人類 leonchih 2026-08-03，D1~D11 全數照建議批准；T1~T8 High 之事前批准已於本 Gate 一併取得。見 §18 修訂紀錄） |
 | **Phase ID** | PHASE-005a |
 | **Task ID（本文件產出）** | PHASE-005a-SPEC |
 | **Base Commit** | `e7f2860`；工作 branch `phase-005a` |
@@ -1058,5 +1058,6 @@ BE-US-19 第 4 條：「Given 參數或油耗資料已有歷史申請引用／Wh
 | 日期 | 版本／狀態 | 內容 | 依據 |
 |---|---|---|---|
 | 2026-08-03 | `DRAFT` 初版 | 本文件建立；36 AC、13 Task、D1~D11 決策點、AC↔測試映射表 36 列（全 `PENDING`） | Task Context Packet PHASE-005a-SPEC；`userstory.md`（`e7e2c34`）；`docs/specs/PHASE-005a-US-PROPOSAL.md`（APPROVED）；`PROJECT_STATE.md` L5~L16 |
+| 2026-08-03 | `DRAFT` → **`ACTIVE`** | **Spec Gate 通過（人類 leonchih，2026-08-03，本 session AskUserQuestion）：D1~D11 全數照建議批准**——D1(a) 保留舊表凍結寫入＋GET 唯讀＋Gate 環境資料由人類重建；D2(a) Prisma enum `FuelType`；D3(a-1)(b-1)(c-1) 油價油耗均 `Decimal(10,4)` 複用既有驗證管線、`basisNote` ≤500 字；D4(a) 推導處容量守門→409 不改欄位；D5(a) `FUEL`→`FUEL_PRICE` 更名＋新增 `FUEL_CONSUMPTION`（既有斷言依 Spec 更新，Packet 逐檔列明）；D6(a) 預覽端點加可選 `ownerId` 走 `resolveOwnerId`（一般使用者帶他人→403）；D7(a) 三組路徑全採；D8(a) append-only＋允許為停用帳號建立；D9(a) 三落點全採；D10(a) 報表條件呈現（結論由大總管寫入 PROJECT_STATE 跨 Phase 追蹤）；D11(a) 擴充函式不新增端點。**兩項自主判斷（§5 B-05 缺油耗不回報油價缺項、D5 斷言更新非弱化）一併追認。T1~T8 High 之事前批准於本 Gate 取得。** | 人類 Spec Gate 裁定（leonchih，2026-08-03） |
 
 > **轉 `ACTIVE` 之條件**：§16 D1~D11 全數經人類裁定並由大總管於本節固化；未裁定項相關之 AC 與 Task 不得開工。
