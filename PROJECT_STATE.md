@@ -6,6 +6,13 @@ State: ACTIVE
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
 > - Gate 環境（compose oilexpense stack + gateadmin/staff01 合成資料）保留供後續 Phase 驗收沿用；dev DB 另有 e2eadmin（T8）。
 
+> **CHORE-003 實作記錄（2026-08-03，branch chore-003 @ rebase 至 main df36f75 後）**
+> - **T1（純函式驗證模組）：DONE**（`ca2267d`，50 單元測試，零接線）。**即審 APPROVE**（0 Must/0 Should/4 AR）：reviewer 以 node 實測六個 mutant 分支證明鑑別力（量級 >= vs >、字面字元數 vs decimalPlaces、pattern 放寬、trim 移除等皆會紅）；文案 byte 級比對零漂移；葉節點/零接線/D4 皆實證。基準線 1078→**1128**。
+> - **T2（接線三端點）：DONE**（`dcad263`，service +107/-51、69 整合測試）。修復前紅燈實證完整（500×3 類+靜默截斷+log 洩驅動層原文）；§14.1 待實作觀測補齊：**兩個 Int 欄位現行實測為 500**（兩種 Prisma 錯誤類皆含絕對路徑）。過渡紅燈 2 條＝§14.8 逐字預告之 T3 調整項（大總管裁定接受 implementer「Spec 原文優先於 Packet Stop Condition 字面」判讀——紅燈集合恰等於列舉、無外溢；結構上不可能同時滿足 AC-25/26 又保持該兩條綠）。**大總管裁定：T2 即審併入 T2+T3 合併複審**（兩 Task 構成單一合約變更、紅燈過渡態為 Spec 預告，分開審會對預告紅燈重複裁決）。基準線 1128→1197（過渡 1195/2/0）。
+> - **T3（AC-29 閉環+§14.8 斷言更新）：DONE**（`17cc428`，14 測試+mutant 實證）。**SPEC-SYNC：DONE**（`78dc61d`，§14 全回填、映射 13 列 GREEN missing=0）。
+> - **T2+T3 合併複審：APPROVE**（0 Must/0 Should/5 AR）。reviewer 自跑後端 1211/0/0+前端 137、mutant A（還原 Number 中介）必紅、mutant B（`+x`）揭示語彙掃描限制（AR-2）、40 組額外輸入 500 掃描零命中、AC-30 兩驗點與 §14.8「恰兩條無第三處」皆實證。**AR-1（掃描未涵蓋 depreciation-engine 全檔）與 AR-2（等價寫法）併 AR-1 雙拷貝條目列 PHASE-011 加固候選**；AR-3 未檢查斷言（沿既有慣例）；AR-4 容量先於值域之 reason 變更（§14.2 必然）；AR-5 觀察：SPEC-SYNC 之 §14 本文編輯為 spec-writer 派工產出（非大總管代筆），PR 說明明示留痕。**基準線終值 1211/0/0（後端）/137（前端）。**
+> - **T2 前置警示（reviewer 移交，Packet 必載）**：①routes 必填檢查維持在格式層前（否則 B-03 文案退化）②**parameter-service.ts L203-208/L321-326 之 `Number(input)<0` 值域檢查須移到格式層之後**（否則 AC-21 之 "-1000000" 回錯文案、I 層必紅）③`toDecimalConstructorArg` 具名匯出必須維持。AR-1 int null 雙義回傳 footgun、AR-2 per-field first-hit 彙總。
+
 > **PHASE-005（區間公務里程統計）開工記錄（2026-08-03，使用者指令「繼續」）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
 > - branch：`phase-005`（自 main @ `310bc39` 切出）。流程：spec-writer 產 Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate** → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
@@ -334,6 +341,8 @@ Updated: 2026-08-02
 - 無。
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
+
+- **【新增 2026-08-03，CHORE-003-T3 確認】AR-1 `toDecimalConstructorArg` 同形雙拷貝仍存**：`parameter-service.ts` 與 `depreciation-engine.ts` 各有同形實作；T3 評估不改用共用 helper（會改變 deriveDepreciation 契約——其接受 Decimal 實例且僅規定 ≤0 無效）。收斂須抽第三個共用葉節點模組，**PHASE-011 重構候選**。詳見 003a Spec §14.7 未採用註記。
 
 - **【新增 2026-08-03，CHORE-003-SPEC 查出之同類缺陷（PHASE-004 領域，另案）】差旅快照金額欄位容量溢位風險**：`TripSegment.snapshotFuelAmount`/`snapshotEtcAmount`/`snapshotRawAmount` 為 `Decimal(14,4)`（整數部 <1e10），但來源 `totalKm`(<1e8，KM_MAGNITUDE_LIMIT) × `unitPrice`(CHORE-003 後 <1e6) 理論乘積可達 ~1e14——極端合法輸入下完成差旅時 DB 拋錯 → 500。與 CHORE-003 同缺陷類；處置（乘積上限驗證 or 收緊輸入上限）屬行為變更需 Spec 批准，建議併入 PHASE-006 前的 chore 或 PHASE-011。詳見 PHASE-003a Spec §14.9 第 4 點。
 

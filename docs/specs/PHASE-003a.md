@@ -523,6 +523,296 @@ TDD：每 Task 先寫會失敗的測試再實作；不得 skip/弱化換綠燈�
 | 2026-08-01 | Gate 反饋修訂 | Mock UI/整合驗收 Gate **通過**（人類，leonchih）；人類提出導覽缺口：管理員首頁缺少進入參數維護頁的連結。依 Gate 反饋流程新增 §5.2 導覽入口需求（管理員首頁提供 `/admin/parameters` 連結，比照既有 `/admin/users` 模式）。由 implementer 以 TDD 實作、reviewer 輕量複審後合入。此為使用者可見行為之微增，不改既有 AC 語意。 | 使用者 Gate 反饋（2026-08-01，leonchih） |
 | 2026-08-02 | UI 修正回合（ui-fix-001） | 人類回報參數維護頁「歷史版本」表格可讀性缺陷：`.param-table` class 無任何 CSS 定義（T6 交付遺漏），瀏覽器預設零內距使生效日期與單價欄目視黏連（`2020-01-01` + `5.0000` 誤讀為 `015.0000`）。批准四項修正：①補 `.param-table` 樣式（比照既有 `.users-table`/`.app-list-table` 慣例）②數值欄靠右對齊 ③折舊表（7 欄）包 `.table-scroll` 橫向捲動 wrapper ④**建立時間顯示格式由 `toLocaleDateString("zh-TW")`（`2026/8/2`）統一為 `YYYY-MM-DD`（`2026-08-02`）**，與生效日期欄一致。①~③為純視覺；④為顯示格式行為變更，本列即其 Spec 依據（原 Spec 未規定建立時間格式）。不改任何 AC 語意、不動後端。 | 使用者批准（2026-08-02，leonchih） |
 | 2026-08-01 | DRAFT→ACTIVE | 人類事前批准 Gate 通過：D1~D10 **全數依 spec-writer 建議定案**（D1 三表+泛型服務、D2 僅 effectiveFrom 隱含結束、**D3 每公里單價 Decimal 4 位小數保留、顯示層一般四捨五入、007 末端一次取整為整數**、D4 服務層權威+`@@unique(effectiveFrom)`、D5 專屬 `PARAMETER_PERIOD_OVERLAP`(409)、D6 單一 `PARAMETER_VERSION_CREATED`+summary.parameterType、D7 推導值不持久化、**D8 油資/ETC Decimal(10,4)・車價 Decimal(12,2)・年限/年里程 Int・單價 Decimal(_,4) 一律非浮點**、D9 本 Phase 不提供撤銷端點、D10 全 requireAdmin）。金額語意 D3/D8 經人類明確批准。轉 ACTIVE，開始 TDD。 | 使用者 Gate 批准（2026-08-01，leonchih） |
+| 2026-08-03 | CHORE-003 錯誤合約修訂（新增 §14） | 依人類 leonchih 2026-08-03 於 **PHASE-005 Spec Gate 之 D1(b) 裁定**（「另開 chore 回合：先修訂 PHASE-003a Spec 錯誤合約（新增 400 情境＋精度截斷拒絕＋『不可解析→400』），再 implementer TDD → reviewer 複審」，AR-5「字串全保真」同案處理），**新增 §14** 定義參數欄位容量／精度／字串保真之修訂後驗證合約：欄位逐欄盤點、行為變更對照表（B-01~B-26）、新增 **AC-21~AC-32**、AC↔測試映射表、Task 拆分（CHORE-003-T1~T3）與受影響既有測試盤點。**§1~§13 主體維持 `COMPLETED` 且未被改寫**（既有 AC-01~AC-20 語意、成功路徑、409/401/403 合約一律不變）；**§14 之狀態為 `ACTIVE`（CHORE-003 待實作）**。§14.4 之 CD-1（前後空白字串處置）、CD-2（非標準十進位字面）、CD-3（折舊整數欄位是否納入）為方向內尚待人類定案之細項，**未裁定不得開工**。本次不新增 `ErrorCode`、不新增依賴、不改資料模型／migration／授權／稽核／前端。 | 人類 leonchih 2026-08-03 PHASE-005 Spec Gate 批准（D1(b)；見 `docs/specs/PHASE-005.md` §16 D1 與 §18 修訂紀錄）；PROJECT_STATE 跨 Phase 追蹤事項 2026-08-03 條目；CHORE-002 R2 AR-5 |
+| 2026-08-03 | CD-1~CD-3 裁定固化（大總管） | §14.4 三決策點經人類裁定**全數採推薦選項 (a)**：**CD-1(a)** 前後空白 trim 後判定（`vehiclePrice` 含空白由 400 放寬為 201 之唯一放寬變更已明示並批准）；**CD-2(a)** 非標準十進位字面（`"1e5"`／`".5"`／`"19."`／`"+19.9"`／`"0x10"` 等）一律 400，僅收標準十進位字面；**CD-3(a)** 折舊整數欄位（`usefulLifeYears`／`estimatedAnnualKm`）之 int4 容量守門納入本回合（AC-28 保留）。§14 全部 AC-21~AC-32 就此定案，CHORE-003 可開工實作。 | 人類 leonchih 2026-08-03 裁定（CD-1/2/3 皆選推薦選項） |
+| 2026-08-03 | CHORE-003-SPEC-SYNC（T1~T3 後同步） | **僅將 §14 同步至實作現實，未改動任何 AC 條文本體、§14.4 決策點、§14.2 合約，亦未動 §1~§13 既有內容。** ①**§14.1**：原「待實作觀測（TDD 紀律）」結案回填為「舊行為實測結果」——兩個 `Int` 欄位之現行溢位行為經 T2 於真實 Postgres 實測確認為 **500**，分屬 `PrismaClientUnknownRequestError`（DB 端 int4 溢位）與 `PrismaClientValidationError`（超出 Prisma `Int` 可接受範圍，如 `1e21`）兩類，兩類日誌**均含絕對來源路徑**（故 AC-31 對本欄位同樣必要）；容量盤點表該列「非 400」改為「500」。②**§14.6 映射表**：改採 PHASE-005 §12 之機械可查格式（新增 `Task`／`狀態` 欄），測試名以三個新增測試檔之**實際 `describe > it` 逐字回填**；**AC-29 拆為結構性（U(structural)）／行為等值（I）兩列**（依 AC-29 明文「單純比較兩路徑結果無鑑別力」）；全表 13 列狀態 `GREEN`、`PENDING` 0 列；新增覆蓋核對與表註 1~4（含反向核對：三檔共 133 條，4 條為刻意保留之附加鑑別）。③**§14.7**：「順帶消除 AR-1 同形雙拷貝」加註**未採用**及理由（`parseParameterDecimalField` 不接受 `Prisma.Decimal` 實例、且附加小數位／量級守門，改用會改變 `deriveDepreciation` 之既有契約——即 §14.8 第 6 項明示須停止之情形）；**AR-1 維持追蹤**。④**§14.8**：第 1、2 項標記 ✅ 已完成（T3 `17cc428`）並記錄完成情形；第 6 項標記實際零變更並記錄未採用共用 helper 之結論。⑤§14 本節狀態之括號敘述由「待實作」更新為「T1~T3 已實作，待終局複審與人類合併批准」（狀態值 `ACTIVE` 未變）。 | CHORE-003-T1 commit `ca2267d`／T2 commit `dcad263`／T3 commit `17cc428` 及各自即審／複審 `APPROVE`；大總管 T2「過渡紅燈」裁定（紅燈集合精確吻合 §14.8 逐字預告，由 T3 關閉）；CD-1(a)／CD-2(a)／CD-3(a) 人類裁定（2026-08-03，leonchih）；治理 2026-08-02.1（AC↔測試映射表為終審核對依據） |
 
 > 狀態轉移：DRAFT →（人類事前批准 D1~D10，其中 D3/D8 為金額語意必批）→ ACTIVE → 實作（TDD）→ COMPLETED。
 > 補充（治理 2026-08-01.2）：本 Spec 屬 High 風險文件，定義 High 風險行為（影響金額之受引用參數）。Gate 中人類提出之任何變更，須先由 spec-writer/大總管完成本 Spec 修訂（引用該批准與日期）後方可實作。
+
+---
+
+## 14. CHORE-003 錯誤合約修訂——參數欄位容量、精度與字串保真（2026-08-03）
+
+| 項目 | 內容 |
+|---|---|
+| **本節狀態** | `ACTIVE`（CHORE-003 T1~T3 已實作並各自通過即審／複審；待終局複審與人類合併批准後轉 `COMPLETED`）。**§1~§13 主體維持 `COMPLETED` 且不受本節改寫**——本節只**新增** AC-21~AC-32 與新增之 400 情境，既有 AC-01~AC-20 之語意、既有成功路徑與 409/401/403 合約一律不變。 |
+| **Task ID（產出本節）** | CHORE-003-SPEC |
+| **批准依據** | 人類 leonchih 2026-08-03 PHASE-005 Spec Gate 裁定 **D1(b)**：「另開 chore 回合：先修訂 **PHASE-003a Spec** 錯誤合約（新增 400 情境＋精度截斷拒絕＋『不可解析→400』），再 implementer TDD → reviewer 複審」；**AR-5**（CHORE-002 R2 資訊性 Accepted Risk）之「字串全保真＋不可解析→400」經同一裁定併入本回合同案處理。 |
+| **風險等級** | **High**（使用者可見錯誤合約變更；金額參數領域）。變更**方向**已批准；本節 §14.4 之 CD-1~CD-3 為方向內尚待人類定案的細項，**未裁定者不得開工**。 |
+| **範圍** | 僅 `parameters` 模組之三個 POST 端點的**輸入驗證層**。不改資料模型、不改 migration、不改授權、不改稽核、不改前端、不新增 `ErrorCode`、不新增依賴。 |
+| **不變式** | 修訂後三端點之錯誤碼集合仍為 **400 `VALIDATION_ERROR` / 409 `PARAMETER_PERIOD_OVERLAP` / 401 `UNAUTHORIZED` / 403 `FORBIDDEN`（含 `PASSWORD_CHANGE_REQUIRED`）**，且**不得**出現 500（本回合的目的即為消滅既有 500 路徑）。 |
+
+### 14.1 事實基準（現況缺陷）與欄位容量逐欄盤點
+
+**引用（PROJECT_STATE 跨 Phase 追蹤條目原文，CHORE-002 reviewer 查出）：**
+
+> `unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時，DB 層拋錯 → **500**（string／number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）。另 `unitPrice:"0.0000001"` **靜默存為 `0.0000`**（精度截斷無提示）。正解：比照 `backend/src/applications/trip-validation.ts` 之綁欄位容量範圍驗證（十進位字面 pattern + 量級上限，見該檔 `parseKmField` 之 `DECIMAL_LITERAL_PATTERN` 與 `KM_MAGNITUDE_LIMIT`）。
+
+**逐欄盤點（本節 AC 之權威欄位清單；容量欄依 `backend/prisma/schema.prisma` 現行定義）：**
+
+| 欄位 | 端點 | Prisma 型別 | 小數位上限（scale） | 量級上限（絕對值） | 現行超出時之行為 |
+|---|---|---|---|---|---|
+| `unitPrice` | `POST /parameters/fuel` | `Decimal @db.Decimal(10, 4)` | **4** | **< 1e6**（整數部分最多 6 位） | ≥1e6 → **500**；>4 位小數 → **靜默截斷**（`"0.0000001"` 存為 `0.0000`） |
+| `unitPrice` | `POST /parameters/etc` | `Decimal @db.Decimal(10, 4)` | **4** | **< 1e6** | 同上 |
+| `vehiclePrice` | `POST /parameters/depreciation` | `Decimal @db.Decimal(12, 2)` | **2** | **< 1e10**（整數部分最多 10 位） | ≥1e10 → **500**；>2 位小數 → **靜默取整**（PostgreSQL `numeric(12,2)` 進位） |
+| `usefulLifeYears` | `POST /parameters/depreciation` | `Int`（PostgreSQL `integer` / int4） | —（僅整數） | **≤ 2147483647** | ≥2^31 之整數通過現行 `Number.isInteger && > 0` 檢查後於持久化層失敗 → **500**（T2 實測確認，詳見下方「舊行為實測結果」） |
+| `estimatedAnnualKm` | `POST /parameters/depreciation` | `Int`（int4） | — | **≤ 2147483647** | 同上 |
+| `effectiveFrom` | 三端點 | `DateTime @db.Date` | — | — | 已有 400（AC-06），**本回合不變** |
+
+- **舊行為實測結果（2026-08-03 回填；原「待實作觀測」已結案）**：本 Spec 定稿時因 worktree 無 DB 而將兩個 `Int` 欄位的現行狀態碼列為未實測。**CHORE-003-T2（commit `dcad263`）於真實 Postgres 上以修復前 RED 測試實測確認：現行行為為 500**，且分屬**兩類驅動層例外**——`PrismaClientUnknownRequestError`（值進得了 Prisma 層、於 DB 端 int4 溢位）與 `PrismaClientValidationError`（值超出 Prisma `Int` 可接受範圍而在送出前即被拒，如 `1e21`）；**兩類之伺服器日誌均含絕對來源路徑**，故 AC-31 之「日誌不外洩」斷言對本欄位同樣必要（非僅適用於兩個 `Decimal` 欄位）。修訂後此情境一律回 400（AC-28／B-25），與 `unitPrice`／`vehiclePrice` 之 500 路徑同時消滅。**證據**：T2 修復前紅燈輸出（見 CHORE-003-T2 Handoff 與 commit `dcad263` 訊息第二項）。
+- **非本回合範圍之 Decimal 欄位**：`TripSegment.totalKm` / `highwayKm`（已由 PHASE-004 `parseKmField` 綁容量守門）；`TravelApplication` / `TripSegment` 之快照欄位（伺服器端計算值，非使用者直接輸入）——後者另見 §14.9 之跨 Phase 提醒。
+
+### 14.2 修訂後之輸入驗證合約
+
+**分層（沿用 `trip-validation.ts` 的 format / business 兩層切分）：**
+
+1. **格式層（本回合新增／強化）**：型別 → 十進位字面 → 小數位 → 欄位容量量級。任一失敗 → **400 `VALIDATION_ERROR`**，`fields` 精確定位欄位。
+2. **值域層（既有，不變）**：油資／ETC `unitPrice ≥ 0`（AC-03）；折舊 `vehiclePrice > 0`、`usefulLifeYears > 0` 且為整數、`estimatedAnnualKm > 0` 且為整數（AC-05）。
+
+**檢查順序（決定性要求，AC-32）**：`型別 → 十進位字面 → 小數位 → 量級 → 值域`。同一欄位多重違規時，**先命中者決定 `reason`**；**跨欄位**（折舊三欄）則沿用既有「一次回報所有違規欄位」之行為（AC-05 不變）。
+
+**路由層不變**：`backend/src/parameters/routes.ts` 之 `accept-any` body schema **維持不變**（`unitPrice: {}` 等），服務層仍為驗證權威。理由：改由 ajv schema 擋下會產生**不同的錯誤形狀**（非 `fields` 定位之 `VALIDATION_ERROR`），破壞 AC-03/05 與 CHORE-001/CHORE-002 已固化的 4xx wire-level 合約。既有的「必填」缺值檢查（`undefined` / `null` / `""` → 400 `單價為必填`）亦維持不變。
+
+**`reason` 文案（zh-TW，面向使用者，不外洩內部細節）：**
+
+| 情境 | `reason` |
+|---|---|
+| 非字串亦非數字之型別（boolean / array / object） | `必須為有效的數值（字串或數字）` |
+| 空字串或全空白字串 | `必須為有效的數值` |
+| 非十進位字面（指數記號、前導 `+`、缺整數部 `.5`、缺小數部 `19.`、十六進位 `0x10`、`Infinity`、`NaN`、`abc`） | `必須為有效的十進位數值（不接受指數記號）` |
+| 小數位超出欄位 scale | `最多允許 4 位小數`（`unitPrice`）／`最多允許 2 位小數`（`vehiclePrice`） |
+| 量級超出欄位容量 | `數值超出可儲存範圍（整數部分最多 6 位）`（`unitPrice`）／`（整數部分最多 10 位）`（`vehiclePrice`） |
+| 整數欄位超出 int4 | `數值超出可儲存範圍（最大 2147483647）` |
+| 值域：單價 < 0 | `單價不得小於 0`（**不變**） |
+| 值域：車價 ≤ 0 | `必須大於 0`（**不變**） |
+| 整數欄位非整數 / ≤ 0 | `必須為整數且大於 0` ／ `必須大於 0`（**不變**） |
+
+> **文案變更提醒**：折舊 `vehiclePrice` 之「無法解析」路徑，現行 `reason` 為 `必須為有效數值且大於 0`（`parameter-service.ts` catch 分支），修訂後改為上表之格式層文案。此為本回合明文批准之文案調整，連帶影響一個既有測試的精確斷言（見 §14.8 第 2 項）——屬**依 Spec 更新斷言**，非弱化測試。
+
+**字串保真（AR-5 閉環）**：修訂後，**字串輸入路徑不得經過 `Number()`**——trim 後的十進位字面直接交給 `new Prisma.Decimal(literal)`，值域比較亦以 `Prisma.Decimal` 方法進行（不再以 `priceNum` 比較）。`number` 輸入路徑以 `value.toString()`（JS 自身最短往返字串轉換）進入同一管線；該路徑的浮點性**源自 JSON number 本身（IEEE 754）**，本層不再引入新的中介。實作完成後，程式註解與文件方可敘述「字串路徑不經浮點中介」；在此之前**不得**如此宣稱（AR-5 原警語）。
+> 連帶清理：`parameter-service.ts` 現有引用 `priceNum` 之 S-3 註解（`createFuelVersion` / `createEtcVersion` 內）於修訂後失效，須由 implementer 同步更新為新事實，避免註解與實作背離。
+
+### 14.3 行為變更對照表（變更前 → 變更後）
+
+> 逐條標記供追溯。「**變更**」＝使用者可見行為改變；「不變」＝納入零回歸反向斷言（AC-30）。`(CD-1)` / `(CD-2)` 表示該列結果取決於 §14.4 對應決策點之裁定，以**推薦選項**列示。
+
+| # | 輸入（`unitPrice`，油資／ETC） | 變更前 | 變更後 | 類別 |
+|---|---|---|---|---|
+| B-01 | `0`、`3.5`、`"3.5000"`、`"1.2345"` | 201 | 201（值不變） | 不變 |
+| B-02 | `-1` | 400 `unitPrice` | 400 `unitPrice` | 不變 |
+| B-03 | 缺欄位／`null`／`""` | 400 `單價為必填` | 400（同） | 不變 |
+| B-04 | `"abc"` | 400 | 400（`reason` 改為格式層文案） | 文案變更 |
+| B-05 | `"19.90000"`（尾隨零） | 201 存 `19.9000` | 201 存 `19.9000` | 不變（**鑑別關鍵**：尾隨零不得誤判為超精度） |
+| B-06 | `" 19.9 "`（前後空白） | 201 存 `19.9000` | 201 存 `19.9000`（trim 後判定） | 不變 **(CD-1)** |
+| B-07 | `"   "`（全空白） | 201 存 `0.0000`（`Number("   ")===0`） | **400** | **變更** |
+| B-08 | `true` | 201 存 `1.0000` | **400** | **變更** |
+| B-09 | `false` | 201 存 `0.0000` | **400** | **變更** |
+| B-10 | `[]` / `["5"]` | 201 存 `0.0000` / `5.0000` | **400** | **變更** |
+| B-11 | `{}` | 400（`Number({})` 為 `NaN`） | 400 | 不變 |
+| B-12 | `"1e5"` | 201 存 `100000.0000` | **400** | **變更 (CD-2)** |
+| B-13 | `".5"` / `"19."` / `"+19.9"` / `"0x10"` | 201 存 `0.5000` / `19.0000` / `19.9000` / `16.0000` | **400** | **變更 (CD-2)** |
+| B-14 | `"Infinity"` / JSON number `1e400`（解析為 `Infinity`） | **500**（DB 層） | **400** | **變更（消滅 500）** |
+| B-15 | `"0.0000001"`、number `0.00001` | 201 **靜默存 `0.0000`** | **400**（`最多允許 4 位小數`） | **變更（D1(b) 明列：精度截斷拒絕）** |
+| B-16 | `"999999.9999"`（容量上界內最大值） | 201 | 201 | 不變（**邊界**） |
+| B-17 | `"1000000"`（1e6）、`"12345678"` | **500** | **400**（`超出可儲存範圍`） | **變更（消滅 500）** |
+
+| # | 輸入（`vehiclePrice`／折舊整數欄位） | 變更前 | 變更後 | 類別 |
+|---|---|---|---|---|
+| B-18 | `"500000.00"`、`500000`、`0`、`-100` | 201／201／400／400 | 同 | 不變 |
+| B-19 | `"abc"` | 400（`reason`＝`必須為有效數值且大於 0`） | 400（`reason` 改為格式層文案） | 文案變更 |
+| B-20 | `" 600000 "`（前後空白） | **400**（`Decimal` 建構丟出 → catch） | **201**（trim 後判定） | **變更（放寬）(CD-1)** |
+| B-21 | `"600000.005"`（3 位小數） | 201 **靜默進位存 `600000.01`** | **400**（`最多允許 2 位小數`） | **變更** |
+| B-22 | `"9999999999.99"`（容量上界內最大值） | 201 | 201 | 不變（**邊界**） |
+| B-23 | `"10000000000"`（1e10） | **500** | **400** | **變更（消滅 500）** |
+| B-24 | `usefulLifeYears` / `estimatedAnnualKm` `= 2147483647` | 201 | 201 | 不變（**邊界**） |
+| B-25 | `usefulLifeYears` / `estimatedAnnualKm` `= 2147483648`、`3e9`、`1e21` | **非 400**（見 §14.1 待實作觀測） | **400** | **變更（消滅非 400 路徑）(CD-3)** |
+| B-26 | `usefulLifeYears = 2.5`、`= 0`、`= -1` | 400 定位欄位 | 同 | 不變 |
+
+> **B-20 特別註記**：此為**唯一放寬方向**的變更（400 → 201）。D1(b) 之批准方向為「消滅 500／拒絕精度截斷／不可解析→400」（皆為收緊），放寬不在其字面範圍內，故列為 **CD-1** 交人類於 CHORE-003 Gate 一併裁定，不得由 AI 自行定案。
+
+### 14.4 需人類批准之決策點（CD-1~CD-3）
+
+> 未裁定者相關 AC 不得開工。三項皆為「已批准方向內」的細項，建議於同一次 CHORE-003 Gate 一併裁定。
+
+**CD-1 — 前後空白字串之處置（影響 B-06、B-20）**
+
+| 選項 | 內容 | 影響 |
+|---|---|---|
+| **(a) trim 後判定（推薦）** | 字串先 `.trim()`，再套用十進位字面 pattern | ① 與 Packet 明列之「正解」`parseKmField` **完全同形**（該函式即先 trim 再比對 pattern）；② 保留 CHORE-002 R2（2026-08-02 定案）之 `" 19.9 "` → 201 行為，不製造相隔一日的反覆；③ **消除現行 `unitPrice`（接受空白）與 `vehiclePrice`（拒絕空白）之不對稱**——該不對稱本身即缺陷；④ 代價：`vehiclePrice` 由 400 放寬為 201（B-20） |
+| (b) 不 trim，含空白一律 400 | 任何前後空白 → 400 | ① 全部方向皆為收緊，完全落在 D1(b) 字面內；② 但推翻 CHORE-002 R2 剛定案之行為（B-06 由 201 變 400），且與 `parseKmField` 不同形，四個欄位仍不對稱（里程接受空白、單價不接受） |
+
+**推薦：(a)**。理由：Packet 指定的參照實作即為 trim 語意；空白是傳輸層雜訊而非值語意差異（trim 後**值完全保真**）；且能一次消除既有的欄位間不對稱。
+> 若裁定 (b)：AC-27 之期望改為「`" 19.9 "` → 400」，B-06 改列「變更」、B-20 改列「不變」，§14.8 第 1 項之既有測試斷言須由 201 改為 400。
+
+**CD-2 — 非標準十進位字面之處置（影響 B-12、B-13）**
+
+| 選項 | 內容 | 影響 |
+|---|---|---|
+| **(a) 一律 400（推薦）** | 採 `^-?\d+(\.\d+)?$` pattern：拒絕指數記號、前導 `+`、`.5`、`19.`、`0x10`、`Infinity`、`NaN` | ① 與 `parseKmField`／PHASE-004 D5 先例一致；② 字面即所存值，稽核可讀、無「`1e5` 究竟存了多少」的解讀歧義；③ 同時天然攔下 `Infinity`／`NaN`（`Prisma.Decimal` **會**接受此二字面，且其 `decimalPlaces()` 回 `NaN`——若僅靠小數位檢查會**漏放**，見下方實作警示）；④ 代價：`"1e5"` 這類「可解析且在容量內」的輸入由 201 變 400，嚴格說略超出「不可解析→400」之字面 |
+| (b) 僅拒絕 `Prisma.Decimal` 無法解析者 | 允許指數記號等 | 需另行明確處理 `Infinity`／`NaN`（否則仍是 500）；且相同數值有多種字面，稽核與測試面擴大 |
+
+**推薦：(a)**。
+> **實作警示（無論裁定何者皆適用）**：`new Prisma.Decimal("Infinity")` 與 `new Prisma.Decimal("NaN")` **不會拋出**，且其 `.decimalPlaces()` 回傳 `NaN`——`NaN > 4` 為 `false`，故**小數位檢查不會擋下它們**。必須以 pattern 或顯式 `isFinite` 判定攔截，否則 B-14 的 500 依舊存在。（此為本 Task 於 `@prisma/client` 實測確認之行為。）
+
+**CD-3 — 折舊整數欄位（`usefulLifeYears` / `estimatedAnnualKm`）是否納入本回合（影響 B-25、AC-28）**
+
+| 選項 | 內容 | 影響 |
+|---|---|---|
+| **(a) 納入（推薦）** | int4 容量守門一併補上 | 與 `unitPrice`／`vehiclePrice` **屬完全相同的缺陷類**（欄位容量溢位 → 非 400）；同一模組同一次修改成本近乎為零；不納入則留一個已知的 500 路徑於正式碼 |
+| (b) 不納入 | 僅處理 PROJECT_STATE 條目字面所列的兩個 Decimal 欄位 | 追蹤條目字面確實只列 `unitPrice`／`vehiclePrice`；但會留下同類缺口，且需另開追蹤項 |
+
+**推薦：(a)**。AC-28 已獨立編號，若裁定 (b) 可整條剔除而不影響其他 AC。
+
+### 14.5 新增 Acceptance Criteria（AC-21~AC-32）
+
+> 編號續接既有 AC-01~AC-20（既有 AC 一律不改）。所有新 AC 之錯誤回應**一律** `400 VALIDATION_ERROR` + `fields[]`，**不新增 `ErrorCode`**。
+
+**AC-21 `unitPrice` 量級上限綁欄位容量（油資／ETC，CHORE-003 / T1, T2）**
+- Given 管理員提交 `unitPrice` 之絕對值 **≥ 1e6**（如 `"1000000"`、`1000000`、`"12345678.9"`、`"-1000000"`）。
+- When `POST /parameters/fuel` 或 `POST /parameters/etc`。
+- Then 回 **400 `VALIDATION_ERROR`**，`fields` 含 `{ field: "unitPrice" }` 且 `reason` 為 `數值超出可儲存範圍（整數部分最多 6 位）`；**不建立版本**；回應不含 DB 錯誤原文／堆疊。
+- **鑑別力**：必須同時測 **`"999999.9999"` → 201**（上界內最大值）與 **`"1000000"` → 400**（上界），才能捕捉「上限值寫錯一個數量級」與「用 `>` 而非 `>=`」；上限常數須綁 `Decimal(10,4)` 之容量推導（`10 - 4 = 6` 位整數），不得寫死無來源的魔術數。
+
+**AC-22 `vehiclePrice` 量級上限綁欄位容量（折舊，CHORE-003 / T1, T2）**
+- Given `vehiclePrice` 絕對值 **≥ 1e10**（如 `"10000000000"`）。
+- When `POST /parameters/depreciation`。
+- Then 400，`fields` 含 `vehiclePrice`，`reason` 為 `數值超出可儲存範圍（整數部分最多 10 位）`；不建立版本；**不進行折舊推導**（沿用 AC-05 之「無效輸入不推導」紀律）。
+- **鑑別力**：`"9999999999.99"` → 201 與 `"10000000000"` → 400 兩邊界必測。
+
+**AC-23 `unitPrice` 精度超出欄位小數位 → 拒絕，不靜默截斷（CHORE-003 / T1, T2）**
+- Given `unitPrice` 之**有效小數位 > 4**（如 `"0.0000001"`、`"1.23456"`、number `0.00001`）。
+- When 提交建立。
+- Then 400，`fields` 含 `unitPrice`，`reason` 為 `最多允許 4 位小數`；**不建立版本**（現行為靜默存 `0.0000`，本回合明文廢止）。
+- **鑑別力（關鍵）**：必須測 **`"19.90000"`（尾隨零）→ 201 且存 `19.9000`**——小數位須以**正規化後的值**（`Prisma.Decimal#decimalPlaces()`，尾隨零已被剝除）判定，而非字面字元數；沿用 `parseKmField` 之同一決策。同時測 `"1.2345"` → 201（恰為上界 4 位）。
+
+**AC-24 `vehiclePrice` 精度超出 2 位小數 → 拒絕（CHORE-003 / T1, T2）**
+- Given `vehiclePrice` 有效小數位 **> 2**（如 `"600000.005"`）。
+- Then 400，`fields` 含 `vehiclePrice`，`reason` 為 `最多允許 2 位小數`；不建立版本（現行為靜默進位存 `600000.01`）。
+- **鑑別力**：`"600000.00"`／`"600000.5"`／`"600000.05"` → 201；`"600000.005"` → 400；並測 `"600000.500"`（尾隨零）→ 201，證明判定基於值而非字面。
+
+**AC-25 非十進位字面 → 400（AR-5「不可解析→400」，CHORE-003 / T1, T2）**
+- Given `unitPrice` 或 `vehiclePrice` 為 `"abc"`、`"1e5"`、`".5"`、`"19."`、`"+19.9"`、`"0x10"`、`"Infinity"`、`"NaN"`，或 number 型別的 `1e-7`、`1e21`、`1e400`（JSON 解析為 `Infinity`）、`NaN`。
+- Then **400**，`fields` 定位對應欄位，`reason` 為 `必須為有效的十進位數值（不接受指數記號）`；不建立版本。
+- **鑑別力**：`"Infinity"` 與 `1e400` 兩例為**本回合消滅 500 的核心證據**，必測且必須斷言**狀態碼為 400 而非 500**；並須有一條測試證明「小數位檢查單獨無法擋下 `Infinity`」之防呆仍在（見 CD-2 實作警示）。
+- 依 CD-2 裁定：若採 (b)，`"1e5"`／`".5"`／`"19."`／`"+19.9"`／`"0x10"` 之期望改為 201，`"Infinity"`／`"NaN"`／`1e400` 仍為 400。
+
+**AC-26 非數值型別 → 400（CHORE-003 / T1, T2）**
+- Given `unitPrice`／`vehiclePrice` 為 `true`、`false`、`[]`、`["5"]`、`{}` 等既非字串亦非數字之 JSON 值（route 為 accept-any，此類值可到達服務層）。
+- Then **400**，`fields` 定位欄位，`reason` 為 `必須為有效的數值（字串或數字）`；不建立版本。
+- **鑑別力**：`true` 現行存為 `1.0000`、`[]` 現行存為 `0.0000`——兩者皆為**靜默寫入錯誤金額參數**，必測；並斷言 DB 中確實**沒有**新增列（不能只斷言狀態碼）。
+
+**AC-27 前後空白字串之處置（CHORE-003 / T1, T2；依 CD-1 裁定）**
+- 採 CD-1 **(a)** 時：Given `" 19.9 "` → Then **201** 且存 `19.9000`；Given `" 600000 "`（`vehiclePrice`）→ **201** 存 `600000.00`；Given `"   "`（全空白）→ **400**（`必須為有效的數值`）；Given `" abc "` → **400**。
+- 採 CD-1 **(b)** 時：上述含空白者一律 **400**。
+- **鑑別力**：`"   "` 現行經 `Number("   ")` 為 `0` 而**靜默存入 `0.0000`**，無論 CD-1 採何選項皆須為 400，此條可獨立於 CD-1 驗證。
+
+**AC-28 折舊整數欄位容量上限（CHORE-003 / T1, T2；依 CD-3 裁定，採 (b) 時整條剔除）**
+- Given `usefulLifeYears` 或 `estimatedAnnualKm` 為 **≥ 2147483648**（即 2^31）之整數（`2147483648`、`3e9`、`1e21`——三者 `Number.isInteger` 皆為 `true`，故現行值域檢查放行）。
+- Then **400**，`fields` 精確定位違規欄位，`reason` 為 `數值超出可儲存範圍（最大 2147483647）`；不建立版本；不推導。
+- **鑑別力**：`2147483647` → 201（上界內最大）與 `2147483648` → 400（上界）必測；兩欄位**各測一次**（避免只守其中一欄）。
+
+**AC-29 字串路徑保真且不經浮點中介（AR-5 閉環，CHORE-003 / T3）**
+- Given 同一數值之字串與等值 number 兩種輸入（如 `"19.9"` vs `19.9`、`"0.1"` vs `0.1`）。
+- When 分別建立版本。
+- Then 兩者存入與回傳之 DTO **完全相同**；且**字串路徑之程式路徑上不存在 `Number(...)` 對輸入的呼叫**（值域比較改以 `Prisma.Decimal` 方法進行）。
+- **鑑別力**：需一條**結構性斷言**（如對 `parameters` 模組原始碼之靜態檢查，或以「僅字串可表達、`Number()` 會失真」之值作行為鑑別）——單純比較兩路徑結果**無鑑別力**（現行實作亦會通過，見 AR-5：`Decimal(10,4)` 下 double 中介不可觀測）。實作者須明確選定並在 Handoff 說明其鑑別力來源。
+- 同時要求：`parameter-service.ts` 中引用 `priceNum` 之 S-3 註解、以及任何宣稱字串路徑行為的文字，須與修訂後實作一致。
+
+**AC-30 既有成功／409／401／403 路徑零回歸（反向斷言，CHORE-003 / T2）**
+- Given 既有 AC-01~AC-20 之全部情境。
+- When 於修訂後執行既有測試套件。
+- Then **全數維持原結果**：合法輸入 201／列表 200（含 `derived` 值不變）、重疊 409 `PARAMETER_PERIOD_OVERLAP`（含 `details.conflictVersion`）、未登入 401、非管理員 403、`mustChangePassword` 403、稽核 `AuditLog` 寫入內容與 `summary` 形狀不變。
+- **鑑別力**：須特別涵蓋 `unitPrice = 0`（值域下界，不得被新的格式層誤擋）、`"3.5000"`／`"1.2345"`（精度上界內）、`-1`（既有值域 400 之 `field` 與行為不變）、以及 `Decimal` round-trip 精度測試（既有「Precision: unitPrice Decimal round-trip」段落）。
+
+**AC-31 錯誤形狀與不外洩（CHORE-003 / T2）**
+- Given 任一新增之 400 情境。
+- Then 回應 body 為統一格式 `{ error: { code: "VALIDATION_ERROR", message, requestId, fields } }`；**不含** DB 錯誤原文、SQL、堆疊、內部路徑或欄位型別定義字串；伺服器日誌亦不得記錄 DB 錯誤原文（沿用 `sanitizeForLog` + pino redact 慣例）；三端點**不再產生任何 500**。
+- **鑑別力**：對 B-14／B-17／B-23 三個原 500 情境，除斷言 400 外，須斷言回應 body 與日誌**不含**驅動層訊息片段。
+
+**AC-32 檢查順序決定性與多欄位彙總（CHORE-003 / T1）**
+- Given 同一欄位同時違反多項規則（如 `"-0.0000001"`：負值＋超精度；`"1e21"`：非十進位字面＋超量級）。
+- Then `reason` 依 §14.2 固定順序（型別 → 字面 → 小數位 → 量級 → 值域）之**先命中者**產生，結果可重現。
+- Given 折舊三欄同時違規（如 `vehiclePrice="600000.005"` 且 `usefulLifeYears=0`）。
+- Then `fields` **同時包含**兩欄位（沿用 AC-05 之多欄位彙總行為）。
+- **鑑別力**：純函式單元測試層即可完整覆蓋；須含至少兩組「多重違規」案例以固定順序，避免實作改動時 `reason` 漂移而無測試察覺。
+
+### 14.6 AC↔測試映射表（治理 2026-08-02.1）
+
+> **格式**：`AC` ｜ `層級` ｜ `測試檔` ｜ `測試名` ｜ `Task` ｜ `狀態`（沿用 PHASE-005 §12 之機械可查慣例，治理 2026-08-02.1）。
+> 層級：U＝unit（無 DB）、I＝integration（真實 route／service + Postgres）、U(structural)＝對原始碼之靜態結構斷言（無 DB）。
+> 狀態值：`PENDING`（Spec 階段）／`RED`（測試已寫且失敗）／`GREEN`（實作完成通過）。**Phase／回合完成前之覆蓋檢查與終審核對以本表為準。**
+> **`GREEN` 列之測試名為實際存在之測試名（逐字可 `grep`）**；巢狀以 `describe > it` 表示，同 `describe` 下之其餘測試以 `… > ` 續接。
+> 本表之 `GREEN` 依據：CHORE-003-T1（commit `ca2267d`，unit 50 條）／T2（commit `dcad263`，integration 69 條、AC-30 主證四檔 84/84 零修改全綠）／T3（commit `17cc428`，string-fidelity 14 條）各自結案並經即審／複審 `APPROVE`；T3 大總管獨立驗收全套兩輪 1211/0/0（2026-08-03）。
+
+| AC | 層級 | 測試檔 | 測試名 | Task | 狀態 |
+|---|---|---|---|---|---|
+| AC-21 | U + I | `backend/test/unit/parameter-validation.test.ts`；`backend/test/integration/chore003-parameter-field-capacity.test.ts` | U：`AC-21 unitPrice ≥1e6 → 400（含 999999.9999 → 201 上界鑑別） > 上界內最大值 "999999.9999" 通過且值保真`；`… > 恰為上界 "1000000" 被拒（捕捉 > 與 >= 之誤用）`；`… > number 型別 1000000、字串 "12345678.9" 同樣被拒`；`… > 負向同樣以絕對值判定："-1000000" 被拒、"-999999.9999" 通過格式層`；`… > error.field 精確回傳呼叫端指定之欄位名`；容量常數綁欄位定義：`容量常數綁 Prisma 欄位定義推導（§14.7 實作備註） > decimalColumnCapacity(precision, scale) 推導整數位數 = precision - scale`；`… > unitPrice 綁 Decimal(10,4)、vehiclePrice 綁 Decimal(12,2)、整數欄位綁 int4`。I：`CHORE-003-T2 參數欄位容量／精度／字串保真（I 層） > AC-21 unitPrice ≥1e6 → 400（含 999999.9999 → 201 上界鑑別） > 上界內最大值 '999999.9999' → 201 且原值存入（B-16，證明上限非寫小一個數量級）`；`… > 上界 '1000000'（1e6）→ 400 量級文案 且 DB 無新增列（B-17，原為 500）`；`… > number 型別 1000000 → 400 量級文案（string／number 同一管線）`；`… > '12345678.9' → 400 量級文案（AC-21 明列案例）`；`… > '-1000000' → 400 **量級**文案而非「單價不得小於 0」（AC-21／AC-32：格式層先於值域層）`；`… > ETC 端點同守門：'999999.9999' → 201；'1000000' → 400 且 DB 無新增列` | T1, T2 | GREEN |
+| AC-22 | U + I | 同上兩檔 | U：`AC-22 vehiclePrice ≥1e10 → 400（含 9999999999.99 → 201 上界鑑別） > 上界內最大值 "9999999999.99" 通過且值保真`；`… > 恰為上界 "10000000000" 被拒`；`… > 量級文案依欄位容量而異（6 位 vs 10 位），不共用同一字串`。I：`… > AC-22 vehiclePrice ≥1e10 → 400（含 9999999999.99 → 201 上界鑑別） > 上界內最大值 '9999999999.99' → 201 且原值存入（B-22）`；`… > 上界 '10000000000'（1e10）→ 400 量級文案、DB 無新增列、回應不含 derived（B-23，原為 500）` | T1, T2 | GREEN |
+| AC-23 | U + I | 同上兩檔 | U：`AC-23 unitPrice >4 位小數 → 400；尾隨零 "19.90000" → 201 > "0.0000001"、"1.23456"、number 0.00001 皆被拒（不再靜默截斷為 0.0000）`；`… > 尾隨零 "19.90000" 通過並存 19.9000（以值而非字面字元數判定）`；`… > 恰為上界 4 位小數 "1.2345"、以及 "3.5000"／0 通過`。I：`… > AC-23 unitPrice >4 位小數 → 400；尾隨零 '19.90000' → 201 > '0.0000001' → 400 小數位文案 且 DB 無新增列（B-15，原為靜默存 0.0000）`；`… > '1.23456' → 400 小數位文案`；`… > number 0.00001 → 400 小數位文案（number 路徑同守門）`；`… > 尾隨零 '19.90000' → 201 且存 19.9000（鑑別關鍵：小數位以正規化後的值判定，非字面字元數）`；`… > 恰為上界 4 位小數 '1.2345' → 201（證明用的是 > 而非 >=）` | T1, T2 | GREEN |
+| AC-24 | U + I | 同上兩檔 | U：`AC-24 vehiclePrice >2 位小數 → 400；"600000.500" → 201 > "600000.005" 被拒（不再靜默進位為 600000.01）`；`… > "600000.00"／"600000.5"／"600000.05" 通過`；`… > 尾隨零 "600000.500" 通過，證明判定基於值而非字面`；`… > 小數位上限隨欄位 scale 變動："1.234" 於 unitPrice 通過、於 vehiclePrice 被拒`。I：`… > AC-24 vehiclePrice >2 位小數 → 400；'600000.500' → 201 > '600000.005' → 400 小數位文案 且 DB 無新增列（B-21，原為靜默進位存 600000.01）`；`… > '600000.00' → 201`；`… > '600000.5' → 201 存 600000.50`；`… > '600000.05' → 201 存 600000.05`；`… > 尾隨零 '600000.500' → 201 存 600000.50（判定基於值而非字面）` | T1, T2 | GREEN |
+| AC-25 | U + I | 同上兩檔 | U：`AC-25 非十進位字面 → 400（Infinity／1e400 斷言為 400 而非 500） > 字串 "abc"／"1e5"／".5"／"19."／"+19.9"／"0x10" 一律被拒（CD-2(a)）`；`… > 字串 "Infinity"／"NaN"／"-Infinity" 被拒（原 500 路徑消滅）`；`… > number 型別 1e-7／1e21／1e400(=Infinity)／NaN／-Infinity 被拒`；`… > vehiclePrice 同樣適用（"abc" 由格式層攔截，取代舊 catch 分支文案）`；`… > 防呆證明：小數位檢查單獨無法擋下 Infinity／NaN，故字面 pattern 為必要守門`；`… > pattern 只收標準十進位字面（正例／反例對照）`。I：`… > AC-25 非十進位字面 → 400（Infinity／1e400 斷言為 400 而非 500）` 之迴圈參數化 8 條，樣板字串（可逐字 `grep`）`` `unitPrice ${JSON.stringify(literal)} → 400 字面文案 且 DB 無新增列` ``，參數 `literals` = "abc"／"1e5"／".5"／"19."／"+19.9"／"0x10"／"Infinity"／"NaN"（見表註 2）；`… > number 1e-7 → 400 字面文案（toString() 為 '1e-7'，指數記號）`；`… > number 1e21 → 400 字面文案（toString() 為 '1e+21'）`；`… > JSON number 1e400（解析為 Infinity）→ **400 而非 500**（B-14 消滅 500 的核心證據）`；`… > 'Infinity' → **400 而非 500**（B-14；小數位檢查單獨擋不住它，須靠字面／isFinite 守門）`；`… > vehiclePrice '1e5' → 400 字面文案（折舊端點同守門）`；`… > vehiclePrice 'abc' → 400 字面文案（B-19 文案變更；狀態碼與 field 不變）` | T1, T2 | GREEN |
+| AC-26 | U + I | 同上兩檔 | U：`AC-26 boolean／array／object → 400（U 層：型別守門） > true／false 被拒（現行分別靜默存 1.0000／0.0000）`；`… > []／["5"]／{} 被拒（現行分別靜默存 0.0000／5.0000）`；`… > null／undefined 亦不被視為數值（必填檢查在上游 route 層，此處為最後守門）`；`… > vehiclePrice 同樣適用`。I：`… > AC-26 boolean／array／object → 400 且 DB 無新增列` 之迴圈參數化 5 條，樣板字串（可逐字 `grep`）`` `unitPrice ${label} → 400 型別文案 且 DB 無新增列` ``，參數 `label` = `true（原靜默存 1.0000）`／`false（原靜默存 0.0000）`／`[]（原靜默存 0.0000）`／`["5"]（原靜默存 5.0000）`／`{}`（見表註 2）；`… > vehiclePrice true → 400 型別文案 且 DB 無新增列` | T1, T2 | GREEN |
+| AC-27 | U + I | 同上兩檔 | U：`AC-27 前後空白字串處置（CD-1(a) trim 後判定）；全空白 → 400 > " 19.9 " trim 後通過並存 19.9000（值完全保真）`；`… > " 600000 "（vehiclePrice）trim 後通過並存 600000.00（B-20 唯一放寬）`；`` … > 全空白 "   "／"\\t\\n" 被拒（廢止 Number("   ")===0 之靜默寫入） ``；`… > 空字串 "" 被拒`；`… > " abc " 被拒（trim 後仍非十進位字面）`；`… > 內部空白 "1 9.9" 被拒（trim 僅去頭尾）`。I：`… > AC-27 前後空白字串處置（CD-1(a)）；全空白 → 400 > unitPrice ' 19.9 ' → 201 存 19.9000（B-06 不變，trim 後值完全保真）`；`… > vehiclePrice ' 600000 ' → 201 存 600000.00（B-20，CD-1(a) 明文批准之放寬）`；`… > unitPrice '   '（全空白）→ 400 空值文案 且 DB 無新增列（B-07，原 Number('   ')===0 靜默存 0.0000）`；`… > unitPrice ' abc ' → 400 字面文案（trim 後仍非十進位字面）` | T1, T2 | GREEN |
+| AC-28 | U + I | 同上兩檔 | U：`AC-28 折舊整數欄位 ≥2^31 → 400（2147483647 → 201 上界鑑別） > 上界內最大值 2147483647 通過（兩欄位各測）`；`… > 恰為上界 2147483648 被拒（兩欄位各測，field 精確定位）`；`… > 3e9 與 1e21（Number.isInteger 皆為 true，現行值域檢查放行）被拒`；`… > 既有值域案例（2.5／0／-1／5）不被本容量守門攔截，交由既有值域層判定（AC-30 零回歸）`；`… > 非 number 型別與非有限值不改變既有值域層行為（回傳 value=null 表示不適用）`。I：`… > AC-28 折舊整數欄位 ≥2^31 → 400（2147483647 → 201 上界鑑別） > usefulLifeYears = 2147483647 → 201（上界內最大，B-24）`；`… > estimatedAnnualKm = 2147483647 → 201（上界內最大，B-24）`；`… > usefulLifeYears = 2147483648（2^31）→ 400 int 容量文案 且 DB 無新增列（B-25，原為非 400）`；`… > estimatedAnnualKm = 2147483648 → 400 int 容量文案 且 DB 無新增列（兩欄位各守一次）`；`… > usefulLifeYears = 3e9 → 400 int 容量文案（Number.isInteger 為 true，現行值域檢查放行）`；`… > estimatedAnnualKm = 1e21 → 400 int 容量文案`；`… > usefulLifeYears = 2147483648.5 → 只回容量文案，不同時回「必須為整數且大於 0」（per-field first-hit）` | T1, T2 | GREEN |
+| AC-29（結構性鑑別） | U(structural) | `backend/test/integration/chore003-string-fidelity.test.ts` | `CHORE-003-T3 §1 AC-29 結構性斷言：金額字串路徑無 Number() 中介 > 掃描 sanity：挖空後仍保有可辨識的程式碼骨架（確保不是掃到空字串而空跑）`；`… > parameter-validation.ts（金額輸入的唯一格式層）全檔無任何 Number()/parseFloat/parseInt 轉型`；`… > 三個建立路徑的函式體內，對金額輸入無任何 Number()/parseFloat/parseInt 轉型`；`… > parameter-service.ts 全檔僅存的 Number() 呼叫為 parseUtcDate 的日期分段（與金額輸入無關）`；`` … > src/parameters/** 已無 `priceNum` 這個舊中介變數（CHORE-002 S-3 機制已消失） ``；`… > 掃描器自證（鑑別力）：舊實作片段必被抓到；註解／字串中的 Number( 必不誤報` | T3 | GREEN |
+| AC-29（行為等值） | I | 同上檔 | `CHORE-003-T3 §2 AC-29：字串輸入與等值 number 輸入之 DTO 完全相同 > createFuelVersion："19.9" 與 19.9 存入與回傳完全相同（僅 id/日期/建立時間不同）`；`… > createFuelVersion："0.1" 與 0.1 存入與回傳完全相同（典型二進位不可精確表示值）`；`… > createFuelVersion：容量上界 "999999.9999" 與 999999.9999 完全相同（AR-5 不可觀測性之上界案例）`；`… > createEtcVersion："5.5" 與 5.5 存入與回傳完全相同`；`… > createDepreciationVersion："9999999999.99" 與 9999999999.99 之 DTO 與 derived 完全相同（容量上界）` | T3 | GREEN |
+| AC-30 | I | **主證（既有四檔，零修改全綠）**：`backend/test/integration/phase3a-parameter-fuel-etc.test.ts`、`phase3a-parameter-depreciation.test.ts`、`phase3a-parameter-audit.test.ts`、`phase3a-parameter-model.test.ts`；**補充鑑別**：`chore003-parameter-field-capacity.test.ts` | 主證：**四檔既有測試名一律不變、斷言零修改，T2 執行 84/84 全綠**（commit `dcad263`）。補充鑑別 10 條：`CHORE-003-T2 參數欄位容量／精度／字串保真（I 層） > AC-30 既有成功／值域／必填行為零回歸（補充鑑別） > unitPrice = 0（值域下界）→ 201 存 0.0000，不得被新的格式層誤擋`；`… > unitPrice '3.5000' → 201 存 3.5000（精度上界內）`；`… > Decimal round-trip：'3.1415' 建立後由 GET 列表取回仍為 3.1415`；`… > unitPrice = -1 → 400 且 field/reason 為既有值域層之「單價不得小於 0」（不變）`；`… > unitPrice = -0.5 → 400「單價不得小於 0」（負值且格式合法者仍走值域層）`；`… > unitPrice 缺欄位／null／'' → 400「單價為必填」（B-03，必填檢查仍在格式層之前）`；`… > vehiclePrice = 0 / -100 → 400「必須大於 0」（既有值域層文案不變）`；`… > usefulLifeYears = 2.5 → 400「必須為整數且大於 0」；= 0 → 400「必須大於 0」（不變）`；`… > 重疊 effectiveFrom 仍為 409 PARAMETER_PERIOD_OVERLAP + details.conflictVersion（不變）`；`… > 未登入 → 401；成功路徑之稽核列仍寫入（不變）` | T2 | GREEN |
+| AC-31 | I | `backend/test/integration/chore003-parameter-field-capacity.test.ts` | 回應層：`CHORE-003-T2 參數欄位容量／精度／字串保真（I 層） > AC-31 原 500 情境之回應不外洩 DB／驅動層原文 > B-14 'Infinity'：400，body 為統一形狀且不含驅動層訊息片段`；`… > B-17 '1000000'：400，body 不含驅動層訊息片段`；`… > B-23 vehiclePrice '10000000000'：400，body 不含驅動層訊息片段`；`… > 三端點於全部新增之 400 情境皆不產生 500（狀態碼掃描）`。日誌層（獨立 `describeWithDb`，顯式 `logLevel:"info"` + logStream 擷取）：`CHORE-003-T2 AC-31 日誌不外洩 DB／驅動層原文 > 前提成立：三個錯誤路徑確實產生了 log 輸出`；`… > log 不含 DB／驅動層錯誤原文（numeric field overflow／out of range／22003／Prisma 查詢結構）`；`… > log 不含 SQL 關鍵字組合與絕對來源路徑`；`… > 三個請求仍被記錄為 400（未被靜默吞掉，且無 500）` | T2 | GREEN |
+| AC-32 | U + I | 同 AC-21 兩檔 | U（10 條）：`AC-32 多重違規之 reason 順序決定性；折舊多欄位彙總 > 型別優先於一切：true 回型別文案而非字面／量級文案`；`… > 字面優先於量級："1e21"（非十進位字面＋超量級）回字面文案`；`… > 小數位優先於量級："1000000.000001"（超量級＋6 位有效小數）回小數位文案`；`… > 尾隨零不構成小數位違規："1000000.00000" 正規化後回量級文案（值判定而非字面）`；`… > 小數位優先於值域："-0.0000001"（負值＋超精度）回小數位文案，負值留給值域層`；`… > 量級優先於值域："-1000000"（負值＋超量級）回量級文案`；`… > 空白字串優先於字面："   " 回「必須為有效的數值」而非字面文案`；`… > 同一輸入重複呼叫結果完全一致（決定性）`；`… > 折舊多欄位彙總：vehiclePrice 與 usefulLifeYears 同時違規時 fields 同時包含兩者`；`… > 折舊三欄同時格式違規：三個欄位皆各自回報，不彼此吞噬`。I（2 條）：`… > AC-32（I 層補充）多重違規之順序決定性；折舊多欄位彙總 > unitPrice '-0.0000001'（負值＋超精度）→ 小數位文案（順序：小數位先於值域）`；`… > vehiclePrice '600000.005' 且 usefulLifeYears = 0 → fields 同時含兩欄位（AC-05 彙總行為不變）` | T1, T2 | GREEN |
+
+**覆蓋核對（2026-08-03，CHORE-003-SPEC-SYNC）**：AC-21~AC-32 全數有映射（本表共 **13 列** = 12 AC + AC-29 拆為結構性／行為等值兩列）；**`GREEN` 13 列、`PENDING` 0 列、`RED` 0 列**。全表測試名以腳本對三個測試檔全文逐字比對，**missing = 0**（含負向對照：刻意竄改一字之測試名比對失敗，證明比對非恆真）。
+
+**表註**
+
+1. **AC-29 拆為兩列**：§14.5 AC-29 明文要求「單純比較兩路徑結果**無鑑別力**」，須另有結構性斷言。實作即依此分為 §1（對原始碼之靜態掃描，無 DB）與 §2（真實 DB 之等值 DTO 比對），兩者層級不同，拆列後方可機械核對。T3 另以 mutant 實證（還原舊 `Number()` 中介 → §1 三條轉紅、§2 行為等值斷言全綠）證明該警告成立。
+2. **AC-25／AC-26 之 I 層測試名為迴圈參數化產生**：測試名由樣板字串在 `for` 迴圈中生成（各 8 條／5 條），故本表記錄其**樣板與參數清單**而非 13 條展開後字面；靜態 `grep` 應以樣板前綴比對。
+3. **AC-30 主證為「零修改」**：四個 `phase3a-parameter-*.test.ts` 之測試名與斷言**一律未動**（§14.8 第 3~5 項），其證據形式為「執行結果全綠」而非新測試名，故本表不逐條列舉；補充鑑別 10 條為 T2 新增之反向斷言。§14.5 AC-30 所列之必涵蓋項（`unitPrice=0`、`"3.5000"`／`"1.2345"`、`-1`、`Decimal` round-trip）全數落在補充鑑別 10 條或既有四檔內。
+4. **反向核對（測試 → AC）**：三個新增檔共 **133 條**（unit 50／capacity-I 69／string-fidelity 14），其中未直接對應單一 AC 者為：unit 檔 `容量常數綁 Prisma 欄位定義推導（§14.7 實作備註）` 2 條（併列於 AC-21，證明上限常數綁 Prisma 欄位定義而非魔術數）與 `純函式性質（葉節點模組，零 IO） > 回傳之 Decimal 由字串建構，D4 bright-line 保真（"0.1" 與 number 0.1 一致）`／`… > 成功結果為 Prisma.Decimal 實例` 2 條（D4 bright-line 守門）；string-fidelity 檔 `CHORE-003-T3 §3 AR-5 實證：欄位容量內不存在 double 中介會失真之值` 3 條（AR-5 之可執行實證，含容量外 17 位有效數字反例作鑑別力對照）。四者皆為刻意保留之附加鑑別，非覆蓋缺口。
+
+### 14.7 Task 拆分建議（供大總管開 Packet 引用）
+
+> 建議 **3 個 implementer Task**（可壓縮為 2：T3 併入 T2）。每 Task 一個 atomic commit，commit 訊息含 Task ID。全部 Task 皆為 **High 風險**（使用者可見錯誤合約 + 金額參數領域），須於 CHORE-003 Gate 取得 CD-1~CD-3 裁定後方可開工。
+
+| Task | 內容 | 涵蓋 AC | 檔案清單 |
+|---|---|---|---|
+| **CHORE-003-T1** | 新增純函式驗證模組：`parseParameterDecimalField(value, field, { scale, integerDigits })`（型別／字面／小數位／量級四道守門，回 `{ ok, value \| error }`）與 `parseParameterIntField(value, field)`（int4 容量）。**零 IO**，與 `trip-validation.ts` 同形。 | AC-21~28（U 層）、AC-32 | **新增** `backend/src/parameters/parameter-validation.ts`；**新增** `backend/test/unit/parameter-validation.test.ts` |
+| **CHORE-003-T2** | 將 T1 守門接入三個建立路徑（fuel／etc／depreciation），值域比較改以 `Prisma.Decimal` 進行；route schema 與必填檢查**不動**。 | AC-21~28（I 層）、AC-30、AC-31 | **修改** `backend/src/parameters/parameter-service.ts`；**新增** `backend/test/integration/chore003-parameter-field-capacity.test.ts`；**回歸執行**（不修改）`phase3a-parameter-*.test.ts` 四檔 |
+| **CHORE-003-T3** | AR-5 閉環：確保字串路徑無 `Number()` 中介、更新失效之 S-3 註解與文件敘述；調整因合約變更而失效之既有斷言（見 §14.8）。 | AC-29 | **修改** `backend/src/parameters/parameter-service.ts`（註解）、`backend/src/parameters/depreciation-engine.ts`（若共用 helper）；**新增** `backend/test/integration/chore003-string-fidelity.test.ts`；**修改** `backend/test/integration/chore002-d4-decimal-number.test.ts`、`backend/test/integration/chore001-d4-decimal-placeholder.test.ts` |
+
+**實作備註（內部技術細節，供 implementer 定案並記錄）：**
+- `parameter-validation.ts` 為**葉節點模組**（不 import 同模組內他檔），故 `parameter-service.ts` 與 `depreciation-engine.ts` 可同時 import 而不形成循環依賴。
+- ~~這**順帶消除 AR-1「`toDecimalConstructorArg` 同形雙拷貝」** 的維護風險。~~ → **未採用（T3 評估後停止，2026-08-03）**。理由：`parseParameterDecimalField(value, field, capacity)` **不接受 `Prisma.Decimal` 實例**（其型別守門僅放行 `string`／`number`，`Decimal` 實例會被判為 `必須為有效的數值（字串或數字）`），而 `deriveDepreciation` 的既有契約 `DepreciationInput.vehiclePrice: Prisma.Decimal | string | number` **必須**接受 `Decimal` 實例（`parameter-service.ts` 即以 `Decimal` 實例呼叫之）；且該函式另附**小數位／量級兩道守門**，改用會使 `deriveDepreciation` 對「格式合法但超容量」之輸入由 `{ ok: false }` 以外的路徑或不同語意回應——**改變其既有契約**（§14.5 AC-14 僅規定「≤ 0 → 無效」）。§14.8 第 6 項已明示「若因此變紅即代表引入非預期行為改變，須停止」，故 T3 停止此項。**AR-1（`toDecimalConstructorArg` 同形雙拷貝）維持追蹤**，`depreciation-engine.ts` 內之雙拷貝說明註解保留有效；若日後要收斂，須另抽第三個共用葉節點模組（不改 `deriveDepreciation` 契約），屬 PHASE-011 加固期重構候選。
+- **`toDecimalConstructorArg` 必須維持自 `parameter-service.ts` 具名匯出**（可改為 re-export），否則 `chore002-d4-decimal-number.test.ts` 之單元段落（該檔 L51~L60）將因找不到匯出而紅——那屬於**破壞既有測試**而非依 Spec 更新斷言。
+- 不 import／不修改 `backend/src/applications/trip-validation.ts`（PHASE-004 領域，已合併 main，回歸面過大）。若日後要抽共用模組，屬 PHASE-011 加固期之重構候選，非本回合。
+- **不新增 `ErrorCode`**：全部走既有 400 `VALIDATION_ERROR`。若實作評估認為需要新碼，須**停止並列為新決策點**交大總管，不得自行新增。
+- 前端 `frontend/src/pages/ParametersPage.tsx` **不需修改**：其送出值為 `<input type="number">` 之原始字串，且已依 `error.fields` 逐欄顯示訊息，新增的 400 情境可直接被現有錯誤態呈現。
+
+### 14.8 受影響既有測試逐檔盤點
+
+> 「須調整」＝因**本 Spec 明文批准的合約變更**而必須更新斷言；此為依 Spec 更新，**不得**以「刪除／skip／放寬」方式處理，且更新後仍須保有原測試的鑑別意圖。
+
+| # | 檔案 | 影響 | 須做什麼 |
+|---|---|---|---|
+| 1 | `backend/test/integration/chore002-d4-decimal-number.test.ts` | **須調整（斷言）→ ✅ 已完成（T3 `17cc428`）** | ① L175-183「`unitPrice: true` → 201 且存 `1.0000`」**斷言須改為 400**（B-08）。② L166-173（`" 19.9 "` → 201）與 L185-192（`" 5.5 "` → 201）：CD-1 採 (a) 時**斷言值不變**，但其標題／註解所述理由（「必須仍走 `priceNum`」）已失效，須改述為新機制；CD-1 採 (b) 時**斷言須改為 400**。③ L51-60 `toDecimalConstructorArg` 單元段落：只要維持匯出即**不需改動**（見 §14.7 備註）。<br>**完成情形**：① 已改為 `400` + `fields[{ field:"unitPrice", reason:"必須為有效的數值（字串或數字）" }]`，並依 AC-26 鑑別要求**加測「DB 無新增列」**（原鑑別意圖強化而非弱化）；② CD-1(a) 下斷言值維持 201/`19.9000`，標題與註解已改述為「格式層 trim 後判定，字串路徑無 `Number()` 中介」；③ `toDecimalConstructorArg` 維持自 `parameter-service.ts` 具名匯出，該段落零改動。 |
+| 2 | `backend/test/integration/chore001-d4-decimal-placeholder.test.ts` | **須調整（文案斷言）→ ✅ 已完成（T3 `17cc428`）** | L44-62 精確斷言 `{ field: "vehiclePrice", reason: "必須為有效數值且大於 0" }`；新驗證改由格式層攔截 `"abc"`，`reason` 變更（§14.2 文案表），該斷言須同步更新。狀態碼與 `field` **維持 400 / `vehiclePrice` 不變**。<br>**完成情形**：`reason` 已更新為 `必須為有效的十進位數值（不接受指數記號）`，狀態碼 400 與 `field: "vehiclePrice"` 皆未變；檔頭補註說明原 `new Prisma.Decimal("0")` placeholder 與其 try/catch 分支已於 T2 消失、本檔守門價值轉為「不可解析之 `vehiclePrice` 仍必須被精確定位並以 400 拒絕」，原鑑別意圖完整保留。 |
+| 3 | `backend/test/integration/phase3a-parameter-fuel-etc.test.ts` | **零變更（AC-30 主證）** | 全檔使用合法值（`0`、`-1`、`"3.5000"`、`"1.2345"`、`"3.1415"`），且**不斷言 `reason` 文字**（僅斷言 `field`），故無須修改。須完整執行並在 Handoff 附結果。 |
+| 4 | `backend/test/integration/phase3a-parameter-depreciation.test.ts` | **零變更（AC-30 主證）** | 同上；`usefulLifeYears=2.5`／`=0`／`=-1` 等既有值域案例之 `reason` 文字**不在本回合變更範圍**（§14.2 表列為「不變」），故斷言不受影響。 |
+| 5 | `backend/test/integration/phase3a-parameter-audit.test.ts`、`phase3a-parameter-model.test.ts` | **零變更** | 使用合法值；稽核與模型層不在變更範圍。須執行確認。 |
+| 6 | `backend/test/unit/depreciation-engine.test.ts`、`backend/test/unit/parameter-version-engine.test.ts` | **零變更 → ✅ 實際零變更（T3 `17cc428`）** | 純引擎測試；未直接測 `toDecimalConstructorArg`。若 T3 讓 `depreciation-engine.ts` 改用共用 helper，行為為恆等變換，測試仍應全綠——**若變紅即代表引入了非預期的行為改變，須停止**。<br>**完成情形**：T3 評估後**未讓 `depreciation-engine.ts` 改用共用 helper**（理由見 §14.7 實作備註第 2 點：`parseParameterDecimalField` 不接受 `Decimal` 實例且附加守門，改用會改變 `deriveDepreciation` 既有契約——即本項所指之「須停止」情形）。該檔 `src` 與測試皆零變更，AR-1 維持追蹤。 |
+| 7 | `backend/test/integration/phase4-*.test.ts`（`travel-draft`／`travel-preview`／`travel-complete`／`admin-on-behalf`／`on-behalf-audit`／`concurrency-freeze`／`reference-protection`） | **零變更** | 該七檔雖出現 `unitPrice`／`vehiclePrice`，但皆以 `prisma.*.create` **直寫**參數版本 fixture（未經 service／endpoint 驗證路徑），且值皆在容量內（`3.5`／`5.0000`／`6.0000` 等），故不受本回合影響。仍建議納入回歸執行範圍。 |
+| 8 | `backend/test/integration/chore002-4xx-status-mapping.test.ts`、`chore001-wire-level-4xx-hardening.test.ts` | **零影響** | 經檢索未涉及 `parameters` 端點。 |
+| 9 | `frontend/test/ParametersPage.test.tsx` | **零變更** | 前端不修改（§14.7 備註）。若 implementer 認為需補「新錯誤文案顯示」之前端測試，屬**加測**而非調整，可加於本檔。 |
+
+### 14.9 已知限制與跨 Phase 提醒
+
+1. **本節不觸及既有資料**：修訂僅影響**新建立**之參數版本輸入驗證。若開發期已存在因靜默截斷而存為 `0.0000` 的版本列，本回合**不做資料修補**（開發期合成資料，可由人類決定清除）。正式資料階段之修補屬人類決策。
+2. **`Int` 欄位容量上限為 PostgreSQL `integer` 之界限，非業務上限**：本回合不設「折舊年限最多 N 年」這類業務上限（US 未要求，屬擴大 Scope）。若日後要加，須新的人類批准。
+3. **`effectiveFrom` 不在本回合範圍**：其 400 合約（AC-06）已完備。
+4. **跨 Phase 提醒（非本回合處理，已回報大總管）**：`TripSegment.snapshotFuelAmount` / `snapshotEtcAmount` / `snapshotRawAmount` 為 `Decimal(14,4)`（整數部分最多 10 位，即 < 1e10），而其計算來源為 `totalKm`（`parseKmField` 上限 < 1e8）× `unitPrice`（本回合上限 < 1e6），理論乘積可達 ~1e14，**超出快照欄位容量**。此屬 PHASE-004 領域之同類缺陷（欄位容量與上游輸入上限未對齊），**本回合不處理**，建議由大總管記入 PROJECT_STATE 跨 Phase 追蹤事項並於 PHASE-011 或專責回合評估。
+
+### 14.10 Rollback
+
+- 變更範圍：一個新增檔（`parameter-validation.ts`）、一個既有服務檔的驗證段落、測試檔。**無 migration、無資料模型變更、無 API 形狀變更**（僅新增既有 `VALIDATION_ERROR` 之觸發情境）。
+- 回滾＝還原分支至 base commit；無資料層副作用需處理。回滾後行為即回到「既有 500 路徑與靜默截斷」之現況（即回到已知缺陷狀態，非資料損毀）。
+- 若僅需部分回退：AC-28（CD-3）之整數欄位守門為獨立條目，可單獨移除而不影響 AC-21~AC-27。
