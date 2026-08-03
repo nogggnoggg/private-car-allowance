@@ -519,6 +519,61 @@ describe("TravelApplicationPage", () => {
 
       expect(screen.getByText(expectedText)).toBeInTheDocument();
     });
+
+    // ---- 合併複審 SF-1：僅缺 ETC 時，油資版本齊備，不得誤報「油資無法
+    // 計算」並隱藏後端已算出之油資金額（FE-US-10 第一條、PHASE-004 行為
+    // 不得回退）。fixture 之 fuelAmount/totalAmount 皆為前端不可能自算出
+    // 的implausible值（§11.3 不自算鑑別）。----
+    it("僅缺 ETC → 仍顯示各段與合計油資金額、不顯示「油資無法計算」、ETC 提示可見", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            segments: [
+              {
+                id: "seg-1",
+                sortOrder: 0,
+                origin: "台北",
+                destination: "台中",
+                totalKm: "100.00",
+                highwayKm: "0.00",
+                attachments: [],
+                snapshot: null,
+              },
+            ],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: ["ETC"],
+            totalAmount: 300,
+            totalKm: "100.00",
+            segments: [
+              {
+                segmentId: "seg-1",
+                segmentIndex: 0,
+                fuelAmount: "300.0000",
+                etcAmount: "0.0000",
+                rawAmount: "300.0000",
+                amount: 300,
+              },
+            ],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByDisplayValue("台北")).toBeInTheDocument());
+      await sleep(400);
+
+      expect(screen.queryByText("油資無法計算")).not.toBeInTheDocument();
+      expect(screen.getAllByText("300.0000").length).toBeGreaterThan(0);
+      expect(screen.getByText(/合計金額：300/)).toBeInTheDocument();
+      expect(screen.getByText("該出差日期缺少 ETC 補助參數，請聯絡管理員設定")).toBeInTheDocument();
+    });
   });
 
   // ---- Preview debounce 300ms (D8) ----

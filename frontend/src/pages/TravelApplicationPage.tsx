@@ -78,6 +78,29 @@ function missingParameterMessages(missing: PreviewMissingCode[]): string[] {
   );
 }
 
+/**
+ * 合併複審 SF-1 修復：「油資無法計算」標題與金額抑制僅繫於「油資相關」代碼
+ * ——僅缺 `ETC` 時，油資版本本就齊備，後端仍會算出正確的油資試算金額
+ * （`formatTravelComputed`，travel-service.ts 明文設計：只缺 ETC 版本時 ETC
+ * 部分以 0 佔位、油資部分照實呈現），此時應維持顯示各段與合計金額（後端為
+ * 準）＋ETC 缺項提示，而非誤報「油資無法計算」並隱藏已算出的金額
+ * （FE-US-10 第一條、AC-32 字面僅涵蓋缺油耗/缺油價，未涵蓋僅缺 ETC）。
+ * `AMOUNT_OUT_OF_RANGE` 必須保留在抑制清單——該情境下後端已把段金額歸零
+ * （travel-service.ts 之 `amountOutOfRange` 分支），顯示歸零值即為 AC-32
+ * 禁止之「金額 0 為最終值」。
+ */
+const FUEL_UNAVAILABLE_CODES: PreviewMissingCode[] = [
+  "FUEL_PRICE",
+  "FUEL_CONSUMPTION",
+  "FUEL_DATA_CORRUPTED",
+  "FUEL_UNIT_PRICE_OUT_OF_RANGE",
+  "AMOUNT_OUT_OF_RANGE",
+];
+
+function isFuelUnavailable(missing: PreviewMissingCode[]): boolean {
+  return missing.some((code) => FUEL_UNAVAILABLE_CODES.includes(code));
+}
+
 let localKeySeq = 0;
 function nextLocalKey(): string {
   localKeySeq += 1;
@@ -758,7 +781,12 @@ export default function TravelApplicationPage(): React.ReactElement {
                     {previewState.kind === "loading" && <p>計算中…</p>}
                     {previewState.kind === "ready" &&
                       preview &&
-                      (previewState.data.parameterAvailable ? (
+                      (isFuelUnavailable(previewState.data.missingParameters) ? (
+                        // AC-32（FE-US-10 第四條）：油資無法計算時，本段金額
+                        // 不得以 0 呈現為最終值——顯示「油資無法計算」。
+                        // SF-1：僅缺 ETC 時油資本可算出，不落入此分支。
+                        <p className="warn-text">油資無法計算</p>
+                      ) : (
                         <dl className="detail-list">
                           <dt>油資補助（試算）</dt>
                           <dd>{preview.fuelAmount}</dd>
@@ -767,10 +795,6 @@ export default function TravelApplicationPage(): React.ReactElement {
                           <dt>本段金額（試算）</dt>
                           <dd>{preview.amount}</dd>
                         </dl>
-                      ) : (
-                        // AC-32（FE-US-10 第四條）：缺參數/不可計算時，本段金額
-                        // 不得以 0 呈現為最終值——顯示「油資無法計算」。
-                        <p className="warn-text">油資無法計算</p>
                       ))}
                     {previewState.kind === "error" && (
                       <p className="field-error">{previewState.message}</p>
@@ -786,23 +810,44 @@ export default function TravelApplicationPage(): React.ReactElement {
           <h2 id="preview-total-heading">金額預覽（試算，後端計算）</h2>
           {previewState.kind === "loading" && <p>計算中…</p>}
           {previewState.kind === "ready" &&
-            (!previewState.data.parameterAvailable ? (
-              // AC-32：三種缺參數情境文字逐字互異（同時成立時同時顯示）；
-              // 且不得以「暫以 0 試算」之類文字暗示金額 0 為最終值。
-              <div className="warn-text">
-                <p>
-                  <strong>油資無法計算</strong>
-                </p>
-                {missingParameterMessages(previewState.data.missingParameters).map((msg) => (
-                  <p key={msg}>{msg}</p>
-                ))}
-              </div>
-            ) : (
-              <p>
-                <strong>合計金額：{previewState.data.totalAmount}</strong>（總里程：
-                {previewState.data.totalKm} 公里）
-              </p>
-            ))}
+            (() => {
+              const { missingParameters } = previewState.data;
+              const messages = missingParameterMessages(missingParameters);
+              const fuelUnavailable = isFuelUnavailable(missingParameters);
+              return (
+                <>
+                  {fuelUnavailable ? (
+                    // AC-32：三種缺參數情境文字逐字互異（同時成立時同時顯示）；
+                    // 且不得以「暫以 0 試算」之類文字暗示金額 0 為最終值。
+                    <div className="warn-text">
+                      <p>
+                        <strong>油資無法計算</strong>
+                      </p>
+                      {messages.map((msg) => (
+                        <p key={msg}>{msg}</p>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      {messages.length > 0 && (
+                        // SF-1：僅缺 ETC 時，油資部分仍可算出，維持顯示合計
+                        // 金額（後端為準）＋ETC 缺項提示，不誤報「油資無法
+                        // 計算」（FE-US-10 第一條、PHASE-004 既有行為）。
+                        <div className="warn-text">
+                          {messages.map((msg) => (
+                            <p key={msg}>{msg}</p>
+                          ))}
+                        </div>
+                      )}
+                      <p>
+                        <strong>合計金額：{previewState.data.totalAmount}</strong>（總里程：
+                        {previewState.data.totalKm} 公里）
+                      </p>
+                    </>
+                  )}
+                </>
+              );
+            })()}
           {previewState.kind === "error" && (
             <p className="field-error" role="alert">
               {previewState.message}
