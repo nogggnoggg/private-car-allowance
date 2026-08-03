@@ -304,6 +304,8 @@ Updated: 2026-08-02
 
 ## 跨 Phase 追蹤事項（來自 PLAN-001 Handoff）
 
+- **【新增 2026-08-03，CHORE-003-SPEC 查出之同類缺陷（PHASE-004 領域，另案）】差旅快照金額欄位容量溢位風險**：`TripSegment.snapshotFuelAmount`/`snapshotEtcAmount`/`snapshotRawAmount` 為 `Decimal(14,4)`（整數部 <1e10），但來源 `totalKm`(<1e8，KM_MAGNITUDE_LIMIT) × `unitPrice`(CHORE-003 後 <1e6) 理論乘積可達 ~1e14——極端合法輸入下完成差旅時 DB 拋錯 → 500。與 CHORE-003 同缺陷類；處置（乘積上限驗證 or 收緊輸入上限）屬行為變更需 Spec 批准，建議併入 PHASE-006 前的 chore 或 PHASE-011。詳見 PHASE-003a Spec §14.9 第 4 點。
+
 - **【PHASE-009 硬約束，PHASE-005 D8(a) 定案，2026-08-03】**：PHASE-009 作廢須以 `Application.status = VOIDED` **取代** `COMPLETED`（不得改採正交旗標如 `voidedAt` 保留 COMPLETED）；若日後改採正交旗標，PHASE-005 `mileage-engine` 之過濾條件（`status = 'COMPLETED'`）必須同案修改，並以真實作廢流程回歸 PHASE-005 AC-04。PHASE-009 開工 Packet 必引本條。
 - **【PHASE-011 效能驗證清單】**：PHASE-005 統計查詢之索引評估（D9(a) 定案不新增；`TravelApplication.tripDate` 範圍條件跨表，屆時以實測決定）；統計頁與列表頁 `tripDate`/`primaryDate` 篩選語意差異之檢視（PHASE-005 Spec §17-6）。
 - **【已轉 CHORE-003，2026-08-03 D1(b) 定案】參數欄位容量溢位回 500**（CHORE-002 reviewer 查出，2026-08-03）：`unitPrice` 落於 `[1e6, Decimal(10,4) 上限外)`、`vehiclePrice` 落於 `[1e10, Decimal(12,2) 上限外)` 時 DB 層拋錯 → 500（string/number 皆然），違反 PHASE-003a Spec 錯誤合約（該端點僅列 400/409/401/403）；另 `unitPrice:"0.0000001"` 靜默存為 0.0000。正解：比照 `trip-validation.ts:88/107` 綁欄位容量之範圍驗證（十進位字面 pattern + 量級上限）。屬新 AC，**spec-writer 產 PHASE-005 Spec 時必須列為決策點供人類裁定（納入 005 或獨立回合）**。關聯：AR-5 字串全保真（「不可解析→400」合約變更）宜同案處理。
