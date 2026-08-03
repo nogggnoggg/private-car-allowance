@@ -437,8 +437,8 @@ TDD：每 Task 先寫**會失敗**的測試再實作；不得刪除／弱化／s
 |---|---|---|
 | `parseMileageRange`（AC-08/15/16/17） | ≥ 14 | ① `dateFrom == dateTo` **必須通過**（反向鑑別：若實作誤用 `>=` 判倒置，此案例必紅）；② `dateFrom = dateTo + 1 日` 必拒（最小倒置）；③ 缺 `dateFrom`／缺 `dateTo`／兩者皆缺各一（依 D5）；④ 格式：`2026/03/01`、`2026-3-1`、`2026-02-30`、`""`、`"abc"`；⑤ 回傳**全部**欄位錯誤而非第一項 |
 | `buildOfficialMileageWhere`（AC-01~06） | ≥ 8 | ① `status` 必須恰為 `"COMPLETED"`（斷言字面值——若實作寫成 `{ not: "DRAFT" }`，AC-04 之作廢排除即失效，本斷言直接變紅）；② `type` 恰為 `"TRAVEL"`；③ `tripDate` 用 `gte`/`lte`（**不是** `gt`/`lt`）——直接斷言 where 物件鍵名；④ `ownerId` 來自參數而非任何預設 |
-| 里程加總純函式（若 D2 裁定為「段加總」則新增此列）（AC-07/11） | ≥ 10 | `(10.00,10.00)+(5.50,0)+(20.25,8.00) = 35.75`；錯誤實作值 `53.75`／`18.00`／`17.75` 皆不同；`10.01×3 = 30.03`（浮點實作得 `30.029999…`）；空陣列 → `0`；不取整 |
-| 里程格式化（AC-09/11/29） | ≥ 6 | `0 → "0.00"`；`30.03 → "30.03"`；`30.1 → "30.10"`；不得輸出 `"30"`、`"30.030000"`、`30.03`(number) |
+| ~~里程加總純函式（若 D2 裁定為「段加總」則新增此列）（AC-07/11）~~ **不適用** | — | **D2(a) 已裁定讀快照聚合（Spec Gate 2026-08-03），此純函式不存在，本列不成立**；AC-07／AC-11 之數值鑑別力改由整合層精確等值斷言承擔（見 §11.2 與 §12 表註 2） |
+| 里程格式化（AC-09/11/29）**（歸屬 T4：DTO 序列化落點，非 T1）** | ≥ 6 | `0 → "0.00"`；`30.03 → "30.03"`；`30.1 → "30.10"`；不得輸出 `"30"`、`"30.030000"`、`30.03`(number)。T1~T3 之引擎層僅回傳 `Prisma.Decimal`，**字串表示法於 T4 之 DTO 層產生並驗證** |
 
 ### 11.2 整合（Vitest + PostgreSQL + 真實 route）
 
@@ -492,22 +492,25 @@ TDD：每 Task 先寫**會失敗**的測試再實作；不得刪除／弱化／s
 > **格式**：`AC` ｜ `層級` ｜ `測試檔（預定路徑）` ｜ `測試名（預定名稱）` ｜ `Task` ｜ `狀態`
 > 狀態值：`PENDING`（Spec 階段）／`RED`（測試已寫且失敗）／`GREEN`（實作完成通過）。
 > **Phase 完成前之覆蓋檢查與終審核對以本表為準**（治理 2026-08-02.1）。
+> **`GREEN` 列之測試名為實際存在之測試名（逐字可 `grep`）；`PENDING` 列為預定名稱。** 巢狀測試以 `describe > it` 表示。
+> 本表之 `GREEN` 依據：T1／T2／T3 + R1（commit `7bbdc00`）之兩輪全綠紀錄（2026-08-03）。
 
 | AC | 層級 | 測試檔 | 測試名（預定） | Task | 狀態 |
 |---|---|---|---|---|---|
-| AC-01 | unit + integration | `backend/test/unit/mileage-range.test.ts`；`backend/test/integration/phase5-mileage-engine.test.ts` | `buildOfficialMileageWhere uses gte/lte on tripDate (inclusive boundaries)`；`inclusive range: dateFrom-1 excluded, dateFrom/dateTo included, dateTo+1 excluded` | T1, T2 | PENDING |
-| AC-02 | integration | `phase5-mileage-engine.test.ts` | `attribution uses tripDate, not createdAt/completedAt/primaryDate` | T1, T2 | PENDING |
-| AC-03 | unit + integration | `mileage-range.test.ts`；`phase5-mileage-engine.test.ts` | `where.status is exactly "COMPLETED"`；`DRAFT travel with mileage is excluded (exact-value assertion)` | T2 | PENDING |
-| AC-04 | integration | `phase5-mileage-engine.test.ts` | `VOIDED travel (seeded directly in DB) is excluded` | T2 | PENDING |
-| AC-05 | integration | `phase5-mileage-engine.test.ts` | `MAINTENANCE/DEPRECIATION applications are excluded and do not throw` | T2 | PENDING |
-| AC-06 | integration | `phase5-mileage-engine.test.ts` | `other user's completed travel never leaks into owner's total` | T2 | PENDING |
-| AC-07 | unit + integration | `backend/test/unit/mileage-engine.test.ts`；`phase5-mileage-engine.test.ts` | `sums totalKm only; highway is never added twice (35.75 vs 53.75/18.00/17.75)` | T2 | PENDING |
-| AC-08 | unit | `mileage-range.test.ts` | `rejects dateFrom > dateTo (minimal 1-day inversion) but accepts dateFrom == dateTo` | T1 | PENDING |
-| AC-09 | integration | `backend/test/integration/phase5-mileage-endpoint.test.ts` | `returns 200 with "0.00" when no eligible travel exists` | T3 | PENDING |
-| AC-10 | integration | `phase5-mileage-engine.test.ts` | `covers the full range across 101 completed travels (not limited by list pagination)` | T3 | PENDING |
-| AC-11 | unit + integration | `mileage-engine.test.ts`；`phase5-mileage-engine.test.ts` | `Decimal precision: 10.01 × 3 === "30.03" with no rounding and no float drift` | T1, T3 | PENDING |
-| AC-12 | integration | `phase5-mileage-engine.test.ts` | `sumOfficialMileage runs inside $transaction, is read-only, opens no nested tx` | T3 | PENDING |
-| AC-13 | integration | `phase5-mileage-engine.test.ts` | `invariant: snapshotTotalKm equals sum of segment totalKm for every COMPLETED travel` | T3 | PENDING |
+| AC-01 | unit + integration | `backend/test/unit/mileage-range.test.ts`；`backend/test/integration/phase5-mileage-engine.test.ts` | `③ tripDate range uses 'gte'/'lte' keys exactly (not 'gt'/'lt') — precise key-name assertion`；`M-1① — AC-01 四點邊界（tripDate 精確 gte/lte，非近似值） > dateFrom−1／dateTo+1 不納入；dateFrom／dateTo 精確納入（bit-exact）` | T1, T2, R1 | GREEN |
+| AC-02 | integration | `phase5-mileage-engine.test.ts` | `M-1② — AC-02 依「出差日期」歸屬區間（非 Application.primaryDate/createdAt） > primaryDate/createdAt 落區間內、tripDate 落區間外（刻意跨月份）→ 不納入`；`… > tripDate 落區間內、primaryDate/createdAt 落區間外（刻意跨月份）→ 納入` | T1, T2, R1 | GREEN |
+| AC-03 | unit + integration | `mileage-range.test.ts`；`phase5-mileage-engine.test.ts` | `① status is exactly the literal 'COMPLETED' (not a negated DRAFT check — AC-04 discriminator)`；`counts only COMPLETED travel; DRAFT and VOIDED are fully excluded (reverse assertion, bit-exact)` | T2 | GREEN |
+| AC-04 | integration | `phase5-mileage-engine.test.ts` | `counts only COMPLETED travel; DRAFT and VOIDED are fully excluded (reverse assertion, bit-exact)`（同一測試同時涵蓋 AC-03／AC-04，VOIDED 列直寫 DB） | T2 | GREEN |
+| AC-05 | integration | `phase5-mileage-engine.test.ts` | `excludes MAINTENANCE / DEPRECIATION applications without throwing (no travel sub-table)` | T2 | GREEN |
+| AC-06 | integration | `phase5-mileage-engine.test.ts` | `isolates by ownerId — B's mileage (including on-behalf-created) never leaks into A's total` | T2 | GREEN |
+| AC-07 | integration | `phase5-mileage-engine.test.ts` | `sums to exactly 35.75 for a travel whose snapshot reflects segment totals without double-counting highway (PHASE-005-R1 M-2: real completion flow, not a hand-written fixture)` | T2, R1 | GREEN |
+| AC-08 | unit | `mileage-range.test.ts` | `① accepts dateFrom == dateTo (single-day statistics) — reverse discriminator for '>=' misuse`；`② rejects dateFrom = dateTo + 1 day (minimal 1-day inversion) with dateRange field error` | T1 | GREEN |
+| AC-09（引擎層：`Decimal 0` / `count 0`） | integration | `phase5-mileage-engine.test.ts` | `returns totalKm 0 and applicationCount 0 for a range with no matching rows`；`AC-09(a): empty range with zero applications returns Decimal 0 / count 0`；`AC-09(b): only a DRAFT travel exists in range — still returns Decimal 0 / count 0`；`AC-09(c): only a VOIDED travel exists in range — still returns Decimal 0 / count 0`；`AC-09(d): only another owner's travel and only a non-travel type exist for ownerA — Decimal 0 / count 0` | T3 | GREEN |
+| AC-09（HTTP 層：200／`"0.00"`／非 `null`／非 404） | integration | `backend/test/integration/phase5-mileage-endpoint.test.ts` | `returns 200 with "0.00" when no eligible travel exists (not null, not empty string, not 404)` | T4 | PENDING |
+| AC-10 | integration | `phase5-mileage-engine.test.ts` | `AC-10: sums the FULL range across 101 distinct-valued COMPLETED travels (> PAGE_SIZE_MAX)` | T3 | GREEN |
+| AC-11 | integration | `phase5-mileage-engine.test.ts` | `preserves decimal precision across multiple rows: 10.01 + 10.01 + 10.01 = 30.03 exactly` | T3 | GREEN |
+| AC-12 | integration | `phase5-mileage-engine.test.ts` | `AC-12: runs correctly inside prisma.$transaction and performs zero writes` | T3 | GREEN |
+| AC-13 | integration | `phase5-mileage-engine.test.ts` | `AC-13 (PHASE-005-R1 M-2, global invariant scan): every segment-bearing COMPLETED travel in this schema has snapshotTotalKm == Σ TripSegment.totalKm`；`invariant (PHASE-005-R1 M-2, global): no COMPLETED travel application in this schema has a null snapshotTotalKm`（D2(a) 之快照非 null 守門） | T3, R1 | GREEN |
 | AC-14 | integration | `phase5-mileage-endpoint.test.ts` | `authenticated user gets 200 with own range mileage` | T4 | PENDING |
 | AC-15 | integration | `phase5-mileage-endpoint.test.ts` | `missing dateFrom / dateTo returns 400 with locating fields` | T4 | PENDING |
 | AC-16 | integration | `phase5-mileage-endpoint.test.ts` | `malformed dates return 400 VALIDATION_ERROR` | T4 | PENDING |
@@ -527,10 +530,16 @@ TDD：每 Task 先寫**會失敗**的測試再實作；不得刪除／弱化／s
 | AC-30 | frontend | `MileageSummarySection.test.tsx` | `displays statistics endpoint value (999.99), never a sum of list items (30.00)` | T7 | PENDING |
 | AC-31 | frontend | `frontend/test/AdminUserApplicationsPage.test.tsx` | `admin statistics request carries ownerId equal to route :userId` | T8 | PENDING |
 | AC-32 | E2E | `e2e/mileage-statistics.spec.ts` | `no horizontal overflow at 375px viewport` | T8 | PENDING |
-| AC-33 | integration | `phase5-mileage-engine.test.ts` | `aggregation happens in DB: query count is constant regardless of row count (no N+1)` | T3 | PENDING |
+| AC-33 | integration | `phase5-mileage-engine.test.ts` | `AC-33: aggregation runs in a constant number of SQL queries, independent of row count (3 vs 101), and is a real SQL SUM/COUNT — not findMany()+reduce (PHASE-005-R1 S-1)` | T3, R1 | GREEN |
 | AC-34 | integration | `phase5-mileage-contract.test.ts` | `errors use the unified envelope and leak no stack/SQL/cookie in body or logs` | T6 | PENDING |
 
 **覆蓋核對**：AC-01~AC-34 全數有映射；無 AC 僅由 E2E 覆蓋（E2E 為附加證據，AC-32 除外——響應式本質為瀏覽器行為，沿用 PHASE-004 AC-89 慣例）。
+
+**表註（2026-08-03 同步，依期中 Review S-2）**
+
+1. **AC-09 拆為兩列**：原單列同時宣稱引擎層與 HTTP 層證據，但實際僅有引擎層測試（`Decimal 0` / `count 0`）；`HTTP 200`、`"0.00"` 字串表示、非 `null`／非 404 屬 DTO／route 行為，落點為 T4。拆列後兩層各自可機械核對。
+2. **AC-07／AC-11 移除 `backend/test/unit/mileage-engine.test.ts` 映射**：§16 **D2(a)**（Spec Gate 2026-08-03 人類批准，見 §18）裁定引擎直接 `SUM(TravelApplication.snapshotTotalKm)`，**不存在里程加總純函式**，該單元測試檔在 D2(a) 下本就不應存在。兩條 AC 之數值鑑別力由整合層精確等值斷言承擔（`35.75` 與 `30.03`），覆蓋不減。此列屬 Gate 後應連動修訂而未修訂之遺留。
+3. **未列 `RED` 狀態**：T1~T3 均依 TDD 先紅後綠，紅燈為過程狀態，結案時一律落在 `GREEN`；R1（commit `7bbdc00`）為零 `src` 變更之測試層鑑別力補強，故僅擴充測試名與 Task 欄，不改變 AC 條文與狀態語意。
 
 ---
 
@@ -872,5 +881,6 @@ PRD 目標句寫「提供個人與管理員的區間統計查詢**頁**」，但
 |---|---|---|---|
 | 2026-08-03 | SPEC-005（初稿） | 建立 PHASE-005 Spec，狀態 `DRAFT`；AC-01~34、Task Graph T1~T8、AC↔測試映射表、決策點 D1~D10 | Task Context Packet SPEC-005；PRD §5 PHASE-005 節；`userstory.md` FE-US-06／AD-US-06／BE-US-30／BE-US-20；PHASE-004 Spec；PROJECT_STATE 跨 Phase 追蹤事項（2026-08-03 條目） |
 | 2026-08-03 | Spec Gate（大總管固化） | **D1~D10 全數照 §16 推薦選項批准**：D1(b) 獨立回合 CHORE-003 與 005 並行（含 AR-5 同案）、D2(a) 讀 `snapshotTotalKm`＋AC-13 不變式＋COMPLETED 快照非 null 斷言、D3(a) 字串／2 位小數／未取整／`"0.00"`、D4(a) 單一端點 `GET /statistics/mileage`、D5(a) `dateFrom`/`dateTo` 皆必填、D6(a) 既有頁內共用區塊不新增路由、D7(a) 里程＋筆數、D8(a) 固化「VOIDED 取代 COMPLETED」並寫入跨 Phase 追蹤、D9(a) 不新增索引（索引評估列 PHASE-011）、D10(a) **T4/T5 升 High 且事前批准已於本 Gate 一併取得**。§7/§12/§15 之「推薦」形狀即定案形狀，無需連動改寫。狀態 `DRAFT`→`ACTIVE`。衍生待辦：PRD PHASE-005 節「High 風險 Task：無」須修正（派工處理）；CHORE-003 回合另開（PHASE-003a Spec 錯誤合約修訂）。 | 人類 leonchih 2026-08-03 Spec Gate 批准（「全部照建議批准」） |
+| 2026-08-03 | PHASE-005-SPEC-SYNC-1（T1~T3+R1 後同步） | **僅同步映射表與測試策略至實作現實，未改動任何 AC 條文本體、§16 決策點或其他章節。** §12：T1/T2/T3 + R1 已覆蓋之 AC-01~AC-08、AC-10~AC-13、AC-33 狀態 `PENDING`→`GREEN`，測試名回填為 `phase5-mileage-engine.test.ts`（18 條）與 `mileage-range.test.ts`（31 條）之**實際測試名**；**AC-09 拆為兩列**（引擎層 T3 `GREEN`／HTTP 層 T4 `PENDING`）；**AC-07／AC-11 移除指向不存在檔案 `backend/test/unit/mileage-engine.test.ts` 之映射**（D2(a) 下該純函式不存在，屬 Gate 後未連動之遺留），層級改為 integration；新增表註 1~3 與 `GREEN` 依據說明。§11.1：「里程加總純函式」列標記為 **D2(a) 下不適用**；「里程格式化」列標註**歸屬 T4（DTO 層）**。 | 期中 Review S-2（2026-08-03）；R1 commit `7bbdc00`；§16 D2(a)／Spec Gate 人類批准 leonchih 2026-08-03 |
 
 > **狀態轉換條件**：人類於 Spec Gate 裁定 D1~D10 → 大總管以修訂紀錄固化裁定結果（引用批准與日期）並將受影響條文（§7 API contract、§15 Task Graph、§12 映射表）連動更新 → 狀態改為 `ACTIVE` → 方可派 T1 開工。
