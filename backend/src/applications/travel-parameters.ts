@@ -15,9 +15,12 @@
  *      `"FUEL_PRICE"|"FUEL_CONSUMPTION"|"ETC"`（D5(a) 已批之破壞性更名）。
  *   4. 缺油耗（B-05）：油種未知，`missing` 僅回報 `FUEL_CONSUMPTION`，
  *      **不**同時查詢／回報油價缺項。
- *   5. `deriveFuelUnitPrice` 之任何 throw（RangeError，代表資料毀損）由本模組
- *      攔截，轉為 `fuelUnitPriceOutOfRange=true`（T2 複審 AR-D 義務——不得讓
- *      例外直接穿透至 HTTP 回應／以 500 面向使用者）。
+ *   5. `deriveFuelUnitPrice` 之 `RangeError`（代表資料毀損）由本模組攔截，
+ *      記一行 sanitized 警示日誌後轉為 `fuelDataCorrupted=true`（T2 複審 AR-D
+ *      義務——不得讓例外直接穿透至 HTTP 回應／以 500 面向使用者；PHASE-005a-T7R
+ *      SF-1：不得零日誌靜默吞掉，且與「推導正常但超出欄位容量」
+ *      （`fuelUnitPriceOutOfRange=true`）為不同情境，訊息與 `details.missing`
+ *      代碼皆刻意不同）。非 `RangeError` 之未知例外一律 rethrow，絕不吞掉。
  *
  * 仍然沿用（不重寫）：
  *   - `findEffectiveVersion`（`../parameters/parameter-version-engine.ts`）—
@@ -58,13 +61,23 @@ export interface ResolvedParameters {
   snapshotFuelPricePerLiter: Prisma.Decimal | null;
   snapshotFuelConsumption: Prisma.Decimal | null;
   /**
-   * D4(a)：油耗與油價皆已解析，但推導單價 `|v| ≥ 10^6`（或
-   * `deriveFuelUnitPrice` 因資料毀損而 throw，本模組已攔截轉換於此）。
-   * 與 `missing` 是獨立的維度——`missing` 表示「查無版本」，本旗標表示
-   * 「版本皆有，但推導結果不可用」。完成流程（T8）依此追加
-   * `FUEL_UNIT_PRICE_OUT_OF_RANGE` 至 409 之 `details.missing`。
+   * D4(a)：油耗與油價皆已解析，但推導單價 `|v| ≥ 10^6`（`deriveFuelUnitPrice`
+   * 正常回傳之 `status: "out_of_range"`，非例外）。與 `missing` 是獨立的
+   * 維度——`missing` 表示「查無版本」，本旗標表示「版本皆有，但推導結果超出
+   * 欄位容量」。完成流程（T8）依此追加 `FUEL_UNIT_PRICE_OUT_OF_RANGE` 至 409
+   * 之 `details.missing`。與 `fuelDataCorrupted`（資料毀損）為互斥的獨立
+   * 維度，兩者不同時為 true（PHASE-005a-T7R SF-1）。
    */
   fuelUnitPriceOutOfRange: boolean;
+  /**
+   * PHASE-005a-T7R SF-1：`deriveFuelUnitPrice` 因資料毀損而 `throw
+   * RangeError`（例如 `kmPerLiter <= 0` 或非有限值繞過上游驗證存入 DB）。
+   * 與 `fuelUnitPriceOutOfRange`（正常推導但超出容量）為不同情境——資料毀損
+   * 情境對外訊息與 `details.missing` 代碼皆刻意不同（可行動性不同：容量超出
+   * 應查參數設定，資料毀損應查該使用者的油耗版本本身）。本模組已攔截並記錄
+   * 一行 sanitized 警示日誌，絕不讓例外穿透至 HTTP 回應。
+   */
+  fuelDataCorrupted: boolean;
   missing: MissingParameter[];
 }
 
@@ -119,6 +132,7 @@ export async function resolveTravelParameters(
       snapshotFuelPricePerLiter: null,
       snapshotFuelConsumption: null,
       fuelUnitPriceOutOfRange: false,
+      fuelDataCorrupted: false,
       missing: ["FUEL_CONSUMPTION", "FUEL_PRICE", "ETC"],
     };
   }
@@ -160,22 +174,40 @@ export async function resolveTravelParameters(
 
   let fuelUnitPrice: Prisma.Decimal | null = null;
   let fuelUnitPriceOutOfRange = false;
+  let fuelDataCorrupted = false;
 
   if (consumption !== null && price !== null) {
-    let derivation: ReturnType<typeof deriveFuelUnitPrice>;
     try {
-      derivation = deriveFuelUnitPrice(price.pricePerLiter, consumption.kmPerLiter);
-    } catch {
-      // T2 複審 AR-D 義務：deriveFuelUnitPrice 之任何 throw（資料毀損情境，
-      // 例如 kmPerLiter <= 0 或非有限值繞過上游驗證存入 DB）代表資料已毀損，
-      // 不得以 500 面向使用者——本模組攔截後轉為 out-of-range，交由完成流程
-      // （T8）轉為可行動的 409（D4(a)），絕不讓例外穿透至 HTTP 回應。
-      derivation = { status: "out_of_range", reason: "FUEL_UNIT_PRICE_OUT_OF_RANGE" };
-    }
-    if (derivation.status === "ok") {
-      fuelUnitPrice = derivation.unitPrice;
-    } else {
-      fuelUnitPriceOutOfRange = true;
+      const derivation = deriveFuelUnitPrice(price.pricePerLiter, consumption.kmPerLiter);
+      if (derivation.status === "ok") {
+        fuelUnitPrice = derivation.unitPrice;
+      } else {
+        // 正常推導（非例外），但 |商| ≥ 1e6 超出欄位容量（AC-20）。
+        fuelUnitPriceOutOfRange = true;
+      }
+    } catch (err) {
+      if (!(err instanceof RangeError)) {
+        // PHASE-005a-T7R SF-1：非 RangeError 之未知例外絕不得吞掉——
+        // fail-loud，維持既有例外傳播行為，交由上層（route 錯誤處理）視為
+        // 未預期錯誤，不得偽裝成可行動的 409。
+        throw err;
+      }
+      // T2 複審 AR-D 義務：deriveFuelUnitPrice 之 RangeError 代表資料已毀損
+      // （例如 kmPerLiter <= 0 或非有限值繞過上游驗證存入 DB），不得以 500
+      // 面向使用者，亦不得零日誌靜默吞掉——記一行 sanitized 警示日誌（僅
+      // versionId／fuelType／err.name，不含 basisNote 或任何個資），供管理員
+      // 事後排查資料完整性問題；本模組攔截後轉為 `fuelDataCorrupted`，交由
+      // 完成流程（T8）轉為可行動的 409（D4(a)），絕不讓例外穿透至 HTTP 回應。
+      console.error(
+        "[travel-parameters] deriveFuelUnitPrice threw RangeError — treating as corrupted fuel data",
+        {
+          fuelConsumptionVersionId: consumption.id,
+          fuelPriceVersionId: price.id,
+          fuelType: consumption.fuelType,
+          errorName: err.name,
+        }
+      );
+      fuelDataCorrupted = true;
     }
   }
 
@@ -189,6 +221,7 @@ export async function resolveTravelParameters(
     snapshotFuelPricePerLiter: price ? price.pricePerLiter : null,
     snapshotFuelConsumption: consumption ? consumption.kmPerLiter : null,
     fuelUnitPriceOutOfRange,
+    fuelDataCorrupted,
     missing,
   };
 }
@@ -215,9 +248,32 @@ export function assertParametersAvailable(
   resolved: ResolvedParameters,
   tripDate: Date | null
 ): void {
-  if (resolved.missing.length === 0 && !resolved.fuelUnitPriceOutOfRange) return;
+  if (
+    resolved.missing.length === 0 &&
+    !resolved.fuelUnitPriceOutOfRange &&
+    !resolved.fuelDataCorrupted
+  ) {
+    return;
+  }
 
   const formattedTripDate = tripDate ? formatUtcDate(tripDate) : null;
+
+  if (resolved.fuelDataCorrupted) {
+    // PHASE-005a-T7R SF-1：與「容量超出」為不同情境——訊息與 details.missing
+    // 代碼皆刻意逐字不同，避免管理員被誤導去查參數組合（實際應查該使用者的
+    // 油耗版本本身是否毀損）。非新增 ErrorCode，仍走 PARAMETER_NOT_AVAILABLE
+    // 409（僅 details.missing 追加新代碼）。
+    throw new AppError(
+      "PARAMETER_NOT_AVAILABLE",
+      409,
+      "油耗資料異常，請聯絡管理員檢查該使用者之油耗版本",
+      undefined,
+      {
+        missing: [...resolved.missing, "FUEL_DATA_CORRUPTED"],
+        tripDate: formattedTripDate,
+      }
+    );
+  }
 
   if (resolved.fuelUnitPriceOutOfRange) {
     // D4(a)：油耗／油價皆已解析，但推導單價超出快照欄位容量（或資料毀損被

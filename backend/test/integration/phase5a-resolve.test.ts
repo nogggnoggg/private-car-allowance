@@ -18,7 +18,8 @@
  */
 import { FuelType, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { computeCompletionBlockers } from "../../src/applications/completion-blockers.js";
 import {
   assertParametersAvailable,
   resolveTravelParameters,
@@ -26,6 +27,18 @@ import {
 import { hashPassword } from "../../src/auth/password.js";
 import { deriveFuelUnitPrice } from "../../src/parameters/fuel-price-engine.js";
 import { buildServer } from "../../src/server.js";
+
+// PHASE-005a-T7R SF-1：`deriveFuelUnitPrice` 之未知例外（非 RangeError）必須
+// rethrow，不得吞掉——測試需要在單一案例中臨時替換其實作為擲出 TypeError，
+// 其餘全部測試須維持真實推導行為。`vi.mock` + `importOriginal` 保留真實實作
+// 作為預設值，僅在該案例以 `mockImplementationOnce` 覆寫一次。
+vi.mock("../../src/parameters/fuel-price-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/parameters/fuel-price-engine.js")>();
+  return {
+    ...actual,
+    deriveFuelUnitPrice: vi.fn(actual.deriveFuelUnitPrice),
+  };
+});
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -355,7 +368,10 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
   describe("AC-21 缺油耗", () => {
     const TRIP_DATE = new Date("2051-02-01");
 
-    it("draft saves successfully with FUEL_CONSUMPTION blocker (owner has no consumption version at all)", async () => {
+    it("PHASE-005a-T7R SF-1修復: draft's computeCompletionBlockers includes FUEL_CONSUMPTION_NOT_AVAILABLE (owner has no consumption version at all)", async () => {
+      // 直建列保留為 fixture（證明草稿本身可正常建立，缺油耗不阻擋草稿儲存）；
+      // 真正的鑑別力斷言改為對 computeCompletionBlockers 的實際輸出斷言
+      // （SF-3 修復前，本測試僅建立列卻從未讀取／斷言 blockers，過度宣稱）。
       const application = await prisma.application.create({
         data: {
           type: "TRAVEL",
@@ -380,9 +396,17 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
       // 絕不 fallback：other 使用者的油耗（kmPerLiter=7）完全不影響 owner 的結果。
       expect(resolved.snapshotFuelConsumption).toBeNull();
       expect(resolved.fuelUnitPrice).toBeNull();
+
+      const blockers = computeCompletionBlockers({
+        tripDate: TRIP_DATE,
+        purpose: "AC-21 缺油耗草稿測試",
+        segments: [],
+        missingParameters: resolved.missing,
+      });
+      expect(blockers.map((b) => b.code)).toContain("FUEL_CONSUMPTION_NOT_AVAILABLE");
     });
 
-    it("complete returns 409 with details.missing containing the consumption code (message differs verbatim from missing-price)", () => {
+    it("assertParametersAvailable throws 409 with details.missing containing FUEL_CONSUMPTION (message differs verbatim from missing-price)", () => {
       const resolved = {
         fuelUnitPrice: null,
         etcUnitPrice: new Prisma.Decimal("2"),
@@ -393,6 +417,7 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
         snapshotFuelPricePerLiter: null,
         snapshotFuelConsumption: null,
         fuelUnitPriceOutOfRange: false,
+        fuelDataCorrupted: false,
         missing: ["FUEL_CONSUMPTION"] as const,
       };
       let caught: unknown;
@@ -401,11 +426,17 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
       } catch (err) {
         caught = err;
       }
-      const err = caught as { code: string; httpStatus: number; userMessage: string };
+      const err = caught as {
+        code: string;
+        httpStatus: number;
+        userMessage: string;
+        details?: { missing?: string[] };
+      };
       expect(err.code).toBe("PARAMETER_NOT_AVAILABLE");
       expect(err.httpStatus).toBe(409);
       expect(err.userMessage).toBe("請聯絡管理員建立油耗資料");
       expect(err.userMessage).not.toBe("請聯絡管理員設定參數");
+      expect(err.details?.missing).toContain("FUEL_CONSUMPTION");
     });
 
     it("another user's effective consumption value never appears in the result (no fallback) — real DB round-trip", async () => {
@@ -446,6 +477,7 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
         snapshotFuelPricePerLiter: null,
         snapshotFuelConsumption: new Prisma.Decimal("1"),
         fuelUnitPriceOutOfRange: false,
+        fuelDataCorrupted: false,
         missing: ["FUEL_PRICE"] as const,
       };
       let caught: unknown;
@@ -573,8 +605,8 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
   // T2 複審 AR-D 義務 — deriveFuelUnitPrice 之 throw 不得以 500 面向使用者
   // ===========================================================================
 
-  describe("deriveFuelUnitPrice throw 之防護（T2 AR-D 義務、D4(a)）", () => {
-    it("資料毀損情境（kmPerLiter<=0 繞過上游驗證直接寫入 DB）→ resolveTravelParameters 不拋出，回傳 fuelUnitPriceOutOfRange=true，非 500", async () => {
+  describe("deriveFuelUnitPrice throw 之防護（T2 AR-D 義務、D4(a)、PHASE-005a-T7R SF-1）", () => {
+    it("資料毀損情境（kmPerLiter<=0 繞過上游驗證直接寫入 DB）→ resolveTravelParameters 不拋出，回傳 fuelDataCorrupted=true（非 fuelUnitPriceOutOfRange），非 500", async () => {
       const corruptOwner = await prisma.user.create({
         data: {
           loginName: `${LOGIN_PREFIX}corrupt_${RUN_ID}`,
@@ -609,11 +641,16 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
         }
         expect(threw).toBeUndefined();
         expect(resolved).toBeDefined();
-        expect(resolved?.fuelUnitPriceOutOfRange).toBe(true);
+        // PHASE-005a-T7R SF-1：資料毀損（RangeError）與「推導正常但超出欄位
+        // 容量」是不同維度——前者為 fuelDataCorrupted，後者才是
+        // fuelUnitPriceOutOfRange。本情境（kmPerLiter=0）屬前者。
+        expect(resolved?.fuelDataCorrupted).toBe(true);
+        expect(resolved?.fuelUnitPriceOutOfRange).toBe(false);
         expect(resolved?.fuelUnitPrice).toBeNull();
 
         // 完成流程之守門（assertParametersAvailable）同樣不得拋出未攔截例外，
-        // 必須是可行動的 409，而非裸露的 RangeError 或 500。
+        // 必須是可行動的 409，而非裸露的 RangeError 或 500；訊息與代碼皆須與
+        // 「超出可計算範圍」情境逐字不同（SF-1 可行動性要求）。
         if (!resolved) throw new Error("resolved must be defined (asserted above)");
         let caught: unknown;
         try {
@@ -621,11 +658,19 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
         } catch (err) {
           caught = err;
         }
-        const err = caught as { code: string; httpStatus: number; userMessage: string };
+        const err = caught as {
+          code: string;
+          httpStatus: number;
+          userMessage: string;
+          details?: { missing?: string[] };
+        };
         expect(err).toBeDefined();
         expect(err.code).toBe("PARAMETER_NOT_AVAILABLE");
         expect(err.httpStatus).toBe(409);
-        expect(err.userMessage).toContain("超出可計算範圍");
+        expect(err.userMessage).toBe("油耗資料異常，請聯絡管理員檢查該使用者之油耗版本");
+        expect(err.userMessage).not.toContain("超出可計算範圍");
+        expect(err.details?.missing).toContain("FUEL_DATA_CORRUPTED");
+        expect(err.details?.missing).not.toContain("FUEL_UNIT_PRICE_OUT_OF_RANGE");
       } finally {
         // UserFuelConsumptionVersion.user 為 onDelete: Restrict（AD-US-04 歷史
         // 資料保護延伸，§8.2 明文）——刪除使用者前必須先移除其油耗版本，否則
@@ -636,6 +681,21 @@ describeWithDb("PHASE-005a-T7 — resolveTravelParameters 雙鏈解析 + AC-04/2
         await prisma.session.deleteMany({ where: { userId: corruptOwner.id } });
         await prisma.user.delete({ where: { id: corruptOwner.id } });
       }
+    });
+
+    it("非 RangeError 之未知例外（TypeError）不得被吞掉 —— 傳播出去，非 409（fail-loud）", async () => {
+      const mocked = vi.mocked(deriveFuelUnitPrice);
+      // mockImplementationOnce：僅覆寫下一次呼叫，之後自動還原為真實實作
+      // （vi.mock 工廠內以 vi.fn(actual.deriveFuelUnitPrice) 設定之預設值），
+      // 不影響本檔其餘任何測試案例。
+      mocked.mockImplementationOnce(() => {
+        throw new TypeError("t7resolve SF-1：模擬未知例外（非資料毀損 RangeError）");
+      });
+      // owner @ 2051-09-01：consumption(kmPerLiter=5) 與 price(35.0000) 皆
+      // 有效，會進入 deriveFuelUnitPrice 呼叫路徑（見 AC-23 fixture）。
+      await expect(
+        resolveTravelParameters(prisma, new Date("2051-09-01"), ownerId)
+      ).rejects.toThrow(TypeError);
     });
   });
 });
