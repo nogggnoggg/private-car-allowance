@@ -6,6 +6,10 @@ State: ACTIVE
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
 > - Gate 環境（compose oilexpense stack + gateadmin/staff01 合成資料）保留供後續 Phase 驗收沿用；dev DB 另有 e2eadmin（T8）。
 
+> **CHORE-003 實作記錄（2026-08-03，branch chore-003 @ rebase 至 main df36f75 後）**
+> - **T1（純函式驗證模組）：DONE**（`ca2267d`，50 單元測試，零接線）。**即審 APPROVE**（0 Must/0 Should/4 AR）：reviewer 以 node 實測六個 mutant 分支證明鑑別力（量級 >= vs >、字面字元數 vs decimalPlaces、pattern 放寬、trim 移除等皆會紅）；文案 byte 級比對零漂移；葉節點/零接線/D4 皆實證。基準線 1078→**1128**。
+> - **T2 前置警示（reviewer 移交，Packet 必載）**：①routes 必填檢查維持在格式層前（否則 B-03 文案退化）②**parameter-service.ts L203-208/L321-326 之 `Number(input)<0` 值域檢查須移到格式層之後**（否則 AC-21 之 "-1000000" 回錯文案、I 層必紅）③`toDecimalConstructorArg` 具名匯出必須維持。AR-1 int null 雙義回傳 footgun、AR-2 per-field first-hit 彙總。
+
 > **PHASE-005（區間公務里程統計）開工記錄（2026-08-03，使用者指令「繼續」）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、單行修改）一律派 implementer。
 > - branch：`phase-005`（自 main @ `310bc39` 切出）。流程：spec-writer 產 Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate** → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
