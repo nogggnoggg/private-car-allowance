@@ -37,9 +37,47 @@ import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest 
 import { resolveOwnerId } from "../applications/application-query.js";
 import { requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { formatUtcDate } from "../parameters/parameter-service.js";
-import { AppError } from "../platform/errors.js";
+import { AppError, type FieldError } from "../platform/errors.js";
 import { sumOfficialMileage } from "./mileage-engine.js";
 import { parseMileageRange } from "./mileage-range.js";
+
+/**
+ * T6-AR-1（複審移交）：`request.query` 的實際執行期型別**不是**
+ * `Record<string, string | undefined>`——Fastify 對重複 query 鍵（如
+ * `?ownerId=x&ownerId=y`）會解析為 `string[]`。舊實作把 query 直接當字串
+ * 傳入 `resolveOwnerId`／`parseMileageRange`，當 ADMIN 帶重複 `ownerId` 時，
+ * 陣列值未經檢查即流入 `buildOfficialMileageWhere` 的 Prisma `where.ownerId`
+ * （Prisma 只接受純量），觸發 `PrismaClientValidationError` → 未預期例外
+ * → 500（log 洩漏查詢結構與絕對路徑）。
+ *
+ * 依 AC-19「不得因夾帶欄位而報 500」，本函式在**任何授權／格式驗證之前**
+ * 對 `ownerId`／`dateFrom`／`dateTo` 三個本端點實際使用的 query 鍵做型別
+ * 收斂：非字串（陣列，或未來 querystring parser 可能產生的其他型別）一律
+ * 400 `VALIDATION_ERROR`。
+ *
+ * 刻意選擇「拒絕」而非「取首值」：取首值會讓「多帶一個同名參數」被靜默接受
+ * 並產生不可預期的行為（例如 ADMIN 取到陣列第一個 ownerId，呼叫者不易得知
+ * 究竟命中哪一個值）；400 明確告知「這不是本端點支援的輸入形狀」，較誠實
+ * （Task Packet 明確要求「擇一並說理」）。
+ *
+ * 此檢查與 B-26（403 優先於日期格式 400）並不衝突——B-26 針對的是「日期字串
+ * 內容是否合法」這個業務規則，本檢查針對的是「query 值是否為單一字串」這個
+ * 更底層的結構前提；沒有這個前提，`resolveOwnerId` 甚至無法對 `ownerId`
+ * 做出有意義的字串比較，因此必須先於授權判定執行。
+ */
+function assertScalarQueryParams(query: Record<string, unknown>): void {
+  const scalarFields: Array<"ownerId" | "dateFrom" | "dateTo"> = ["ownerId", "dateFrom", "dateTo"];
+  const fields: FieldError[] = [];
+  for (const field of scalarFields) {
+    const value = query[field];
+    if (value !== undefined && typeof value !== "string") {
+      fields.push({ field, reason: "僅接受單一字串值，不得重複帶入此參數" });
+    }
+  }
+  if (fields.length > 0) {
+    throw new AppError("VALIDATION_ERROR", 400, "查詢參數有誤，請檢查標示欄位。", fields);
+  }
+}
 
 interface MileagePluginOptions {
   prisma: PrismaClient;
@@ -74,7 +112,12 @@ export const mileagePlugin: FastifyPluginAsync<MileagePluginOptions> = async (
     "/statistics/mileage",
     { preHandler: authPreHandlers },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = request.query as Record<string, string | undefined>;
+      // T6-AR-1：query 的執行期型別可能是 `string[]`（重複鍵）——見上方
+      // `assertScalarQueryParams` 註解。先做結構層的型別收斂，再視為
+      // `Record<string, string | undefined>` 使用。
+      const rawQuery = request.query as Record<string, unknown>;
+      assertScalarQueryParams(rawQuery);
+      const query = rawQuery as Record<string, string | undefined>;
       const actor = request.currentUser;
 
       // B-26：授權判定先行。一般使用者自帶他人 `ownerId` 一律 403，且不看其餘

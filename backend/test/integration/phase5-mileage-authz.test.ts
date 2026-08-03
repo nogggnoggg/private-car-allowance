@@ -64,8 +64,15 @@ const OWNER_TOTAL = "111.25";
 const OTHER_TOTAL = "222.50";
 const ADMIN_TOTAL = "333.75";
 const PWD_TOTAL = "444.00";
+/**
+ * T6-AR-4（複審移交）：舊版矩陣列 6（停用帳號）未替 `disabledId` 建立任何差旅
+ * 資料，導致該列「不洩自己資料」的斷言恆真（沒有資料可洩漏，非真正驗證）。
+ * 補一筆相異總額，使該斷言具鑑別力——若實作意外洩漏，`555.00` 會出現在
+ * 401 回應原文中，必紅。
+ */
+const DISABLED_TOTAL = "555.00";
 /** 出現在任何 4xx 回應中即代表數值洩漏。 */
-const ALL_TOTALS = [OWNER_TOTAL, OTHER_TOTAL, ADMIN_TOTAL, PWD_TOTAL];
+const ALL_TOTALS = [OWNER_TOTAL, OTHER_TOTAL, ADMIN_TOTAL, PWD_TOTAL, DISABLED_TOTAL];
 
 interface MileageSummaryBody {
   totalKm?: unknown;
@@ -285,6 +292,12 @@ describeWithDb("PHASE-005-T5 — GET /statistics/mileage 權限矩陣 + appliedF
       tripDate: "2048-04-12",
       segments: [{ totalKm: PWD_TOTAL, highwayKm: "0.00" }],
     });
+    // T6-AR-4：disabled 使用者亦有相異總額，使矩陣列 6「不洩自己資料」非真空。
+    await createCompletedTravel({
+      ownerId: disabledId,
+      tripDate: "2048-04-18",
+      segments: [{ totalKm: DISABLED_TOTAL, highwayKm: "0.00" }],
+    });
 
     await prisma.user.update({ where: { id: pwdId }, data: { mustChangePassword: true } });
     await prisma.user.update({ where: { id: disabledId }, data: { isActive: false } });
@@ -320,6 +333,34 @@ describeWithDb("PHASE-005-T5 — GET /statistics/mileage 權限矩陣 + appliedF
       expect(resp.statusCode).toBe(403);
       // `expectNoDataLeak` 同時排除他人的 222.50 與自己的 111.25（靜默降級必紅）。
       expectNoDataLeak(resp, "FORBIDDEN");
+    });
+  });
+
+  // =========================================================================
+  // T6-AR-3 — `ownerId=`（空字串）格：釘住 `resolveOwnerId` 的空值分支
+  // =========================================================================
+  //
+  // `application-query.ts:resolveOwnerId` 的第一個分支同時處理三種輸入：
+  // `undefined`、`""`、`=== actor.id`。矩陣列 1 已覆蓋前兩者的「未帶」與
+  // 「帶自己」，但實際查詢字串中「帶自己」用的是真實 id 字串，從未顯式送出
+  // 空字串這個獨立分支——本組測試專門釘住 `ownerId=`（空字串）本身。
+
+  describe("T6-AR-3／ownerId=（空字串）視同未帶", () => {
+    it("USER sends an explicit empty ownerId → 200 own statistics, appliedFilters.ownerId === actor.id", async () => {
+      const resp = await get({ ownerId: "" }, ownerCookie);
+      expect(resp.statusCode).toBe(200);
+      expectSummary(resp, { totalKm: OWNER_TOTAL, applicationCount: 2, ownerId });
+      // 反向鑑別：空字串若被誤判為「非 actor.id 的他人」，應變成 403；
+      // 若被誤判為某個不存在的使用者，應變成 200 + 0。兩者皆與本斷言矛盾。
+      const body = resp.json() as MileageSummaryBody;
+      expect(body.appliedFilters?.ownerId).toBe(ownerId);
+      expect(body.appliedFilters?.ownerId).not.toBe("");
+    });
+
+    it("ADMIN sends an explicit empty ownerId → 200 defaults to self, same as omitting it (AC-25)", async () => {
+      const resp = await get({ ownerId: "" }, adminCookie);
+      expect(resp.statusCode).toBe(200);
+      expectSummary(resp, { totalKm: ADMIN_TOTAL, applicationCount: 1, ownerId: adminId });
     });
   });
 
