@@ -20,7 +20,7 @@
  *  - 同 DB 連跑兩輪全綠（自我修復清理 + 精確範圍隔離的 tripDate 區間）。
  *
  * PHASE-005-R1（期中 Review REQUEST_CHANGES 修復，全部為測試層修復，零 src
- * 變更 — 詳見各測試內的 M-1/M-2/S-1/S-3 標記與說明）：
+ * 變更 — 詳見各測試內的 M-1/M-2/S-1 標記與說明；S-3 已於 R4 撤回，見下）：
  *  - M-1① AC-01 四點邊界：dateFrom−1／dateFrom／dateTo／dateTo+1 各一筆
  *    COMPLETED，精確斷言恰納入中間兩筆（`tripDate`，非 `primaryDate`）。
  *  - M-1② AC-02 歸屬日期：primaryDate/createdAt 落區間內但 tripDate 落區間外
@@ -28,11 +28,13 @@
  *  - M-2 AC-07/AC-13/D2(a) 由套套邏輯改為有鑑別力版本（見上）。
  *  - S-1 AC-33：新增 SQL 文字斷言（`SUM(`/`COUNT(` 皆須在場，不得為
  *    `findMany()+reduce`），查詢數上界收緊為 `toBe(1)`（本實作實測恰 1 次）。
- *  - S-3：於四點邊界測試中加入 `SHOW TimeZone` 明文斷言（UTC/Etc/UTC），把
- *    「起訖含當日語意依賴 DB session TimeZone=UTC」的隱含環境假設變成可失敗
- *    守門（reviewer 實測 Asia/Taipei session 下 dateFrom 當日會被排除——修復
- *    該行為本身需要動 `mileage-range.ts`，超出本回合 Files Allowed 範圍，故
- *    本回合只把假設變得可見，不改變行為）。
+ *  - S-3（已證偽並撤回，PHASE-005-R4）：原假設「起訖含當日語意依賴 DB
+ *    session TimeZone=UTC」不成立——production 路徑使用 Prisma 結構化 API
+ *    對 `@db.Date` 欄位以 `date` 型別綁參，比較與 session TimeZone 無關，在
+ *    UTC±14 全時區逐位元恆定。原 `SHOW TimeZone` 斷言已移除；改於 M-1①
+ *    測試新增一條真性質守門（`SET LOCAL TimeZone` 非 UTC 下重跑同一斷言），
+ *    守護 Prisma 對 `@db.Date` 之 date-OID 綁參行為本身（升版敏感）。詳見
+ *    Spec §18 2026-08-03 修訂列。
  *
  * Test discipline (Spec §11.0 / CLAUDE.md): cleanup scoped to this suite's own
  * synthetic data only (loginName prefix "p5t2_" + tracked application ids);
@@ -886,16 +888,9 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
 
   describe("M-1① — AC-01 四點邊界（tripDate 精確 gte/lte，非近似值）", () => {
     it("dateFrom−1／dateTo+1 不納入；dateFrom／dateTo 精確納入（bit-exact）", async () => {
-      // S-3 守門：起訖含當日語意（AC-01/02）的 gte/lte 比較，實際上依賴 DB
-      // session 之 TimeZone=UTC（reviewer 實測：Asia/Taipei session 下
-      // `travel.tripDate >= dateFrom` 之 timestamptz 比較會把 dateFrom 當日排
-      // 除，見檔頭 S-3 說明）。把這個隱含環境假設變成一條明文、可失敗的守
-      // 門——若未來測試/部署環境的 DB session TimeZone 漂移離開 UTC，先在這裡
-      // 失敗，而不是讓下面的邊界斷言以令人困惑的 off-by-one 面貌失敗。
-      const tzRows = await prisma.$queryRawUnsafe("SHOW TimeZone");
-      const sessionTimeZone = tzRows[0]?.TimeZone;
-      expect(["UTC", "Etc/UTC"]).toContain(sessionTimeZone);
-
+      // S-3（已撤回，見檔頭說明）：起訖含當日語意（AC-01/02）之 gte/lte 比較，
+      // production 路徑透過 Prisma 結構化 API 對 `@db.Date` 欄位以 `date` 型別
+      // 綁參，與 DB session TimeZone 無關，不存在此處原假設之 off-by-one 風險。
       const dateFrom = new Date("2045-01-10");
       const dateTo = new Date("2045-01-20");
 
@@ -938,6 +933,61 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
       // 邊界外兩筆（901.00/902.00）刻意取遠大於 30 的值——若任一筆被誤納
       // 入，結果會明顯偏離 30，鑑別力充分；若兩筆都被誤納入，applicationCount
       // 亦會偏離 2。
+      expect(result.totalKm.toString()).toBe("30");
+      expect(result.applicationCount).toBe(2);
+    });
+
+    it("真性質守門（PHASE-005-R4）：SET LOCAL TimeZone 非 UTC 下四點邊界結果逐位元不變——證明 @db.Date 綁參與 session TimeZone 無關", async () => {
+      // 守護對象：Prisma 結構化 API 對 `@db.Date` 欄位以 date 型別（非
+      // timestamptz）綁參的行為本身。此行為升版敏感——若未來 Prisma/驅動版本
+      // 改變綁參型別，本測試會在此處先失敗，而不是讓 AC-01/02 的邊界斷言以
+      // 令人困惑的 off-by-one 面貌失敗（S-3 原始關切，已證偽但守門價值保留）。
+      const dateFrom = new Date("2045-02-10");
+      const dateTo = new Date("2045-02-20");
+
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-02-09",
+        tripDate: "2045-02-09", // dateFrom − 1 日
+        snapshotTotalKm: "901.00",
+      });
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-02-10",
+        tripDate: "2045-02-10", // dateFrom 當日
+        snapshotTotalKm: "10.00",
+      });
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-02-20",
+        tripDate: "2045-02-20", // dateTo 當日
+        snapshotTotalKm: "20.00",
+      });
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-02-21",
+        tripDate: "2045-02-21", // dateTo + 1 日
+        snapshotTotalKm: "902.00",
+      });
+
+      // biome-ignore lint/suspicious/noExplicitAny: tx client, dynamic import
+      const result = await prisma.$transaction(async (tx: any) => {
+        // 刻意選用遠離 UTC 的時區（Etc/GMT+12 = UTC-12），與原假設方向一致
+        // （非 UTC 會使 off-by-one 若存在則暴露）。POSIX 語意：Etc/GMT+12 之
+        // 偏移為 UTC−12。
+        await tx.$executeRawUnsafe("SET LOCAL TimeZone = 'Etc/GMT+12'");
+        return sumOfficialMileage(tx, { ownerId: ownerA.id, dateFrom, dateTo });
+      });
+
+      // 與 M-1① 相同斷言、相同 fixture 形狀：恰納入中間兩筆，逐位元不變。
       expect(result.totalKm.toString()).toBe("30");
       expect(result.applicationCount).toBe(2);
     });
