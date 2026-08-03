@@ -52,7 +52,8 @@ State: ACTIVE
 > - **T10（油耗維護頁，Medium）：DONE**（`410e7f4`，7 檔 +983；10 測試；usage ~191k）。AC-30 落地：三 state 可辨識＋依據備註、五欄表單＋basisNote 必填、五態 7 it、state 不自算鑑別（mock FUTURE＋過去日期，mutant 3 紅實證）。雙路由沿 PHASE-004-T14 慣例（`/admin/users/:userId/fuel-consumption` 預選＋`/admin/fuel-consumption` 一般入口，記錄交複審）；types/api.ts 僅新增型別（Packet 授權內）。大總管獨立驗收：前端兩輪 **152/0/0**（142+10 精確）、tsc 0、biome 192 檔乾淨、backend/e2e 零觸碰。前端基準線 → **152**。§12 AC-30 GREEN。
 > - **T11（個人檢視＋缺參數提示，Medium）：DONE**（`2ed582d`，9 檔 +590/-29；14 測試；usage ~221k）。AC-31 四條＋補充五態、AC-32 四條＋A-2 三不可計算代碼文案（it.each）、D5(a) 前端契約收斂全數落地（PreviewMissingCode 六碼、TravelSnapshotDto 雙版本 id nullable、`includes("FUEL")` 恆 false 消除——mutant 復舊 6/7 紅實證）。大總管獨立驗收：前端兩輪 **166/0/0**（152+14 精確）、tsc 0、biome 194 檔乾淨、backend/e2e 零觸碰。前端基準線 → **166**。§12 AC-31/32 GREEN（verbose 親跑逐字回填）。
 > - **T11 裁定三項（大總管，交複審確認）**：①HomePage.test.tsx 範圍外改動**追認納入**（Packet 嵌入指示之必然後果、循檔內 PHASE-004-T13 先例、計數斷言 2→3 意圖不變）②ETC 缺項與三不可計算代碼文案為 implementer 自選（Spec 無逐字），交複審＋T13 文案總盤點③預覽「任一缺項即整體顯示油資無法計算」之保守取捨（vs 部分呈現可算項）——符合 AC-32 硬性要求，列晨間報告供人類確認呈現偏好；若欲部分呈現另開小 Task。
-> - 下一步：T12（錯誤合約）派工中 → T9~T12 前端鏈＋合約合併複審 → T13 → 終審 → Draft PR。vitest 併跑限制持續有效。
+> - **T12（錯誤合約＋日誌安全，Medium）：DONE**（`0c5ab0c`，1 檔 +849；27 測試；零 src 變更、零缺陷發現；usage ~143k）。AC-35 結構性守門（13 碼全等＋7 src 檔字面值掃描、BOGUS mutant 必紅實證）、AC-34 端點合約 18 it＋logStream 六掃描＋A-6 console.error spy 逐鍵白名單獨立驗證（涵蓋邊界明文記載）。大總管獨立驗收：後端兩輪 **1468/0/0**（1441+27 精確）、tsc 0、biome 195 檔乾淨。後端基準線 → **1468**。§12 AC-34/35 GREEN——**37 AC 中僅餘 AC-33（T13）PENDING**。
+> - 下一步：T9~T12 合併複審（reviewer）→ T13（E2E＋375px）→ 終審 → Draft PR。vitest 併跑限制持續有效。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
