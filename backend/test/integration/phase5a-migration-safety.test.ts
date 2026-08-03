@@ -14,8 +14,12 @@
  * Done When items:
  *   1. migration 前後舊列逐欄位值比對全同（本檔用「既有 DB」情境，對一個只套
  *      用 PHASE-004 為止（不含本 Phase）migration 的 scratch schema 寫入一筆
- *      舊模型完整已完成差旅，再對同一 schema 套用本 Phase 剩餘的 migration，
- *      逐欄位比對前後完全相同）。
+ *      舊模型完整已完成差旅（`Application` + `TravelApplication` + 2 筆
+ *      `TripSegment`）、以及各 1 筆既有 `FuelParameterVersion` /
+ *      `EtcParameterVersion`，再對同一 schema 套用本 Phase 剩餘的 migration，
+ *      對全部五張表逐欄位比對前後完全相同 —— 機械證明 Spec §8.6 硬性要求的
+ *      「既有 `Application`／`TravelApplication`／`TripSegment`／
+ *      `FuelParameterVersion`／`EtcParameterVersion` 之任何既有欄位值零改寫」。
  *   2. `prisma migrate deploy` 於乾淨 DB（全新 scratch schema，套用全部
  *      migration）與既有 DB（上述漸進套用）皆成功。
  *   3. 帳號刪除守門測試涵蓋 `UserFuelConsumptionVersion`（只有油耗版本、無
@@ -188,11 +192,23 @@ describeWithDb("PHASE-005a-T1 migration safety net — existing DB (AC-27)", () 
   const APPLICATION_ID = `p5a_t1_app_${RUN_ID}`;
   const LOGIN_NAME = `p5a_t1_owner_${RUN_ID}`;
   const PASSWORD = "OldModelFixture99!";
+  // Real (not dangling) references: an actual FuelParameterVersion /
+  // EtcParameterVersion row is inserted below and these ids point at it, so
+  // the "既有 FuelParameterVersion／EtcParameterVersion 零改寫" clause of
+  // Spec §8.6 has a real row to be measured against (not just a foreign id
+  // string with nothing behind it).
   const LEGACY_FUEL_VERSION_ID = `p5a_t1_legacy_fuel_ver_${RUN_ID}`;
   const LEGACY_ETC_VERSION_ID = `p5a_t1_legacy_etc_ver_${RUN_ID}`;
+  const TRIP_SEGMENT_ID_1 = `p5a_t1_seg1_${RUN_ID}`;
+  const TRIP_SEGMENT_ID_2 = `p5a_t1_seg2_${RUN_ID}`;
   const TRIP_DATE = new Date("2033-05-01T00:00:00.000Z");
 
-  let beforeRow: Record<string, unknown>;
+  /** Before-migration snapshots for all five tables covered by Spec §8.6. */
+  let beforeApplicationRow: Record<string, unknown>;
+  let beforeTravelRow: Record<string, unknown>;
+  let beforeSegmentRows: Record<string, unknown>[];
+  let beforeFuelVersionRows: Record<string, unknown>[];
+  let beforeEtcVersionRows: Record<string, unknown>[];
 
   beforeAll(async () => {
     if (!DB_URL) return;
@@ -207,11 +223,14 @@ describeWithDb("PHASE-005a-T1 migration safety net — existing DB (AC-27)", () 
     baselineDir = buildBaselineMigrationsFixture();
     await runMigrateDeploy(path.join(baselineDir, "schema.prisma"), existingUrl);
 
-    // Step 2: write a complete old-model COMPLETED travel application via raw
-    // SQL (the baseline schema physically lacks the five new columns, so the
-    // real generated Prisma Client — built from the CURRENT schema — cannot
-    // be used for this insert; a plain SQL INSERT naming only the
-    // baseline columns is schema-agnostic and works against either state).
+    // Step 2: write a complete old-model COMPLETED travel application — plus
+    // an existing FuelParameterVersion, an existing EtcParameterVersion, and
+    // two existing TripSegment rows — via raw SQL (the baseline schema
+    // physically lacks the five new TravelApplication columns, so the real
+    // generated Prisma Client — built from the CURRENT schema — cannot be
+    // used for this insert; a plain SQL INSERT naming only the baseline
+    // columns is schema-agnostic and works against either state). This is
+    // the full set of five tables Spec §8.6 names as requiring zero rewrite.
     const scratchClient = new PrismaClient({ datasources: { db: { url: existingUrl } } });
     try {
       const now = new Date();
@@ -224,6 +243,18 @@ describeWithDb("PHASE-005a-T1 migration safety net — existing DB (AC-27)", () 
         VALUES
           (${OWNER_ID}, ${LOGIN_NAME}, 'Old Model Owner (Fixture)', NULL, ${passwordHash},
            'USER'::"Role", true, false, 0, NULL, ${now}, ${now})
+      `;
+      await scratchClient.$executeRaw`
+        INSERT INTO "FuelParameterVersion"
+          (id, "unitPrice", "effectiveFrom", "createdById", "createdAt")
+        VALUES
+          (${LEGACY_FUEL_VERSION_ID}, 3.5000, ${TRIP_DATE}, ${OWNER_ID}, ${now})
+      `;
+      await scratchClient.$executeRaw`
+        INSERT INTO "EtcParameterVersion"
+          (id, "unitPrice", "effectiveFrom", "createdById", "createdAt")
+        VALUES
+          (${LEGACY_ETC_VERSION_ID}, 5.0000, ${TRIP_DATE}, ${OWNER_ID}, ${now})
       `;
       await scratchClient.$executeRaw`
         INSERT INTO "Application"
@@ -243,19 +274,70 @@ describeWithDb("PHASE-005a-T1 migration safety net — existing DB (AC-27)", () 
            3.5000, 5.0000, ${LEGACY_FUEL_VERSION_ID}, ${LEGACY_ETC_VERSION_ID},
            120.50, 725.7500, ${now})
       `;
+      // Two segments whose totalKm sum to 120.50 and rawAmount sum to
+      // 725.7500 — self-consistent with the parent TravelApplication's
+      // snapshotTotalKm / snapshotRawAmount above.
+      await scratchClient.$executeRaw`
+        INSERT INTO "TripSegment"
+          (id, "travelApplicationId", "sortOrder", origin, destination, "totalKm",
+           "highwayKm", "snapshotFuelAmount", "snapshotEtcAmount", "snapshotRawAmount",
+           "snapshotAmount", "createdAt", "updatedAt")
+        VALUES
+          (${TRIP_SEGMENT_ID_1}, ${APPLICATION_ID}, 0, 'Fixture Origin A', 'Fixture Dest A',
+           70.25, 10.00, 250.0000, 150.0000, 400.0000, 400, ${now}, ${now})
+      `;
+      await scratchClient.$executeRaw`
+        INSERT INTO "TripSegment"
+          (id, "travelApplicationId", "sortOrder", origin, destination, "totalKm",
+           "highwayKm", "snapshotFuelAmount", "snapshotEtcAmount", "snapshotRawAmount",
+           "snapshotAmount", "createdAt", "updatedAt")
+        VALUES
+          (${TRIP_SEGMENT_ID_2}, ${APPLICATION_ID}, 1, 'Fixture Origin B', 'Fixture Dest B',
+           50.25, 0.00, 200.0000, 125.7500, 325.7500, 326, ${now}, ${now})
+      `;
 
-      // Capture the "before" snapshot — every column that physically exists
-      // right now (baseline-only; the new five columns don't exist yet).
-      const rows = await scratchClient.$queryRawUnsafe<Record<string, unknown>[]>(
+      // Capture the "before" snapshots — every column that physically
+      // exists right now (baseline-only; TravelApplication's five new
+      // columns don't exist yet) — across all five tables named in Spec
+      // §8.6's zero-rewrite requirement.
+      const appRows = await scratchClient.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "Application" WHERE id = $1`,
+        APPLICATION_ID
+      );
+      expect(appRows).toHaveLength(1);
+      beforeApplicationRow = canonicalizeRow(appRows[0]);
+
+      const travelRows = await scratchClient.$queryRawUnsafe<Record<string, unknown>[]>(
         `SELECT * FROM "TravelApplication" WHERE "applicationId" = $1`,
         APPLICATION_ID
       );
-      expect(rows).toHaveLength(1);
-      beforeRow = canonicalizeRow(rows[0]);
+      expect(travelRows).toHaveLength(1);
+      beforeTravelRow = canonicalizeRow(travelRows[0]);
       // Sanity: the fixture really is "old model shaped" per the baseline
       // schema (no new columns exist yet to even be null).
-      expect(beforeRow.fuelParameterVersionId).toBe(LEGACY_FUEL_VERSION_ID);
-      expect("fuelPriceVersionId" in beforeRow).toBe(false);
+      expect(beforeTravelRow.fuelParameterVersionId).toBe(LEGACY_FUEL_VERSION_ID);
+      expect("fuelPriceVersionId" in beforeTravelRow).toBe(false);
+
+      const segmentRows = await scratchClient.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "TripSegment" WHERE "travelApplicationId" = $1 ORDER BY "sortOrder"`,
+        APPLICATION_ID
+      );
+      expect(segmentRows).toHaveLength(2);
+      beforeSegmentRows = segmentRows.map(canonicalizeRow);
+
+      const fuelVersionRows = await scratchClient.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "FuelParameterVersion" WHERE id = $1`,
+        LEGACY_FUEL_VERSION_ID
+      );
+      expect(fuelVersionRows).toHaveLength(1);
+      beforeFuelVersionRows = fuelVersionRows.map(canonicalizeRow);
+
+      const etcVersionRows = await scratchClient.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "EtcParameterVersion" WHERE id = $1`,
+        LEGACY_ETC_VERSION_ID
+      );
+      expect(etcVersionRows).toHaveLength(1);
+      beforeEtcVersionRows = etcVersionRows.map(canonicalizeRow);
     } finally {
       await scratchClient.$disconnect();
     }
@@ -277,25 +359,77 @@ describeWithDb("PHASE-005a-T1 migration safety net — existing DB (AC-27)", () 
     // beforeAll would have thrown (failing this whole describe block) if
     // either `runMigrateDeploy` call rejected — this assertion just makes
     // the success condition explicit and independently checkable.
-    expect(beforeRow).toBeDefined();
+    expect(beforeApplicationRow).toBeDefined();
+    expect(beforeTravelRow).toBeDefined();
+    expect(beforeSegmentRows).toHaveLength(2);
+    expect(beforeFuelVersionRows).toHaveLength(1);
+    expect(beforeEtcVersionRows).toHaveLength(1);
   });
 
-  it("AC-27 / Done When #1: every pre-existing column is byte-for-byte unchanged after migration", async () => {
+  it("AC-27 / Done When #1: every pre-existing column, across all five Spec §8.6 tables, is byte-for-byte unchanged after migration", async () => {
     const client = new PrismaClient({ datasources: { db: { url: existingUrl } } });
     try {
-      const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+      // Every column present BEFORE migration must have the exact same value
+      // AFTER migration (the migration is new-columns-only — Spec §8.6 hard
+      // requirement: "既有 Application／TravelApplication／TripSegment／
+      // FuelParameterVersion／EtcParameterVersion 之任何既有欄位值零改寫").
+      // The same SELECT * → canonicalizeRow → per-column compare loop is
+      // applied to all five tables below.
+      function assertRowUnchanged(
+        label: string,
+        before: Record<string, unknown>,
+        after: Record<string, unknown>
+      ): void {
+        for (const [key, value] of Object.entries(before)) {
+          expect(after[key], `${label}: column "${key}" changed across migration`).toEqual(value);
+        }
+      }
+
+      const appRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "Application" WHERE id = $1`,
+        APPLICATION_ID
+      );
+      expect(appRows).toHaveLength(1);
+      assertRowUnchanged("Application", beforeApplicationRow, canonicalizeRow(appRows[0]));
+
+      const travelRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
         `SELECT * FROM "TravelApplication" WHERE "applicationId" = $1`,
         APPLICATION_ID
       );
-      expect(rows).toHaveLength(1);
-      const afterRow = canonicalizeRow(rows[0]);
+      expect(travelRows).toHaveLength(1);
+      assertRowUnchanged("TravelApplication", beforeTravelRow, canonicalizeRow(travelRows[0]));
 
-      // Every column present BEFORE migration must have the exact same value
-      // AFTER migration (the migration is new-columns-only — Spec §8.6
-      // hard requirement).
-      for (const [key, value] of Object.entries(beforeRow)) {
-        expect(afterRow[key], `column "${key}" changed across migration`).toEqual(value);
+      const segmentRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "TripSegment" WHERE "travelApplicationId" = $1 ORDER BY "sortOrder"`,
+        APPLICATION_ID
+      );
+      expect(segmentRows).toHaveLength(2);
+      const afterSegmentRows = segmentRows.map(canonicalizeRow);
+      for (let i = 0; i < beforeSegmentRows.length; i++) {
+        assertRowUnchanged(`TripSegment[${i}]`, beforeSegmentRows[i], afterSegmentRows[i]);
       }
+
+      const fuelVersionRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "FuelParameterVersion" WHERE id = $1`,
+        LEGACY_FUEL_VERSION_ID
+      );
+      expect(fuelVersionRows).toHaveLength(1);
+      assertRowUnchanged(
+        "FuelParameterVersion",
+        beforeFuelVersionRows[0],
+        canonicalizeRow(fuelVersionRows[0])
+      );
+
+      const etcVersionRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "EtcParameterVersion" WHERE id = $1`,
+        LEGACY_ETC_VERSION_ID
+      );
+      expect(etcVersionRows).toHaveLength(1);
+      assertRowUnchanged(
+        "EtcParameterVersion",
+        beforeEtcVersionRows[0],
+        canonicalizeRow(etcVersionRows[0])
+      );
     } finally {
       await client.$disconnect();
     }
@@ -347,8 +481,12 @@ describeWithDb("PHASE-005a-T1 migration safety net — existing DB (AC-27)", () 
         headers: { cookie },
       });
       expect(resp.statusCode).toBe(200);
-      const body = resp.json<{ application: { snapshot: unknown } }>();
+      const body = resp.json<{ application: { snapshot: unknown; segments: unknown[] } }>();
       expect(body.application.snapshot).not.toBeNull();
+      // Now that the fixture carries real TripSegment rows (rather than
+      // zero), this also confirms the migrated segments actually surface
+      // through the read path.
+      expect(body.application.segments).toHaveLength(2);
     } finally {
       if (app) await app.close();
     }
