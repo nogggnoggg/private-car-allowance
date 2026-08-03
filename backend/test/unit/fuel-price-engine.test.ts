@@ -43,12 +43,14 @@ const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
 const PHASE_005A_SRC_FILES = [
   "src/parameters/fuel-price-engine.ts",
   "src/parameters/fuel-price-service.ts", // PHASE-005a-T3
+  "src/users/fuel-consumption-service.ts", // PHASE-005a-T4
 ] as const;
 
 /**
- * 清單目前有兩個項目（`fuel-price-engine.ts`、`fuel-price-service.ts`），並會
- * 隨 T4~T8 陸續擴充；此常數固定指向清單第一項（`fuel-price-engine.ts`），
- * 供下方「檔案專屬」斷言（非泛用迴圈）取用。
+ * 清單目前有三個項目（`fuel-price-engine.ts`、`fuel-price-service.ts`、
+ * `fuel-consumption-service.ts`），並會隨 T5~T8 陸續擴充；此常數固定指向
+ * 清單第一項（`fuel-price-engine.ts`），供下方「檔案專屬」斷言（非泛用
+ * 迴圈）取用。
  */
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_005A_SRC_FILES[0]);
 
