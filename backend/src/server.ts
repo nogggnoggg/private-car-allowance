@@ -15,6 +15,7 @@ import { authPlugin } from "./auth/routes.js";
 import { getEnvOrTestDefaults } from "./config/env.js";
 import { getPrismaClient } from "./db/prisma.js";
 import { buildLoggerOptions } from "./logger.js";
+import { mileagePlugin } from "./mileage/routes.js";
 import { parametersPlugin } from "./parameters/routes.js";
 import { registerErrorHandlers } from "./platform/error-handler.js";
 import { healthPlugin, makeDefaultDbProbe } from "./platform/health.js";
@@ -115,6 +116,9 @@ export async function buildServer(
 
   // Register applications routes (差旅草稿 CRUD — PHASE-004-T3)
   await fastify.register(applicationsPlugin, { prisma });
+
+  // Register mileage statistics route (GET /statistics/mileage — PHASE-005-T4)
+  await fastify.register(mileagePlugin, { prisma });
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {
