@@ -766,6 +766,7 @@ describeWithDb("PHASE-005a-T8 — 差旅完成流程快照擴充 ＋ 取整層�
     let ownerCookie: string;
     let applicationId: string;
     let snapshotBefore: TravelSnapshotJson;
+    let segmentsBefore: SegmentJson[];
 
     beforeAll(async () => {
       if (!DB_URL) return;
@@ -787,8 +788,12 @@ describeWithDb("PHASE-005a-T8 — 差旅完成流程快照擴充 ＋ 取整層�
       );
       const completeResp = await completeHttp(ownerCookie, applicationId);
       expect(completeResp.statusCode).toBe(200);
-      snapshotBefore = completeResp.json<{ application: ApplicationJson }>().application
-        .snapshot as TravelSnapshotJson;
+      const completedApplication = completeResp.json<{ application: ApplicationJson }>()
+        .application;
+      snapshotBefore = completedApplication.snapshot as TravelSnapshotJson;
+      // S-3（T8 即審複審）：Spec AC-26 明列「各段 snapshot*」亦須逐位元不變，
+      // 不只申請層級的 `snapshot`——一併保存段落陣列供下方比對。
+      segmentsBefore = completedApplication.segments;
     });
 
     it("adding an earlier-effective price or consumption version leaves the completed snapshot bit-identical", async () => {
@@ -804,16 +809,34 @@ describeWithDb("PHASE-005a-T8 — 差旅完成流程快照擴充 ＋ 取整層�
         headers: { cookie: ownerCookie },
       });
       expect(getResp.statusCode).toBe(200);
-      const snapshotAfter = getResp.json<{ application: ApplicationJson }>().application
-        .snapshot as TravelSnapshotJson;
+      const applicationAfter = getResp.json<{ application: ApplicationJson }>().application;
+      const snapshotAfter = applicationAfter.snapshot as TravelSnapshotJson;
 
       expect(snapshotAfter).toEqual(snapshotBefore);
+      // S-3（T8 即審複審）：各段 snapshot* 亦須逐位元不變（Spec AC-26 明列
+      // 「各段 snapshot*」，非只申請層級 `snapshot`）。
+      expect(applicationAfter.segments).toEqual(segmentsBefore);
     });
 
-    it("GET of a completed application performs no parameter resolution", async () => {
+    it("GET of a completed application performs no parameter resolution (positive control: DRAFT GET does)", async () => {
       const spy = vi.mocked(travelParameters.resolveTravelParameters);
-      const callsBefore = spy.mock.calls.length;
 
+      // S-2（T8 即審複審）：正對照——先 GET 一筆 DRAFT（必然呼叫
+      // resolveTravelParameters，計數 +1），證明 spy 攔截確實生效、非恆綠；
+      // 再 GET 已完成申請，計數應為 +0。若 vi.mock 攔截失效，兩次呼叫都不會
+      // 改變 spy 計數，下方 +1 斷言會先失敗，避免「呼叫次數差 0」單獨作為
+      // 唯一斷言時的恆真風險。
+      const draftId = await createDraft(ownerCookie);
+      const callsBeforeDraft = spy.mock.calls.length;
+      const draftGetResp = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${draftId}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(draftGetResp.statusCode).toBe(200);
+      expect(spy.mock.calls.length).toBe(callsBeforeDraft + 1);
+
+      const callsBeforeCompleted = spy.mock.calls.length;
       const getResp = await app.inject({
         method: "GET",
         url: `/applications/travel/${applicationId}`,
@@ -821,7 +844,7 @@ describeWithDb("PHASE-005a-T8 — 差旅完成流程快照擴充 ＋ 取整層�
       });
       expect(getResp.statusCode).toBe(200);
 
-      expect(spy.mock.calls.length).toBe(callsBefore);
+      expect(spy.mock.calls.length).toBe(callsBeforeCompleted);
     });
   });
 
@@ -865,6 +888,110 @@ describeWithDb("PHASE-005a-T8 — 差旅完成流程快照擴充 ＋ 取整層�
       for (const seg of segs) {
         expect(seg.snapshotAmount).toBeNull();
       }
+    });
+  });
+
+  // =========================================================================
+  // T8 即審 S-1 修復：AMOUNT_OUT_OF_RANGE 須接進草稿/預覽（SF-2 反模式復發）
+  // =========================================================================
+  describe("S-1 修復：草稿/預覽亦暴露 AMOUNT_OUT_OF_RANGE（不得只在完成時 409）", () => {
+    const YEAR = "2068";
+    let ownerId: string;
+    let ownerCookie: string;
+
+    beforeAll(async () => {
+      if (!DB_URL) return;
+      const owner = await createOwner("s1range");
+      ownerId = owner.id;
+      ownerCookie = owner.cookie;
+      // 與 AR-2 同一鑑別組合：U=999999（<1e6，AC-20 容量內），totalKm 為
+      // Decimal(10,2) 容量上限 → segFuel 遠超 Decimal(14,4) 容量。
+      await createConsumption(ownerId, FuelType.GASOLINE_92, "1.0000", `${YEAR}-01-01`);
+      await createPrice(FuelType.GASOLINE_92, "999999.0000", `${YEAR}-01-01`, ownerId); // U=999999
+      await createEtc(`${YEAR}-01-01`, "0.0000", ownerId);
+    });
+
+    it("draft GET exposes parameterAvailable=false + AMOUNT_OUT_OF_RANGE, amount not shown as huge final value", async () => {
+      const id = await createDraft(ownerCookie);
+      await buildSegmentsWithAttachments(
+        ownerCookie,
+        ownerId,
+        id,
+        `${YEAR}-06-01`,
+        "S-1 草稿溢位",
+        [{ origin: "A", destination: "B", totalKm: "99999999.99", highwayKm: "0.00" }]
+      );
+
+      const getResp = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${id}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(getResp.statusCode).toBe(200);
+      const application = getResp.json<{ application: ApplicationJson }>().application;
+
+      expect(application.computed?.parameterAvailable).toBe(false);
+      expect(application.computed?.missingParameters).toContain("AMOUNT_OUT_OF_RANGE");
+      expect(application.computed?.totalAmount).not.toBeGreaterThan(0);
+      const blockerCodes = application.completionBlockers.map((b) => b.code);
+      expect(blockerCodes).toContain("AMOUNT_OUT_OF_RANGE");
+    });
+
+    it("preview endpoint exposes parameterAvailable=false + AMOUNT_OUT_OF_RANGE, amount not shown as huge final value", async () => {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/applications/travel/preview",
+        headers: { cookie: ownerCookie },
+        payload: {
+          tripDate: `${YEAR}-06-02`,
+          segments: [{ totalKm: "99999999.99", highwayKm: "0.00" }],
+        },
+      });
+      expect(resp.statusCode).toBe(200);
+      const preview = resp.json<{ preview: ComputedJson }>().preview;
+      expect(preview.parameterAvailable).toBe(false);
+      expect(preview.missingParameters).toContain("AMOUNT_OUT_OF_RANGE");
+      expect(preview.totalAmount).not.toBeGreaterThan(0);
+    });
+  });
+
+  // =========================================================================
+  // T8 即審 AR-2 補正例：合法大額（不超容量）完成成功之邊界值（防守門誤殺）
+  // =========================================================================
+  describe("AR-2 邊界正例：合法大額完成成功（防守門誤殺）", () => {
+    const YEAR = "2069";
+    let ownerId: string;
+    let ownerCookie: string;
+
+    beforeAll(async () => {
+      if (!DB_URL) return;
+      const owner = await createOwner("ar2boundary");
+      ownerId = owner.id;
+      ownerCookie = owner.cookie;
+      // U=1000（遠低於 AC-20 之 1e6 上限），totalKm=100000.00 →
+      // segFuel=100,000,000，遠低於 Decimal(14,4) 容量（|v|<1e10）與 int4 上限
+      // ——刻意選擇「大但合法」的組合，證明守門只擋真正超容量，不誤殺一般
+      // 大額差旅。
+      await createConsumption(ownerId, FuelType.GASOLINE_92, "1.0000", `${YEAR}-01-01`);
+      await createPrice(FuelType.GASOLINE_92, "1000.0000", `${YEAR}-01-01`, ownerId); // U=1000
+      await createEtc(`${YEAR}-01-01`, "0.0000", ownerId);
+    });
+
+    it("a large-but-legal amount completes successfully (not rejected as overflow)", async () => {
+      const id = await createDraft(ownerCookie);
+      await buildSegmentsWithAttachments(
+        ownerCookie,
+        ownerId,
+        id,
+        `${YEAR}-06-01`,
+        "AR-2 邊界正例",
+        [{ origin: "A", destination: "B", totalKm: "100000.00", highwayKm: "0.00" }]
+      );
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{ application: ApplicationJson }>();
+      expect(body.application.status).toBe("COMPLETED");
+      expect(body.application.snapshot?.totalAmount).toBe(100000000);
     });
   });
 });

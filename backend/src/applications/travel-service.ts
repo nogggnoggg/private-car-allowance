@@ -1118,14 +1118,14 @@ function exceedsInt4Capacity(value: number): boolean {
 }
 
 /**
- * AR-2 邊界守門：在任何快照寫入之前，確認 `calculateTravel` 之輸出（段金額、
- * 整筆金額、總里程）皆落在對應資料庫欄位容量內。任一項超出容量 → 409
- * `PARAMETER_NOT_AVAILABLE`（複用既有 ErrorCode，AC-35 仍成立），
- * `details.missing` 追加 `AMOUNT_OUT_OF_RANGE`；**絕不** 500、**絕不**靜默
- * 截斷寫入。
+ * T8 即審 S-1 修復：抽出的共用容量 predicate — 原本只有
+ * `assertCalculationWithinStorageCapacity`（完成流程專用）在用，導致草稿/
+ * 預覽端（`formatTravelComputed`）看不到超容量狀態，形成「預覽說可以、完成
+ * 才 409」的 SF-2 同類反模式復發。純函式、零 IO，供 `formatTravelComputed`
+ * 與 `assertCalculationWithinStorageCapacity` 共用同一份判定，不得各自為政。
  */
-function assertCalculationWithinStorageCapacity(result: CalcResult): void {
-  const overflow =
+function isCalculationOverStorageCapacity(result: CalcResult): boolean {
+  return (
     exceedsDecimalCapacity(result.totalRawAmount) ||
     exceedsDecimalCapacity(result.totalKm) ||
     exceedsInt4Capacity(result.totalAmount) ||
@@ -1135,9 +1135,19 @@ function assertCalculationWithinStorageCapacity(result: CalcResult): void {
         exceedsDecimalCapacity(s.etcAmount) ||
         exceedsDecimalCapacity(s.rawAmount) ||
         exceedsInt4Capacity(s.amount)
-    );
+    )
+  );
+}
 
-  if (overflow) {
+/**
+ * AR-2 邊界守門：在任何快照寫入之前，確認 `calculateTravel` 之輸出（段金額、
+ * 整筆金額、總里程）皆落在對應資料庫欄位容量內。任一項超出容量 → 409
+ * `PARAMETER_NOT_AVAILABLE`（複用既有 ErrorCode，AC-35 仍成立），
+ * `details.missing` 追加 `AMOUNT_OUT_OF_RANGE`；**絕不** 500、**絕不**靜默
+ * 截斷寫入。
+ */
+function assertCalculationWithinStorageCapacity(result: CalcResult): void {
+  if (isCalculationOverStorageCapacity(result)) {
     throw new AppError(
       "PARAMETER_NOT_AVAILABLE",
       409,
@@ -1544,11 +1554,16 @@ export interface TravelComputedSegmentDto {
  * `parameterAvailable` 恆為 `true`、`missingParameters=[]`，以單價 0 算出
  * 看似合理的金額——形成「預覽說可以、完成 409」的不一致，違反 §16 D4(a)
  * 「草稿仍可存，預覽顯示不可計算」與 FE-US-10 第四條。
+ *
+ * T8 即審 S-1 修復：追加 `AMOUNT_OUT_OF_RANGE`——同一類「預覽說可以、完成才
+ * 409」反模式，但成因是里程×單價之「結果」超出快照欄位容量（AR-2），與上述
+ * 兩者互為獨立維度，見 `isCalculationOverStorageCapacity`。
  */
 export type PreviewMissingCode =
   | MissingParameter
   | "FUEL_UNIT_PRICE_OUT_OF_RANGE"
-  | "FUEL_DATA_CORRUPTED";
+  | "FUEL_DATA_CORRUPTED"
+  | "AMOUNT_OUT_OF_RANGE";
 
 export interface TravelComputedDto {
   parameterAvailable: boolean;
@@ -1613,23 +1628,47 @@ export function formatTravelComputed(
     missingParameters.push("FUEL_UNIT_PRICE_OUT_OF_RANGE");
   }
 
+  // T8 即審 S-1 修復：完成流程專用的 `assertCalculationWithinStorageCapacity`
+  // 之前只在完成時把關，草稿/預覽走的是這裡（`formatTravelComputed`）——同一
+  // 份 `isCalculationOverStorageCapacity` predicate 現在也套用在此，避免
+  // 「草稿/預覽顯示可完成、完成才 409」的不一致（SF-2 同類反模式復發）。
+  const amountOutOfRange = isCalculationOverStorageCapacity(result);
+  if (amountOutOfRange) {
+    missingParameters.push("AMOUNT_OUT_OF_RANGE");
+  }
+
   return {
     parameterAvailable:
       resolved.missing.length === 0 &&
       !resolved.fuelUnitPriceOutOfRange &&
-      !resolved.fuelDataCorrupted,
+      !resolved.fuelDataCorrupted &&
+      !amountOutOfRange,
     missingParameters,
     totalKm: result.totalKm.toFixed(2),
-    segments: result.segments.map((s) => ({
-      segmentId: s.segmentId,
-      segmentIndex: s.segmentIndex,
-      fuelAmount: s.fuelAmount.toFixed(4),
-      etcAmount: s.etcAmount.toFixed(4),
-      rawAmount: s.rawAmount.toFixed(4),
-      amount: s.amount,
-    })),
-    totalRawAmount: result.totalRawAmount.toFixed(4),
-    totalAmount: result.totalAmount,
+    // 超容量時金額**不得**以巨額呈現為最終值（同上「絕不靜默截斷寫入」精神，
+    // 呈現面呼應：不呈現看似可信但無法真正儲存/完成的金額）——比照
+    // fuelUnitPrice/etcUnitPrice 以 0 佔位、由前端依 missingParameters 顯示
+    // 提示文案而非直接採信金額之既有慣例。`totalKm` 仍照實呈現（使用者已
+    // 填寫之里程本身，非計算「結果」）。
+    segments: amountOutOfRange
+      ? result.segments.map((s) => ({
+          segmentId: s.segmentId,
+          segmentIndex: s.segmentIndex,
+          fuelAmount: "0.0000",
+          etcAmount: "0.0000",
+          rawAmount: "0.0000",
+          amount: 0,
+        }))
+      : result.segments.map((s) => ({
+          segmentId: s.segmentId,
+          segmentIndex: s.segmentIndex,
+          fuelAmount: s.fuelAmount.toFixed(4),
+          etcAmount: s.etcAmount.toFixed(4),
+          rawAmount: s.rawAmount.toFixed(4),
+          amount: s.amount,
+        })),
+    totalRawAmount: amountOutOfRange ? "0.0000" : result.totalRawAmount.toFixed(4),
+    totalAmount: amountOutOfRange ? 0 : result.totalAmount,
   };
 }
 
@@ -1683,6 +1722,22 @@ export async function toTravelApplicationDto(
       ? await resolveTravelParameters(prisma, tripDate, application.ownerId)
       : null;
 
+  // T8 即審 S-1 修復：`computed` 先算，才能把其
+  // `AMOUNT_OUT_OF_RANGE`（`isCalculationOverStorageCapacity`）狀態傳給下面
+  // 的 `completionBlockers`——與 fuelUnitPriceOutOfRange/fuelDataCorrupted
+  // 同一模式（草稿層級暴露與 `computed.missingParameters` 一致的狀態）。
+  const computed: TravelComputedDto | null = resolvedParameters
+    ? formatTravelComputed(
+        resolvedParameters,
+        segments.map((s) => ({
+          segmentId: s.id,
+          segmentIndex: s.sortOrder,
+          totalKm: s.totalKm,
+          highwayKm: s.highwayKm,
+        }))
+      )
+    : null;
+
   const completionBlockers: Blocker[] =
     application.status === "DRAFT" && resolvedParameters
       ? computeCompletionBlockers({
@@ -1702,20 +1757,10 @@ export async function toTravelApplicationDto(
           // 與 `computed.missingParameters`（formatTravelComputed）呈現一致。
           fuelUnitPriceOutOfRange: resolvedParameters.fuelUnitPriceOutOfRange,
           fuelDataCorrupted: resolvedParameters.fuelDataCorrupted,
+          // T8 即審 S-1 修復：與 `computed?.missingParameters` 呈現一致。
+          amountOutOfRange: computed?.missingParameters.includes("AMOUNT_OUT_OF_RANGE") ?? false,
         })
       : [];
-
-  const computed: TravelComputedDto | null = resolvedParameters
-    ? formatTravelComputed(
-        resolvedParameters,
-        segments.map((s) => ({
-          segmentId: s.id,
-          segmentIndex: s.sortOrder,
-          totalKm: s.totalKm,
-          highwayKm: s.highwayKm,
-        }))
-      )
-    : null;
 
   // PHASE-004-T8: 僅 COMPLETED 且快照欄位齊備時非 null——讀 `TravelApplication`
   // 的快照欄位 + `Application.totalAmount`，絕不重新查詢參數表或重算

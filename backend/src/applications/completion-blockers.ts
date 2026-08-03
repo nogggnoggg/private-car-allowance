@@ -74,6 +74,15 @@ export interface BlockerInput {
    * 預設 `false`。
    */
   fuelDataCorrupted?: boolean;
+  /**
+   * T8 即審 S-1 修復：`calculateTravel` 之輸出（段金額／整筆金額／總里程）
+   * 超出對應資料庫欄位容量（`travel-service.ts` 之
+   * `assertCalculationWithinStorageCapacity`／`formatTravelComputed` 共用同一
+   * predicate）。與 `missingParameters`/`fuelUnitPriceOutOfRange`/
+   * `fuelDataCorrupted` 為獨立維度——草稿階段同樣暴露，避免「預覽/草稿顯示
+   * 可完成、完成才 409」的不一致（SF-2 同類反模式）。選填，預設 `false`。
+   */
+  amountOutOfRange?: boolean;
 }
 
 export interface Blocker {
@@ -160,6 +169,17 @@ export function computeCompletionBlockers(input: BlockerInput): Blocker[] {
     blockers.push({
       code: "FUEL_UNIT_PRICE_OUT_OF_RANGE",
       message: "油價與油耗之組合超出可計算範圍，請聯絡管理員檢查參數設定",
+    });
+  }
+
+  // T8 即審 S-1 修復：與上兩者為獨立維度（里程×單價之「結果」超容量，非
+  // 「查無版本」也非「單價本身超範圍」）。文案與完成端點之 409
+  // `PARAMETER_NOT_AVAILABLE` 訊息逐字一致（`travel-service.ts`
+  // `assertCalculationWithinStorageCapacity`），避免同一狀態出現兩種措辭。
+  if (input.amountOutOfRange) {
+    blockers.push({
+      code: "AMOUNT_OUT_OF_RANGE",
+      message: "計算結果超出可儲存之金額範圍，請聯絡管理員檢查里程與參數設定",
     });
   }
 
