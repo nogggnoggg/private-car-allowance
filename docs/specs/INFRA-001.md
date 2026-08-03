@@ -239,7 +239,7 @@ Packet 要求確認「真併發測試是否刻意要多 worker 打同一資料�
 
 - **AC-07**　globalSetup 為 `1..maxForks` 每個編號供裝 schema `vitest_w<i>`，且每個 schema 的 `_prisma_migrations` 內 `finished_at IS NOT NULL` 的筆數等於 `backend/prisma/migrations/` 下 migration 目錄數（現為 7）。
 - **AC-08**　每個 worker schema 內含全部 11 張業務表；且 6 個 enum 型別（`Role`、`AuditAction`、`AttachmentStatus`、`AttachmentRefType`、`ApplicationType`、`ApplicationStatus`）在該 schema 內存在，其 `pg_type.oid` 與 `public` 同名型別**不同**。
-- **AC-09**　~~每次 run 開始時，globalSetup 先移除所有符合 `^vitest_w[0-9]+$` 的既有 schema~~ **（2026-08-03 修訂，人類批准第四選項「按需重建」）**：每次 run 開始時，globalSetup 對每個 `vitest_w<1..maxForks>`：既有且 migration 狀態吻合（`_prisma_migrations` 之 `migration_name` 集合＋`checksum`＋`finished_at IS NOT NULL` 與 `prisma/migrations/` 目錄完全一致）⇒ **沿用不重建**（跨 run 資料殘留由 per-file 清空承擔，AC-10/12/15 為其證明）；不吻合 ⇒ drop 後重新 `migrate deploy`。編號大於本次 `maxForks` 的孤兒 schema 一律移除。`public` schema **不得被觸碰**（run 前後 `public` 的表數不變）。修訂動機：reviewer 對齊量測證實 AC-23 殘餘增幅幾乎全部來自每次 run 的一次性供裝 ~2.7s，按需重建可將常態 run 供裝壓至 ~20ms（預期增幅 ~25%→~2%）。
+- **AC-09**　~~每次 run 開始時，globalSetup 先移除所有符合 `^vitest_w[0-9]+$` 的既有 schema~~ **（2026-08-03 修訂，人類批准第四選項「按需重建」）**：每次 run 開始時，globalSetup 對每個 `vitest_w<1..maxForks>`：既有且 migration 狀態吻合（`_prisma_migrations` 之 `migration_name` 集合＋`checksum`＋`finished_at IS NOT NULL` 與 `prisma/migrations/` 目錄完全一致）⇒ **沿用不重建**（跨 run 資料殘留由 per-file 清空承擔，AC-10/12/15 為其證明）；不吻合 ⇒ drop 後重新 `migrate deploy`。編號大於本次 `maxForks` 的孤兒 schema 一律移除。`public` schema **不得被觸碰**（run 前後 `public` 的表數不變）。修訂動機：reviewer 對齊量測證實 AC-23 殘餘增幅幾乎全部來自每次 run 的一次性供裝 ~2.7s，按需重建可將常態 run 供裝壓至數十 ms（實測熱路徑 39-51ms、增幅 +5.2%）。**適用範圍註記**：此收益僅及「暖 DB」（本機常態）；CI 因每 job 使用全新 postgres service container 恆走冷路徑（重建全部 schema，實測供裝 1620ms、增幅 +20.2% 壓線），本優化對 CI 無收益。
 
 ### C. 每檔乾淨起點（per-file）
 
@@ -624,7 +624,7 @@ vitest 主行程
 | AC-20 | evidence | — | `git diff .github/workflows/ci.yml` 為空 | T3 | 檔案層面已確認（`git diff` 對 `.github/**` 為空）；CI 實際綠燈證據待大總管開 Draft PR 取得，不在 T3 職責內 |
 | AC-21 | evidence | — | Draft PR 的 `Backend Build & Tests` job 綠燈 + log 中自檢輸出的 schema 名 | T3 | 待大總管開 Draft PR 後取得，不在 T3 職責內 |
 | AC-22 | evidence | — | globalSetup 耗時（本機 + CI 各一） | T1 | 已完成（本機，T1 Handoff）；CI 端待大總管開 PR 後取得 |
-| AC-23 | evidence | — | 全套 wall time 前後對照（同機同負載） | T3→R1 | **未達標（歷程如下），待人類最終裁定**——T3 首測 ~69%（見 §17）→ 人類裁定派 R1 → R1 交付（共用連線+FK 拓撲 DELETE）增幅降至其量測之 ~40% → **reviewer 對齊重測推翻 R1 歸因**：兩邊同 47 檔之對齊量測增幅 **+25.3%**（12.08s vs 9.64s）,且 per-file 邊際成本 ≈ 0——殘餘幾乎 100% 為 globalSetup 一次性供裝 ~2.7s（佔基線 28.5%）;R1 的「isolate:true 架構性成本 47ms×53」歸因**不成立**（該數字實為供裝時間之誤歸因）。reviewer 提出第四選項（globalSetup 按需重建:比對 `_prisma_migrations` 吻合即不 drop 不 spawn,實測 no-op deploy 468ms→預期增幅 ~2%）,但需人類重裁 D3「run 前 drop」語意——**留待人類裁定:接受 ~25% or 批准第四選項** |
+| AC-23 | evidence | — | 全套 wall time 前後對照（同機同負載） | T3→R1 | **未達標（歷程如下），待人類最終裁定**——T3 首測 ~69%（見 §17）→ 人類裁定派 R1 → R1 交付（共用連線+FK 拓撲 DELETE）增幅降至其量測之 ~40% → **reviewer 對齊重測推翻 R1 歸因**：兩邊同 47 檔之對齊量測增幅 **+25.3%**（12.08s vs 9.64s）,且 per-file 邊際成本 ≈ 0——殘餘幾乎 100% 為 globalSetup 一次性供裝 ~2.7s（佔基線 28.5%）;R1 的「isolate:true 架構性成本 47ms×53」歸因**不成立**（該數字實為供裝時間之誤歸因）。reviewer 提出第四選項（globalSetup 按需重建:比對 `_prisma_migrations` 吻合即不 drop 不 spawn,實測 no-op deploy 468ms→預期增幅 ~2%）,但需人類重裁 D3「run 前 drop」語意——**留待人類裁定:接受 ~25% or 批准第四選項**（→已批准,見 §17）。**INFRA-001b-T1 重測（2026-08-03,reviewer 獨立對齊量測）**:**熱路徑（暖 DB,本機常態）+5.2%**（10.02s vs off 基線 9.52s,n=3;最壞配對 +16.4% 仍達標）——**達標**;**冷路徑（全新 DB,首跑）+20.2%**（供裝 1620ms）——壓線。**CI 每 job 全新 postgres service container 恆走冷路徑,本優化在 CI 收益為零**（CI maxForks=2 絕對成本較低）。供裝實測:熱 39-51ms、冷 1620ms（AC-22 之 ≤30s 均達標） |
 | AC-24 | evidence | — | 14 輪固定格式表（round/passed/failed/skipped/wall/CPU%） | T3 | **已完成**——T3 於 2026-08-03 連續 14 輪，每輪 922 passed / 0 failed / 0 skipped，CPU 負載 34~54%，backend-only wall time 12.6~15.3s（Duration 欄），全數見 Handoff；無 503 flake、無需中止重跑 |
 | AC-25 | evidence | — | `git diff` 顯示 `maxForks` 值未變、無測試檔清理程式碼被刪 | T3 | 已完成——`git diff main...HEAD` 對既有 47 測試檔、`vitest.config.ts` 的 `maxForks` 計算公式（僅搬遷至 `max-forks.ts`，公式字元未變）、既有清理程式碼（RUN_ID/前綴/`deleteMany`）均無刪除或改動 |
 | AC-26 | evidence | — | 本 Spec §7-#9 記錄 + AC-10/AC-12 綠燈 | T3 | 已完成——§7-#9 已記錄「結構性關閉，9 檔不需各自補 beforeAll」；AC-10/AC-12 綠燈已於 T2（`6319fea`）與本 T3 14 輪中反覆驗證 |
@@ -713,6 +713,7 @@ L1 的存在本身是 AC-05 的驗收對象——**回退路徑必須被測過�
 - **L6 — 冗餘防線未清理**（§7）。47 檔中的 RUN_ID／前綴／`afterAll` 清理成為冗餘但保留；日後若要簡化，應為獨立回合並逐檔驗證，不可與本回合混合（會使 diff 不可審）。
 - **L7 — 供裝依賴 `prisma` CLI 可執行**。若 `node_modules` 未安裝或 binary 解析失敗，globalSetup 會失敗（fail-loud）。
 - **L8（Review AR-3）— 兩個 vitest run 同時打同一 DB 會互相摧毀**：後者 globalSetup 的孤兒清理會 `DROP SCHEMA CASCADE` 掉前者正在用的 schema。D3「run 前 drop」之既知後果；CI 每 job 獨立 DB 不受影響；本機請勿並行兩個 run。
+- **L10（INFRA-001b Review AR-3）— 按需重建失去「每 run 全新 schema」的自癒性**：比對只看 `_prisma_migrations` 帳本，schema 內結構漂移（業務表被手動砍等）會被沿用且跨 run 持續。失敗方向大聲（relation does not exist / 0 表 fail-closed throw）。**復原手法：手動 `DROP SCHEMA "vitest_w<i>" CASCADE`（全部）後重跑即回冷路徑全重建。**（另 AR-2 狀態檔 mid-run 覆寫——AC-22/23 證據一律以 console 輸出為準勿讀狀態檔；AR-4 命名 regex 第三份拷貝與邊界未單測；AR-5 guard 測試檔行號引用漂移——均記錄保留。）
 - **L9（Review AR-5）— FK 拓撲排序刻意忽略自參考 FK**（現況 self-refs = 0，reviewer 實測確認）。若未來加入 `ON DELETE RESTRICT` 自參考 FK，單表 DELETE 會失敗且拓撲排序偵測不到循環（不會回退 TRUNCATE）——屆時須調整 `computeForeignKeySafeDeleteOrder`。
 
 ---
