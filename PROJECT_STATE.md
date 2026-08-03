@@ -29,7 +29,8 @@ State: ACTIVE
 > - 並行事件：T3R-LITE（測試檔）與 SPEC-REV1（Spec 檔）並行派工，兩 agent 各自於 Handoff 主動回報「工作區有非我造成之異動」——互相守望有效，零交叉污染，分檔 commit 乾淨。
 > - **T3b BLOCKED 事件（防呆第四次攔截）**：implementer 發現 AC-37(e) 封閉清單漏列 `phase3a-parameter-audit.test.ts`（5 條 it 直打舊端點），正確 Stop 並還原試探修改。**SPEC-REV2：DONE**（`e5fefbd`）——補列＋處置定案「移轉至新端點」（實查新端點稽核僅一條成功路徑，移轉為淨增覆蓋：敏感鍵掃描／403／401／409 原子性四項）＋三道窮盡 grep 指令落檔（61 行/11 檔全歸類）＋「service 函式不得移除」硬性約束（27 處直呼依賴）。**根因**：REV1 之 grep 被工具截斷於 100 筆未察覺——已立「grep 指令原文＋命中計數落檔」規則。
 > - **T3b（舊端點凍結，High）：DONE**（`5f43214`，4 檔 +265/-333）。大總管獨立驗收：全套兩輪 **1293/0/0**（帳目精確 1301−10＋2：舊 POST describe 10 條合併為 AC-37(a)(b) 2 條，授權語意併入 404 判定）、chore003 it 數 59/59 零流失、GET 授權三條 git diff 實證零改動、播種改直寫斷言逐字保留、tsc 0、biome 乾淨。修復前紅燈（stash 復舊 route → `expected 201 to be 404`）實證。基準線 → **1293**。映射表 AC-37 轉 GREEN（實名回填）。
-> - 下一步：T3R＋T3b 合併複審 → T4（油耗 service，High）→ T5/T6 → T7/T8 → 前端。vitest 併跑限制持續有效。
+> - **T3R＋T3b 合併複審：REQUEST_CHANGES（僅 SF-1）→ 修復 → 結案**。M-1 關閉經 reviewer 獨立重驗（namespace-import 突變重現必紅）；T3b 本體零 finding（10→2 合併經逐條對帳裁定無覆蓋損失、三道 grep 重跑表外零殘留、稽核移轉淨增四項覆蓋）。SF-1（self-proof 前兩條恆真——突變源餵錯管線）→ **T3R2-LITE：DONE**（`fdf4b02`，改 blankCommentsOnly 同管線＋正負控制配對）；AR-3 Spec 措辭由大總管更正（`e2e3d7e`）。大總管驗收：單檔 54/54、全套 1293/0/0、tsc 0、biome 乾淨。AR 記錄：AR-1 RegExp 建構子繞過（import 斷言為主防線）、AR-4 createFuelVersion 生產不可達（登記「舊表寫入路徑最終退場（PHASE-008 後）」追蹤）、AR-5 全表快照耦合 INFRA-001 不變式。**SF-1 關閉確認併入 T4 即審**（輕量批次）。
+> - 下一步：T4（油耗 service，High）→ T5/T6 → T7/T8 → 前端。vitest 併跑限制持續有效。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
