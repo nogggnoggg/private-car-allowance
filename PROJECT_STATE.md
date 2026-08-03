@@ -10,7 +10,10 @@ State: ACTIVE
 > - branch：`phase-005a`（自 main @ `1444771` 切出）。流程：spec-writer 產 **US 修訂提案（DRAFT，不動 userstory.md）** → **人類逐字確認 US Gate** → userstory.md 修訂落地 → spec-writer 產 Phase Spec（DRAFT）→ 人類 Spec Gate → implementer TDD → reviewer → Draft PR + CI → 人類合併批准。
 > - 006/007 開工 Packet 必引事項（見 PHASE-005 結案列）於 005a 不適用（005a 不觸統計引擎），但差旅計算引擎（PHASE-004 T6/T7）之單價解析為本 Phase 核心觸點。
 > - **US-DRAFT：DONE**（`207895c`，PHASE-005a-US-PROPOSAL.md 309 行；零越權修改、編號接續實證 FE-27/AD-14/BE-31/NFR-16）。**US Gate 通過（人類 leonchih，2026-08-03）：提案全文＋Q1–Q10 全數照推薦批准；Q3 明確裁定「僅擋完成申請、草稿可存」**（與既有 BE-US-09 缺參數行為一致）。要點：Q1 每油種各自時間軸、Q2 車輛主檔維持 Out of Scope 加註、Q4 油種固定四項列舉、Q6 依據備註必填、Q7 油價≥0／油耗>0、Q8 快照保存油種＋油價＋油耗三項來源值、Q9 段金額取整規則不變、Q10 沿用 D6 授權邊界。
-> - 下一步：US-LAND（spec-writer 落地 userstory.md＋PRD.md，獨立 commit 引用本批准）→ Phase Spec（DRAFT）→ 人類 Spec Gate。
+> - **US-LAND：DONE**（`e7e2c34`，userstory.md +156/-21、PRD +27/-12）。大總管獨立驗收：US 總數 91（FE28/AD15/BE32/NFR16）、無重複編號、Q3「僅擋完成」零走樣（擋草稿語意掃描 0 命中）、「不受影響」條目零改動、PRD 14 項齊備（Phase 總數 13、覆蓋確認 91 條）。spec-writer 自我攔截一處越權（AD-US-14 列非批准範圍，已還原）。
+> - **PHASE-003a Spec 狀態處置（大總管裁定）**：整體維持 COMPLETED、於狀態欄加「部分取代註記」指向 PHASE-005a（僅油資參數模型被取代；ETC／折舊／§14 錯誤合約維持有效）。非全文 SUPERSEDED。
+> - 已知缺口（spec-writer 回報，交下一 Task）：PRD §5 尚無 PHASE-005a 段落本體——併入 Phase Spec Task 補齊。
+> - 下一步：SPEC-005a（spec-writer 產 docs/specs/PHASE-005a.md DRAFT，含 AC↔測試映射表、Q4/Q7 落 Spec 層細節、PRD §5 段落補齊）→ 人類 Spec Gate（High，事前批准）。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
