@@ -122,3 +122,61 @@ export function withSchema(databaseUrl: string, schema: string): string {
   url.searchParams.set("schema", schema);
   return url.toString();
 }
+
+/**
+ * INFRA-001b-T1 — AC-09（2026-08-03 修訂，人類批准第四選項「按需重建」）：
+ * migration 狀態比對的**純函式**核心。刻意與 `global-setup.ts` 的 DB/檔案系統
+ * 存取分離，讓「吻合／不吻合」的判斷邏輯本身可以完全用單元測試涵蓋（無需真實
+ * DB），比對規則本身的正確性不必依賴整合測試才能驗證。
+ *
+ * 一個 worker schema 視為「與 `prisma/migrations/` 目錄吻合」，若且唯若：
+ *
+ *   1. `_prisma_migrations` 內的 `migration_name` 集合與目錄集合**完全一致**
+ *      （無多、無少 —— 用長度相等 + 逐一比對取代單純的子集合檢查，防止「表
+ *      裡多出一筆未知 migration」被誤判為吻合）。
+ *   2. 每一筆都 `finished_at IS NOT NULL`。
+ *   3. 每一筆都 `rolled_back_at IS NULL`。
+ *   4. 每一筆的 `checksum` 與該 migration 目錄下 `migration.sql` 內容的
+ *      sha256 十六進位雜湊值相等（INFRA-001b-T1 實測驗證：對本機既有 7 個
+ *      migration 逐一計算 `sha256(migration.sql)` 並與 `_prisma_migrations.
+ *      checksum` 全數比對，7/7 完全相符 —— 證實 Prisma 5.22 的 checksum 就是
+ *      未加鹽的 `migration.sql` 內容 sha256 十六進位字串，可穩定重現，故採用
+ *      全量 checksum 比對而非退回到「僅比對 migration_name 集合」的較弱策略）。
+ *
+ * fail-safe（Packet 明示）：呼叫端必須確保「查詢失敗／schema 不存在／任何
+ * 不確定情形」一律不呼叫本函式判定為 true —— 本函式本身只處理「已成功查到的
+ * 資料列」，查詢失敗與否是呼叫端 `readWorkerMigrationRows()` 的職責（回傳
+ * `undefined` 代表不確定，呼叫端必須把 `undefined` 當成「不吻合」，絕不可餵給
+ * 本函式當作空陣列 —— 空陣列與「查詢失敗」的語意不同，見 `global-setup.ts`）。
+ */
+export interface MigrationDirChecksum {
+  /** migration 目錄名稱，例如 `20260801083343_init`。 */
+  readonly name: string;
+  /** `sha256(migration.sql 內容)` 的十六進位字串。 */
+  readonly checksum: string;
+}
+
+/** `_prisma_migrations` 表單一列的最小讀取形狀（僅比對邏輯需要的欄位）。 */
+export interface ProvisionedMigrationRow {
+  readonly migration_name: string;
+  readonly checksum: string;
+  readonly finished_at: Date | string | null;
+  readonly rolled_back_at: Date | string | null;
+}
+
+export function schemaMigrationStateMatches(
+  expectedDirs: readonly MigrationDirChecksum[],
+  actualRows: readonly ProvisionedMigrationRow[]
+): boolean {
+  if (actualRows.length !== expectedDirs.length) return false;
+
+  const rowsByName = new Map(actualRows.map((row) => [row.migration_name, row]));
+  for (const dir of expectedDirs) {
+    const row = rowsByName.get(dir.name);
+    if (!row) return false;
+    if (row.finished_at === null || row.finished_at === undefined) return false;
+    if (row.rolled_back_at !== null && row.rolled_back_at !== undefined) return false;
+    if (row.checksum !== dir.checksum) return false;
+  }
+  return true;
+}

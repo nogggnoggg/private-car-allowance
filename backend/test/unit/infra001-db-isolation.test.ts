@@ -12,9 +12,12 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  type MigrationDirChecksum,
+  type ProvisionedMigrationRow,
   isolationMode,
   parseWorkerPoolId,
   resolveWorkerDatabaseUrl,
+  schemaMigrationStateMatches,
   shouldSkipIsolationOnlyTests,
   withSchema,
   workerSchemaName,
@@ -180,6 +183,73 @@ describe("INFRA-001-T1 db-isolation pure functions", () => {
     it("is the same rewrite logic resolveWorkerDatabaseUrl delegates to", () => {
       const result = withSchema("postgresql://u:p@h:5432/db", "vitest_w9");
       expect(result).toBe("postgresql://u:p@h:5432/db?schema=vitest_w9");
+    });
+  });
+
+  describe("schemaMigrationStateMatches — INFRA-001b-T1 AC-09 按需重建的純函式比對核心", () => {
+    const dirs: MigrationDirChecksum[] = [
+      { name: "20260101000000_init", checksum: "aaa" },
+      { name: "20260102000000_second", checksum: "bbb" },
+    ];
+
+    function rowsFromDirs(overrides?: Partial<Record<string, Partial<ProvisionedMigrationRow>>>) {
+      return dirs.map((dir) => ({
+        migration_name: dir.name,
+        checksum: dir.checksum,
+        finished_at: new Date("2026-01-01T00:00:00Z"),
+        rolled_back_at: null,
+        ...(overrides?.[dir.name] ?? {}),
+      }));
+    }
+
+    it("returns true when migration_name/checksum/finished_at/rolled_back_at all line up exactly", () => {
+      expect(schemaMigrationStateMatches(dirs, rowsFromDirs())).toBe(true);
+    });
+
+    it("returns false when a migration is missing from the DB (subset, not just superset check)", () => {
+      const rows = rowsFromDirs().slice(0, 1);
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(false);
+    });
+
+    it("returns false when the DB has an extra unknown migration row (same length trap)", () => {
+      // Same length as `dirs`, but the second entry is a name `dirs` doesn't
+      // know about — a naive "same length ⇒ ok" check would wrongly pass this.
+      const rows = [
+        rowsFromDirs()[0],
+        {
+          migration_name: "20269999000000_unknown_to_directory",
+          checksum: "zzz",
+          finished_at: new Date("2026-01-01T00:00:00Z"),
+          rolled_back_at: null,
+        },
+      ];
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(false);
+    });
+
+    it("returns false when a checksum differs from the migration.sql-derived value", () => {
+      const rows = rowsFromDirs({ "20260102000000_second": { checksum: "corrupted" } });
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(false);
+    });
+
+    it("returns false when finished_at is null (migration started but never completed)", () => {
+      const rows = rowsFromDirs({ "20260101000000_init": { finished_at: null } });
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(false);
+    });
+
+    it("returns false when rolled_back_at is not null (migration was rolled back)", () => {
+      const rows = rowsFromDirs({
+        "20260101000000_init": { rolled_back_at: new Date("2026-01-01T01:00:00Z") },
+      });
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(false);
+    });
+
+    it("returns true regardless of row order (comparison is by name, not by position)", () => {
+      const rows = [...rowsFromDirs()].reverse();
+      expect(schemaMigrationStateMatches(dirs, rows)).toBe(true);
+    });
+
+    it("returns false for an empty actualRows array against a non-empty expected set (the fail-safe default for 'schema not provisioned')", () => {
+      expect(schemaMigrationStateMatches(dirs, [])).toBe(false);
     });
   });
 });
