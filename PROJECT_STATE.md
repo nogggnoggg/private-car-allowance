@@ -6,6 +6,8 @@ State: ACTIVE
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
 > - Gate 環境（compose oilexpense stack + gateadmin/staff01 合成資料）保留供後續 Phase 驗收沿用；dev DB 另有 e2eadmin（T8）。
 
+> **CHORE-003：DONE（2026-08-03）**——PR #12 經人類批准合併（`9e00761`），003a Spec §14 轉 COMPLETED。基準線終值：後端 **1211/0/0**、前端 137、E2E 17。消滅三類 500 與兩類靜默錯誤金額寫入。跨 Phase 追蹤之「欄位溢位」條目就此結案（AR-1 雙拷貝/語彙掃描限制列 PHASE-011 加固候選；快照欄位容量另案追蹤中）。**下一站：PHASE-006（保養費用分攤）——首步派 spec-writer 產 Spec（DRAFT）→ 人類 Spec Gate。**
+
 > **CHORE-003 實作記錄（2026-08-03，branch chore-003 @ rebase 至 main df36f75 後）**
 > - **T1（純函式驗證模組）：DONE**（`ca2267d`，50 單元測試，零接線）。**即審 APPROVE**（0 Must/0 Should/4 AR）：reviewer 以 node 實測六個 mutant 分支證明鑑別力（量級 >= vs >、字面字元數 vs decimalPlaces、pattern 放寬、trim 移除等皆會紅）；文案 byte 級比對零漂移；葉節點/零接線/D4 皆實證。基準線 1078→**1128**。
 > - **T2（接線三端點）：DONE**（`dcad263`，service +107/-51、69 整合測試）。修復前紅燈實證完整（500×3 類+靜默截斷+log 洩驅動層原文）；§14.1 待實作觀測補齊：**兩個 Int 欄位現行實測為 500**（兩種 Prisma 錯誤類皆含絕對路徑）。過渡紅燈 2 條＝§14.8 逐字預告之 T3 調整項（大總管裁定接受 implementer「Spec 原文優先於 Packet Stop Condition 字面」判讀——紅燈集合恰等於列舉、無外溢；結構上不可能同時滿足 AC-25/26 又保持該兩條綠）。**大總管裁定：T2 即審併入 T2+T3 合併複審**（兩 Task 構成單一合約變更、紅燈過渡態為 Spec 預告，分開審會對預告紅燈重複裁決）。基準線 1128→1197（過渡 1195/2/0）。
