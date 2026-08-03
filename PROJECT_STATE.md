@@ -17,7 +17,9 @@ State: ACTIVE
 > - **Spec Gate 通過（人類 leonchih，2026-08-03）：D1~D11 全數照建議批准**（要點：D1(a) 舊表凍結寫入不換算、D4(a) 409 守門、D5(a) FUEL→FUEL_PRICE 更名、D6(a) 預覽加 ownerId、D8(a) append-only；完整固化於 Spec §18）；兩項自主判斷追認；**T1~T8 High 事前批准已於本 Gate 取得**。Spec 轉 **ACTIVE**。
 > - **D10(a) 跨 Phase 追蹤（PHASE-008 硬約束）**：報表版型須條件呈現——新模型顯示油種／每公升油價／油耗／每公里單價四列，舊模型僅每公里單價一列＋「（舊制參數）」註記，判別依 `fuelPriceVersionId` 是否 null。PHASE-008 開工 Packet 必引本條。
 > - **D1(a) 附帶（整合 Gate 前置）**：Gate 環境既有油資參數（每公里 5.0000）不換算；油價與油耗合成資料由人類於整合 Gate 時重新輸入。
-> - 下一步：依 TDD 順序開工 T1（schema＋migration，High）→ T2（單價推導純函式）→ …；T1~T8 每 Task 完成即審（High 即審節奏）。
+> - **T1（schema＋migration，High）：DONE**（`35b30e7`，5 檔 +677/-6）＋ **T1R-LITE**（`3a2c0a5`，infra001 自檢表數斷言 11→13 機械連動）。implementer 於 T1 正確觸發 Stop（禁改檔轉紅，未私改）——防呆第三次成功攔截。大總管獨立驗收：**測試計數差異親自查證**——stash 還原量測基準線 1211 逐檔零流失，新檔實為 6 測試（Handoff 自述 9/4 describe 為過時描述，實為 6 it/3 describe），1211+6=1217 精確吻合；全套 1217/0/0、單檔 6/6、tsc 0、biome 乾淨。基準線 1211 → **1217**。
+> - **新追蹤項（PHASE-011 加固候選）**：infra001-isolation-self-check 之業務表總數寫死斷言（今 13）——每個新增資料表的 Phase 都會再撞一次，候選改為動態計數（比照 countMigrationDirs 模式）。
+> - 下一步：T1+T1R reviewer 即審（High 節奏）→ T2（單價推導純函式，金額核心）→ T3/T4 → …
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
