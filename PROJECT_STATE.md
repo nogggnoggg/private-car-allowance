@@ -34,7 +34,8 @@ State: ACTIVE
 > - **Session 邊界建議（大總管裁定，使用者 2026-08-03 詢問後確認方向）**：T8 結束（後端金額語意收斂、複審清零）為最自然之 session 重開點；重開一律挑 Task 邊界（Handoff 已驗收、已 commit、PROJECT_STATE 已更新），不得於 agent 背景執行中切換。
 > - **T4（油耗 service，High）：DONE**（`7a72943`，3 檔 +1238/-3，50 整合測試）。AC-07~11 全覆蓋：`0.0001` 邊界正例、404 不洩漏、跨使用者同日獨立、併發 [201,409]、basisNote 500/501 字邊界、AC-11 十八列與 AC-06 同形 gate table；複用實證採 T3R2 修正後正負控制管線；P2002 stub；掃描清單三檔。RED-first 以模組移除實證。大總管獨立驗收：全套兩輪 **1346/0/0**（1293+50+3）、tsc 0、biome 乾淨。基準線 → **1346**。usage ~198k。**diff 超預算 77%（逾 50% Stop 門檻）**：implementer 完工後才察覺、據實揭露未中止——大總管裁定接受（驅動因素為 Spec 要求之 gate table 與既定測試檔慣例，零 scope creep；「完工後追溯中止」不符 Stop 條款前瞻性意旨），惟記回顧：**T5 起 Packet 預算改以 T3/T4 實績（~1100-1250 行）校準**，避免預算長期系統性低估。
 > - T4 揭露之未定序邊界（交 T4 即審裁量）：userId-404 與欄位格式 400 之優先序無 AC 規範，implementer 採格式先行並記於 JSDoc。
-> - 下一步：T4 即審（併 SF-1 關閉確認）→ T5（route+授權矩陣+稽核，High）→ T6 → T7/T8 → 前端。vitest 併跑限制持續有效。
+> - **T4 即審＋SF-1 關閉確認：APPROVE**（0 Must/0 Should/6 AR；usage ~123k）。SF-1 以獨立探針三格矩陣實證恆真已消除；AC-10 收斂鑑別力以假 prisma 突變探針實證；append-only 掃描 0 命中；404/400 優先序裁定保留（格式先行洩漏更少）。映射表 AC-07~11 轉 GREEN（verbose 實名回填，AR-6 關閉）。**AR 轉 T5 Packet 義務**：AR-1 判定順序與 admin/routes 既有慣例（先 404 後 400）分歧——T5 於 Spec §16 補「代他人寫入端點判定順序」明示裁定；AR-3 存在性檢查移入交易或加 P2003 映射；AR-4 P2002 映射應綁 `UserFuelConsumptionVersion_userId_effectiveFrom_key` meta（AuditLog 同交易後之誤譯風險）；AR-5 清單排序測試須亂序插入建立鑑別力（AC-12）；另 hook 前瞻警示：AC-14 `before` 須嚴格 `<`（誤用 findEffectiveVersion 之 `<=` 會取回剛建立列）、hook 須自行重查完整欄位。
+> - 下一步：T5（route+授權矩陣 15 格+稽核，High）→ T6 → T7/T8 → 前端。vitest 併跑限制持續有效。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
