@@ -201,7 +201,33 @@
 | 管理員 | 201/409/400 | 200 | 201/409/400 | 201 | 200 | 200（自己） |
 | 停用帳號（`isActive=false`） | 401 | 401 | 401 | 401 | 401 | 401 |
 
-> **AC 總數：36**
+### H. 舊油資端點凍結（§16 **D1(a)** 之落實）
+
+> **D1(a) 批准原文（§16，人類 leonchih 2026-08-03）**：「`POST /parameters/fuel` **移除**（回 404），`GET /parameters/fuel` **保留為唯讀**（供稽核追溯與 PHASE-008 舊快照顯示）」；同段並明示「需調整 PHASE-003a 之既有測試（**屬依 Spec 更新斷言，非弱化測試**）」。本 AC 為該批准之排程落點，**不引入任何新產品決策**。
+
+**AC-37 `POST /parameters/fuel` 移除、`GET /parameters/fuel` 唯讀保留（§16 D1(a) / T3b）**
+
+- **(a) 寫入端點回 404** — When 以任何 body（合法或畸形）呼叫 `POST /parameters/fuel`。Then **404 `NOT_FOUND`**，body 為統一錯誤形狀 `{ error: { code: "NOT_FOUND", message, requestId } }`（由 `backend/src/platform/error-handler.ts:63-68` 之 `setNotFoundHandler` 提供；`NOT_FOUND` 屬既有 `ErrorCode` 聯集，**不新增 `ErrorCode`**，AC-35 仍成立）。
+  > **判定語意（須明示，避免 reviewer 誤判為授權回歸）**：route 已不存在，故 `requireAuth`／`requirePasswordChanged`／`requireAdmin` 三道 preHandler **不執行**；**管理員／一般使用者／未登入三種身分皆為 404**（無授權判定，亦無資源可洩漏）。測試須逐一涵蓋此三種身分。
+- **(b) 零寫入證明** — Then 上述三種身分之請求前後，`FuelParameterVersion` 之**列數與最大 `createdAt` 全等**；**不得**因 404 路徑而建立任何列。
+- **(c) 讀取端點 200 唯讀保留** — When 管理員呼叫 `GET /parameters/fuel`。Then **200**，回傳既有 `FuelParameterVersion` 版本清單，DTO 形狀與 `effectiveFrom` 排序與 PHASE-003a AC-19 **逐字相同**；**授權鏈完全不變**（`requireAuth` → `requirePasswordChanged` → `requireAdmin`），故未登入 → 401、`mustChangePassword=true` → 403 `PASSWORD_CHANGE_REQUIRED`、一般使用者 → 403 `FORBIDDEN` 三格行為與 PHASE-003a 既有測試逐字相同（該三條既有 it 為本項之現成證據，**不得**改動）。
+- **(d) 不變式** — 本 AC **不觸及** `FuelParameterVersion` 之 schema、既有列、`fuelParameterVersionId` 之歷史引用，亦不觸及 `/parameters/etc`／`/parameters/depreciation` 之任何行為（AC-27／§8.5 之「零回填、零改寫」仍成立）。
+
+**(e) 受影響之既有測試逐檔清單（以 `grep` 實查為準；處置一律為「依 Spec 更新斷言」，非弱化）**
+
+| 檔案 | 受影響位置（實查） | 處置 |
+|---|---|---|
+| `backend/test/integration/phase3a-parameter-fuel-etc.test.ts` | `describeWithDb("POST /parameters/fuel")`（L168）之 **10 條 it**：AC-01（L198）、AC-01 boundary（L218）、AC-03（L231）、AC-06 缺 `effectiveFrom`（L247）、AC-06 非法日期（L262）、AC-07 重疊（L277）、AC-09 相鄰日（L308）、AC-16 USER 403（L329）、AC-17 未登入 401（L341）、`mustChangePassword` 403（L352） | **就地改寫為 AC-37(a)(b) 之 404／零寫入斷言**（不刪檔、不刪 describe）。該批對「油資寫入」之契約覆蓋由 PHASE-005a **AC-01／02／03／05／06**（`/parameters/fuel-price`，§12 已 `GREEN`）承接；`/parameters/etc` 之同型 it 全數保留不動。 |
+| 同上 | `describeWithDb("GET /parameters/fuel")`（L368）之 AC-19（L398）以 `POST /parameters/fuel` **播種**兩列 | 播種改為 `prisma.fuelParameterVersion.create`（直寫，繞過已移除之端點）；**GET 之斷言逐字不變**（AC-37(c) 之主要證據）。 |
+| 同上 | 同 describe 之 AC-16（L448）／AC-17（L459）／`mustChangePassword`（L469）三條**純 GET** it | **零改動**（AC-37(c) 授權鏈不變之現成證據）。 |
+| 同上 | `describeWithDb("Concurrent defense…")`（L747）之「two sequential requests with same fuel date」（L773） | 移轉至 `/parameters/fuel-price`（同語意已由 AC-02 之並發 it 覆蓋，`GREEN`）或改直寫播種；**ETC 之同型 it（L798）不動**。 |
+| 同上 | `describeWithDb("Precision: unitPrice Decimal round-trip")`（L827）之 L851／L863 兩條（皆以 POST 播種） | 播種改直寫或移轉至 `/parameters/fuel-price`；精度斷言逐字保留。 |
+| `backend/test/integration/chore003-parameter-field-capacity.test.ts` | helper `postFuel`（L151-158）＋ **34 處呼叫**，散佈於 AC-21／AC-23／AC-25／AC-26／AC-27／AC-30／AC-31／AC-32 各 describe | **`postFuel` 改指 `POST /parameters/fuel-price`**：payload 由 `{ unitPrice, effectiveFrom }` 改為 `{ fuelType: "GASOLINE_95", pricePerLiter: <原值>, effectiveFrom }`；期望 `fields[].field` 由 `unitPrice` 改為 `pricePerLiter`。**狀態碼與 `reason` 文案逐字不變**——兩端點共用 `parseParameterDecimalField` ＋ `UNIT_PRICE_CAPACITY`，值域層文案同為「單價不得小於 0」（`fuel-price-service.ts:158-160` 實查證實）。`afterAll` 之清理（L133 `prisma.fuelParameterVersion.deleteMany`）須同步改為 `fuelPriceVersion`。ETC／折舊路徑之 it **全數不動**。 |
+| 同上 | **唯一文案例外**：「`unitPrice` 缺欄位／`null`／`''` → 400『單價為必填』」（L570-579） | 「單價為必填」由**舊 route 之就地必填檢查**產生（`backend/src/parameters/routes.ts:156-160`），`/parameters/fuel-price` 無此分支，缺／`null`／`''` 一律走 `parseParameterDecimalField`。故該 it 之期望 `reason` **依已批准之 AC-06 文案更新**；**嚴禁**為了讓舊斷言通過而在新端點加回「單價為必填」分支（那將是以實作遷就過時測試）。 |
+| `e2e/travel-application.spec.ts`（L77 GET／L91 POST）、`e2e/admin-applications.spec.ts`（L65／L78）、`e2e/mileage-statistics.spec.ts`（L86／L99） | 三個 helper 皆為 **`if (!covers(fuelVersions))` 守衛後才 POST**（實查確認）。dev／Gate DB 既有油資列（`PROJECT_STATE`：5.0000／2026-01-01 生效）使 `covers` 恆為 `true`，故 **T3b 落地當下不會使 e2e 轉紅**。 | **不屬 T3b**。三檔之播種改寫與 D1(a) 附款「Gate 環境之舊油資參數列由人類以新模型重建」合併處理，落點 **T13**（E2E）。列此僅為排程可追溯。 |
+| `frontend/src/api/parameters.ts`（L26 GET／L36 POST）、`frontend/test/ParametersPage.test.tsx`（L614 mock） | `apiCreateFuelVersion` 在 T3b 後即為 404 死路徑 | **不屬 T3b**，由 **T9**（AC-29）承接：油資區塊改指 `/parameters/fuel-price`，並移除／改寫 `apiCreateFuelVersion`。**T9 附帶必辦**：`ParametersPage.test.tsx:614` 之 mock 條件 `url.includes("/api/parameters/fuel")` 會**同時命中** `/api/parameters/fuel-price`，須收斂為精確比對，否則新舊端點之 mock 無法區辨。 |
+
+> **AC 總數：37**
 
 ---
 
@@ -331,6 +357,21 @@ interface FuelPriceVersionDto {
   createdAt: string;          // ISO
 }
 ```
+
+#### 7.1.1 舊油資端點之凍結後合約（§16 **D1(a)** 已批准；落點 T3b、AC-37）
+
+```
+POST /parameters/fuel
+  404 NOT_FOUND   { error: { code: "NOT_FOUND", message: "找不到請求的資源。", requestId } }
+  // route 移除 → preHandler 鏈不執行 → 管理員／一般使用者／未登入皆為 404
+  // 零寫入：FuelParameterVersion 不得因此路徑新增任何列
+
+GET  /parameters/fuel
+  200  { versions: FuelParameterDto[] }   // 唯讀保留；DTO 形狀、排序、授權鏈與 PHASE-003a 完全不變
+  401 | 403 PASSWORD_CHANGE_REQUIRED | 403 FORBIDDEN
+```
+
+> **凍結後之唯一寫入入口為 `POST /parameters/fuel-price`（§7.1）。** `FuelParameterVersion` 表、既有列與 `TravelApplication.fuelParameterVersionId` 之歷史引用一律保留不動（§8.5、AC-27）。保留 `GET` 之目的：稽核追溯與 PHASE-008 舊模型快照之參數來源顯示（D1(a) 原文）。
 
 ### 7.2 使用者車輛油耗（管理員）
 
@@ -631,6 +672,7 @@ complete（既有 Serializable 交易內，步驟順序不變）
 - 快照可重現性 AC-25：由快照三來源值獨立重算並精確比對。
 - migration 安全 AC-27：migration 前寫入舊模型列 → 套用 → 逐欄位值比對。
 - 錯誤合約與日誌 AC-34／35：`logStream` 掃描（沿用 PHASE-005 T6 慣例）。
+- 舊端點凍結 AC-37（T3b）：`POST /parameters/fuel` 三身分 404 ＋ 零寫入；`GET /parameters/fuel` 唯讀與授權鏈不變（既有三條授權 it 為現成證據，零改動）。受影響既有斷言之更新範圍以 AC-37(e) 逐檔清單為**封閉界線**，超出者須回報而非自行擴張。
 
 ### 11.3 前端（Vitest ＋ Testing Library，mock fetch）
 
@@ -701,8 +743,10 @@ complete（既有 Serializable 交易內，步驟順序不變）
 | AC-34 | integration | `backend/test/integration/phase5a-contract.test.ts` | `AC-34 錯誤格式統一且不外洩 > every error path returns { error: { code, message, requestId, fields? } }`；`… > no log line contains password / token / cookie / SQL / absolute path`；`… > basisNote never appears in application logs` | T12 | PENDING |
 | AC-35 | unit(structural) | `phase5a-contract.test.ts` | `AC-35 不新增 ErrorCode > errors.ts ErrorCode union equals the known baseline`；`… > PHASE-005a source references only baseline ErrorCode literals` | T12 | PENDING |
 | AC-36 | integration | `phase5a-fuel-consumption-authz.test.ts` | `AC-36 授權矩陣 > 15 必要格逐格（未登入／強制改密／一般使用者／管理員／停用帳號 × 六類端點）` | T5 | PENDING |
+| AC-37 | integration | `backend/test/integration/phase3a-parameter-fuel-etc.test.ts`（就地改寫之 `POST /parameters/fuel` describe）；連動更新 `backend/test/integration/chore003-parameter-field-capacity.test.ts` | `POST /parameters/fuel（D1(a) 凍結後） > AC-37(a) 管理員／一般使用者／未登入三種身分皆回 404 NOT_FOUND（統一錯誤形狀，不新增 ErrorCode）`；`… > AC-37(b) 三種身分之請求前後 FuelParameterVersion 列數與最大 createdAt 全等（零寫入）`；`GET /parameters/fuel > AC-37(c) 唯讀保留：200 且 DTO 形狀與排序與 PHASE-003a AC-19 逐字相同`；`… > AC-37(c) 授權鏈不變：401／403 PCR／403 FORBIDDEN 三格行為不變（既有三條 it 零改動）` | T3b | PENDING |
 
-**覆蓋核對**：AC-01~AC-36 全數有映射（本表共 **36 列**）；`PENDING` 36 列、`RED` 0、`GREEN` 0（Spec 階段）。無 AC 僅由 E2E 覆蓋（AC-33 除外——響應式本質為瀏覽器行為，沿用 PHASE-004 AC-89／PHASE-005 AC-32 慣例）。
+**覆蓋核對**：AC-01~AC-37 全數有映射（本表共 **37 列**）。無 AC 僅由 E2E 覆蓋（AC-33 除外——響應式本質為瀏覽器行為，沿用 PHASE-004 AC-89／PHASE-005 AC-32 慣例）。
+> **AC-37 測試名為預定名稱**；落地後依 `vitest --reporter=verbose` 之實際輸出**逐字回填**（機械規則自 §18 第二列起適用）。
 
 ---
 
@@ -739,6 +783,7 @@ complete（既有 Serializable 交易內，步驟順序不變）
 | **T1** | Schema ＋ migration：`FuelType` enum、兩張新表、`TravelApplication` 五欄、`AuditAction` 值、`userHasHistory` 納入新表 | DB | AC-27 | `backend/prisma/schema.prisma`、`backend/prisma/migrations/*`（≤3 檔）、`backend/src/users/history.ts`、`backend/test/integration/phase5a-migration-safety.test.ts` | **High**（migration） | — | migration 前後舊列逐欄位值比對全同；`prisma migrate` 於乾淨 DB 與既有 DB 皆成功；帳號刪除守門測試涵蓋新表 |
 | **T2** | 單價推導純函式 `deriveFuelUnitPrice` ＋ 容量守門 ＋ 零浮點掃描 | BE（純函式，零接線） | AC-18, 20, 28 | `backend/src/parameters/fuel-price-engine.ts`、`backend/test/unit/fuel-price-engine.test.ts` | **High**（金額核心） | T1 | 八列驗表全綠；`ROUND_HALF_EVEN` mutant 必紅；結構性掃描斷言在場 |
 | **T3** | 油價 service ＋ route（按油種建立／列表／重疊／驗證／稽核） | BE | AC-01, 02, 03, 05, 06 | `backend/src/parameters/fuel-price-service.ts`、`backend/src/parameters/routes.ts`、`backend/test/integration/phase5a-fuel-price.test.ts` | **High**（參數版本＝金額基準） | T1 | 四油種同生效日組合全綠；並發 409 非 500；複用 `parseParameterDecimalField`／`checkNoOverlap` 經 import 斷言證實 |
+| **T3b** | **落實 D1(a)：移除 `POST /parameters/fuel`（回 404）、保留 `GET /parameters/fuel` 唯讀**；依 Spec 更新受影響之既有斷言（AC-37(e) 逐檔清單） | BE | AC-37 | `backend/src/parameters/routes.ts`（**僅**移除 POST handler；GET handler 與 `/parameters/etc`、`/parameters/depreciation`、`/parameters/fuel-price` 零改動）、`backend/test/integration/phase3a-parameter-fuel-etc.test.ts`、`backend/test/integration/chore003-parameter-field-capacity.test.ts`（**3 檔**） | **High**（公開 API contract 變更——**事前批准已由 §16 D1(a) 人類裁定構成**，不需另行 Gate） | T3 | 三身分 404 ＋ 零寫入實證全綠；`GET` 之既有三條授權 it **逐字零改動**且仍綠；`chore003` 之 ETC／折舊 it **零改動**且仍綠；`postFuel` 改指後 34 處呼叫全綠（唯一文案例外依 AC-37(e) 末列處置）；後端全套兩輪全綠且**無任何測試被刪除／`skip`／弱化**（Handoff 須附增刪計數） |
 | **T4** | 油耗 service（建立／列表／驗證／重疊／依據備註） | BE | AC-07, 08, 09, 10, 11 | `backend/src/users/fuel-consumption-service.ts`、`backend/test/integration/phase5a-fuel-consumption.test.ts` | **High**（他人屬性寫入） | T1 | 值域邊界 `0.0001` 正例與 `0` 反例全綠；並發 409；跨使用者獨立 |
 | **T5** | 油耗 route ＋ 授權矩陣 ＋ 稽核 ＋ 版本 `state` | BE | AC-12, 13, 14, 36 | `backend/src/users/fuel-consumption-routes.ts`、`backend/src/server.ts`（註冊）、`backend/test/integration/phase5a-fuel-consumption-authz.test.ts` | **High**（授權） | T4 | 15 必要格全綠；403 路徑 DB 零寫入實證；稽核 `before`/`after` 精確；判定順序無側信道 |
 | **T6** | 自身唯讀端點 `GET /me/fuel-consumption` | BE | AC-15, 16, 17 | `backend/src/users/fuel-consumption-routes.ts`、`backend/test/integration/phase5a-self-consumption.test.ts` | **High**（授權／資料隔離） | T5 | 逐鍵白名單全等；他人識別值三路徑（query／body／path）皆不可達 |
@@ -753,14 +798,17 @@ complete（既有 Serializable 交易內，步驟順序不變）
 ### 依賴圖
 
 ```
-T1 ──▶ T2 ──▶ T3 ──┐
+T1 ──▶ T2 ──▶ T3 ──┬──▶ T3b ──▶ T9
  │                  ├──▶ T7 ──▶ T8 ──▶ T12 ──┐
  └──▶ T4 ──▶ T5 ──▶ T6 ──┘                    │
                      │                        │
-        T9 ◀── T3    ├──▶ T10                 │
+                     ├──▶ T10                 │
         T11 ◀── T6, T7                        │
                      └──▶ T11 ──▶ T13 ◀───────┘
 ```
+
+> **排序硬性要求**：**T3b 必須在 T9 之前完成**。理由：T9 之 AC-29 將前端油資區塊改指 `/parameters/fuel-price`；若 T9 先行，前端已離開舊端點而後端仍可寫，等同 D1(a) 所否決之 **(b) 新舊並存**；若 T3b 先行，`frontend/src/api/parameters.ts:36` 之 `apiCreateFuelVersion` 成為 404 死路徑，**由 T9 於同一 Phase branch 內立即承接清除**（見 AC-37(e) 末二列之 T9 附帶必辦）。此為 Phase 內部之過渡狀態，不進 `main` 單獨發布。
+> **T13 附帶必辦**：三個 e2e helper 之油資播種改寫（AC-37(e) 倒數第二列）與 D1(a) 附款「Gate 環境舊油資參數列由人類以新模型重建」合併於 T13 處理。
 
 ### 規模上限自查
 
@@ -769,6 +817,7 @@ T1 ──▶ T2 ──▶ T3 ──┐
 | T1 | 1 | 6 | DB only（＋1 既有 src 檔之守門擴充） | ✅ |
 | T2 | 3 | 2 | BE only | ✅ |
 | T3 | 5 | 3 | BE only | ✅ |
+| T3b | 1 | 3 | BE only（1 src ＋ 2 既有測試檔之斷言更新；零 schema、零 FE、零 E2E） | ✅ |
 | T4 | 5 | 2 | BE only | ✅ |
 | T5 | 4 | 3 | BE only | ✅ |
 | T6 | 3 | 2 | BE only | ✅ |
@@ -1061,5 +1110,7 @@ BE-US-19 第 4 條：「Given 參數或油耗資料已有歷史申請引用／Wh
 | 2026-08-03 | `ACTIVE`（T2 複審修復同步） | T1R2+T2 合併複審 REQUEST_CHANGES（0 Must/4 Should/6 AR）→ **T2R-LITE**（`4259893`）修 SF-1（非有限除數/被除數守門——NaN 穿透 `lte(0)`、Infinity 靜默回 0，reviewer node 實測；後置有限性檢查補齊）、SF-3（AC-28 掃描改 `PHASE_005A_SRC_FILES` 清單驅動、缺檔必紅）、SF-4（裁定保留 RangeError；註解虛假上游依據更正，記 T7/T8「引擎 throw 不得 500」義務）；SF-2 由大總管以 verbose 實名回填 §12（AC-18/28 轉 GREEN、AC-20 單元層 GREEN/T8 整合層 PENDING、AC-27 實名更正）。「映射表名一律逐字複製 vitest verbose 輸出」自本列起為機械規則。AR-2（段金額/totalAmount 溢位邊界）移交 T8 邊界表。基準線 1244/0/0。 | 合併複審報告；大總管白名單 |
 | 2026-08-03 | `ACTIVE`（T1 結案同步） | T1（`35b30e7`）＋T1R-LITE（`3a2c0a5`）＋T1R2-LITE（`255caed`，Review S-1 修復：AC-27 安全網擴為 §8.6 五表逐欄比對）結案；§12 映射表 AC-27 轉 `GREEN` 並回填實際測試名（Review S-2）。基準線 1217/0/0。 | T1 即審 REQUEST_CHANGES（0 Must/2 Should/7 AR）之 S-1/S-2 處置；大總管白名單（狀態欄／映射表狀態） |
 | 2026-08-03 | `DRAFT` → **`ACTIVE`** | **Spec Gate 通過（人類 leonchih，2026-08-03，本 session AskUserQuestion）：D1~D11 全數照建議批准**——D1(a) 保留舊表凍結寫入＋GET 唯讀＋Gate 環境資料由人類重建；D2(a) Prisma enum `FuelType`；D3(a-1)(b-1)(c-1) 油價油耗均 `Decimal(10,4)` 複用既有驗證管線、`basisNote` ≤500 字；D4(a) 推導處容量守門→409 不改欄位；D5(a) `FUEL`→`FUEL_PRICE` 更名＋新增 `FUEL_CONSUMPTION`（既有斷言依 Spec 更新，Packet 逐檔列明）；D6(a) 預覽端點加可選 `ownerId` 走 `resolveOwnerId`（一般使用者帶他人→403）；D7(a) 三組路徑全採；D8(a) append-only＋允許為停用帳號建立；D9(a) 三落點全採；D10(a) 報表條件呈現（結論由大總管寫入 PROJECT_STATE 跨 Phase 追蹤）；D11(a) 擴充函式不新增端點。**兩項自主判斷（§5 B-05 缺油耗不回報油價缺項、D5 斷言更新非弱化）一併追認。T1~T8 High 之事前批准於本 Gate 取得。** | 人類 Spec Gate 裁定（leonchih，2026-08-03） |
+
+| 2026-08-03 | `ACTIVE`（PHASE-005a-SPEC-REV1：D1(a) 排程缺口修補） | **T3 即審 S-2 查出：已批准之 D1(a)「`POST /parameters/fuel` 移除（回 404）、`GET /parameters/fuel` 保留唯讀」在原 36 AC／13 Task 中無任何歸屬**，導致兩套量綱不同（元／km vs 元／L）之油資寫入端點並存——即 D1 已否決之選項 (b)。本次修訂：①§2 新增 **AC-37**（含 (a) 三身分 404、(b) 零寫入、(c) `GET` 唯讀與授權鏈不變、(d) 不變式、(e) 受影響既有測試之 `grep` 實查逐檔清單）；②§7.1 新增 **§7.1.1 凍結後合約**；③§15 新增 **T3b**（High，依賴 T3，**T9 前必須完成**）＋依賴圖與規模上限自查同步；④§12 新增 AC-37 列（`PENDING`／T3b），並移除與現況矛盾之過時計數句（原「`PENDING` 36 列、`GREEN` 0」與已 `GREEN` 之 AC-18／27／28 相斥）。**本修訂為既有批准之排程落實，無任何新產品決策、無 Scope 擴大、無 AC 刪減。** 受影響測試之處置一律為 D1(a) 原文所預期之「依 Spec 更新斷言，非弱化測試」；`chore003` 之 `postFuel` 改指 `/parameters/fuel-price` 以**零刪除**保全 §14 欄位容量契約覆蓋（唯一文案例外見 AC-37(e) 末列，明令不得以實作遷就過時斷言）。 | §16 **D1(a)** 批准原文（人類 leonchih，2026-08-03，見本節第四列）；T3 即審 S-2；Task Context Packet PHASE-005a-SPEC-REV1 |
 
 > **轉 `ACTIVE` 之條件**：§16 D1~D11 全數經人類裁定並由大總管於本節固化；未裁定項相關之 AC 與 Task 不得開工。
