@@ -11,10 +11,28 @@
  *  - Done When 反向斷言組：DRAFT 999.00 + VOIDED 888.00 併存 → 結果恰 10.00。
  *  - AC-05 僅計差旅類型：MAINTENANCE/DEPRECIATION（無子表）不計入，且不拋錯。
  *  - AC-06 僅計指定擁有人：A/B 隔離，含 B 由代操作（createdBy=admin）建立之情境。
- *  - AC-07 加總各段總里程且不重複加高速：35.75 精確值（數值鑑別）。
- *  - D2(a) defensive check：不存在 status=COMPLETED AND snapshotTotalKm IS NULL。
+ *  - AC-07 加總各段總里程且不重複加高速：35.75 精確值，經**真實完成流程**
+ *    （`completeTravelApplication`）產生（PHASE-005-R1 M-2 修復——原版直接寫入
+ *    `snapshotTotalKm` 字面值為套套邏輯，見下方測試內註解）。
+ *  - D2(a) defensive check：全表不存在 status=COMPLETED AND snapshotTotalKm IS
+ *    NULL（PHASE-005-R1 M-2 修復——原版僅查自建 id）。
  *  - D3(a) Decimal 保真：10.01 × 3 = 30.03，無浮點失真。
  *  - 同 DB 連跑兩輪全綠（自我修復清理 + 精確範圍隔離的 tripDate 區間）。
+ *
+ * PHASE-005-R1（期中 Review REQUEST_CHANGES 修復，全部為測試層修復，零 src
+ * 變更 — 詳見各測試內的 M-1/M-2/S-1/S-3 標記與說明）：
+ *  - M-1① AC-01 四點邊界：dateFrom−1／dateFrom／dateTo／dateTo+1 各一筆
+ *    COMPLETED，精確斷言恰納入中間兩筆（`tripDate`，非 `primaryDate`）。
+ *  - M-1② AC-02 歸屬日期：primaryDate/createdAt 落區間內但 tripDate 落區間外
+ *    → 不納入；反之 → 納入（`$executeRaw` 覆寫 `createdAt`，故意跨月份）。
+ *  - M-2 AC-07/AC-13/D2(a) 由套套邏輯改為有鑑別力版本（見上）。
+ *  - S-1 AC-33：新增 SQL 文字斷言（`SUM(`/`COUNT(` 皆須在場，不得為
+ *    `findMany()+reduce`），查詢數上界收緊為 `toBe(1)`（本實作實測恰 1 次）。
+ *  - S-3：於四點邊界測試中加入 `SHOW TimeZone` 明文斷言（UTC/Etc/UTC），把
+ *    「起訖含當日語意依賴 DB session TimeZone=UTC」的隱含環境假設變成可失敗
+ *    守門（reviewer 實測 Asia/Taipei session 下 dateFrom 當日會被排除——修復
+ *    該行為本身需要動 `mileage-range.ts`，超出本回合 Files Allowed 範圍，故
+ *    本回合只把假設變得可見，不改變行為）。
  *
  * Test discipline (Spec §11.0 / CLAUDE.md): cleanup scoped to this suite's own
  * synthetic data only (loginName prefix "p5t2_" + tracked application ids);
@@ -23,6 +41,7 @@
  * 不倚賴 Prisma `startsWith` 之 SQL LIKE 語意做權威判定。
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { completeTravelApplication } from "../../src/applications/travel-service.js";
 
 const DB_URL = process.env.DATABASE_URL;
 
@@ -68,10 +87,24 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
 
   const createdApplicationIds: string[] = [];
   const createdUserIds: string[] = [];
+  const createdAttachmentIds: string[] = [];
+  const createdFuelVersionIds: string[] = [];
+  const createdEtcVersionIds: string[] = [];
 
   async function cleanupSyntheticData() {
+    if (createdAttachmentIds.length > 0) {
+      await prisma.attachment.deleteMany({ where: { id: { in: createdAttachmentIds } } });
+    }
     if (createdApplicationIds.length > 0) {
       await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
+    }
+    if (createdFuelVersionIds.length > 0) {
+      await prisma.fuelParameterVersion.deleteMany({
+        where: { id: { in: createdFuelVersionIds } },
+      });
+    }
+    if (createdEtcVersionIds.length > 0) {
+      await prisma.etcParameterVersion.deleteMany({ where: { id: { in: createdEtcVersionIds } } });
     }
 
     // Over-broad, SQL-LIKE-safe pre-filter bound (no literal "_" reached yet),
@@ -183,6 +216,103 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
     }
 
     return application;
+  }
+
+  // -----------------------------------------------------------------------
+  // PHASE-005-R1 M-2 helpers — 真實完成流程（`completeTravelApplication`）所需
+  // 之油資/ETC 參數版本與段落附件。年份 2044 為本套件專屬、跨其他 integration
+  // 測試檔未使用之年份（FuelParameterVersion/EtcParameterVersion 為全域共用
+  // 表，見 phase4-travel-complete.test.ts 檔頭同一教訓）。
+  // -----------------------------------------------------------------------
+
+  async function createParamVersions(
+    effectiveFrom: string,
+    fuelPrice: string,
+    etcPrice: string
+  ): Promise<{ fuelVersionId: string; etcVersionId: string }> {
+    const fuel = await prisma.fuelParameterVersion.create({
+      data: {
+        unitPrice: fuelPrice,
+        effectiveFrom: new Date(effectiveFrom),
+        createdById: ownerA.id,
+      },
+    });
+    const etc = await prisma.etcParameterVersion.create({
+      data: {
+        unitPrice: etcPrice,
+        effectiveFrom: new Date(effectiveFrom),
+        createdById: ownerA.id,
+      },
+    });
+    createdFuelVersionIds.push(fuel.id);
+    createdEtcVersionIds.push(etc.id);
+    return { fuelVersionId: fuel.id, etcVersionId: etc.id };
+  }
+
+  async function createLinkedAttachment(segmentId: string, forOwnerId: string) {
+    const att = await prisma.attachment.create({
+      data: {
+        status: "LINKED",
+        storageKey: `p5t2-synth-${RUN_ID}-${Math.random().toString(36).slice(2)}`,
+        mimeType: "image/jpeg",
+        byteSize: 123,
+        originalFilename: "synthetic.jpg",
+        uploaderId: forOwnerId,
+        ownerId: forOwnerId,
+        refType: "TRIP_SEGMENT",
+        refId: segmentId,
+        linkedAt: new Date(),
+      },
+    });
+    createdAttachmentIds.push(att.id);
+    return att;
+  }
+
+  /**
+   * 建立一筆「可被 `completeTravelApplication` 真實完成」的草稿：擁有人、出差
+   * 目的、每段皆有起訖地點與一張已連結附件——完整性驗證（AC-52 同一
+   * `computeCompletionBlockers`）與參數可用性檢查皆會通過。呼叫方須自行先
+   * 呼叫 `createParamVersions`，確保 `tripDate` 落在其 `effectiveFrom` 之後。
+   */
+  async function createCompletableTravelApplication(opts: {
+    ownerId: string;
+    primaryDate: string;
+    tripDate: string;
+    purpose: string;
+    segments: Array<{ totalKm: string; highwayKm: string }>;
+  }): Promise<string> {
+    const application = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "DRAFT",
+        ownerId: opts.ownerId,
+        createdById: opts.ownerId,
+        primaryDate: new Date(opts.primaryDate),
+        travel: {
+          create: {
+            tripDate: new Date(opts.tripDate),
+            purpose: opts.purpose,
+          },
+        },
+      },
+    });
+    createdApplicationIds.push(application.id);
+
+    for (const [i, seg] of opts.segments.entries()) {
+      const segment = await prisma.tripSegment.create({
+        data: {
+          travelApplicationId: application.id,
+          sortOrder: i,
+          origin: `p5r1-origin-${i}`,
+          destination: `p5r1-dest-${i}`,
+          totalKm: seg.totalKm,
+          highwayKm: seg.highwayKm,
+        },
+      });
+      await createLinkedAttachment(segment.id, opts.ownerId);
+    }
+
+    return application.id;
   }
 
   // -----------------------------------------------------------------------
@@ -311,30 +441,42 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
   // AC-07 加總各段總里程且不重複加高速（35.75 數值鑑別）
   // -----------------------------------------------------------------------
 
-  it("sums to exactly 35.75 for a travel whose snapshot reflects segment totals without double-counting highway", async () => {
-    const dateFrom = new Date("2026-07-01");
-    const dateTo = new Date("2026-07-10");
+  it("sums to exactly 35.75 for a travel whose snapshot reflects segment totals without double-counting highway (PHASE-005-R1 M-2: real completion flow, not a hand-written fixture)", async () => {
+    // M-2 修復：原版直接對 `snapshotTotalKm` 寫入字面值 "35.75"，而引擎從不
+    // 讀 TripSegment——這使得 35.75 vs 53.75 的鑑別在任何實作下都不可能觸發
+    // （寫什麼字面值，讀回來就是什麼，與 sumOfficialMileage 的加總邏輯正確與
+    // 否完全無關）。改為透過 `completeTravelApplication`（PHASE-004 生產程式，
+    // 非測試自建）真正計算並落地快照，此時 35.75 vs 53.75 的鑑別力才是真實的
+    // ——若生產程式誤把 highway 重複相加，這裡會如實得到 53.75 並讓斷言失敗。
+    const dateFrom = new Date("2044-07-01");
+    const dateTo = new Date("2044-07-10");
+
+    await createParamVersions("2044-01-01", "5.0000", "2.0000");
 
     // Segments: (10.00, hw 10.00), (5.50, hw 0.00), (20.25, hw 8.00).
     // Σ totalKm = 35.75. Wrong implementations would yield 53.75 (total+hw),
     // 18.00 (hw only), or 17.75 (total-hw) — asserted exactly below.
-    const segments = [
-      { totalKm: "10.00", highwayKm: "10.00" },
-      { totalKm: "5.50", highwayKm: "0.00" },
-      { totalKm: "20.25", highwayKm: "8.00" },
-    ];
-
-    await createTravelApplication({
+    const applicationId = await createCompletableTravelApplication({
       ownerId: ownerA.id,
-      createdById: ownerA.id,
-      status: "COMPLETED",
-      primaryDate: "2026-07-05",
-      tripDate: "2026-07-05",
-      // D2(a): 聚合來源為快照，測試依 AC-50 語意（完成時 snapshotTotalKm =
-      // Σ 各段 totalKm）自行寫入該值。
-      snapshotTotalKm: "35.75",
-      segments,
+      primaryDate: "2044-07-05",
+      tripDate: "2044-07-05",
+      purpose: "PHASE-005-R1 M-2 AC-07 真實完成流程鑑別力測試",
+      segments: [
+        { totalKm: "10.00", highwayKm: "10.00" },
+        { totalKm: "5.50", highwayKm: "0.00" },
+        { totalKm: "20.25", highwayKm: "8.00" },
+      ],
     });
+
+    const completed = await completeTravelApplication(prisma, applicationId);
+    expect(completed.status).toBe("COMPLETED");
+
+    // DB round-trip: the snapshot really is 35.75, computed by production
+    // code — not authored by this test.
+    const dbTravel = await prisma.travelApplication.findUniqueOrThrow({
+      where: { applicationId },
+    });
+    expect(dbTravel.snapshotTotalKm?.toString()).toBe("35.75");
 
     const result = await sumOfficialMileage(prisma, { ownerId: ownerA.id, dateFrom, dateTo });
 
@@ -374,10 +516,15 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
   // D2(a) defensive check — 不存在 status=COMPLETED AND snapshotTotalKm IS NULL
   // -----------------------------------------------------------------------
 
-  it("invariant: no COMPLETED travel application created by this suite has a null snapshotTotalKm", async () => {
+  it("invariant (PHASE-005-R1 M-2, global): no COMPLETED travel application in this schema has a null snapshotTotalKm", async () => {
+    // M-2 修復：原版以 `id: { in: createdApplicationIds }` 限定，只查自建
+    // 列——本套件自建的 COMPLETED 列本就全部手動寫入 snapshotTotalKm，這條
+    // 斷言在任何實作下都不可能失敗。改為不限定 id 的全表掃描；per-worker
+    // schema 隔離 + 本檔 setupFiles 之 per-file TRUNCATE（見 vitest.config.ts
+    // INFRA-001 註解）保證本檔執行期間，這個 schema 內只有本檔自己的資料，
+    // 全表掃描不會誤觸其他測試檔的殘留列。
     const offenders = await prisma.application.findMany({
       where: {
-        id: { in: createdApplicationIds },
         type: "TRAVEL",
         status: "COMPLETED",
         travel: { snapshotTotalKm: null },
@@ -575,44 +722,51 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
   // AC-13 — 快照與段加總一致性不變式
   // -----------------------------------------------------------------------
 
-  it("AC-13: snapshotTotalKm equals the exact sum of TripSegment.totalKm for a multi-segment COMPLETED travel", async () => {
-    const segments = [
-      { totalKm: "12.34", highwayKm: "0.00" },
-      { totalKm: "7.66", highwayKm: "1.00" },
-      { totalKm: "0.50", highwayKm: "0.00" },
-    ];
-    const expectedSnapshot = sumDecimalStrings(segments.map((s) => s.totalKm));
-    expect(expectedSnapshot).toBe("20.5");
-
-    const application = await createTravelApplication({
-      ownerId: ownerA.id,
-      createdById: ownerA.id,
-      status: "COMPLETED",
-      primaryDate: "2026-12-15",
-      tripDate: "2026-12-15",
-      snapshotTotalKm: expectedSnapshot,
-      segments,
-    });
-
-    const fetched = await prisma.travelApplication.findUniqueOrThrow({
-      where: { applicationId: application.id },
+  it("AC-13 (PHASE-005-R1 M-2, global invariant scan): every segment-bearing COMPLETED travel in this schema has snapshotTotalKm == Σ TripSegment.totalKm", async () => {
+    // M-2 修復：原版對「自建一列、寫入的快照與寫入的段落」做比較——快照
+    // 字面值與段落字面值皆由同一個 `sumDecimalStrings` 呼叫產生、寫入同一個
+    // helper，這只證明「DB 寫入什麼、讀回來就是什麼」的 round-trip，並未驗證
+    // 「快照是否真的等於段落之和」這件事本身（快照從未經由計算得出）。改為
+    // 不限定 id 的全表不變式掃描：涵蓋本檔目前為止所有測試建立的 COMPLETED
+    // 列，包含上面 AC-07 測試中「經 `completeTravelApplication` 真實計算」
+    // 的那一筆——只有這一筆的快照是生產程式算出來的，其餘本檔測試建立的
+    // COMPLETED 列多數無段落（0 段，見下方 skip 理由）。per-worker schema
+    // 隔離保證全表掃描不誤觸其他測試檔的資料（同上一測試理由）。
+    const completedTravels = await prisma.travelApplication.findMany({
+      where: { application: { status: "COMPLETED" } },
       include: { segments: true },
     });
 
-    const segmentSum = sumDecimalStrings(
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma model shape
-      fetched.segments.map((s: any) => s.totalKm.toString())
-    );
+    // Sanity: 若這裡是空陣列，代表掃描範圍本身有問題（例如查詢寫錯、schema
+    // 隔離失效），而非「不變式碰巧成立」。
+    expect(completedTravels.length).toBeGreaterThan(0);
 
-    expect(fetched.snapshotTotalKm?.toString()).toBe(expectedSnapshot);
-    expect(segmentSum).toBe(fetched.snapshotTotalKm?.toString());
+    let checkedWithSegments = 0;
+    for (const travel of completedTravels) {
+      if (travel.segments.length === 0) {
+        // B-15（Spec §16）：本檔多數 COMPLETED fixture 為測試其他 AC（狀態
+        // 過濾、擁有人隔離等）以 `createTravelApplication` 直接寫入
+        // snapshotTotalKm、不建立真實段落——這是已知的測試捷徑，不是「0 段
+        // 異常資料」，此不變式僅對「確實有段落」的列有意義，故略過。
+        continue;
+      }
+      checkedWithSegments++;
+      const segmentSum = sumDecimalStrings(
+        travel.segments.map((s) => s.totalKm?.toString() ?? "0")
+      );
+      expect(travel.snapshotTotalKm?.toString()).toBe(segmentSum);
+    }
+
+    // Sanity: 至少要有一筆「有段落」的列被實際檢查過（否則上面的迴圈是空轉，
+    // 不變式從未被真正驗證）。
+    expect(checkedWithSegments).toBeGreaterThan(0);
   });
 
   // -----------------------------------------------------------------------
   // AC-33 — 聚合於 DB 層完成（查詢數常數斷言：3 筆與 101 筆情境同查詢數）
   // -----------------------------------------------------------------------
 
-  it("AC-33: aggregation runs in a constant number of SQL queries, independent of row count (3 vs 101)", async () => {
+  it("AC-33: aggregation runs in a constant number of SQL queries, independent of row count (3 vs 101), and is a real SQL SUM/COUNT — not findMany()+reduce (PHASE-005-R1 S-1)", async () => {
     const { PrismaClient } = await import("@prisma/client");
     const countingClient = new PrismaClient({
       datasources: { db: { url: DB_URL } },
@@ -620,9 +774,16 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
     });
     await countingClient.$connect();
 
+    // S-1 修復：原版只數查詢「次數」——`findMany()` 讀出命中集合再於 JS 端
+    // `reduce()` 加總，同樣恰好是 1 次 SQL 查詢，會被原本的次數斷言誤判為
+    // 通過（AC-33 真正要求的是「聚合在 DB 層完成」，不是「只發一次查詢」）。
+    // 改為額外收集每次查詢的 SQL 文字，斷言其中含真正的 `SUM(`/`COUNT(`
+    // 聚合函式——`findMany()` 產生的 SQL 不會有這兩個關鍵字。
+    const queryTexts: string[] = [];
     let queryCount = 0;
-    countingClient.$on("query", () => {
+    countingClient.$on("query", (e: { query: string }) => {
       queryCount++;
+      queryTexts.push(e.query);
     });
 
     try {
@@ -666,31 +827,168 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
       await prisma.travelApplication.createMany({ data: travelRows });
 
       queryCount = 0;
+      queryTexts.length = 0;
       const smallResult = await sumOfficialMileage(countingClient, {
         ownerId: ownerA.id,
         dateFrom: smallFrom,
         dateTo: smallTo,
       });
       const smallQueryCount = queryCount;
+      const smallQueryTexts = [...queryTexts];
 
       queryCount = 0;
+      queryTexts.length = 0;
       const largeResult = await sumOfficialMileage(countingClient, {
         ownerId: ownerA.id,
         dateFrom: largeFrom,
         dateTo: largeTo,
       });
       const largeQueryCount = queryCount;
+      const largeQueryTexts = [...queryTexts];
 
       expect(smallResult.applicationCount).toBe(3);
       expect(largeResult.applicationCount).toBe(101);
 
-      // 常數（不隨資料筆數增長）：3 筆與 101 筆情境的查詢數必須相等，且為一
-      // 個小常數（單一 `aggregate()` 實作應為 1）。
-      expect(smallQueryCount).toBeGreaterThan(0);
-      expect(smallQueryCount).toBeLessThanOrEqual(2);
+      // 常數（不隨資料筆數增長）：3 筆與 101 筆情境的查詢數必須相等，且恰為
+      // 1（S-1 修復：本實作實測恰 1 次 SQL，收緊上界，不再留 ≤2 的模糊空間）。
+      expect(smallQueryCount).toBe(1);
       expect(largeQueryCount).toBe(smallQueryCount);
+
+      // S-1 修復核心：查詢文字須含真正的 SQL SUM(/COUNT( 聚合函式——
+      // `findMany()+reduce()` 產生的 SQL 絕不會含這兩個關鍵字，即使查詢次數
+      // 同樣恰為 1 也會在這裡被鑑別出來。
+      const smallCombined = smallQueryTexts.join("\n");
+      const largeCombined = largeQueryTexts.join("\n");
+      expect(smallCombined).toMatch(/\bSUM\(/i);
+      expect(smallCombined).toMatch(/\bCOUNT\(/i);
+      expect(largeCombined).toMatch(/\bSUM\(/i);
+      expect(largeCombined).toMatch(/\bCOUNT\(/i);
     } finally {
       await countingClient.$disconnect();
     }
+  });
+
+  // ===========================================================================
+  // PHASE-005-R1 M-1 — AC-01 四點邊界 + AC-02 歸屬日期（tripDate vs
+  // primaryDate/createdAt）+ S-3 TimeZone 守門
+  //
+  // Review 原文：現況整合層無法分辨「以 `Application.primaryDate` 過濾」與
+  // 「以 `TravelApplication.tripDate` 過濾」（既有 fixture 之 primaryDate 恆等於
+  // tripDate），亦無 off-by-one 行為斷言。下方兩組測試補上這兩項鑑別力。
+  // ===========================================================================
+
+  describe("M-1① — AC-01 四點邊界（tripDate 精確 gte/lte，非近似值）", () => {
+    it("dateFrom−1／dateTo+1 不納入；dateFrom／dateTo 精確納入（bit-exact）", async () => {
+      // S-3 守門：起訖含當日語意（AC-01/02）的 gte/lte 比較，實際上依賴 DB
+      // session 之 TimeZone=UTC（reviewer 實測：Asia/Taipei session 下
+      // `travel.tripDate >= dateFrom` 之 timestamptz 比較會把 dateFrom 當日排
+      // 除，見檔頭 S-3 說明）。把這個隱含環境假設變成一條明文、可失敗的守
+      // 門——若未來測試/部署環境的 DB session TimeZone 漂移離開 UTC，先在這裡
+      // 失敗，而不是讓下面的邊界斷言以令人困惑的 off-by-one 面貌失敗。
+      const tzRows = await prisma.$queryRawUnsafe("SHOW TimeZone");
+      const sessionTimeZone = tzRows[0]?.TimeZone;
+      expect(["UTC", "Etc/UTC"]).toContain(sessionTimeZone);
+
+      const dateFrom = new Date("2045-01-10");
+      const dateTo = new Date("2045-01-20");
+
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-01-09",
+        tripDate: "2045-01-09", // dateFrom − 1 日
+        snapshotTotalKm: "901.00",
+      });
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-01-10",
+        tripDate: "2045-01-10", // dateFrom 當日
+        snapshotTotalKm: "10.00",
+      });
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-01-20",
+        tripDate: "2045-01-20", // dateTo 當日
+        snapshotTotalKm: "20.00",
+      });
+      await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-01-21",
+        tripDate: "2045-01-21", // dateTo + 1 日
+        snapshotTotalKm: "902.00",
+      });
+
+      const result = await sumOfficialMileage(prisma, { ownerId: ownerA.id, dateFrom, dateTo });
+
+      // 精確值斷言（非「> 0」之類的近似）：恰納入中間兩筆 10.00+20.00=30.00。
+      // 邊界外兩筆（901.00/902.00）刻意取遠大於 30 的值——若任一筆被誤納
+      // 入，結果會明顯偏離 30，鑑別力充分；若兩筆都被誤納入，applicationCount
+      // 亦會偏離 2。
+      expect(result.totalKm.toString()).toBe("30");
+      expect(result.applicationCount).toBe(2);
+    });
+  });
+
+  describe("M-1② — AC-02 依「出差日期」歸屬區間（非 Application.primaryDate/createdAt）", () => {
+    it("primaryDate/createdAt 落區間內、tripDate 落區間外（刻意跨月份）→ 不納入", async () => {
+      const dateFrom = new Date("2045-06-01");
+      const dateTo = new Date("2045-06-10");
+
+      const application = await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-06-05", // 落區間內
+        tripDate: "2045-09-05", // 刻意落在不同月份、區間外
+        snapshotTotalKm: "77.00",
+      });
+      // `createdAt` 為 `@default(now())`，測試執行當下必然落在 2045-06 之
+      // 外；為了明確驗證「即使 createdAt 落區間內也不納入」（而非僅是「剛好
+      // 沒落在區間內」的巧合），以 `$executeRaw` 明確覆寫成落區間內的值。
+      await prisma.$executeRaw`UPDATE "Application" SET "createdAt" = ${new Date(
+        "2045-06-05T00:00:00.000Z"
+      )} WHERE id = ${application.id}`;
+
+      const dbApp = await prisma.application.findUniqueOrThrow({ where: { id: application.id } });
+      expect(dbApp.createdAt.getUTCFullYear()).toBe(2045);
+      expect(dbApp.createdAt.getUTCMonth()).toBe(5); // 0-indexed：6 月
+
+      const result = await sumOfficialMileage(prisma, { ownerId: ownerA.id, dateFrom, dateTo });
+
+      expect(result.totalKm.toString()).toBe("0");
+      expect(result.applicationCount).toBe(0);
+    });
+
+    it("tripDate 落區間內、primaryDate/createdAt 落區間外（刻意跨月份）→ 納入", async () => {
+      const dateFrom = new Date("2045-07-01");
+      const dateTo = new Date("2045-07-10");
+
+      const application = await createTravelApplication({
+        ownerId: ownerA.id,
+        createdById: ownerA.id,
+        status: "COMPLETED",
+        primaryDate: "2045-10-05", // 刻意落在不同月份、區間外
+        tripDate: "2045-07-05", // 落區間內
+        snapshotTotalKm: "88.00",
+      });
+      await prisma.$executeRaw`UPDATE "Application" SET "createdAt" = ${new Date(
+        "2045-10-05T00:00:00.000Z"
+      )} WHERE id = ${application.id}`;
+
+      const dbApp = await prisma.application.findUniqueOrThrow({ where: { id: application.id } });
+      expect(dbApp.createdAt.getUTCMonth()).toBe(9); // 0-indexed：10 月，區間外
+
+      const result = await sumOfficialMileage(prisma, { ownerId: ownerA.id, dateFrom, dateTo });
+
+      expect(result.totalKm.toString()).toBe("88");
+      expect(result.applicationCount).toBe(1);
+    });
   });
 });
