@@ -10,7 +10,7 @@
  * 請求，佇列式 mock 很容易因順序被自動預覽請求插隊而錯位。
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -792,6 +792,91 @@ describe("TravelApplicationPage", () => {
 
     await waitFor(() => {
       expect(screen.getByText("首頁占位")).toBeInTheDocument();
+    });
+  });
+
+  // ---- PHASE-005a-T14（Gate 反饋①）：未儲存變更時「完成申請」確認框 ----
+  describe("未儲存變更提示（T14）", () => {
+    it("有未儲存變更 → 確認框顯示「有未儲存的變更，請先儲存草稿」、確認鈕停用、不含伺服器舊狀態缺項紅字", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+
+      // 使用者編輯欄位但未按「儲存草稿」→ dirty。
+      fireEvent.change(screen.getByLabelText("出差日期"), { target: { value: "2026-03-05" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "完成申請" }));
+      const dialog = screen.getByRole("dialog", { name: "確認完成申請" });
+
+      expect(within(dialog).getByText("有未儲存的變更，請先儲存草稿")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "確認完成" })).toBeDisabled();
+      expect(within(dialog).queryByText(/請填寫出差日期/)).not.toBeInTheDocument();
+      expect(within(dialog).queryByText("至少需要一個行程段")).not.toBeInTheDocument();
+    });
+
+    it("無未儲存變更 → 完成申請確認框行為不變（現行文字、確認鈕可按）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            tripDate: "2026-03-01",
+            purpose: "台中出差",
+            completionBlockers: [],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "完成申請" }));
+      const dialog = screen.getByRole("dialog", { name: "確認完成申請" });
+
+      expect(
+        within(dialog).getByText("完成後將無法修改，且無法復原。確定要完成這筆申請嗎？")
+      ).toBeInTheDocument();
+      expect(within(dialog).queryByText("有未儲存的變更，請先儲存草稿")).not.toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "確認完成" })).not.toBeDisabled();
+    });
+
+    it("dirty → 儲存 → 再點完成 → 不再出現未儲存提示，確認鈕恢復可按", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            tripDate: "2026-03-01",
+            purpose: "台中出差",
+            completionBlockers: [],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("PUT", isPutDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            tripDate: "2026-03-02",
+            purpose: "台中出差（修改）",
+            completionBlockers: [],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+
+      fireEvent.change(screen.getByLabelText("出差日期"), { target: { value: "2026-03-02" } });
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => expect(screen.getByText("草稿已儲存。")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "完成申請" }));
+      const dialog = screen.getByRole("dialog", { name: "確認完成申請" });
+
+      expect(within(dialog).queryByText("有未儲存的變更，請先儲存草稿")).not.toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "確認完成" })).not.toBeDisabled();
     });
   });
 

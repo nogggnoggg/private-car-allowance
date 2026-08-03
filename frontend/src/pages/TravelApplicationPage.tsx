@@ -907,18 +907,27 @@ export default function TravelApplicationPage(): React.ReactElement {
         <div className="dialog-overlay">
           <dialog open className="dialog-box" aria-label="確認完成申請">
             <h3>確認完成申請</h3>
-            <p>完成後將無法修改，且無法復原。確定要完成這筆申請嗎？</p>
-            {completeError && (
-              <div className="error-block" role="alert">
-                {completeError}
-              </div>
+            {dirty ? (
+              // PHASE-005a-T14（Gate 反饋①）：表單存在未儲存變更時，確認框不得
+              // 以伺服器舊狀態渲染 completionBlockers 衍生之誤導紅字（該狀態
+              // 尚未反映使用者的未儲存編輯），改顯示本提示並停用確認送出。
+              <p className="warn-text">有未儲存的變更，請先儲存草稿</p>
+            ) : (
+              <>
+                <p>完成後將無法修改，且無法復原。確定要完成這筆申請嗎？</p>
+                {completeError && (
+                  <div className="error-block" role="alert">
+                    {completeError}
+                  </div>
+                )}
+              </>
             )}
             <div className="btn-row">
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={handleComplete}
-                disabled={completing}
+                disabled={completing || dirty}
               >
                 {completing ? "處理中…" : "確認完成"}
               </button>
