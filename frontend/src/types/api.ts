@@ -16,6 +16,22 @@ export interface FuelPriceVersionDto {
   createdAt: string; // ISO
 }
 
+// ---- PHASE-005a-T4/T5/T10 fuel consumption (使用者車輛油種＋油耗版本) ----
+
+export type FuelConsumptionVersionState = "HISTORICAL" | "CURRENT" | "FUTURE";
+
+export interface FuelConsumptionVersionDto {
+  id: string;
+  userId: string;
+  fuelType: FuelType;
+  kmPerLiter: string; // Decimal(10,4) as string, toFixed(4)
+  effectiveFrom: string; // YYYY-MM-DD
+  basisNote: string;
+  state: FuelConsumptionVersionState;
+  createdAt: string; // ISO
+  createdById: string;
+}
+
 export interface EtcParameterDto {
   id: string;
   unitPrice: string;

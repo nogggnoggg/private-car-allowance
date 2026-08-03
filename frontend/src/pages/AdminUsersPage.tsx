@@ -260,6 +260,11 @@ export default function AdminUsersPage(): React.ReactElement {
           <Link to="/admin/applications" className="btn btn-secondary">
             使用者申請紀錄
           </Link>
+          {/* PHASE-005a-T10 (AC-30): 一般化入口，未預選使用者，見
+              AdminFuelConsumptionPage.tsx 檔頭註解。 */}
+          <Link to="/admin/fuel-consumption" className="btn btn-secondary">
+            油耗維護
+          </Link>
           <button
             type="button"
             className="btn btn-primary"
@@ -320,6 +325,14 @@ export default function AdminUsersPage(): React.ReactElement {
                         className="btn btn-sm btn-secondary"
                       >
                         申請紀錄
+                      </Link>
+                      {/* PHASE-005a-T10 (AC-30): 進入該使用者的油耗維護頁，
+                          見 AdminFuelConsumptionPage.tsx 檔頭註解。 */}
+                      <Link
+                        to={`/admin/users/${u.id}/fuel-consumption`}
+                        className="btn btn-sm btn-secondary"
+                      >
+                        油耗維護
                       </Link>
                       {u.isActive ? (
                         <button
@@ -405,6 +418,12 @@ export default function AdminUsersPage(): React.ReactElement {
                       className="btn btn-sm btn-secondary"
                     >
                       申請紀錄
+                    </Link>
+                    <Link
+                      to={`/admin/users/${u.id}/fuel-consumption`}
+                      className="btn btn-sm btn-secondary"
+                    >
+                      油耗維護
                     </Link>
                     {u.isActive ? (
                       <button

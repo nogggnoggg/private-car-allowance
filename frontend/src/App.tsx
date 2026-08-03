@@ -2,6 +2,7 @@ import type React from "react";
 import { Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import { RedirectIfAuthenticated, RequireAuth } from "./components/RouteGuard.js";
 import { AuthProvider } from "./context/AuthContext.js";
+import AdminFuelConsumptionPage from "./pages/AdminFuelConsumptionPage.js";
 import AdminUserApplicationsPage from "./pages/AdminUserApplicationsPage.js";
 import AdminUsersPage from "./pages/AdminUsersPage.js";
 import AttachmentsDemoPage from "./pages/AttachmentsDemoPage.js";
@@ -113,6 +114,26 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <ParametersPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-005a-T10 (AC-30): 管理員油耗維護頁——沿用 PHASE-004-T14
+              AdminUserApplicationsPage 之雙路由慣例，兩者掛載同一元件。
+              `:userId` 由 AdminUsersPage 每列的「油耗維護」連結帶入預選。 */}
+          <Route
+            path="/admin/users/:userId/fuel-consumption"
+            element={
+              <RequireAuth>
+                <AdminFuelConsumptionPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/fuel-consumption"
+            element={
+              <RequireAuth>
+                <AdminFuelConsumptionPage />
               </RequireAuth>
             }
           />
