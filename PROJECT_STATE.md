@@ -24,7 +24,8 @@ State: ACTIVE
 > - **排程事件（大總管自省）**：曾同時派 reviewer 複審與 T2 implementer——同 checkout 併跑 vitest 會共用 per-worker schema 槽位（INFRA-001 已知不設防），已即時停掉 reviewer 改序執行；T1R2 複審與 T2 即審合併為單一 Review Packet（比照 CHORE-003 先例）。
 > - **T1R2＋T2 合併複審：REQUEST_CHANGES**（0 Must/4 Should/6 AR；S-1 關閉、T2 本體正確、mutant 與基準線獨立重驗）。**SF-1 為真缺陷**：金額核心對 NaN/Infinity 除數不設防（NaN 穿透 lte(0) 守門回 ok、Infinity 靜默單價 0）——CHORE-003 同型陷阱再現於新碼，reviewer node 實測抓獲。→ **T2R-LITE：DONE**（`4259893`，+4 防禦測試，27/27）修 SF-1/SF-3（掃描清單化）/SF-4（裁定保留 RangeError、更正虛假上游依據、記 T7/T8 不得 500 義務）；SF-2 大總管以 verbose 實名回填 §12 並立「映射名逐字複製 verbose」機械規則。大總管驗收：全套 1244/0/0、tsc 0、biome 乾淨。基準線 1239 → **1244**。AR 移交：AR-2 段金額溢位邊界→T8；AR-1 魔術數 1e6 綁 schema 推導→候選；AR-3 掃描器 `+ 變數` 空格盲點→SF-3 擴列時處理。
 > - **T2R＋SF-2 輕量複審：APPROVE**（0 Must/0 Should/5 AR）。四項 SF 逐一獨立實證關閉（SF-1 以修復前邏輯對照證明四條防禦測試具鑑別力；SF-3 fail-loud 以缺檔探測實證；SF-2 逐字 grep 全命中）。**AR 義務轉入後續 Packet**：AR-B 「新增 src 檔必須同步入 `PHASE_005A_SRC_FILES` 掃描清單」列為 T3~T8 Done When 機械項；AR-D 「引擎 RangeError 不得以 500 呈現」補入 T7/T8 Done When。
-> - 下一步：T3（油價 service/route，High）→ T4（油耗 service，High）→ T5/T6（授權面）→ T7/T8 → 前端。
+> - **T3（油價 service/route，High）：DONE**（`cce6a9d`，4 檔：service 新建 273 行、routes +93 純新增、48 整合測試、掃描清單入列）。四油種同生效日組合、併發雙寫恰 201+409（非 500）、AC-06 十七列逐字 reason＋三邊界正例、複用實證 import 斷言。大總管獨立驗收：全套兩輪 **1295/0/0**（基準 1244+48+3 結構掃描）、tsc 0、biome 乾淨。基準線 → **1295**。diff ~2x 預算（Packet 自身 Done When 所驅動之測試矩陣，接受，記回顧）。**交複審關注**：①`REASON_FUEL_TYPE` zh-TW 文案為 implementer 自選（Spec 僅釘 fields[].field），T9 前端接用前須複審 ②重複 query key（?fuelType=a&fuelType=b）為安全 400 但無專測（B-11 屬 T6 慣例）。
+> - 下一步：T3 即審（High 節奏）→ T4（油耗 service，High）→ T5/T6（授權面）→ T7/T8 → 前端。vitest 併跑限制持續有效：review 與實作不同時派。
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
