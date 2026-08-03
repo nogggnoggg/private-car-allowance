@@ -523,6 +523,13 @@ describeWithDb("PHASE-005-T2 — sumOfficialMileage", () => {
     // schema 隔離 + 本檔 setupFiles 之 per-file TRUNCATE（見 vitest.config.ts
     // INFRA-001 註解）保證本檔執行期間，這個 schema 內只有本檔自己的資料，
     // 全表掃描不會誤觸其他測試檔的殘留列。
+    // 正對照（PHASE-005-R1 AR-1）：先確認母體非空，避免 where 條件日後被
+    // 改壞導致母體整組消失、offenders 恆為 [] 而靜默通過。
+    const completedTravelCount = await prisma.application.count({
+      where: { type: "TRAVEL", status: "COMPLETED" },
+    });
+    expect(completedTravelCount).toBeGreaterThan(0);
+
     const offenders = await prisma.application.findMany({
       where: {
         type: "TRAVEL",
