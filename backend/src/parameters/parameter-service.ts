@@ -13,12 +13,29 @@
  *   interactive transaction, after the version row is inserted but before
  *   the transaction commits. T5 should pass a callback that writes the
  *   AuditLog entry (action=PARAMETER_VERSION_CREATED, D6).
+ *
+ * CHORE-003-T2（Spec §14，ACTIVE）—— 欄位容量／精度／字串保真守門接線：
+ *   三個建立路徑的金額欄位改由 `parameter-validation.ts`（T1 純函式）先過
+ *   **格式層**（型別 → 十進位字面 → 小數位 → 欄位容量量級），再進既有
+ *   **值域層**（`unitPrice ≥ 0` / `vehiclePrice > 0` / 整數欄位為整數且 > 0）。
+ *   §14.2 之固定順序即為此；同一欄位先命中者決定 `reason`，跨欄位仍沿用既有
+ *   「一次回報所有違規欄位」行為（AC-05／AC-32）。
+ *   目的：消滅 §14.3 B-14／B-17／B-23／B-25 之 500 路徑，並廢止 B-15／B-21 的
+ *   靜默精度截斷。route schema 之 accept-any 與 `routes.ts` 的「必填」缺值檢查
+ *   **不變**（§14.2「路由層不變」）。
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
+import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 import { deriveDepreciation } from "./depreciation-engine.js";
+import {
+  DEPRECIATION_VEHICLE_PRICE_CAPACITY,
+  UNIT_PRICE_CAPACITY,
+  parseParameterDecimalField,
+  parseParameterIntField,
+} from "./parameter-validation.js";
 import { checkNoOverlap } from "./parameter-version-engine.js";
 
 // ---------------------------------------------------------------------------
@@ -152,6 +169,13 @@ export function toEtcDto(row: EtcRow): EtcParameterDto {
  * 確保驗證的是本專案實際使用的路徑）：
  *   node -e "const {Prisma}=require('@prisma/client'); console.log(new Prisma.Decimal(0.1).toString()===new Prisma.Decimal('0.1').toString())"
  *   → true
+ *
+ * CHORE-003-T2 現況說明（避免註解與實作背離）：本模組的三個建立路徑已改由
+ * `parameter-validation.ts` 的 `parseParameterDecimalField()` 完成字串化與
+ * `Prisma.Decimal` 建構（同樣是「一律以字串建構」，且額外加上四道格式守門），
+ * 故本函式目前**不再被 `parameter-service.ts` 內部呼叫**。它維持具名匯出乃因
+ * `chore002-d4-decimal-number.test.ts` 之單元段落直接測試此 helper 的恆等變換
+ * 契約（PHASE-003a Spec §14.7 備註明列：移除匯出屬「破壞既有測試」）。
  */
 export function toDecimalConstructorArg(value: number | string): string {
   if (typeof value === "string") return value;
@@ -182,7 +206,8 @@ export interface CreateFuelVersionInput {
  * Creates a new FuelParameterVersion.
  *
  * Validates:
- *   - unitPrice ≥ 0 (AC-03)
+ *   - unitPrice 格式層：型別／十進位字面／≤4 位小數／|value| < 1e6（AC-21/23/25/26/27）
+ *   - unitPrice ≥ 0 (AC-03) —— 值域層，以 `Prisma.Decimal` 比較
  *   - effectiveFrom is a valid YYYY-MM-DD date (AC-06)
  *   - No overlap with existing versions via checkNoOverlap (AC-07)
  *
@@ -199,22 +224,26 @@ export async function createFuelVersion(
   input: CreateFuelVersionInput,
   onCreated?: OnParameterCreated<FuelParameterDto>
 ): Promise<FuelParameterDto> {
-  // Validate unitPrice ≥ 0 (AC-03)
-  const priceNum = Number(input.unitPrice);
-  if (Number.isNaN(priceNum) || priceNum < 0) {
+  // CHORE-003-T2: 格式層先行（型別 → 十進位字面 → 小數位 → 欄位容量量級），
+  // 上限常數綁 `Decimal(10, 4)` 之容量推導（見 parameter-validation.ts），不寫死魔術數。
+  // 這一步取代了原本的 `Number(input.unitPrice)`：accept-any route 送進來的
+  // boolean／array／全空白字串等值不再被 `Number()` 悄悄脅制成數字寫入 DB（B-07~B-10），
+  // 且 ≥1e6／>4 位小數／`Infinity` 等值在進入交易前即被擋下（B-14／B-15／B-17）。
+  const priceResult = parseParameterDecimalField(input.unitPrice, "unitPrice", UNIT_PRICE_CAPACITY);
+  if (!priceResult.ok) {
+    throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
+      priceResult.error,
+    ]);
+  }
+  const unitPriceDecimal = priceResult.value;
+
+  // 值域層（既有語意不變，AC-03／AC-30）：`unitPrice ≥ 0`。比較改以 `Prisma.Decimal`
+  // 方法進行——字串輸入路徑上不再有任何對輸入的 `Number()` 呼叫（§14.2 字串保真）。
+  if (unitPriceDecimal.lessThan(0)) {
     throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
       { field: "unitPrice", reason: "單價不得小於 0" },
     ]);
   }
-
-  // D4: build the Decimal constructor arg from priceNum (already validated non-NaN, ≥0
-  // above) — never from the raw accept-any input.unitPrice. CHORE-002-R2 (S-3): the route
-  // accepts any JSON value for unitPrice; passing input.unitPrice straight through let
-  // values Number() can coerce but Decimal()'s string constructor cannot parse (e.g.
-  // " 19.9 " with whitespace, or booleans) reach `new Prisma.Decimal(...)` inside the
-  // transaction and throw an uncaught DecimalError → 500, instead of the intended 400/201
-  // contract. `String(priceNum)` can never throw (priceNum is a validated finite number).
-  const unitPriceArg = toDecimalConstructorArg(priceNum);
 
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
@@ -246,7 +275,8 @@ export async function createFuelVersion(
       // Create
       const version = await tx.fuelParameterVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal(unitPriceArg),
+          // 已由格式層以字串建構完成的 Decimal（D4 bright-line：一律非浮點）。
+          unitPrice: unitPriceDecimal,
           effectiveFrom: effectiveFromDate,
           createdById: input.createdById,
         },
@@ -308,7 +338,8 @@ export interface CreateEtcVersionInput {
 
 /**
  * Creates a new EtcParameterVersion.
- * Structure identical to createFuelVersion — shared validation + no-overlap logic.
+ * Structure identical to createFuelVersion — shared validation + no-overlap logic
+ * （含 CHORE-003-T2 之格式層／值域層兩段，兩端點共用同一組欄位容量常數）。
  *
  * T5 接入點: pass `onCreated` to inject AuditLog write inside the same transaction.
  */
@@ -317,22 +348,22 @@ export async function createEtcVersion(
   input: CreateEtcVersionInput,
   onCreated?: OnParameterCreated<EtcParameterDto>
 ): Promise<EtcParameterDto> {
-  // Validate unitPrice ≥ 0 (AC-03)
-  const priceNum = Number(input.unitPrice);
-  if (Number.isNaN(priceNum) || priceNum < 0) {
+  // CHORE-003-T2: 與 createFuelVersion 完全同形的兩層驗證（格式層 → 值域層）。
+  // 同一組守門常數（`Decimal(10, 4)`）確保兩端點行為一致（AC-21／AC-23）。
+  const priceResult = parseParameterDecimalField(input.unitPrice, "unitPrice", UNIT_PRICE_CAPACITY);
+  if (!priceResult.ok) {
+    throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
+      priceResult.error,
+    ]);
+  }
+  const unitPriceDecimal = priceResult.value;
+
+  // 值域層（既有語意不變，AC-03／AC-30）：`unitPrice ≥ 0`，以 `Prisma.Decimal` 比較。
+  if (unitPriceDecimal.lessThan(0)) {
     throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
       { field: "unitPrice", reason: "單價不得小於 0" },
     ]);
   }
-
-  // D4: build the Decimal constructor arg from priceNum (already validated non-NaN, ≥0
-  // above) — never from the raw accept-any input.unitPrice. CHORE-002-R2 (S-3): the route
-  // accepts any JSON value for unitPrice; passing input.unitPrice straight through let
-  // values Number() can coerce but Decimal()'s string constructor cannot parse (e.g.
-  // " 5.5 " with whitespace, or booleans) reach `new Prisma.Decimal(...)` inside the
-  // transaction and throw an uncaught DecimalError → 500, instead of the intended 400/201
-  // contract. `String(priceNum)` can never throw (priceNum is a validated finite number).
-  const unitPriceArg = toDecimalConstructorArg(priceNum);
 
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
@@ -364,7 +395,8 @@ export async function createEtcVersion(
       // Create
       const version = await tx.etcParameterVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal(unitPriceArg),
+          // 已由格式層以字串建構完成的 Decimal（D4 bright-line：一律非浮點）。
+          unitPrice: unitPriceDecimal,
           effectiveFrom: effectiveFromDate,
           createdById: input.createdById,
         },
@@ -486,9 +518,10 @@ export interface CreateDepreciationVersionInput {
  * Creates a new DepreciationParameterVersion.
  *
  * Validates:
- *   - vehiclePrice > 0 (AC-05)
- *   - usefulLifeYears > 0 and integer (AC-05, D8)
- *   - estimatedAnnualKm > 0 and integer (AC-05, D8)
+ *   - vehiclePrice 格式層：型別／十進位字面／≤2 位小數／|value| < 1e10（AC-22/24/25/26/27）
+ *   - vehiclePrice > 0 (AC-05) —— 值域層，以 `Prisma.Decimal` 比較
+ *   - usefulLifeYears ≤ 2147483647（int4 容量，AC-28）且 > 0 and integer (AC-05, D8)
+ *   - estimatedAnnualKm ≤ 2147483647（int4 容量，AC-28）且 > 0 and integer (AC-05, D8)
  *   - effectiveFrom is a valid YYYY-MM-DD date (AC-06)
  *   - No overlap with existing versions via checkNoOverlap (AC-08)
  *
@@ -508,24 +541,37 @@ export async function createDepreciationVersion(
   onCreated?: OnParameterCreated<DepreciationParameterDto>
 ): Promise<DepreciationParameterDto> {
   // Collect all validation errors to report together (AC-05: 精確指違規欄位，可多個)
-  const fieldErrors: { field: string; reason: string }[] = [];
+  // CHORE-003-T2：跨欄位彙總行為維持不變（AC-05／AC-32 後半）；每個欄位內部則為
+  // **first-hit**——格式層命中即不再追加該欄位的值域層文案。
+  const fieldErrors: FieldError[] = [];
 
-  // Validate vehiclePrice > 0 (AC-05)
-  let vehiclePriceDecimal: Prisma.Decimal;
-  try {
-    // D4: route through toDecimalConstructorArg — same string-only construction as
-    // unitPrice above, closing the last "number 變數建構" gap (see helper doc).
-    vehiclePriceDecimal = new Prisma.Decimal(toDecimalConstructorArg(input.vehiclePrice));
-    if (vehiclePriceDecimal.lte(0)) {
-      fieldErrors.push({ field: "vehiclePrice", reason: "必須大於 0" });
-    }
-  } catch {
-    fieldErrors.push({ field: "vehiclePrice", reason: "必須為有效數值且大於 0" });
-    vehiclePriceDecimal = new Prisma.Decimal("0"); // placeholder; won't be used if there's an error
+  // vehiclePrice：格式層（型別／字面／2 位小數／< 1e10 量級）→ 值域層（> 0）。
+  // 取代原本的 `new Prisma.Decimal(...)` + try/catch：那個 catch 分支既擋不住
+  // `"Infinity"`（Decimal 建構不拋錯 → 進 DB → 500，B-14）、也擋不住 ≥1e10（B-23），
+  // 且會讓 `"600000.005"` 靜默進位存成 `600000.01`（B-21）。
+  let vehiclePriceDecimal: Prisma.Decimal | null = null;
+  const vehiclePriceResult = parseParameterDecimalField(
+    input.vehiclePrice,
+    "vehiclePrice",
+    DEPRECIATION_VEHICLE_PRICE_CAPACITY
+  );
+  if (!vehiclePriceResult.ok) {
+    fieldErrors.push(vehiclePriceResult.error);
+  } else if (vehiclePriceResult.value.lte(0)) {
+    // 值域層文案不變（AC-05／AC-30）
+    fieldErrors.push({ field: "vehiclePrice", reason: "必須大於 0" });
+  } else {
+    vehiclePriceDecimal = vehiclePriceResult.value;
   }
 
-  // Validate usefulLifeYears > 0 and integer (AC-05, D8)
-  if (
+  // usefulLifeYears：int4 容量守門（CD-3(a)／AC-28）先於既有值域層。
+  // `parseParameterIntField` 的 `{ ok: true, value: null }` 意為「容量守門不適用」
+  // （非 number／非有限值），一律往下交既有值域層判定，其行為與文案完全不變。
+  const usefulLifeYearsResult = parseParameterIntField(input.usefulLifeYears, "usefulLifeYears");
+  if (!usefulLifeYearsResult.ok) {
+    fieldErrors.push(usefulLifeYearsResult.error);
+  } else if (
+    // Validate usefulLifeYears > 0 and integer (AC-05, D8) —— 既有邏輯逐字不變
     typeof input.usefulLifeYears !== "number" ||
     !Number.isFinite(input.usefulLifeYears) ||
     !Number.isInteger(input.usefulLifeYears) ||
@@ -538,8 +584,15 @@ export async function createDepreciationVersion(
     }
   }
 
-  // Validate estimatedAnnualKm > 0 and integer (AC-05, D8)
-  if (
+  // estimatedAnnualKm：同上。
+  const estimatedAnnualKmResult = parseParameterIntField(
+    input.estimatedAnnualKm,
+    "estimatedAnnualKm"
+  );
+  if (!estimatedAnnualKmResult.ok) {
+    fieldErrors.push(estimatedAnnualKmResult.error);
+  } else if (
+    // Validate estimatedAnnualKm > 0 and integer (AC-05, D8) —— 既有邏輯逐字不變
     typeof input.estimatedAnnualKm !== "number" ||
     !Number.isFinite(input.estimatedAnnualKm) ||
     !Number.isInteger(input.estimatedAnnualKm) ||
@@ -569,6 +622,9 @@ export async function createDepreciationVersion(
 
   // At this point all values are validated; effectiveFromDate is non-null
   const validEffectiveFrom = effectiveFromDate as Date;
+  // 同理 vehiclePriceDecimal：只有在格式層與值域層都通過時才會被賦值，而任一未通過
+  // 都會在上面的 fieldErrors 檢查處丟出——故此處必為非 null（取代原本的 "0" placeholder）。
+  const validVehiclePrice = vehiclePriceDecimal as Prisma.Decimal;
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -592,7 +648,7 @@ export async function createDepreciationVersion(
       // Create
       const version = await tx.depreciationParameterVersion.create({
         data: {
-          vehiclePrice: vehiclePriceDecimal,
+          vehiclePrice: validVehiclePrice,
           usefulLifeYears: input.usefulLifeYears,
           estimatedAnnualKm: input.estimatedAnnualKm,
           effectiveFrom: validEffectiveFrom,
