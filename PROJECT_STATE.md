@@ -1,6 +1,11 @@
 # PROJECT_STATE
 
 State: ACTIVE
+
+> **INFRA-001b 開工記錄（2026-08-03，人類批准第四選項）**
+> - 三項裁定（使用者「按照你的建議執行」）：①AC-23 第四選項（globalSetup 按需重建，D3/AC-09 修訂已入 Spec §17）②NFR-3 追認選項 A（每檔一條共用連線，25/100）③CHORE-002（D4-Decimal-number ×4 + 4xx status 對照表）排本回合後、PHASE-005 前。
+> - branch：`infra-001b`（自 main @ `917d91c`）。流程：implementer TDD → 大總管驗收 → reviewer 輕量複審 → PR + CI → **人類批准合併（白天，回常規）**。
+> - §15 重錨定：大總管零程式修改。
 Governance-Version: 2026-08-01.2
 Updated: 2026-08-02
 
