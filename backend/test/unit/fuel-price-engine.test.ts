@@ -46,6 +46,9 @@ const PHASE_005A_SRC_FILES = [
   "src/users/fuel-consumption-service.ts", // PHASE-005a-T4
   "src/users/fuel-consumption-routes.ts", // PHASE-005a-T5
   "src/applications/travel-parameters.ts", // PHASE-005a-T7（雙鏈解析＋單價推導接線，金額路徑）
+  "src/applications/travel-service.ts", // PHASE-005a-T8（完成流程快照擴充＋容量守門，金額路徑；AR-5）
+  "src/applications/routes.ts", // PHASE-005a-T8（AR-5，實掃零命中，唯讀確認）
+  "src/applications/completion-blockers.ts", // PHASE-005a-T8（AR-5，SF-2 blocker 代碼，唯讀確認）
 ] as const;
 
 /**

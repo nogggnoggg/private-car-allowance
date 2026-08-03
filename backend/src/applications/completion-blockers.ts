@@ -59,6 +59,21 @@ export interface BlockerInput {
   segments: ReadonlyArray<BlockerSegmentInput>;
   /** 缺少的參數類別；T7 之前呼叫端一律傳空陣列。 */
   missingParameters: ReadonlyArray<MissingParameter>;
+  /**
+   * PHASE-005a-T8（T7 複審 SF-2 必辦）：油耗與油價皆已解析，但推導單價超出
+   * 快照欄位容量（AC-20 / D4(a)）。與 `missingParameters` 是獨立維度——草稿
+   * 階段暴露此狀態，避免「預覽說可以、完成 409」的不一致（違反 §16 D4(a)
+   * 「草稿仍可存，預覽顯示不可計算」與 FE-US-10 第四條）。選填，預設
+   * `false`（既有呼叫端不受影響）。
+   */
+  fuelUnitPriceOutOfRange?: boolean;
+  /**
+   * PHASE-005a-T8（同上 SF-2）：`deriveFuelUnitPrice` 偵測到資料毀損
+   * （`RangeError`，見 `travel-parameters.ts`）。與 `fuelUnitPriceOutOfRange`
+   * 為互斥的獨立維度，訊息與代碼皆刻意逐字不同（可行動性不同）。選填，
+   * 預設 `false`。
+   */
+  fuelDataCorrupted?: boolean;
 }
 
 export interface Blocker {
@@ -128,6 +143,23 @@ export function computeCompletionBlockers(input: BlockerInput): Blocker[] {
     blockers.push({
       code: "PARAMETER_NOT_AVAILABLE",
       message: `出差日期缺少有效的${labels}補助參數，請聯絡管理員設定`,
+    });
+  }
+
+  // PHASE-005a-T8（T7 複審 SF-2 必辦）：與 missingParameters 為獨立維度，
+  // 兩者皆非「查無版本」而是「版本齊備但推導/資料本身有問題」——優先序
+  // fuelDataCorrupted 高於 fuelUnitPriceOutOfRange（與 assertParametersAvailable
+  // 的判斷優先序一致，travel-parameters.ts 同名邏輯），訊息逐字沿用該處
+  // 已批准之 zh-TW 文案，避免同一狀態出現兩種不同措辭。
+  if (input.fuelDataCorrupted) {
+    blockers.push({
+      code: "FUEL_DATA_CORRUPTED",
+      message: "油耗資料異常，請聯絡管理員檢查該使用者之油耗版本",
+    });
+  } else if (input.fuelUnitPriceOutOfRange) {
+    blockers.push({
+      code: "FUEL_UNIT_PRICE_OUT_OF_RANGE",
+      message: "油價與油耗之組合超出可計算範圍，請聯絡管理員檢查參數設定",
     });
   }
 

@@ -82,7 +82,7 @@ import { assertApplicationMutable, assertTransition } from "./application-state-
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
-import { type CalcSegmentInput, calculateTravel } from "./travel-calculation.js";
+import { type CalcResult, type CalcSegmentInput, calculateTravel } from "./travel-calculation.js";
 import {
   type MissingParameter,
   type ResolvedParameters,
@@ -1066,6 +1066,88 @@ export interface CompleteTravelApplicationOptions {
 /** Retry budget for SERIALIZABLE conflicts, mirroring `updateTravelDraft`'s pattern (B-29). */
 const COMPLETE_MAX_RETRIES = 6;
 
+// ---------------------------------------------------------------------------
+// PHASE-005a-T8 — storage-capacity guard (T2 複審 AR-2 邊界表義務)
+//
+// `deriveFuelUnitPrice`'s AC-20 guard (§16 D4(a)) only bounds `fuelUnitPrice`
+// itself (`|U| < 1e6`, the `TravelApplication.fuelUnitPrice Decimal(10,4)`
+// column). It says nothing about the DERIVED amounts `calculateTravel`
+// produces from `U` and a segment's `totalKm`: `totalKm` is only bounded by
+// its OWN column (`TripSegment.totalKm Decimal(10,2)`, |v| < 1e8) and has NO
+// upper business-rule bound (`trip-validation.ts` only rejects `<= 0`). A
+// segment with `totalKm` near 1e8 and a `fuelUnitPrice` near the (valid,
+// AC-20-passing) ceiling of ~1e6 yields `segFuel = totalKm * fuelUnitPrice`
+// near 1e14 — far beyond `TripSegment.snapshotFuelAmount`/`snapshotRawAmount`
+// and `TravelApplication.snapshotRawAmount`'s `Decimal(14,4)` capacity
+// (|v| < 1e10), and `Application.totalAmount`/`TripSegment.snapshotAmount`
+// (both Postgres `int4`, i.e. `Int`) have an even smaller ceiling
+// (2,147,483,647). Without this guard, such a combination would pass AC-20's
+// check, pass `calculateTravel` (a pure function with no capacity notion of
+// its own — Spec AC-19 explicitly forbids touching it), and then fail at the
+// `tx.tripSegment.update`/`tx.travelApplication.update`/`tx.application.update`
+// write with a raw Postgres "numeric field overflow" (Decimal columns) or a
+// silently-wrapping/truncating integer write (the `Int` columns) — i.e.
+// exactly the "500 or silent truncation" class of failure AC-20/D4(a) already
+// ruled unacceptable for the narrower `fuelUnitPrice` case.
+//
+// Treatment (implementer decision, no new product/Spec decision — same class
+// of risk already adjudicated by the human Spec Gate for AC-20/D4(a), applied
+// here to the DERIVED amounts one arithmetic step downstream): reject BEFORE
+// any write, same error code (`PARAMETER_NOT_AVAILABLE`, 409 — AC-35: no new
+// `ErrorCode`), with a `details.missing` code (`AMOUNT_OUT_OF_RANGE`)
+// distinguishable from `FUEL_UNIT_PRICE_OUT_OF_RANGE`/`FUEL_DATA_CORRUPTED`.
+// Called immediately after `calculateTravel` returns (pure, no IO) and BEFORE
+// Step ⑤a's first `tx.tripSegment.update` — so on rejection, the transaction
+// has not written anything yet (no partial snapshot, matching AC-53's
+// atomicity discipline by construction, not by rollback).
+// ---------------------------------------------------------------------------
+
+/** Exclusive upper bound (as `Prisma.Decimal`) for `Decimal(P,4)`/`Decimal(P,2)` columns with 10 integer digits (`snapshotFuelAmount`/`snapshotEtcAmount`/`snapshotRawAmount` @ `Decimal(14,4)`, `snapshotTotalKm` @ `Decimal(12,2)`, `TravelApplication.snapshotRawAmount` @ `Decimal(14,4)`) — all share the same 10-digit integer part, hence the same bound. */
+const DECIMAL_CAPACITY_BOUND = new Prisma.Decimal("10000000000"); // 1e10
+
+/** Postgres `int4` bounds — `Application.totalAmount` / `TripSegment.snapshotAmount`. */
+const INT4_MIN = -2147483648;
+const INT4_MAX = 2147483647;
+
+function exceedsDecimalCapacity(value: Prisma.Decimal): boolean {
+  return value.abs().greaterThanOrEqualTo(DECIMAL_CAPACITY_BOUND);
+}
+
+function exceedsInt4Capacity(value: number): boolean {
+  return value < INT4_MIN || value > INT4_MAX || !Number.isFinite(value);
+}
+
+/**
+ * AR-2 邊界守門：在任何快照寫入之前，確認 `calculateTravel` 之輸出（段金額、
+ * 整筆金額、總里程）皆落在對應資料庫欄位容量內。任一項超出容量 → 409
+ * `PARAMETER_NOT_AVAILABLE`（複用既有 ErrorCode，AC-35 仍成立），
+ * `details.missing` 追加 `AMOUNT_OUT_OF_RANGE`；**絕不** 500、**絕不**靜默
+ * 截斷寫入。
+ */
+function assertCalculationWithinStorageCapacity(result: CalcResult): void {
+  const overflow =
+    exceedsDecimalCapacity(result.totalRawAmount) ||
+    exceedsDecimalCapacity(result.totalKm) ||
+    exceedsInt4Capacity(result.totalAmount) ||
+    result.segments.some(
+      (s) =>
+        exceedsDecimalCapacity(s.fuelAmount) ||
+        exceedsDecimalCapacity(s.etcAmount) ||
+        exceedsDecimalCapacity(s.rawAmount) ||
+        exceedsInt4Capacity(s.amount)
+    );
+
+  if (overflow) {
+    throw new AppError(
+      "PARAMETER_NOT_AVAILABLE",
+      409,
+      "計算結果超出可儲存之金額範圍，請聯絡管理員檢查里程與參數設定",
+      undefined,
+      { missing: ["AMOUNT_OUT_OF_RANGE"] }
+    );
+  }
+}
+
 /**
  * Completes a TRAVEL draft: state-machine gate → completeness validation
  * (§9 step②, shares `computeCompletionBlockers` with the draft-view
@@ -1213,6 +1295,10 @@ export async function completeTravelApplication(
           }));
           const result = calculateTravel({ segments: calcSegments, fuelUnitPrice, etcUnitPrice });
 
+          // T2 複審 AR-2 邊界守門：在任何快照寫入前確認結果落在欄位容量內
+          // （見上方 `assertCalculationWithinStorageCapacity` doc comment）。
+          assertCalculationWithinStorageCapacity(result);
+
           // Step ⑤a: per-segment snapshot (取整前 fuel/etc/raw + 取整後 amount).
           const resultBySegmentId = new Map(result.segments.map((s) => [s.segmentId, s]));
           for (const segment of segments) {
@@ -1239,8 +1325,9 @@ export async function completeTravelApplication(
           // `fuelParameterVersionId`（舊模型，`FuelParameterVersion` 表）刻意
           // 保持不寫（維持 null，§8.4 判別欄位）——新模型只寫
           // `fuelPriceVersionId`/`fuelConsumptionVersionId`。
-          // 三項來源快照值（snapshotFuelType/PricePerLiter/Consumption）與
-          // AC-25 可重現性驗證屬 T8 範圍，本 Task 不在此寫入（Out of Scope）。
+          // 三項來源快照值（snapshotFuelType/PricePerLiter/Consumption，AC-25）
+          // 由本 Task（T8）接線寫入——`resolved` 已由 `resolveTravelParameters`
+          // 附帶解出（T7），此處只是首次落地寫入快照欄位。
           await tx.travelApplication.update({
             where: { applicationId: id },
             data: {
@@ -1251,6 +1338,9 @@ export async function completeTravelApplication(
               etcParameterVersionId: resolved.etcVersionId,
               snapshotTotalKm: result.totalKm,
               snapshotRawAmount: result.totalRawAmount,
+              snapshotFuelType: resolved.snapshotFuelType,
+              snapshotFuelPricePerLiter: resolved.snapshotFuelPricePerLiter,
+              snapshotFuelConsumption: resolved.snapshotFuelConsumption,
               calculatedAt,
             },
           });
@@ -1384,6 +1474,14 @@ export interface TravelSnapshotDto {
   fuelUnitPrice: string;
   etcUnitPrice: string;
   /**
+   * PHASE-005a-T8（AC-25 逐欄可讀）：完成當下之油種／每公升油價／車輛油耗
+   * 快照——新模型申請恆非 `null`；AC-27 既有舊模型已完成申請恆為 `null`
+   * （這三欄位由本 Phase 新增，migration 對舊列一律留 `NULL`，零回填）。
+   */
+  snapshotFuelType: string | null;
+  snapshotFuelPricePerLiter: string | null;
+  snapshotFuelConsumption: string | null;
+  /**
    * PHASE-005a-T7: 舊模型（`FuelParameterVersion`）引用；新模型完成之申請
    * 恆為 `null`（§8.4 判別欄位——完成流程只寫新模型欄位）。既有舊模型已完成
    * 申請仍回傳原值（AC-27 快照零影響）。
@@ -1438,9 +1536,23 @@ export interface TravelComputedSegmentDto {
   amount: number; // 取整後（整數）
 }
 
+/**
+ * PHASE-005a-T8（T7 複審 SF-2 必辦）：`missingParameters` 除既有
+ * `MissingParameter`（查無版本）外，追加兩個「版本齊備但無法計算」代碼——
+ * `FUEL_UNIT_PRICE_OUT_OF_RANGE`（AC-20/D4(a)）與 `FUEL_DATA_CORRUPTED`
+ * （T7R SF-1）。修法前 out-of-range/data-corrupted 兩情境下
+ * `parameterAvailable` 恆為 `true`、`missingParameters=[]`，以單價 0 算出
+ * 看似合理的金額——形成「預覽說可以、完成 409」的不一致，違反 §16 D4(a)
+ * 「草稿仍可存，預覽顯示不可計算」與 FE-US-10 第四條。
+ */
+export type PreviewMissingCode =
+  | MissingParameter
+  | "FUEL_UNIT_PRICE_OUT_OF_RANGE"
+  | "FUEL_DATA_CORRUPTED";
+
 export interface TravelComputedDto {
   parameterAvailable: boolean;
-  missingParameters: MissingParameter[];
+  missingParameters: PreviewMissingCode[];
   totalKm: string;
   segments: TravelComputedSegmentDto[];
   totalRawAmount: string;
@@ -1489,9 +1601,24 @@ export function formatTravelComputed(
 
   const result = calculateTravel({ segments: calcSegments, fuelUnitPrice, etcUnitPrice });
 
+  // PHASE-005a-T8（SF-2）：out-of-range／data-corrupted 兩情境下單價實為 0
+  // 佔位（見上方 `fuelUnitPrice`/`etcUnitPrice ?? 0`），此時算出的金額**不得**
+  // 被當作最終值呈現——`parameterAvailable=false` 且 `missingParameters`
+  // 追加對應代碼，前端（T11，Out of Scope）據此顯示「油資無法計算」而非
+  // 金額 0。
+  const missingParameters: PreviewMissingCode[] = [...resolved.missing];
+  if (resolved.fuelDataCorrupted) {
+    missingParameters.push("FUEL_DATA_CORRUPTED");
+  } else if (resolved.fuelUnitPriceOutOfRange) {
+    missingParameters.push("FUEL_UNIT_PRICE_OUT_OF_RANGE");
+  }
+
   return {
-    parameterAvailable: resolved.missing.length === 0,
-    missingParameters: [...resolved.missing],
+    parameterAvailable:
+      resolved.missing.length === 0 &&
+      !resolved.fuelUnitPriceOutOfRange &&
+      !resolved.fuelDataCorrupted,
+    missingParameters,
     totalKm: result.totalKm.toFixed(2),
     segments: result.segments.map((s) => ({
       segmentId: s.segmentId,
@@ -1571,6 +1698,10 @@ export async function toTravelApplicationDto(
             attachmentCount: attachmentsBySegment.get(s.id)?.length ?? 0,
           })),
           missingParameters: resolvedParameters.missing,
+          // PHASE-005a-T8（SF-2）：草稿層級同樣暴露 out-of-range／data-corrupted，
+          // 與 `computed.missingParameters`（formatTravelComputed）呈現一致。
+          fuelUnitPriceOutOfRange: resolvedParameters.fuelUnitPriceOutOfRange,
+          fuelDataCorrupted: resolvedParameters.fuelDataCorrupted,
         })
       : [];
 
@@ -1614,6 +1745,13 @@ export async function toTravelApplicationDto(
           etcParameterVersionId: travel.etcParameterVersionId,
           fuelPriceVersionId: travel.fuelPriceVersionId,
           fuelConsumptionVersionId: travel.fuelConsumptionVersionId,
+          snapshotFuelType: travel.snapshotFuelType,
+          snapshotFuelPricePerLiter: travel.snapshotFuelPricePerLiter
+            ? travel.snapshotFuelPricePerLiter.toFixed(4)
+            : null,
+          snapshotFuelConsumption: travel.snapshotFuelConsumption
+            ? travel.snapshotFuelConsumption.toFixed(4)
+            : null,
           totalKm: travel.snapshotTotalKm.toFixed(2),
           totalRawAmount: travel.snapshotRawAmount.toFixed(4),
           totalAmount: application.totalAmount,
