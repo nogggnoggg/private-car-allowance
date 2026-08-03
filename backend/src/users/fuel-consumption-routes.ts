@@ -1,11 +1,35 @@
 /**
- * User fuel-consumption routes — PHASE-005a-T5
+ * User fuel-consumption routes — PHASE-005a-T5 / T6
  *
  * Endpoints (backend routes; nginx strips /api prefix):
  *   POST /users/:userId/fuel-consumption → 201 { version: FuelConsumptionVersionWithStateDto }
  *   GET  /users/:userId/fuel-consumption → 200 { versions: FuelConsumptionVersionWithStateDto[] }
+ *   GET  /me/fuel-consumption            → 200 { current: { fuelType, kmPerLiter,
+ *                                                  effectiveFrom } | null }   (T6)
  *
- * Spec §2.B AC-12/13/14, §2.G AC-36, §7.2, §16 D7(a)/D8(a).
+ * Spec §2.B AC-12/13/14, §2.C AC-15/16/17, §2.G AC-36, §7.2, §7.3, §16 D7(a)/D8(a).
+ *
+ * --- T6: GET /me/fuel-consumption (自身唯讀) ---------------------------------
+ *
+ * Auth: requireAuth + requirePasswordChanged only（一般使用者與管理員皆可讀自己，
+ * 無 requireAdmin）。`userId` 恆為 `request.currentUser.id`——本路由**沒有**任何
+ * `:userId`／`:id` 路徑參數，也不讀取 query 或 body 的任何欄位來決定「查誰的
+ * 資料」（AC-17／§16 D7(a)：「結構上不可能傳入他人識別值」）。即使呼叫端在
+ * query string 夾帶 `?userId=他人ID` 或在 body 夾帶 `{ userId: 他人ID }`，本
+ * handler 完全不讀取 `request.query`／`request.body`，故該等欄位對回應結果
+ * 零影響；以路徑夾帶他人識別值（例如 `/me/fuel-consumption/他人ID`）則因本路由
+ * 未註冊任何路徑參數而根本不匹配該路由（Fastify 404 NOT_FOUND，並非本路由的
+ * 業務邏輯判斷出「不允許」——是路由表結構上就不存在該路徑）。
+ *
+ * 有效版本判定：複用 `listFuelConsumptionVersions` 取得該使用者全部版本，
+ * 再以 `findEffectiveVersion`（不重寫日期比較邏輯）對**查詢當日**
+ * （`new Date()`，UTC 日粒度）判定「今日生效版本」。查無生效版本（含「零版本」
+ * 與「全部版本 effectiveFrom 皆在未來」兩種情況，兩者在 `findEffectiveVersion`
+ * 的語意下同為「候選集合為空」）→ `{ current: null }`；找到 → `{ current: {
+ * fuelType, kmPerLiter, effectiveFrom } }`，**逐鍵白名單**：僅此三鍵，不含
+ * `id`／`basisNote`／`createdById`／`state`／`userId`（AC-15、§7.3 鍵集合封閉）。
+ * 此逐鍵白名單透過**手動建構回傳物件**（而非展開整列 DTO 再挑選欄位）達成，
+ * 避免未來 DTO 新增欄位時意外外洩。
  *
  * Auth (both endpoints): requireAuth + requirePasswordChanged + requireAdmin
  *   — this is the exact ordering AC-13 requires: 認證 → 強制改密 → 授權
@@ -263,6 +287,42 @@ export const fuelConsumptionPlugin: FastifyPluginAsync<FuelConsumptionPluginOpti
       const versionsWithState = withState(versions, new Date());
 
       return reply.status(200).send({ versions: versionsWithState });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /me/fuel-consumption — self read-only current fuel-consumption
+  //   version (AC-15/16/17, §7.3, §16 D7(a), T6)
+  // -------------------------------------------------------------------------
+
+  // 一般使用者與管理員皆可（讀自己）；無 requireAdmin — 見檔頭 T6 JSDoc。
+  const selfPreHandlers = [requireAuth(prisma), requirePasswordChanged];
+
+  fastify.get(
+    "/me/fuel-consumption",
+    { preHandler: selfPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // AC-17／D7(a): 擁有人恆為 request.currentUser.id。本 handler 刻意不讀取
+      // request.query／request.body 的任何欄位 —— 即使呼叫端夾帶
+      // ?userId=他人 或 { userId: 他人 }，兩者對下方查詢完全零影響。
+      const selfUserId = request.currentUser.id;
+
+      const versions = await listFuelConsumptionVersions(prisma, selfUserId);
+      const effective = findEffectiveVersion(versions, new Date());
+
+      if (!effective) {
+        return reply.status(200).send({ current: null });
+      }
+
+      // 逐鍵白名單：手動建構回傳物件，僅此三鍵（AC-15、§7.3 鍵集合封閉）——
+      // 不展開整列 DTO，避免 basisNote/id/createdById/state/userId 外洩。
+      return reply.status(200).send({
+        current: {
+          fuelType: effective.fuelType,
+          kmPerLiter: effective.kmPerLiter,
+          effectiveFrom: effective.effectiveFrom,
+        },
+      });
     }
   );
 };
