@@ -22,7 +22,8 @@ State: ACTIVE
 > - **T1 即審：REQUEST_CHANGES**（0 Must/2 Should/7 AR；程式本體零缺陷）。S-1 AC-27 安全網僅比對單表→ **T1R2-LITE：DONE**（`255caed`，擴為 §8.6 五表逐欄比對＋突變自證 TripSegment 改寫必紅）；S-2 映射表→大總管白名單回填 AC-27 轉 GREEN（`30cdf54`）。AR 要點：enum 具名清單與表數計數不對稱（併 PHASE-011 動態化候選）、油耗版本使使用者永久不可刪（D8(a) 設計後果，PHASE-010 文件記載）、非 CONCURRENTLY 索引之部署註記。
 > - **T2（單價推導純函式，High）：DONE**（`39b71a9`，2 檔新增 22 單元測試）。八列驗表全綠、ROUND_HALF_EVEN mutant 實測恰 2 紅（45÷10 兩處）、AC-28 結構性掃描含掃描器自證。大總管獨立驗收：單檔 22/22、全套兩輪 1239/0/0、tsc 0、biome 乾淨。基準線 1217 → **1239**。diff +409 超預算 36%（AC 溯源註解＋四類必要測試，據實揭露接受，記回顧校準）。附帶：`kmPerLiter≤0` 防禦性拋錯超出 AC 字面（上游驗證層已擋，正常路徑不可達），交合併複審裁量。
 > - **排程事件（大總管自省）**：曾同時派 reviewer 複審與 T2 implementer——同 checkout 併跑 vitest 會共用 per-worker schema 槽位（INFRA-001 已知不設防），已即時停掉 reviewer 改序執行；T1R2 複審與 T2 即審合併為單一 Review Packet（比照 CHORE-003 先例）。
-> - 下一步：T1R2＋T2 合併複審 → T3（油價 service/route）→ T4（油耗 service）→ …
+> - **T1R2＋T2 合併複審：REQUEST_CHANGES**（0 Must/4 Should/6 AR；S-1 關閉、T2 本體正確、mutant 與基準線獨立重驗）。**SF-1 為真缺陷**：金額核心對 NaN/Infinity 除數不設防（NaN 穿透 lte(0) 守門回 ok、Infinity 靜默單價 0）——CHORE-003 同型陷阱再現於新碼，reviewer node 實測抓獲。→ **T2R-LITE：DONE**（`4259893`，+4 防禦測試，27/27）修 SF-1/SF-3（掃描清單化）/SF-4（裁定保留 RangeError、更正虛假上游依據、記 T7/T8 不得 500 義務）；SF-2 大總管以 verbose 實名回填 §12 並立「映射名逐字複製 verbose」機械規則。大總管驗收：全套 1244/0/0、tsc 0、biome 乾淨。基準線 1239 → **1244**。AR 移交：AR-2 段金額溢位邊界→T8；AR-1 魔術數 1e6 綁 schema 推導→候選；AR-3 掃描器 `+ 變數` 空格盲點→SF-3 擴列時處理。
+> - 下一步：T2R＋SF-2 輕量複審關閉 → T3（油價 service/route，High）→ T4（油耗 service，High）→ …
 
 > **PHASE-005：DONE（2026-08-03）**——PR #11 經人類批准合併（`df36f75`），Spec 轉 COMPLETED。基準線終值：後端 **1078/0/0**、前端 **137/0/0**、E2E **17**。34/34 AC、終審 APPROVE、Gate 通過。**下一站：CHORE-003 實作（chore-003 branch 已備、CD-1~3 已裁定）→ PHASE-006（保養費用分攤）。**
 > - 006/007 開工 Packet 必引：D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單（B-12/15/17/19/24/25）。
