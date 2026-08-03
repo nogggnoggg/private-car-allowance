@@ -31,6 +31,44 @@
 import { Prisma } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
+// D4 bright-line: number → Decimal-safe constructor arg
+// ---------------------------------------------------------------------------
+
+/**
+ * Prepares the `new Prisma.Decimal(...)` constructor argument for
+ * `input.vehiclePrice`, closing the "number 變數建構" D4 gap (Spec D8:
+ * 一律非浮點) — mirrors `toDecimalConstructorArg` in parameter-service.ts.
+ *
+ * - `Prisma.Decimal` instance / string: passed through unchanged — no float
+ *   mediation occurs for either.
+ * - number: converted via `String(value)` rather than handed directly to the
+ *   constructor.
+ *
+ * 本版 decimal.js 的建構子對 number 引數內部已先做 toString() 才解析，
+ * 因此 `new Decimal(value)` 與 `new Decimal(String(value))` 對所有 number
+ * 皆為恆等變換（含科學記號輸入 —— decimal.js 完整支援解析 "1e+21" 這類
+ * 字面值）。此函式仍保留「一律先字串化」這一步，不是為了修正當前版本的
+ * 行為差異（沒有差異），而是讓 D4 bright-line（一律非浮點）不依賴這個
+ * 實作細節本身 —— 未來若更換十進位運算函式庫或升版、且新版建構子改為
+ * 直接讀取 number 的二進位值，這裡的轉換仍會保護既有行為不變。
+ *
+ * 可重跑驗證（直擊實際建構子 Prisma.Decimal，而非其底層 decimal.js，
+ * 確保驗證的是本專案實際使用的路徑）：
+ *   node -e "const {Prisma}=require('@prisma/client'); console.log(new Prisma.Decimal(0.1).toString()===new Prisma.Decimal('0.1').toString())"
+ *   → true
+ *
+ * 同形雙拷貝說明（AR-1）：此 helper 與 parameter-service.ts 的
+ * toDecimalConstructorArg 邏輯相同但各自持有一份，理由是 import 環——
+ * parameter-service.ts 已 import 本檔（depreciation-engine.ts）的
+ * deriveDepreciation，若本檔反向 import parameter-service.ts 的共用邏輯會
+ * 形成循環依賴。修改任一份的轉換邏輯時，須同步檢查並修改另一份。
+ */
+function toDecimalConstructorArg(value: Prisma.Decimal | string | number): Prisma.Decimal | string {
+  if (typeof value !== "number") return value;
+  return String(value);
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -69,7 +107,7 @@ export function deriveDepreciation(input: DepreciationInput): DepreciationResult
   // Convert vehiclePrice to Decimal
   let price: Prisma.Decimal;
   try {
-    price = new Prisma.Decimal(input.vehiclePrice as string | number);
+    price = new Prisma.Decimal(toDecimalConstructorArg(input.vehiclePrice));
   } catch {
     return { ok: false };
   }

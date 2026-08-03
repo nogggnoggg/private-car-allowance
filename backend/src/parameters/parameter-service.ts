@@ -127,6 +127,38 @@ export function toEtcDto(row: EtcRow): EtcParameterDto {
 }
 
 // ---------------------------------------------------------------------------
+// D4 bright-line: number → Decimal-safe string conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a `number | string` amount into a string suitable for the
+ * `Prisma.Decimal` constructor, closing the last "number 變數建構" gap of the
+ * D4 bright-line (Spec D8: 一律非浮點).
+ *
+ * - string input: returned as-is — already a decimal literal, no float
+ *   mediation ever occurs for the string path.
+ * - number input: converted via `String(value)` rather than handed directly
+ *   to `new Prisma.Decimal(value)`.
+ *
+ * 本版 decimal.js 的建構子對 number 引數內部已先做 toString() 才解析，
+ * 因此 `new Decimal(value)` 與 `new Decimal(String(value))` 對所有 number
+ * 皆為恆等變換（含科學記號輸入 —— decimal.js 完整支援解析 "1e+21" 這類
+ * 字面值）。此函式仍保留「一律先字串化」這一步，不是為了修正當前版本的
+ * 行為差異（沒有差異），而是讓 D4 bright-line（一律非浮點）不依賴這個
+ * 實作細節本身 —— 未來若更換十進位運算函式庫或升版、且新版建構子改為
+ * 直接讀取 number 的二進位值，這裡的轉換仍會保護既有行為不變。
+ *
+ * 可重跑驗證（直擊實際建構子 Prisma.Decimal，而非其底層 decimal.js，
+ * 確保驗證的是本專案實際使用的路徑）：
+ *   node -e "const {Prisma}=require('@prisma/client'); console.log(new Prisma.Decimal(0.1).toString()===new Prisma.Decimal('0.1').toString())"
+ *   → true
+ */
+export function toDecimalConstructorArg(value: number | string): string {
+  if (typeof value === "string") return value;
+  return String(value);
+}
+
+// ---------------------------------------------------------------------------
 // T5 audit hook type
 // ---------------------------------------------------------------------------
 
@@ -175,6 +207,15 @@ export async function createFuelVersion(
     ]);
   }
 
+  // D4: build the Decimal constructor arg from priceNum (already validated non-NaN, ≥0
+  // above) — never from the raw accept-any input.unitPrice. CHORE-002-R2 (S-3): the route
+  // accepts any JSON value for unitPrice; passing input.unitPrice straight through let
+  // values Number() can coerce but Decimal()'s string constructor cannot parse (e.g.
+  // " 19.9 " with whitespace, or booleans) reach `new Prisma.Decimal(...)` inside the
+  // transaction and throw an uncaught DecimalError → 500, instead of the intended 400/201
+  // contract. `String(priceNum)` can never throw (priceNum is a validated finite number).
+  const unitPriceArg = toDecimalConstructorArg(priceNum);
+
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
   if (!effectiveFromDate) {
@@ -205,7 +246,7 @@ export async function createFuelVersion(
       // Create
       const version = await tx.fuelParameterVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal(priceNum),
+          unitPrice: new Prisma.Decimal(unitPriceArg),
           effectiveFrom: effectiveFromDate,
           createdById: input.createdById,
         },
@@ -284,6 +325,15 @@ export async function createEtcVersion(
     ]);
   }
 
+  // D4: build the Decimal constructor arg from priceNum (already validated non-NaN, ≥0
+  // above) — never from the raw accept-any input.unitPrice. CHORE-002-R2 (S-3): the route
+  // accepts any JSON value for unitPrice; passing input.unitPrice straight through let
+  // values Number() can coerce but Decimal()'s string constructor cannot parse (e.g.
+  // " 5.5 " with whitespace, or booleans) reach `new Prisma.Decimal(...)` inside the
+  // transaction and throw an uncaught DecimalError → 500, instead of the intended 400/201
+  // contract. `String(priceNum)` can never throw (priceNum is a validated finite number).
+  const unitPriceArg = toDecimalConstructorArg(priceNum);
+
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
   if (!effectiveFromDate) {
@@ -314,7 +364,7 @@ export async function createEtcVersion(
       // Create
       const version = await tx.etcParameterVersion.create({
         data: {
-          unitPrice: new Prisma.Decimal(priceNum),
+          unitPrice: new Prisma.Decimal(unitPriceArg),
           effectiveFrom: effectiveFromDate,
           createdById: input.createdById,
         },
@@ -463,7 +513,9 @@ export async function createDepreciationVersion(
   // Validate vehiclePrice > 0 (AC-05)
   let vehiclePriceDecimal: Prisma.Decimal;
   try {
-    vehiclePriceDecimal = new Prisma.Decimal(input.vehiclePrice as string | number);
+    // D4: route through toDecimalConstructorArg — same string-only construction as
+    // unitPrice above, closing the last "number 變數建構" gap (see helper doc).
+    vehiclePriceDecimal = new Prisma.Decimal(toDecimalConstructorArg(input.vehiclePrice));
     if (vehiclePriceDecimal.lte(0)) {
       fieldErrors.push({ field: "vehiclePrice", reason: "必須大於 0" });
     }

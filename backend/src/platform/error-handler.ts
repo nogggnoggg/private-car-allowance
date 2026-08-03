@@ -127,14 +127,31 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
       wireError.statusCode >= 400 &&
       wireError.statusCode < 500;
     if (isFastifyContentTypeError || has4xxStatusCode) {
+      // CHORE-002 修項②: wire-level 4xx 對照表 — 413/415 保留原始語意與 statusCode,
+      // 其餘（畸形 JSON、Content-Length 不符等）維持既有 400 VALIDATION_ERROR 壓平。
+      // （reviewer 實測：CHORE-001 舊版把 413/415 也壓成 400，語意流失。）
+      // CHORE-002-R2 (AR-4): 新增 4xx 錯誤來源（如 429 rate-limit plugin、405 method-not-allowed
+      // plugin）時，須同步在此對照表擴充對應分支，否則會被下方的 400 fallback 壓平語意。
+      let wireStatus = 400;
+      let wireCode: "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_MEDIA_TYPE" | "VALIDATION_ERROR" =
+        "VALIDATION_ERROR";
+      let wireMessage = "輸入資料有誤，請檢查標示欄位。";
+      if (wireError.statusCode === 413) {
+        wireStatus = 413;
+        wireCode = "PAYLOAD_TOO_LARGE";
+        wireMessage = "請求內容過大，請縮小後再試。";
+      } else if (wireError.statusCode === 415) {
+        wireStatus = 415;
+        wireCode = "UNSUPPORTED_MEDIA_TYPE";
+        wireMessage = "不支援的內容類型，請確認 Content-Type 設定。";
+      }
+
       // AR-3: omit { requestId } from log object — logController already injects it
       request.log.info(
         { errName: error.name, errCode: wireError.code },
         "Wire-level 4xx error (body parser / framework)"
       );
-      return reply
-        .status(400)
-        .send(buildErrorBody("VALIDATION_ERROR", "輸入資料有誤，請檢查標示欄位。", requestId));
+      return reply.status(wireStatus).send(buildErrorBody(wireCode, wireMessage, requestId));
     }
 
     // 4. Unknown/unhandled exception → INTERNAL_ERROR
