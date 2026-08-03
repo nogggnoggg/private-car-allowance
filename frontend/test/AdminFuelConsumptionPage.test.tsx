@@ -389,3 +389,65 @@ describe("管理員油耗維護頁 — 五態：Loading／Empty／400／404／40
     expect(calledPaths.some((p) => p.includes("/fuel-consumption"))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// AR-5（T9~T12 合併複審移交）：AC-30「版型比照」條款
+// （.param-table／.num-col／YYYY-MM-DD）先前零測試覆蓋——比照
+// ParametersPage.test.tsx 既有測試模式（"ParametersPage — 折舊表包在
+// .table-scroll wrapper 內" describe）補結構斷言。
+// ---------------------------------------------------------------------------
+describe("管理員油耗維護頁 — 版型比照 ParametersPage（AC-30／AR-5）", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("版本列表表格具備 .param-table class", async () => {
+    mockMeAsAdmin();
+    mockGetUsers([userA]);
+    mockGetVersions([versionFixture()]);
+
+    renderPage(`/admin/users/${userA.id}/fuel-consumption`);
+
+    const table = await screen.findByRole("table", { name: "油耗版本清單" });
+    expect(table).toHaveClass("param-table");
+  });
+
+  it("表格的直接外層具備 .table-scroll class", async () => {
+    mockMeAsAdmin();
+    mockGetUsers([userA]);
+    mockGetVersions([versionFixture()]);
+
+    renderPage(`/admin/users/${userA.id}/fuel-consumption`);
+
+    const table = await screen.findByRole("table", { name: "油耗版本清單" });
+    expect(table.parentElement).toHaveClass("table-scroll");
+  });
+
+  it("油耗（公里／公升）欄（th 與 td）具備 num-col class", async () => {
+    mockMeAsAdmin();
+    mockGetUsers([userA]);
+    mockGetVersions([versionFixture({ kmPerLiter: "15.0000" })]);
+
+    renderPage(`/admin/users/${userA.id}/fuel-consumption`);
+
+    const th = await screen.findByRole("columnheader", { name: "油耗（公里／公升）" });
+    expect(th).toHaveClass("num-col");
+    const td = screen.getByText("15.0000");
+    expect(td).toHaveClass("num-col");
+  });
+
+  it("生效日期欄呈現 YYYY-MM-DD 格式（比照 ParametersPage 慣例，不含時分秒）", async () => {
+    mockMeAsAdmin();
+    mockGetUsers([userA]);
+    mockGetVersions([versionFixture({ effectiveFrom: "2026-03-15" })]);
+
+    renderPage(`/admin/users/${userA.id}/fuel-consumption`);
+
+    const cell = await screen.findByText("2026-03-15");
+    expect(cell.textContent).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});

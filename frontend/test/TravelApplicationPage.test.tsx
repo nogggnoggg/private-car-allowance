@@ -520,6 +520,47 @@ describe("TravelApplicationPage", () => {
       expect(screen.getByText(expectedText)).toBeInTheDocument();
     });
 
+    // ---- AR-4（T9~T12 合併複審移交）：後端 completionBlockers 與前端本表
+    // 預覽缺項提示同碼時去重，避免同一狀態出現兩種近似措辭（例：
+    // AMOUNT_OUT_OF_RANGE 之「計算結果超出可儲存之金額範圍…」vs「計算金額
+    // 超出可儲存範圍…」，僅一字之差）----
+    it("AR-4 去重：completionBlockers 已含 AMOUNT_OUT_OF_RANGE 對應 blocker 時，預覽區不重複顯示自己的一份措辭", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            completionBlockers: [
+              {
+                code: "AMOUNT_OUT_OF_RANGE",
+                message: "計算結果超出可儲存之金額範圍，請聯絡管理員檢查里程與參數設定",
+              },
+            ],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            parameterAvailable: false,
+            missingParameters: ["AMOUNT_OUT_OF_RANGE"],
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => expect(screen.getByLabelText("出差日期")).toBeInTheDocument());
+      await sleep(400);
+
+      // 後端 blocker 措辭仍照實顯示一次（D7 後端權威，不得動後端文案）。
+      expect(
+        screen.getByText("計算結果超出可儲存之金額範圍，請聯絡管理員檢查里程與參數設定")
+      ).toBeInTheDocument();
+      // 前端自己那份近似措辭不得重複出現。
+      expect(
+        screen.queryByText("計算金額超出可儲存範圍，請聯絡管理員檢查里程與參數設定")
+      ).not.toBeInTheDocument();
+    });
+
     // ---- 合併複審 SF-1：僅缺 ETC 時，油資版本齊備，不得誤報「油資無法
     // 計算」並隱藏後端已算出之油資金額（FE-US-10 第一條、PHASE-004 行為
     // 不得回退）。fixture 之 fuelAmount/totalAmount 皆為前端不可能自算出
