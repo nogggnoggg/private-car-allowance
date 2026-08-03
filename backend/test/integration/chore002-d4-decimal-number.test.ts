@@ -27,6 +27,16 @@
  *   移除「極端量級防呆」（>= 1e21 / < 1e-6 拋錯）與對應 (c) 組測試——該防呆是
  *   核准範圍（「行為零變更」）外的新增行為，且其前提（String() 會產生 decimal.js
  *   無法解析的字面值）經 reviewer 實測為假：decimal.js 完整支援解析科學記號字串。
+ *
+ * CHORE-003-T3 斷言調整（依 PHASE-003a Spec §14.8 第 1 項，非弱化測試）：
+ *   ① `unitPrice: true` 由「201 且存 1.0000」改為 **400**（§14.3 B-08／AC-26），
+ *      並加測「DB 無新增列」。
+ *   ② `" 19.9 "`／`" 5.5 "` 之**斷言值不變**（CD-1(a)），僅將標題與註解所述理由
+ *      由已失效的「必須仍走 priceNum」改述為新機制（格式層 trim 後判定）。
+ *   ③ L51-60 `toDecimalConstructorArg` 單元段落不動——該 helper 依 §14.7 備註
+ *      維持自 `parameter-service.ts` 具名匯出。
+ *   本檔其餘 (a)(b)(d) 等價性斷言原樣保留；AC-29 之字串保真結構性鑑別另見
+ *   `chore003-string-fidelity.test.ts`。
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { getPrismaClient } from "../../src/db/prisma.js";
@@ -163,7 +173,11 @@ describeWithDb(
       expect(byNumber.unitPrice).toBe(byString.unitPrice);
     });
 
-    it("createFuelVersion：unitPrice 帶前後空白字串 ' 19.9 ' → 201 且存 19.9000（S-3 鑑別①：accept-any route 讓 Number() 能吃、Decimal() 字串建構不能吃的輸入必須仍走 priceNum）", async () => {
+    // CHORE-003-T3（Spec §14.8 第 1 項②）：斷言值不變，但理由改述為新機制。
+    // 舊理由「必須仍走 priceNum」已隨 CHORE-003-T2 廢止 `Number()` 中介而失效；
+    // 現行機制為 CD-1(a)——格式層對字串先 `.trim()` 再判定十進位字面，
+    // 前後空白視為傳輸層雜訊，trim 後值完全保真（AC-27）。
+    it("createFuelVersion：unitPrice 帶前後空白字串 ' 19.9 ' → 201 且存 19.9000（CD-1(a)：格式層 trim 後判定，字串路徑無 Number() 中介）", async () => {
       const result = await createFuelVersion(prisma, {
         unitPrice: " 19.9 ",
         effectiveFrom: "2098-01-03",
@@ -172,17 +186,32 @@ describeWithDb(
       expect(result.unitPrice).toBe("19.9000");
     });
 
-    it("createFuelVersion：unitPrice boolean true → 201 且存 1.0000（S-3 鑑別②：既有 accept-any 寬鬆行為如實保留，本回合不改值語意）", async () => {
-      const result = await createFuelVersion(prisma, {
-        // @ts-expect-error — accept-any route, deliberately exercising a non-declared runtime input
-        unitPrice: true,
-        effectiveFrom: "2098-01-04",
-        createdById: CREATED_BY,
+    // CHORE-003-T3（Spec §14.8 第 1 項①、§14.3 B-08、AC-26）：斷言由 201/1.0000
+    // 改為 400。原鑑別意圖（「accept-any route 送得進來的非數值型別，其處置必須被
+    // 測住、不得無人看管」）**完整保留並強化**：舊行為是 `Number(true) === 1` 靜默
+    // 把錯誤金額參數寫進 DB，修訂後為格式層型別守門攔為 400；除狀態碼外另斷言
+    // DB 確實沒有新增列（AC-26 明列之鑑別要求）。
+    it("createFuelVersion：unitPrice boolean true → 400 型別守門，且 DB 無新增列（B-08／AC-26：廢止 Number(true)===1 之靜默寫入）", async () => {
+      await expect(
+        createFuelVersion(prisma, {
+          // @ts-expect-error — accept-any route, deliberately exercising a non-declared runtime input
+          unitPrice: true,
+          effectiveFrom: "2098-01-04",
+          createdById: CREATED_BY,
+        })
+      ).rejects.toMatchObject({
+        code: "VALIDATION_ERROR",
+        httpStatus: 400,
+        fields: [{ field: "unitPrice", reason: "必須為有效的數值（字串或數字）" }],
       });
-      expect(result.unitPrice).toBe("1.0000");
+
+      const count = await prisma.fuelParameterVersion.count({
+        where: { effectiveFrom: new Date("2098-01-04") },
+      });
+      expect(count).toBe(0);
     });
 
-    it("createEtcVersion：unitPrice 帶前後空白字串 ' 5.5 ' → 201 且存 5.5000（S-3 鑑別①）", async () => {
+    it("createEtcVersion：unitPrice 帶前後空白字串 ' 5.5 ' → 201 且存 5.5000（CD-1(a)：同上，格式層 trim 後判定）", async () => {
       const result = await createEtcVersion(prisma, {
         unitPrice: " 5.5 ",
         effectiveFrom: "2098-02-03",

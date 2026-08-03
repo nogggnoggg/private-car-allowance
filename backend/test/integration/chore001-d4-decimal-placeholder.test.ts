@@ -16,6 +16,13 @@ import type { PrismaClient } from "@prisma/client";
  *
  * 不需要真實 DB：這個分支在觸及 `prisma.$transaction` 之前就已 return/throw，
  * 傳入的 prisma 物件不會被呼叫到，用型別斷言的假物件即可。
+ *
+ * CHORE-003-T3 現況更新（避免註解與實作背離，AC-29 後半）：上述
+ * `new Prisma.Decimal("0")` placeholder 與其 try/catch 分支已於 CHORE-003-T2
+ * 消失——`vehiclePrice` 改由 `parameter-validation.ts` 的格式層解析，失敗時
+ * 直接 push `FieldError`，`vehiclePriceDecimal` 以 `null` 起始且僅在兩層驗證
+ * 皆通過時賦值。本檔的守門價值因此轉為「不可解析之 `vehiclePrice` 仍必須被
+ * 精確定位到該欄位並以 400 拒絕」，斷言依 Spec §14.8 第 2 項同步文案（見下）。
  */
 import { describe, expect, it } from "vitest";
 import { createDepreciationVersion } from "../../src/parameters/parameter-service.js";
@@ -41,7 +48,11 @@ describe('CHORE-001-T1 ②: D4 Decimal placeholder（new Prisma.Decimal("0")）�
     });
   });
 
-  it("錯誤的 fields 陣列包含 vehiclePrice：'必須為有效數值且大於 0'（catch 分支訊息不變）", async () => {
+  // CHORE-003-T3（Spec §14.8 第 2 項）：`reason` 文案依 §14.2 文案表更新。
+  // 原鑑別意圖（「不可解析的 vehiclePrice 必須被**精確定位到該欄位**並拒絕，
+  // 不得靜默寫入、不得漏報欄位」）完整保留：狀態碼 400 與 field `vehiclePrice`
+  // 皆維持不變，僅 reason 隨明文批准的合約變更同步（格式層攔截取代舊 catch 分支）。
+  it("錯誤的 fields 陣列包含 vehiclePrice：'必須為有效的十進位數值（不接受指數記號）'（§14.2 文案表；400 與 field 不變）", async () => {
     try {
       await createDepreciationVersion(unusedPrisma, {
         vehiclePrice: "abc",
@@ -56,7 +67,7 @@ describe('CHORE-001-T1 ②: D4 Decimal placeholder（new Prisma.Decimal("0")）�
       const appErr = err as AppError;
       expect(appErr.fields).toContainEqual({
         field: "vehiclePrice",
-        reason: "必須為有效數值且大於 0",
+        reason: "必須為有效的十進位數值（不接受指數記號）",
       });
     }
   });

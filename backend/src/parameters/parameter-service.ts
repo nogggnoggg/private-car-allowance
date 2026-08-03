@@ -23,6 +23,24 @@
  *   目的：消滅 §14.3 B-14／B-17／B-23／B-25 之 500 路徑，並廢止 B-15／B-21 的
  *   靜默精度截斷。route schema 之 accept-any 與 `routes.ts` 的「必填」缺值檢查
  *   **不變**（§14.2「路由層不變」）。
+ *
+ * CHORE-003-T3（AC-29／AR-5 閉環）—— 金額字串路徑保真不變式：
+ *   `unitPrice`／`vehiclePrice` **自輸入到 `Prisma.Decimal` 建構之間不得經過任何
+ *   浮點中介**：格式層一律以原字串（`number` 輸入則以 `.toString()`）建構，值域
+ *   比較亦改以 `Prisma.Decimal` 方法（`lessThan`／`lte`）進行。CHORE-002 時期的
+ *   `const priceNum = Number(input.unitPrice)` 中介已完全移除。
+ *
+ *   本檔僅存的 `Number(...)` 呼叫在 `parseUtcDate()` 內（`effectiveFrom` 之
+ *   `YYYY-MM-DD` 分段轉整數），與金額輸入無關；`Number.isFinite`／
+ *   `Number.isInteger` 則是折舊整數欄位（`usefulLifeYears`／`estimatedAnnualKm`，
+ *   本就是 `number` 型別）之既有值域述詞，兩者皆不在 AC-29 的禁止範圍。
+ *
+ *   此不變式由 `test/integration/chore003-string-fidelity.test.ts` 的**結構性
+ *   靜態斷言**守住（掃描本目錄原始碼、以白名單固定上述 3 個日期用呼叫）——
+ *   之所以不能用行為測試守，是因為兩個欄位的容量（`Decimal(10,4)` ≤10 位、
+ *   `Decimal(12,2)` ≤12 位有效數字）都在 double 無損往返的 15 位之內，浮點中介
+ *   在合法輸入下**不可觀測**（AR-5 判定，該測試檔 §3 有可執行實證）。
+ *   → 若日後有人在金額路徑加回 `Number()`，該測試會轉紅並指出違規呼叫。
  */
 
 import type { PrismaClient } from "@prisma/client";
