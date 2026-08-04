@@ -389,9 +389,22 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
       expect(log?.actorId).not.toBe(log?.targetId);
       expect(log?.targetLabel).toBe(`${OWNER_LOGIN}#${application.id}`);
 
+      // AR-1：以 count（非僅 findFirst）確認恰好 1 列——防止重試/重放路徑
+      // 對同一次代建立重複寫入稽核列（targetLabel 帶 applicationId，本次執行
+      // 唯一）。
+      const auditRowCount = await prisma.auditLog.count({
+        where: { targetLabel: `${OWNER_LOGIN}#${application.id}` },
+      });
+      expect(auditRowCount).toBe(1);
+
       const summary = log?.summary as Record<string, unknown>;
       expect(summary.applicationId).toBe(application.id);
       expect(summary.type).toBe("MAINTENANCE");
+      expect(summary.lastMaintenanceDate).toBe("2091-03-01");
+      expect(summary.currentMaintenanceDate).toBe("2091-04-01");
+      expect(summary.lastOdometerKm).toBe("0.00");
+      expect(summary.currentOdometerKm).toBe("50.00");
+      expect(summary.actualCost).toBe("300.00");
 
       assertNoSensitiveContent(log?.targetLabel, "auditLog.targetLabel");
       assertNoSensitiveContent(log?.summary, "auditLog.summary");
@@ -435,16 +448,31 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
       expect(log?.actorId).toBe(adminId);
       expect(log?.targetId).toBe(ownerId);
 
+      // AR-1：count===1，防重試/重放對同一次代修改重複寫入稽核列。
+      const auditRowCount = await prisma.auditLog.count({
+        where: { targetLabel: `${OWNER_LOGIN}#${applicationId}` },
+      });
+      expect(auditRowCount).toBe(1);
+
       const summary = log?.summary as {
         applicationId: string;
         type: string;
         lastMaintenanceDate: { before: string | null; after: string | null };
+        currentMaintenanceDate: { before: string | null; after: string | null };
+        lastOdometerKm: { before: string | null; after: string | null };
+        currentOdometerKm: { before: string | null; after: string | null };
         actualCost: { before: string | null; after: string | null };
       };
       expect(summary.applicationId).toBe(applicationId);
       expect(summary.type).toBe("MAINTENANCE");
       expect(summary.lastMaintenanceDate.before).toBeNull();
       expect(summary.lastMaintenanceDate.after).toBe("2091-05-01");
+      expect(summary.currentMaintenanceDate.before).toBeNull();
+      expect(summary.currentMaintenanceDate.after).toBe("2091-06-01");
+      expect(summary.lastOdometerKm.before).toBeNull();
+      expect(summary.lastOdometerKm.after).toBe("0.00");
+      expect(summary.currentOdometerKm.before).toBeNull();
+      expect(summary.currentOdometerKm.after).toBe("20.00");
       expect(summary.actualCost.before).toBeNull();
       expect(summary.actualCost.after).toBe("150.00");
 
@@ -535,6 +563,11 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
       const runIdDigitSum = RUN_ID.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 100;
       const sentinelCost = new Prisma.Decimal(`999999.${String(runIdDigitSum).padStart(2, "0")}`);
       const injectedMessage = `P6T9-INJECTED-CREATE-AUDIT-FAILURE-${RUN_ID}`;
+      // SF-1（T9 即審 mutant M4b：`onCreated(tx, …)` → `onCreated(prisma, …)`
+      // 全套存活）：hook 若拿到「交易外」的 client，用它寫入的這列 sentinel
+      // AuditLog 會在主體 insert rollback 後仍然殘留——藉此釘死 hook 必須
+      // 收到「同一筆交易」的 tx，而非外層 prisma。
+      const sentinelTargetLabel = `P6T9-SENTINEL-CREATE#${RUN_ID}`;
 
       await expect(
         createMaintenanceDraft(
@@ -544,7 +577,15 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
             createdById: adminId,
             actualCost: sentinelCost,
           },
-          async () => {
+          async (txClient) => {
+            await txClient.auditLog.create({
+              data: {
+                action: "APPLICATION_CREATED_ON_BEHALF",
+                actorId: adminId,
+                targetId: ownerId,
+                targetLabel: sentinelTargetLabel,
+              },
+            });
             throw new Error(injectedMessage);
           }
         )
@@ -554,6 +595,11 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
         where: { actualCost: sentinelCost },
       });
       expect(stray).toBeNull();
+
+      const strayAudit = await prisma.auditLog.findFirst({
+        where: { targetLabel: sentinelTargetLabel },
+      });
+      expect(strayAudit).toBeNull();
     });
 
     it("updateMaintenanceDraft: onUpdated 注入失敗 → 交易整體 rollback，欄位仍為修改前的值", async () => {
@@ -563,13 +609,24 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
       });
 
       const injectedMessage = `P6T9-INJECTED-UPDATE-AUDIT-FAILURE-${RUN_ID}`;
+      // SF-1（同型 M4b，`updateMaintenanceDraft` 側）：sentinel 列殘留即代表
+      // hook 拿到的是交易外 client。
+      const sentinelTargetLabel = `P6T9-SENTINEL-UPDATE#${RUN_ID}`;
 
       await expect(
         updateMaintenanceDraft(
           prisma,
           applicationId,
           { actualCost: new Prisma.Decimal("999.00") },
-          async () => {
+          async (txClient) => {
+            await txClient.auditLog.create({
+              data: {
+                action: "APPLICATION_UPDATED_ON_BEHALF",
+                actorId: adminId,
+                targetId: ownerId,
+                targetLabel: sentinelTargetLabel,
+              },
+            });
             throw new Error(injectedMessage);
           }
         )
@@ -586,6 +643,11 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
         where: { targetLabel: { contains: applicationId } },
       });
       expect(log).toBeNull();
+
+      const strayAudit = await prisma.auditLog.findFirst({
+        where: { targetLabel: sentinelTargetLabel },
+      });
+      expect(strayAudit).toBeNull();
     });
   });
 
