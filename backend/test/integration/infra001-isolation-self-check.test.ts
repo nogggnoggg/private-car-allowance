@@ -53,6 +53,7 @@ const BUSINESS_ENUM_NAMES = [
   "AuditAction",
   "AttachmentStatus",
   "AttachmentRefType",
+  "FuelType",
   "ApplicationType",
   "ApplicationStatus",
 ] as const;

@@ -167,6 +167,14 @@ function assertRowUnchanged(
   before: Record<string, unknown>,
   after: Record<string, unknown>
 ): void {
+  // Closed-set guard (AR-1): also assert the column SET itself is unchanged,
+  // not just the values under `before`'s keys — otherwise a migration that
+  // ADDs a column (even NOT NULL DEFAULT ...) to one of these tables would
+  // silently pass this check, since the new key is invisible to a loop keyed
+  // off `before`.
+  expect(Object.keys(after).sort(), `${label}: column set changed across migration`).toEqual(
+    Object.keys(before).sort()
+  );
   for (const [key, value] of Object.entries(before)) {
     expect(after[key], `${label}: column "${key}" changed across migration`).toEqual(value);
   }
@@ -177,8 +185,10 @@ async function dropSchema(admin: PrismaClient, schema: string): Promise<void> {
 }
 
 // ===========================================================================
-// Done When: existing-DB incremental migration safety net — five-table
-// zero-rewrite check (§8.6 pattern, applied to this Task's representative set)
+// Done When: existing-DB incremental migration safety net — AC-01(b) 逐欄
+// zero-rewrite check, across Application/TravelApplication/TripSegment/
+// Attachment/User (the five tables AC-01(b) names) plus FuelPriceVersion/
+// UserFuelConsumptionVersion (kept as additional coverage beyond the AC).
 // ===========================================================================
 
 describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
@@ -195,14 +205,17 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
   const TRIP_SEGMENT_ID_2 = `p6_t1_seg2_${RUN_ID}`;
   const FUEL_VERSION_ID = `p6_t1_fuel_ver_${RUN_ID}`;
   const CONSUMPTION_VERSION_ID = `p6_t1_consumption_ver_${RUN_ID}`;
+  const ATTACHMENT_ID = `p6_t1_attachment_${RUN_ID}`;
   const TRIP_DATE = new Date("2033-05-01T00:00:00.000Z");
 
-  /** Before-migration snapshots for all five representative tables. */
+  /** Before-migration snapshots for all seven representative tables. */
   let beforeApplicationRow: Record<string, unknown>;
   let beforeTravelRow: Record<string, unknown>;
   let beforeSegmentRows: Record<string, unknown>[];
   let beforeFuelVersionRow: Record<string, unknown>;
   let beforeConsumptionVersionRow: Record<string, unknown>;
+  let beforeUserRow: Record<string, unknown>;
+  let beforeAttachmentRow: Record<string, unknown>;
 
   beforeAll(async () => {
     if (!DB_URL) return;
@@ -320,7 +333,26 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
       },
     });
 
-    // Capture the "before" snapshots across all five representative tables.
+    // Attachment: representative lifecycle-state row (LINKED, referencing the
+    // first TripSegment above) — covers AC-01(b)'s explicit Attachment table.
+    await client.attachment.create({
+      data: {
+        id: ATTACHMENT_ID,
+        status: "LINKED",
+        storageKey: `p6_t1_storage_${RUN_ID}`,
+        thumbnailKey: `p6_t1_thumb_${RUN_ID}`,
+        mimeType: "image/jpeg",
+        byteSize: 123456,
+        originalFilename: "phase6-t1-fixture.jpg",
+        uploaderId: OWNER_ID,
+        ownerId: OWNER_ID,
+        refType: "TRIP_SEGMENT",
+        refId: TRIP_SEGMENT_ID_1,
+        linkedAt: new Date(),
+      },
+    });
+
+    // Capture the "before" snapshots across all seven representative tables.
     const appRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
       `SELECT * FROM "Application" WHERE id = $1`,
       APPLICATION_ID
@@ -356,6 +388,20 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
     expect(consumptionVersionRows).toHaveLength(1);
     beforeConsumptionVersionRow = canonicalizeRow(consumptionVersionRows[0]);
 
+    const userRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+      `SELECT * FROM "User" WHERE id = $1`,
+      OWNER_ID
+    );
+    expect(userRows).toHaveLength(1);
+    beforeUserRow = canonicalizeRow(userRows[0]);
+
+    const attachmentRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+      `SELECT * FROM "Attachment" WHERE id = $1`,
+      ATTACHMENT_ID
+    );
+    expect(attachmentRows).toHaveLength(1);
+    beforeAttachmentRow = canonicalizeRow(attachmentRows[0]);
+
     // Step 3: apply the REST of this Phase's migrations (real schema + real
     // migrations dir, i.e. the new M1) on top of the same schema — the
     // actual "existing DB gets upgraded" path.
@@ -376,6 +422,8 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
     expect(beforeSegmentRows).toHaveLength(2);
     expect(beforeFuelVersionRow).toBeDefined();
     expect(beforeConsumptionVersionRow).toBeDefined();
+    expect(beforeUserRow).toBeDefined();
+    expect(beforeAttachmentRow).toBeDefined();
   });
 
   it("Done When: every pre-existing column, across all five representative tables, is byte-for-byte unchanged after migration", async () => {
@@ -424,6 +472,20 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
       beforeConsumptionVersionRow,
       canonicalizeRow(consumptionVersionRows[0])
     );
+
+    const userRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+      `SELECT * FROM "User" WHERE id = $1`,
+      OWNER_ID
+    );
+    expect(userRows).toHaveLength(1);
+    assertRowUnchanged("User", beforeUserRow, canonicalizeRow(userRows[0]));
+
+    const attachmentRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+      `SELECT * FROM "Attachment" WHERE id = $1`,
+      ATTACHMENT_ID
+    );
+    expect(attachmentRows).toHaveLength(1);
+    assertRowUnchanged("Attachment", beforeAttachmentRow, canonicalizeRow(attachmentRows[0]));
   });
 
   it("the new MaintenanceApplication table exists and is empty after migrating an existing DB", async () => {
