@@ -228,7 +228,17 @@ T13R2 含中斷續派全程 ~99k，仍落在 Lite 帶。與②的表面矛盾其
 
 ---
 
-## 5. 附註：與 PHASE-005 回顧之銜接
+## 5. 流程建議：每 Phase 結束之大總管復盤（使用者裁定，常設流程）
+
+**使用者裁定（2026-08-04）**：本報告之產出方式——Phase 結束時由大總管彙整全 Phase subagent usage 數據（各結案列累記之 usage／tool uses），派分析 agent 產出 retrospective 報告——自 PHASE-005a 起立為**常設流程**，每個 Phase 結束皆執行。
+
+**建議「AGENTS LOOP workflow 設計 agent」將此方法納入多 agent 迴圈設計**：
+
+- **Phase 級 usage 復盤為迴圈的固定收尾步驟**——位置在人類合併批准之後、下一 Phase 開工之前，與 Spec 轉 COMPLETED／PROJECT_STATE 結案列同屬 Phase Done 的收尾動作。
+- **數據餵入下一 Phase 的派工預算校準**——復盤報告之 usage 帶（§1.5、§4 之 14-1/19-2）作為下一 Phase Task Graph 設計與 Packet 預算的輸入；型態驗證節（§2 形式）逐 Phase 累積，使派工型態庫隨專案演進而非單次快照。
+- **前置依賴**：usage 記錄紀律（§3.6，Handoff 自報欄＋大總管結案列照抄）是本流程的資料來源，兩者應同批落地。
+
+## 6. 附註：與 PHASE-005 回顧之銜接
 
 - 本報告 §3.1/§14-2 與 PHASE-005 回顧 P-6（預算系統性低估）同向：005a 已將行數預算按 T3/T4 實績校準（T5 起首次落帶內），本報告再補 usage 維度。兩者合併後，Packet 預算應為「檔數＋測試條數＋可執行行數＋usage 帶」四元組。
 - PHASE-005 回顧 P-3（單一驗證腳本）在 005a 仍未建：T7 的 244 tool uses 中相當比例為重複的全套驗證指令組合，verify 腳本可直接壓低所有 Task 的 tool uses 底噪。優先序維持高位。
