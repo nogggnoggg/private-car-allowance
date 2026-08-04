@@ -9,6 +9,9 @@ State: ACTIVE
 > - Packet 必引（開工前提清單）：①PHASE-005 結案列——D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單 B-12/15/17/19/24/25 ②005a T7 之雙鏈解析與統計引擎現況（期間公務里程複用 PHASE-005 引擎）③INFRA-001 vitest 併跑限制持續有效 ④基準線：後端 1468/前端 180/E2E 23。
 > - 派工模式沿用：subagent 一律背景派工；依序執行；Review 節奏（High 即審/期中/終審）照 §19。
 > - **常設規則（使用者裁定 2026-08-04）：每 Phase 結束，大總管必做 usage 復盤**——彙整全 Phase subagent usage（各 Task 結案列累記），派分析 agent 產出 `docs/retrospective/PHASE-XXX-usage.md`，數據餵入下一 Phase 派工預算校準。自 PHASE-005a 起生效（`5ea21f6`＋`50cd4af`，已 cherry-pick 至本分支），PHASE-006 結案時執行。已同步寫入大總管長期記憶。
+> - **SPEC-006：DONE**（`fc09dab`，1022 行：41 AC 全溯源、14 Task（T1~T9 High）、D1~D12、40 格授權矩陣、35 邊界；usage ~281k）。spec-writer 實查三大現況缺口：①deriveContainerState 對 MAINTENANCE 佔位回 draft——建表後成真實附件刪除漏洞（AC-23/T6 紅燈實證修復）②deleteApplication 不 detach MAINTENANCE 附件→永不清理孤兒（B-29/T6）③actualCost(12,2)×比例 1.0 超 totalAmount int4 上界（AC-19/D10 守門）。infra001 表數 13→14 機械連動入 T1。
+> - **Spec Gate 通過（人類 leonchih 2026-08-04）：D1~D12 全數照推薦批准（D11 明示追認）；T1~T9 九項 High 事前批准同場取得**。要點：D4(a) 分攤＝ROUND_HALF_UP(cost×officialKm÷intervalKm, 0) 單次取整、不得先取整比例（kill case 1500000×2/3 差 1 元）；D10(a) AMOUNT_OUT_OF_RANGE blocker 草稿/預覽同步暴露。Spec 轉 **ACTIVE**。
+> - 下一步：PRD-SYNC（Lite，spec-writer）→ T1（schema+migration，High）。usage 復盤建議採納（High 即審、Medium 合併複審上限 3 Task、Lite 上限 1 主 finding＋2 同檔小 AR、>250k 拆分訊號）本 Phase 試行。
 
 > **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
 > - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
