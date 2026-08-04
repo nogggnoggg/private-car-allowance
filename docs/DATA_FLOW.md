@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：2026-08-04（最後同步至 PHASE-006 已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`）
+- 更新日期：2026-08-04（最後同步至 PHASE-006 已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`、`PHASE-007-DOC-SYNC-B`）
 - 上游：`userstory.md`、`docs/PRD.md`、`docs/ARCHITECTURE.md`
 - 說明：概念層資料模型與資料流草案。實體命名為概念名稱，非最終 DB schema；不含欄位型別、索引、API I/O 格式（於 Phase Spec 定案）。
 
@@ -25,9 +25,15 @@ Application 0..1───1 Report (已完成才有；修正版各自新 Report)
 Report 1───1 PdfFile (保存於 volume)
 Application 0..1 ──self── Application (原申請 ─supersededBy→ 修正版)
 
-FuelParameterVersion  (油資每公里，含生效日期，不重疊)
+FuelPriceVersion      (每公升油價；依油種各自一條時間軸，含生效日期，不重疊)   ← PHASE-005a 落地
+User 1───* UserFuelConsumptionVersion (車輛油種 + 油耗 km/L，含生效日期，不重疊) ← PHASE-005a 落地
+FuelParameterVersion  (油資每公里；**舊模型**，寫入已凍結、唯讀保留供歷史引用)  ← PHASE-005a D1(a)
 EtcParameterVersion   (ETC 每公里，含生效日期，不重疊)
 DepreciationParameterVersion (車價/年限/預估年里程，含生效日期，不重疊)
+
+TravelApplication 完成快照 ─引用→ FuelPriceVersion            ← PHASE-005a 落地（新模型）
+TravelApplication 完成快照 ─引用→ UserFuelConsumptionVersion   ← PHASE-005a 落地（新模型）
+TravelApplication 完成快照 ─引用→ FuelParameterVersion         （舊模型；新流程不再寫入）
 
 CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後金額)
 ```
@@ -39,21 +45,23 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 | User | 登入帳號、顯示姓名、員工編號(可空)、密碼雜湊、啟用/停用、需強制改密旗標、登入失敗計數/鎖定至、角色(一般/管理員) | 密碼僅存雜湊；員工編號可空 |
 | Session | 擁有者、建立/到期、失效狀態 | 停用/重設密碼即失效 |
 | Application（抽象） | 擁有人、建立者(操作者)、類型(差旅/保養/折舊)、狀態(草稿/已完成/已作廢)、作廢原因/操作者/時間、版本關聯、CalculationSnapshot | 三類共用狀態與快照容器 |
-| TravelApplication | 出差日期、出差目的 | 差旅專屬 + 多段行程 |
+| TravelApplication | 出差日期、出差目的；**完成快照**：油資／ETC 每公里單價、快照總里程、取整前金額、計算時間 ＋ **PHASE-005a 新增五欄** `snapshotFuelType`／`snapshotFuelPricePerLiter`（元／L）／`snapshotFuelConsumption`（km/L）／`fuelPriceVersionId`／`fuelConsumptionVersionId` | 差旅專屬 + 多段行程；**PHASE-005a 落地**：新增五欄全部 nullable、無 default、零回填；新舊模型判別與寫入順序見 §2.2 |
 | TripSegment | 出發地、到達地、總里程、高速里程、排序 | 屬差旅；≥1 段且每段完成須 ≥1 附件 |
 | MaintenanceApplication | **業務 5 欄**：上次/本次保養日期（`@db.Date`，日粒度）、上次/本次里程表、實際費用；**快照 5 欄**：`snapshotIntervalKm`（區間里程）／`snapshotOfficialKm`（期間公務里程）／`snapshotRatio`（比例，6 位小數）／`snapshotRawAmount`（取整前分攤金額）／`calculatedAt` | **PHASE-006 已落地之實體**：`MaintenanceApplication` 子表，1:1 於 `Application`（PK ＝ `applicationId`，`onDelete: Cascade`），與既有 `TravelApplication` 對稱（D1(a)）；本次保養日期為 `Application.primaryDate` 之來源；**最終金額落於既有 `Application.totalAmount`（`Int`）不重複持久化**；**實際費用之快照即 `actualCost` 欄位本身**（完成後凍結，D11(a)，不另存冗餘副本） |
 | DepreciationApplication | 申請年度；(快照:車價/年限/預估年里程/單價/年度里程/補貼金額) | 折舊專屬 |
 | Attachment | 檔案參照(volume 路徑)、格式、大小、暫存/關聯狀態、所屬申請/項目、上傳時間 | 生命週期核心 |
 | Report | 報表編號(TRV/MNT/DEP+月內唯一)、產生時間、所屬申請版本 | 已完成才有；冪等 |
 | PdfFile | volume 檔案參照、安全檔名 | 保存不可變內容 |
-| Fuel/Etc/DepreciationParameterVersion | 參數值、生效日期 `effectiveFrom`（日粒度，含當日；有效期間不重疊，結束由下一版隱含界定，PHASE-003a D2 方案 A） | 版本化、被引用不可覆寫；折舊每年費用/每公里單價為 derived 不持久化（D7），即算即回 |
+| Fuel/Etc/DepreciationParameterVersion | 參數值、生效日期 `effectiveFrom`（日粒度，含當日；有效期間不重疊，結束由下一版隱含界定，PHASE-003a D2 方案 A） | 版本化、被引用不可覆寫；折舊每年費用/每公里單價為 derived 不持久化（D7），即算即回。**`FuelParameterVersion` 之油資角色自 PHASE-005a 起由 `FuelPriceVersion` ＋ `UserFuelConsumptionVersion` 取代**（D1(a)：表與既有列保留、寫入端點凍結、`GET` 唯讀），量綱不同（元／km vs 元／L）**不做任何資料換算** |
+| FuelPriceVersion | 油種 `fuelType`（GASOLINE_92／95／98／DIESEL 固定四項）、每公升油價 `pricePerLiter`（元／L，≥0）、生效日期 `effectiveFrom`（日粒度，含當日）、建立者、建立時間 | **PHASE-005a 落地**：每油種各自一條時間軸（`@@unique(fuelType, effectiveFrom)`）；僅管理員可寫；被已完成申請快照引用後不可覆寫 |
+| UserFuelConsumptionVersion | 使用者 `userId`、油種 `fuelType`、油耗 `kmPerLiter`（km/L，>0）、生效日期 `effectiveFrom`（日粒度，含當日）、核對依據 `basisNote`（必填）、操作管理員、建立時間 | **PHASE-005a 落地**：使用者屬性但**僅管理員可寫**（本人亦不可寫，僅唯讀檢視）；同使用者 `effectiveFrom` 唯一、跨使用者互不干涉；append-only；對 `User` 為 `onDelete: Restrict`（屬該帳號歷史資料，納入刪除守門） |
 | AuditLog | 操作者、擁有人、時間、操作類型、受影響資料、前後摘要 | 不含密碼 |
 
 ### 1.2 關鍵不變式
 
 - 一般使用者只能存取自己擁有的 Application/Attachment/Report。
 - Application 完成即鎖定業務欄位與附件，並寫入 CalculationSnapshot；快照不可變。
-- 三類 ParameterVersion 各自有效期間不重疊；被歷史申請引用後內容不可覆寫。
+- 各類參數版本（ETC／折舊 ParameterVersion、`FuelPriceVersion` 依油種、`UserFuelConsumptionVersion` 依使用者）各自時間軸之有效期間不重疊；被歷史申請引用後內容不可覆寫。
 - 修正版為新 Application（草稿），透過版本關聯指向原申請；原申請與其 PDF 不被改動。
 - 統計/計算僅納入「已完成且未作廢」的差旅。
 

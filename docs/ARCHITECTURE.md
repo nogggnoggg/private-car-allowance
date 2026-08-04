@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：2026-08-04（最後同步至 PHASE-006 已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`）
+- 更新日期：2026-08-04（最後同步至 PHASE-006 已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`、`PHASE-007-DOC-SYNC-B`）
 - 上游：`userstory.md`、`docs/PRD.md`、`CLAUDE.md`（技術棧已由人類確認）
 - 說明：本文件為概念層架構草案，不含實際套件版本細節、API 完整路徑、DB 欄位與索引、部署程式碼。這些於各 Phase Spec 與實作 Task 定案。
 
@@ -117,7 +117,6 @@
 - **附件內容一律經後端授權端點回傳；持久化 volume 不得由 nginx 靜態直出對外（否則繞過授權，違反 NFR-US-10）**。storage key 由系統產生、不含使用者輸入，杜絕路徑穿越與列舉取檔。（修訂 2026-08-01，SPEC-003 決策點 D7；PHASE-003 拓撲約束，待人類批准 Spec 後生效。）
 - 附件對申請容器於 PHASE-003 採**弱關聯**（refType+refId，避免提前建立申請表）；「完成鎖定」語意權威在申請狀態機，附件不冗餘持久化 locked。（修訂 2026-08-01，SPEC-003 決策點 D1/D2。）
 - **`deriveContainerState` 支援 `refType=MAINTENANCE`（PHASE-006 D2(a)，已落地）**：自 PHASE-006 起，保養附件之容器狀態經 `MaintenanceApplication → Application.status` 推導（`refId` ＝ `Application.id` ＝ `MaintenanceApplication.applicationId`），已完成保養之證明附件即受鎖定保護（BE-US-25 第 4 條）；`deleteApplication` 於刪除保養草稿時一併 detach 其 `MAINTENANCE` 附件，避免孤兒 `LINKED` 附件。維持上列「弱關聯 ＋ 不冗餘持久化 locked」之既有定案（未改為強 FK、未新增 locked 旗標）。
-- **油耗資料之寫入授權（PHASE-005a，本節之非附件條目）**：使用者車輛油耗（`UserFuelConsumptionVersion`）為**使用者屬性**，但**僅管理員可寫**——一般使用者**含本人**皆不可寫；本人僅得經 `GET /me/fuel-consumption` 唯讀檢視。差旅單價解析一律以**擁有人**之油耗為準，管理員代操作時絕不取操作者之油耗。
 
 ### 4.6 綜合查詢與資料隔離
 
@@ -147,6 +146,10 @@
 - **複用介面**：`sumOfficialMileage(db, { ownerId, dateFrom, dateTo })` 唯讀且接受交易 client。**`maintenance`（期間公務里程）已於 PHASE-006 落地**——預覽路徑以 `prisma` 唯讀呼叫（零寫入），完成路徑於同一 `SERIALIZABLE` 交易 `tx` 內呼叫；`ownerId` 一律取自 `Application.ownerId`（**代操作時亦為擁有人，絕不為操作者**），區間為 `[上次保養日期, 本次保養日期]` 起訖含當日。`depreciation`（年度公務里程）之複用仍為**計畫**（PHASE-007）。里程過濾與加總**全案只有這一份實作**，PHASE-006 未重寫（以 import 接線斷言 ＋ 突變自證守護）。
 - **D2(a) `count`／`SUM` 不對稱之保養處置（PHASE-006 AC-15，已落地）**：若期間內某已完成差旅之快照總里程為 `null`，引擎之 `applicationCount` **計入**該列而 `totalKm` **忽略**該列（外觀為「筆數 ≥ 1 但里程 `0.00`」）——此為既有引擎行為，PHASE-006 **不改**。保養之**任何金額計算一律只使用 `totalKm`**，`applicationCount` 純供顯示，不得參與分子、分母或任何推導；偏差方向為**保守**（分子偏低 → 比例偏低 → 分攤偏低），不會溢付；DTO 如實回傳兩值，前端不得據此自行推導或補值。
 - **效能形狀**：以 DB 層單一聚合完成，不將命中集合讀入記憶體相加、不 N+1、不分頁；不新增索引（D9(a)），依賴既有申請 `(擁有人, 狀態)` 索引前綴與出差日期索引，實測與索引評估留待 PHASE-011 效能驗證。
+
+### 4.11 使用者屬性之授權（PHASE-005a 定案）
+
+- **油耗資料之寫入授權（PHASE-005a）**：使用者車輛油耗（`UserFuelConsumptionVersion`）為**使用者屬性**，但**僅管理員可寫**——一般使用者**含本人**皆不可寫；本人僅得經 `GET /me/fuel-consumption` 唯讀檢視。差旅單價解析一律以**擁有人**之油耗為準，管理員代操作時絕不取操作者之油耗。
 
 ## 5. 設計原則（不可違背）
 
