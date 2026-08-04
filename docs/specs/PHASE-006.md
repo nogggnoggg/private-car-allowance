@@ -308,7 +308,7 @@
 
 ### 6.2 稽核
 
-- 代操作建立／修改沿用既有 `AuditAction.APPLICATION_CREATED_ON_BEHALF`／`APPLICATION_UPDATED_ON_BEHALF`，以 `summary.applicationType = "MAINTENANCE"` 區分；**不新增 enum 值**（AC-01(f)）。
+- 代操作建立／修改沿用既有 `AuditAction.APPLICATION_CREATED_ON_BEHALF`／`APPLICATION_UPDATED_ON_BEHALF`，以 `summary.type = "MAINTENANCE"` 區分；**不新增 enum 值**（AC-01(f)）。
 - 稽核寫入與業務寫入**同交易**（AC-30）；`summary` 不含密碼／token／session cookie。
 - 本人自建／自改**不寫稽核**（沿 PHASE-004 AC-86）。
 
@@ -642,8 +642,8 @@ POST /applications/:id/complete
 | AC-27 | integration | `phase6-maintenance-complete.test.ts` | `AC-27 完成僅本人 > an ADMIN completing another user's maintenance draft gets 403 and writes nothing`；`… > the owner completing their own draft succeeds (discriminating control)` | T7 | GREEN（T7 `245d5f8`：route 層嚴格 owner-only（不用 assertOwnershipOrAdmin，M4 mutant 紅）、admin 403 零寫入＋本人成功對照、401/PCR/他人全格） |
 | AC-28 | integration | `phase6-snapshot-immutability.test.ts` | `AC-28 快照不可變 > adding and completing a new trip inside the maintenance period leaves all six snapshot values and totalAmount bit-identical`；`… > GET of a COMPLETED maintenance performs no official-mileage query (spy: DRAFT +1, COMPLETED +0)` | T8 | GREEN（T8 `062c3b7`：真實完成流程 fixture、drift 鑑別（M-C 紅 1029 vs 40）、逐位元字串比對、spy DRAFT+1/COMPLETED+0（M-B 紅）） |
 | AC-29 | integration | `phase6-snapshot-immutability.test.ts` | `AC-29 併發完成 > two concurrent completions resolve to exactly one 200 and one 403, never a double snapshot, never a 500` | T8 | GREEN（T8 `062c3b7`：12 輪真併發恰一成功/一 403、零 500、單快照；503 覆蓋缺口記 AR-2） |
-| AC-30 | integration | `backend/test/integration/phase6-on-behalf.test.ts` | `AC-30 代建立 > POST /admin/users/:userId/applications/maintenance sets ownerId=U, createdById=admin and writes one APPLICATION_CREATED_ON_BEHALF row`；`… > 代修改 writes APPLICATION_UPDATED_ON_BEHALF with before/after summary and no sensitive keys`；`… > audit and business writes share one transaction (real $transaction rollback evidence)`；`… > unknown userId → 404 with zero rows created` | T9 | PENDING |
-| AC-31 | integration | `phase6-on-behalf.test.ts` | `AC-31 管理員不得改已完成 > admin PUT on a COMPLETED maintenance returns 403 請建立修正版 with zero DB writes` | T9 | PENDING |
+| AC-30 | integration | `backend/test/integration/phase6-on-behalf.test.ts` | `AC-30 代建立 > POST /admin/users/:userId/applications/maintenance sets ownerId=U, createdById=admin and writes one APPLICATION_CREATED_ON_BEHALF row`；`… > 代修改 writes APPLICATION_UPDATED_ON_BEHALF with before/after summary and no sensitive keys`；`… > audit and business writes share one transaction (real $transaction rollback evidence)`；`… > unknown userId → 404 with zero rows created` | T9 | GREEN—待 SF-4 裁定註記（T9 `7b8b218`＋T9R：稽核精確（M1/M2/M3/M4/M5/M8 killed）、tx client 釘住（M4b 雙側必紅）、summary 五欄值（M9 必紅）、count===1、真回滾、404 零列；SF-4 停用者不對稱交人類裁定中） |
+| AC-31 | integration | `phase6-on-behalf.test.ts` | `AC-31 管理員不得改已完成 > admin PUT on a COMPLETED maintenance returns 403 請建立修正版 with zero DB writes` | T9 | GREEN（T9 `7b8b218`：admin PUT COMPLETED 403「請建立修正版」＋零寫入；D7(a) 負向 complete 403） |
 | AC-32 | integration | `backend/test/integration/phase6-application-list.test.ts` | `AC-32 綜合列表 > maintenance and travel rows are interleaved in primaryDate DESC, createdAt DESC, id DESC order`；`… > maintenance rows carry type=MAINTENANCE and the correct status`；`… > fields not applicable to maintenance are null (rendered as — by the frontend)` | T10 | PENDING |
 | AC-33 | integration | `phase6-application-list.test.ts` | `AC-33 篩選 > type=MAINTENANCE returns only maintenance rows`；`… > primaryDate equals the current maintenance date and drives the date-range filter (inclusive on both ends)`；`… > a normal user passing another ownerId gets 403 (never a silent downgrade)` | T10 | PENDING |
 | AC-34 | frontend | `frontend/test/MaintenanceApplicationPage.test.tsx` | `保養申請頁 > 表單提供上次／本次保養日期、上次／本次里程表、本次實際保養費用五欄（逐字標籤）`；`… > 僅填部分欄位仍可儲存草稿`；`… > 後端 400 之 fields[] 就地標示於對應欄位` | T11 | PENDING |
@@ -996,7 +996,7 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5 ──┐
 - **PHASE-007（折舊）**：可原樣複製本 Phase 之子表模式（D1(a)）、blocker 兩段式（§9.3）、附件容器擴充（D2(a)）與快照重現性斷言；`DepreciationApplication` 之 `deriveContainerState` 分支同樣須擴充（**PHASE-007 開工 Packet 必引本條**）。年度公務里程同樣呼叫 `sumOfficialMileage`（`dateFrom=該年 1/1`、`dateTo=該年 12/31`），D2(a) 之不對稱處置同樣適用。
 - **PHASE-008（報表）**：保養報表編號前綴 `MNT`；列印版須呈現區間里程／公務里程／比例／實際費用／分攤金額五值＋證明圖片；**比例為顯示值，對帳請以三項來源值重算**（D4(a) 之附帶約束，**PHASE-008 開工 Packet 必引**）；keyword 擴充見 §17.1 #4。
 - **PHASE-009（作廢／修正版）**：保養之 `COMPLETED → VOIDED` 轉換須擴充 `ALLOWED_TRANSITIONS`；作廢之保養**本身**不進入任何統計，但作廢之**差旅**會改變後續保養之分子——**已完成保養之快照仍不得改變**（AC-28），此為刻意設計（歷史金額凍結）。
-- **PHASE-010（稽核檢視）**：代操作保養之 `AuditLog` 以 `summary.applicationType="MAINTENANCE"` 區分。
+- **PHASE-010（稽核檢視）**：代操作保養之 `AuditLog` 以 `summary.type="MAINTENANCE"` 區分。
 - **PHASE-011（清理／效能）**：`HasReferenceQuery` 之實作須納入 `MaintenanceApplication` 之附件引用；索引評估納入 `MaintenanceApplication.currentMaintenanceDate`；infra 表數動態化。
 
 ---
@@ -1005,6 +1005,7 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5 ──┐
 
 | 日期 | 變更 | 依據 |
 |---|---|---|
+| 2026-08-04 | `ACTIVE`（T9 即審 SF-3 更正） | §6.2 與 §19（PHASE-010 前瞻）之 `summary.applicationType` 兩處更正為 `summary.type`——對齊 PHASE-004 既有稽核 summary 鍵名（差旅代操作 `summary.type="TRAVEL"`，admin/routes.ts:500 實作在先）；Spec 原文為撰寫筆誤，非產品決策變更。T9 實作採 `type` 為正確一致性選擇（reviewer 判讀）。 | T9 即審 SF-3；PHASE-004 既有實作；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（T6 即審 SF-2 更正） | §13 授權矩陣第 8 列（保養證明附件讀取）之 PCR 格由「403 PCR」更正為「200」——原列與**已批准之 PHASE-003 D8**（人類 2026-08-01：附件讀取端點不掛 requirePasswordChanged）及現行實作（attachment/routes.ts:164 明文註記）相牴觸；本更正為對齊既有人類批准，非新產品決策。上傳端點（POST /attachments）仍掛 PCR 不變（reviewer 實測）。 | T6 即審 SF-2；PHASE-003 Spec D8 批准原文；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（T1 即審 SF-2(b) 更正） | AC-01(a)/AC-28/§9⑤ 之「六個快照欄位」更正為「五個」——與 §8.2 及已批 D11(a)（不另存 snapshotActualCost）一致；「六」為 DRAFT 撰寫殘留（原含 snapshotActualCost 之草案計數），非產品決策變更。DB 實查 11 欄（1 PK＋5 業務＋5 快照）。 | T1 即審 SF-2(b)；D11(a) 批准原文；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（PRD-SYNC 落地） | §19 三項 PRD 修正已由 PHASE-006-PRD-SYNC 落地（spec-writer Lite 派工）；§19 標題之「本 Task 未編輯 docs/PRD.md」註記自此為歷史敘述。 | PHASE-006-PRD-SYNC Handoff；大總管白名單 |
