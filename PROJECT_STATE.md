@@ -8,6 +8,7 @@ State: ACTIVE
 > - Risk Level：**High**（PRD：完成鎖定/快照/附件權限；金額計算〔分攤＝費用×比例整筆一次四捨五入〕）。
 > - Packet 必引（開工前提清單）：①PHASE-005 結案列——D2(a) null 快照 count/sum 不對稱警示、「不得以一般使用者不知道單價為安全前提」、補測清單 B-12/15/17/19/24/25 ②005a T7 之雙鏈解析與統計引擎現況（期間公務里程複用 PHASE-005 引擎）③INFRA-001 vitest 併跑限制持續有效 ④基準線：後端 1468/前端 180/E2E 23。
 > - 派工模式沿用：subagent 一律背景派工；依序執行；Review 節奏（High 即審/期中/終審）照 §19。
+> - **常設規則（使用者裁定 2026-08-04）：每 Phase 結束，大總管必做 usage 復盤**——彙整全 Phase subagent usage（各 Task 結案列累記），派分析 agent 產出 `docs/retrospective/PHASE-XXX-usage.md`，數據餵入下一 Phase 派工預算校準。自 PHASE-005a 起生效（`5ea21f6`＋`50cd4af`，已 cherry-pick 至本分支），PHASE-006 結案時執行。已同步寫入大總管長期記憶。
 
 > **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
 > - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
