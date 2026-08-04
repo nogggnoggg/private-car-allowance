@@ -55,15 +55,18 @@ import {
   toDto as toAttachmentDto,
 } from "../attachment/lifecycle-service.js";
 import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.js";
-import { AppError } from "../platform/errors.js";
-import { assertApplicationMutable } from "./application-state-machine.js";
+import { AppError, type FieldError } from "../platform/errors.js";
+import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
 import type { Blocker } from "./depreciation-blockers.js";
 import { computeDepreciationBlockers } from "./depreciation-blockers.js";
 import {
   calculateDepreciation,
   isDepreciationCalculationOverCapacity,
 } from "./depreciation-calculation.js";
-import { resolveDepreciationParameters } from "./depreciation-parameters.js";
+import {
+  type ResolvedDepreciationParameters,
+  resolveDepreciationParameters,
+} from "./depreciation-parameters.js";
 import { utcDateOnly } from "./travel-service.js";
 
 // ---------------------------------------------------------------------------
@@ -896,4 +899,313 @@ export async function buildDepreciationApplicationDto(
     duplicateYearNotice,
     computed
   );
+}
+
+// ---------------------------------------------------------------------------
+// completeDepreciationApplication — PHASE-007-T9（AC-27/28/29/30；AC-16/18 之
+// 完成端點 409 段）
+//
+// §9.3「完成與快照寫入」逐字流程，單一 SERIALIZABLE 交易（含重試）：
+//   ① `SELECT ... FOR UPDATE` → `assertTransition(status → COMPLETED)`
+//      → 非 DRAFT → 403（狀態機為單一事實來源，本檔不自寫狀態判定）
+//   ② `attachmentCount` 於 **tx 內 `FOR UPDATE` 之後現算**（AC-24 整合層；
+//      T8 即審 FW-3 逐字：**絕不**沿用交易外 DTO 之 `attachments.length`——
+//      那是 write-skew 缺口：交易外讀到 1 張、交易內該張已被刪除）。
+//      `computeDepreciationBlockers`（第一段，`officialKm` 省略）→ 非空即
+//      400，**不**執行 ③④（§9.3「②與③④之順序不可對調」逐字）。
+//   ③ `sumOfficialMileage(tx, …)` — 同一交易（AC-27），`ownerId` 恆為擁有人。
+//   ④ `resolveDepreciationParameters(tx, …)` — **於交易內重新解析**
+//      （T7 即審 FW-2：不得沿用 builder 於交易外之結果；三個版本值供快照）。
+//   ⑤ 第二段 blocker：`PARAMETER_NOT_AVAILABLE` → **409**（§7.5／§16 D5(a)）；
+//      其餘（`AMOUNT_OUT_OF_RANGE`）→ **400**，兩者皆於**任何寫入之前**拒絕。
+//   ⑥a `DepreciationApplication` 8 個快照欄（顯式定精度）
+//   ⑥b `Application.status/totalAmount/completedAt`（最後一筆寫入）
+//
+// 授權（§16 D9(a)：**僅擁有人本人**）不在本函式判定——`routes.ts` 於呼叫前已
+// 完成嚴格 `actor.id === ownerId` 判定（與 `completeTravelApplication`／
+// `completeMaintenanceApplication` 同型分工；本函式沒有 owner/admin 之分，
+// 故不可能因本檔改動而放行管理員代完成）。
+//
+// ── 容量判定之單一決策點（T7 即審 FW-4） ──────────────────────────────────
+// 本流程**不**另行呼叫 `isDepreciationCalculationOverCapacity`：容量是否超出
+// 的判定**只發生一次**，即 `computeDepreciationBlockers` 第二段內部（T3 已將
+// 該 predicate 收為其唯一呼叫點）。第二段回空陣列 ⇒ 容量已通過 ⇒ 才建構供寫
+// 入用的**唯一** `calculateDepreciation` 結果物件 `result`，`snapshotRawAmount`
+// 與 `totalAmount` 一律取自該同一物件（`result.amount` 直接寫入，**禁止**二次
+// 取整、**禁止**由 4dp `rawAmount` 反推——AC-28 逐字）。純函式對同一組
+// `officialKm`／`perKmUnitPrice` 參考恆為同值，故「判定所依據的金額」與「寫入
+// 的金額」不可能分歧（`depreciation-blockers.ts` 為本 Task 之 Forbidden 檔，
+// 無法改為旗標注入式而省去其內部那次呼叫）。
+//
+// ── 4dp 量化不會造成 Postgres 22003（T2 即審 FW-6 之窄窗） ────────────────
+// `snapshotRawAmount` 寫入前以 `formatRawAmount` 顯式量化為 4dp，理論上
+// `rawAmount ∈ [1e10−5e-5, 1e10)` 會被量化為恰好 `1e10` 而溢出
+// `Decimal(14,4)`。該窗**不可達**：同一 `result` 之 `amount ＝ round(rawAmount)`
+// 於此窗恆為 `10000000000`，遠超 `int4`（2147483647），故容量判定必先以
+// `AMOUNT_OUT_OF_RANGE` 於寫入前拒絕。此性質由整合測試以窄窗案例
+// （officialKm 4199999.79 × perKmUnitPrice 2380.9525 ＝ 9999999999.999975）
+// 實證為 400 而非 500。
+// ---------------------------------------------------------------------------
+
+export interface CompleteDepreciationApplicationOptions {
+  /**
+   * TEST-ONLY 失敗切點（AC-30 原子性鑑別力測試需要）：於快照寫入（⑥a）之後、
+   * 狀態轉換（⑥b）之前呼叫。預設 no-op；生產路徑（`routes.ts`）從不傳入此
+   * 選項——與 `completeTravelApplication`／`completeMaintenanceApplication` 之
+   * `__testOnlyFailAfterSnapshotWrite` 同型。
+   */
+  __testOnlyFailAfterSnapshotWrite?: () => void;
+}
+
+const COMPLETE_DEPRECIATION_MAX_RETRIES = 6;
+
+/**
+ * 完成中該申請被刪除（`P2025`）之偵測（AC-30 逐字：「`P2025`（完成中被刪）
+ * 不得以 500 呈現」）。形狀沿 `admin/routes.ts` 之既有 `isRecordNotFound`。
+ */
+function isRecordNotFound(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025";
+}
+
+/**
+ * §7.5 完成端點之 400 拒絕形狀：`VALIDATION_ERROR` ＋ `fields[]`（僅具欄位
+ * 路徑者）＋ `details.blockers[]`（**永遠是完整清單**），沿 PHASE-004 D14(i)／
+ * PHASE-006 `throwMaintenanceBlockersError` 之既有形狀。
+ */
+function throwDepreciationBlockersError(blockers: Blocker[]): never {
+  const fields: FieldError[] = [];
+  for (const blocker of blockers) {
+    if (typeof blocker.field === "string") {
+      fields.push({ field: blocker.field, reason: blocker.message });
+    }
+  }
+  throw new AppError(
+    "VALIDATION_ERROR",
+    400,
+    "尚未符合完成條件，請檢查標示項目後再試一次。",
+    fields,
+    { blockers }
+  );
+}
+
+/**
+ * §7.5／§16 D5(a)：缺參數於**完成端點**為 409 `PARAMETER_NOT_AVAILABLE` ＋
+ * `details.missing` ＋ `details.applicationYear`（沿差旅既有形狀）。
+ *
+ * 兩來源之**訊息逐字互異**（AC-16(a)／AC-18；T3 即審 FW-6）：
+ *   - 該年 1/1 查無有效版本  → `missing = ["DEPRECIATION"]`
+ *     → 管理員該做的事是「**建立**折舊參數」
+ *   - 版本存在但 `deriveDepreciation` 回 `ok:false`
+ *     → `missing = ["DEPRECIATION_DERIVATION_FAILED"]`
+ *     → 管理員該做的事是「**檢查既有版本的三個設定值**」
+ * 兩者於草稿／預覽面被 §7.5 折為同一 blocker code（`PARAMETER_NOT_AVAILABLE`），
+ * 但本層必須保留區辨——區辨依據為 `resolved.derivationFailed`（**不是**在本檔
+ * 重新判斷版本是否存在）。
+ *
+ * `missing` 一律以**新陣列**組裝（T7 即審 FW-1）：絕不把
+ * `resolveDepreciationParameters` 之回傳陣列直接放進 `details`，亦絕不對其
+ * `push`——回傳值之壽命超出本次呼叫時，變異會污染其他呼叫端。
+ */
+function throwDepreciationParameterNotAvailable(
+  resolved: ResolvedDepreciationParameters,
+  applicationYear: number
+): never {
+  const missing = resolved.derivationFailed ? ["DEPRECIATION_DERIVATION_FAILED"] : ["DEPRECIATION"];
+  const message = resolved.derivationFailed
+    ? "該年度之折舊參數設定值無法推導每公里單價，請聯絡管理員檢查折舊參數設定。"
+    : "該年度尚無有效折舊參數，請聯絡管理員設定。";
+  throw new AppError("PARAMETER_NOT_AVAILABLE", 409, message, undefined, {
+    missing,
+    applicationYear,
+  });
+}
+
+/**
+ * 完成一筆折舊草稿：狀態機守門 → 完成度（兩段式，§9.3）→ 年度公務里程（同一
+ * 交易）→ 參數選版與單價（同一交易）→ 計算與容量守門 → 快照寫入 → 狀態轉換，
+ * 全部落在**單一 `SERIALIZABLE` 交易**內（AC-30：任一步驟失敗即全部回滾，
+ * 含同一次嘗試中已寫入的快照）。
+ *
+ * 併發（AC-33 之實作面）：`SERIALIZABLE` ＋ 衝突重試，與
+ * `updateDepreciationDraft`／`completeMaintenanceApplication` 同型。同一草稿之
+ * 兩個完成請求：敗方之重試以新鮮快照重讀到 `status=COMPLETED`（勝方所寫），
+ * `assertTransition` 拋 403。與 `DELETE /attachments/:id` 之競態則為既有的
+ * write-skew 形狀——Postgres SSI 偵測到環即中止一方，中止方重試。
+ */
+export async function completeDepreciationApplication(
+  prisma: PrismaClient,
+  id: string,
+  options: CompleteDepreciationApplicationOptions = {}
+): Promise<DepreciationApplicationRecord> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= COMPLETE_DEPRECIATION_MAX_RETRIES; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // Table name quoted for Postgres case-sensitivity — 與
+          // `updateDepreciationDraft`／`completeMaintenanceApplication` 同一
+          // 鎖列模式。
+          await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
+
+          const existing = await tx.application.findUniqueOrThrow({
+            where: { id },
+            select: {
+              status: true,
+              ownerId: true,
+              depreciation: { select: { applicationYear: true } },
+            },
+          });
+
+          // ①：狀態機守門（單一事實來源）。非 DRAFT（已完成，或理論不可達之
+          // VOIDED）→ 403 FORBIDDEN。
+          assertTransition(existing.status, "COMPLETED");
+
+          const applicationYear = existing.depreciation?.applicationYear ?? null;
+
+          // ②：附件計數於 `FOR UPDATE` 鎖列**之後**、同一 `tx` 內現算
+          //     （T8 即審 FW-3；AC-24 整合層）。
+          const attachmentCount = await tx.attachment.count({
+            where: { refType: "DEPRECIATION", refId: id, status: "LINKED" },
+          });
+
+          // ②（第一段，§9.3）：`officialKm` 省略 ＝「尚未查詢」，完全抑制第
+          // 3、4 碼。非空即拒絕，**不**執行 ③④。年度為 `null`／非整數一律在
+          // 此以 400 `YEAR_REQUIRED` 拒絕（T7 即審 FW-3：**絕不**映射為 409
+          // ——沒有年度就沒有「該年度無參數」之語意）。
+          const structuralBlockers = computeDepreciationBlockers({
+            applicationYear,
+            attachmentCount,
+          });
+          if (structuralBlockers.length > 0) {
+            throwDepreciationBlockersError(structuralBlockers);
+          }
+          if (applicationYear === null || !Number.isInteger(applicationYear)) {
+            // 不可達：第一段之 `YEAR_REQUIRED` 已涵蓋此條件（判準同源於
+            // `computeDepreciationBlockers`）。此處僅為型別窄化，不含第二份判定。
+            throw new AppError("INTERNAL_ERROR", 500, "計算結果異常，請聯絡管理員");
+          }
+
+          // ③：年度公務里程——引擎唯一呼叫點，同一交易；`ownerId` 恆為
+          //     `Application.ownerId`（絕不為操作者）。
+          const { dateFrom, dateTo } = depreciationYearRange(applicationYear);
+          const { totalKm } = await sumOfficialMileage(tx, {
+            ownerId: existing.ownerId,
+            dateFrom,
+            dateTo,
+          });
+
+          // ④：選版與單價——交易內重新解析（T7 即審 FW-2）。
+          const resolved = await resolveDepreciationParameters(tx, applicationYear);
+
+          // ⑤（第二段，§9.3）：`officialKm`／`perKmUnitPrice` 同給。容量判定
+          //     於此函式內部發生**恰一次**（見檔頭「單一決策點」說明）。
+          const secondPassBlockers = computeDepreciationBlockers({
+            applicationYear,
+            attachmentCount,
+            officialKm: totalKm,
+            perKmUnitPrice: resolved.perKmUnitPrice,
+          });
+          if (secondPassBlockers.length > 0) {
+            // T7 即審 FW-3：完成端點之錯誤映射**不得**複用 `computed`／草稿之
+            // `blockingCodes`——一律由本次交易內重算之 blocker 決定：
+            // `PARAMETER_NOT_AVAILABLE` → 409（§16 D5(a)），其餘 → 400。
+            if (secondPassBlockers.some((b) => b.code === "PARAMETER_NOT_AVAILABLE")) {
+              throwDepreciationParameterNotAvailable(resolved, applicationYear);
+            }
+            throwDepreciationBlockersError(secondPassBlockers);
+          }
+
+          const { perKmUnitPrice, version } = resolved;
+          if (perKmUnitPrice === null || version === null) {
+            // 不可達：第二段為空 ⇒ 第 3 碼未產生 ⇒ 單價與版本必非 null。
+            throw new AppError("INTERNAL_ERROR", 500, "計算結果異常，請聯絡管理員");
+          }
+
+          // 供寫入之**唯一** `calculateDepreciation` 結果物件。
+          const result = calculateDepreciation({ officialKm: totalKm, perKmUnitPrice });
+          if (result.rawAmount === null || result.amount === null) {
+            // 不可達：非有限值會使容量 predicate 回 `true` → 第 4 碼 → 上方
+            // 已於寫入前拒絕。
+            throw new AppError("INTERNAL_ERROR", 500, "計算結果異常，請聯絡管理員");
+          }
+
+          // ⑥a：8 個快照欄，**顯式定精度**（AC-28 逐字：`toFixed(scale)` 後以
+          //      字串建構 `Decimal`，防裁尾零與 Postgres 靜默第二次取整）。
+          //      四個 `Decimal` 欄之 scale 逐一對應 §8.2 之 DDL：
+          //        snapshotVehiclePrice   Decimal(12,2)
+          //        snapshotPerKmUnitPrice Decimal(14,4)
+          //        snapshotOfficialKm     Decimal(12,2)
+          //        snapshotRawAmount      Decimal(14,4)
+          //      三個來源值天然即為該 scale（參數表 2dp／引擎 4dp／里程和 2dp），
+          //      故量化為無損；`snapshotRawAmount` 則必然發生一次量化（2dp×4dp
+          //      最多 6dp），一律走既有 `formatRawAmount`（顯式 `ROUND_HALF_UP`，
+          //      與 `computed.rawAmount` 之呈現同一份實作，勿寫第二份）。
+          const calculatedAt = new Date();
+          await tx.depreciationApplication.update({
+            where: { applicationId: id },
+            data: {
+              snapshotVehiclePrice: new Prisma.Decimal(version.vehiclePrice.toFixed(2)),
+              snapshotUsefulLifeYears: version.usefulLifeYears,
+              snapshotEstimatedAnnualKm: version.estimatedAnnualKm,
+              snapshotPerKmUnitPrice: new Prisma.Decimal(perKmUnitPrice.toFixed(4)),
+              snapshotOfficialKm: new Prisma.Decimal(result.officialKm.toFixed(2)),
+              snapshotRawAmount: new Prisma.Decimal(formatRawAmount(result.rawAmount)),
+              calculatedAt,
+              depreciationParameterVersionId: version.id,
+            },
+          });
+
+          // TEST-ONLY 注入點——見 `CompleteDepreciationApplicationOptions`。
+          // 上方寫入的快照必須與下方狀態轉換一同回滾。
+          options.__testOnlyFailAfterSnapshotWrite?.();
+
+          // ⑥b：狀態轉換 —— 最後一筆寫入。`totalAmount` 直接取
+          //      `result.amount`（AC-28：不得二次取整、不得由 4dp
+          //      `snapshotRawAmount` 反推）。
+          await tx.application.update({
+            where: { id },
+            data: {
+              status: "COMPLETED",
+              totalAmount: result.amount,
+              completedAt: calculatedAt,
+            },
+          });
+
+          return await tx.application.findUniqueOrThrow({
+            where: { id },
+            include: depreciationApplicationInclude,
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (err) {
+      lastError = err;
+
+      // 業務錯誤（403/400/409/…）與測試注入之錯誤一律立即上拋，永不重試。
+      if (err instanceof AppError) {
+        throw err;
+      }
+
+      // AC-30：完成中該申請被刪除 → 404，**不得**以 500 呈現。
+      if (isRecordNotFound(err)) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      if (!isRetryableTransactionConflict(err)) {
+        throw err;
+      }
+
+      if (attempt >= COMPLETE_DEPRECIATION_MAX_RETRIES) {
+        throw new AppError(
+          "SERVICE_UNAVAILABLE",
+          503,
+          "系統忙碌，請稍後再試（完成申請時發生資料庫並發衝突，已重試多次仍未成功）"
+        );
+      }
+      await sleep(retryBackoffMs(attempt));
+    }
+  }
+
+  // Unreachable (loop always returns or throws) — satisfies TypeScript control-flow analysis.
+  throw lastError;
 }

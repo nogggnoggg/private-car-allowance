@@ -781,9 +781,13 @@ describeWithDb("PHASE-007-T7 — 折舊參數選版 ＋ 單價套用 ＋ compute
 
     it("單一組裝點：routes.ts 之折舊三端點一律經 buildDepreciationApplicationDto，且不自行 import 計算／blocker 純函式", () => {
       const source = fs.readFileSync(ROUTES_SRC_PATH, "utf8");
-      // POST／GET／PUT 三處呼叫（`await buildDepreciationApplicationDto(...)`）。
+      // POST／GET／PUT／complete 四處呼叫（`await buildDepreciationApplicationDto(...)`）。
+      // 第 4 處為 PHASE-007-T9 之完成端點分派分支（generic
+      // `POST /applications/:id/complete` 之 DEPRECIATION 分支）——它同樣經本
+      // builder 組裝 DTO，正是本守門所欲保護之性質。精確計數（非 ≥）刻意保留：
+      // 第 5 個未經編排層的呼叫仍必紅。
       const builderCalls = source.match(/await buildDepreciationApplicationDto\(/g) ?? [];
-      expect(builderCalls.length).toBe(3);
+      expect(builderCalls.length).toBe(4);
       // routes.ts 不得自行 import 金額／blocker／參數純函式（否則即出現第二個
       // 組裝點，`computed` 與 `completionBlockers` 可各自漂移）。
       const importBlock = source.slice(0, source.indexOf("export const applicationsPlugin"));

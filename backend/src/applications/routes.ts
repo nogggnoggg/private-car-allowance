@@ -64,6 +64,7 @@ import type { CreateDepreciationDraftInput } from "./depreciation-service.js";
 import {
   type UpdateDepreciationDraftPatch,
   buildDepreciationApplicationDto,
+  completeDepreciationApplication,
   computeDepreciationComputed,
   createDepreciationDraft,
   getDepreciationApplication,
@@ -1137,6 +1138,31 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
         const completed = await completeMaintenanceApplication(prisma, id);
         const dto = await buildMaintenanceApplicationDto(prisma, completed);
+        return reply.status(200).send({ application: dto });
+      }
+
+      // PHASE-007-T9（§9.3、AC-29／§16 D9(a)）：折舊分支——與 MAINTENANCE
+      // 分支逐字同型，前端與 E2E 仍只有一套完成端點。型別探測本身不構成授權
+      // 判定（本分支自行判定）；`getDepreciationApplication` 對不存在、非
+      // DEPRECIATION 型別、或子列缺席之 id 一律回 `null` → 404。
+      if (typeProbe?.type === "DEPRECIATION") {
+        const existing = await getDepreciationApplication(prisma, id);
+        if (!existing) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+
+        // §16 D9(a)（AC-29）：完成僅能由申請擁有人本人執行——刻意**不**呼叫
+        // `assertOwnershipOrAdmin`（會放行 ADMIN），改用嚴格的 owner-only
+        // 判定；ADMIN 若非擁有人，同一般他人一樣得 403。管理員代操作端點
+        // （T11）亦不提供任何代完成路徑。
+        if (request.currentUser.id !== existing.ownerId) {
+          throw new AppError("FORBIDDEN", 403, "無權存取此資源");
+        }
+
+        const completed = await completeDepreciationApplication(prisma, id);
+        // `buildDepreciationApplicationDto` 對非 DRAFT 一律 `computed: null`
+        // （§7.2；T7 即審 FW-7：完成回應不得夾帶 `computed`）。
+        const dto = await buildDepreciationApplicationDto(prisma, completed);
         return reply.status(200).send({ application: dto });
       }
 
