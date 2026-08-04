@@ -64,6 +64,7 @@ import type { CreateDepreciationDraftInput } from "./depreciation-service.js";
 import {
   type UpdateDepreciationDraftPatch,
   buildDepreciationApplicationDto,
+  computeDepreciationComputed,
   createDepreciationDraft,
   getDepreciationApplication,
   updateDepreciationDraft,
@@ -1052,6 +1053,48 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       const updated = await updateDepreciationDraft(prisma, id, patch);
       const dto = await buildDepreciationApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/depreciation/preview (PHASE-007-T6, AC-09~12, §16 D13(a))
+  //
+  // stateless（§9.2 零寫入不變式）：本路由只呼叫唯讀聚合
+  // （`computeDepreciationComputed` → `sumOfficialMileage`），從未呼叫任何
+  // `.create`/`.update`/`.delete`——與 `/applications/travel/preview`
+  // （PHASE-004-T7）／`/applications/maintenance/preview`（PHASE-006-T5）同型。
+  //
+  // 授權（§6.1 授權矩陣第 5 列）：先 `resolveOwnerId`（一般使用者帶他人
+  // `ownerId` → 403 fail-closed，**不靜默降級為自己**；管理員可指定任一
+  // `ownerId`），再做欄位格式驗證——判定順序沿 §6.1 明文「授權先於格式驗
+  // 證」（PHASE-005 B-26），複用既有 `resolveOwnerId`（不重寫判定）。
+  //
+  // 年度里程之歸屬人恆為此處解析出的 `ownerId`（stateless 預覽無持久化資源，
+  // 故無 `Application.ownerId` 可載入；`resolveOwnerId` 即本路徑之唯一權威，
+  // 與既有 `GET /statistics/mileage` 之揭露面完全相同，非授權擴張——§6.3）。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/depreciation/preview",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      const rawOwnerId = typeof body.ownerId === "string" ? body.ownerId : undefined;
+      const ownerId = resolveOwnerId(request.currentUser, rawOwnerId);
+
+      const { errors: fieldErrors, fields } = parseDepreciationFieldsInput(body);
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const preview = await computeDepreciationComputed(prisma, {
+        ownerId,
+        // key 缺席與顯式 `null` 同義：尚未選擇年度（§9.2 → YEAR_REQUIRED，不查 DB）。
+        applicationYear: fields.applicationYear ?? null,
+      });
+
+      return reply.status(200).send({ preview });
     }
   );
 

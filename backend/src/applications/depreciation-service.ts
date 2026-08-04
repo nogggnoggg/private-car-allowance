@@ -20,7 +20,10 @@
  *
  * ── 本 Task 明示留白（不提前實作半套，Packet FW-3 認知） ────────────────
  *   - `computed`（`DepreciationComputedDto`）：其內容需要年度公務里程（T6）
- *     與參數選版／單價（T7）；本檔對外恆回 `null`。T7 落地時必須以
+ *     與參數選版／單價（T7）。**PHASE-007-T6 已落地其年度里程部分**
+ *     （`computeDepreciationComputed`，供 `POST /applications/depreciation/
+ *     preview` 使用）；申請 DTO 之 `computed` 欄位仍恆回 `null`，其填充屬
+ *     T7（Spec §15 T7 列「預覽端點 ＋ `computed`」）。T7 落地時必須以
  *     `pure.calculable && !overCapacity` 合成 `calculable`，**不得**由
  *     `completionBlockers.length === 0` 反推（T3 即審 FW-3：附件缺漏會抑制
  *     第 3/4 碼，空清單 ≠ 可計算）。
@@ -50,7 +53,7 @@ import {
   linkAttachmentTx,
   toDto as toAttachmentDto,
 } from "../attachment/lifecycle-service.js";
-import type { PrismaLike } from "../mileage/mileage-engine.js";
+import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.js";
 import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
 import type { Blocker } from "./depreciation-blockers.js";
@@ -452,6 +455,106 @@ export interface DepreciationComputedDto {
   rawAmount: string | null;
   amount: number | null;
   blockingCodes: string[];
+}
+
+// ---------------------------------------------------------------------------
+// 年度公務里程接線（PHASE-007-T6；AC-09~12、§7.3、§9.2）
+//
+// 引擎複用（AC-09）：年度里程一律經 `sumOfficialMileage`（PHASE-005 引擎，
+// 全案唯一實作）取得——本檔**不得**自行複製任何加總／過濾邏輯，
+// `mileage-engine.ts`／`mileage-range.ts` 於本 Phase 零 diff。
+// ---------------------------------------------------------------------------
+
+/**
+ * 由申請年度推導引擎查詢區間（§7.3）：`[YYYY-01-01, YYYY-12-31]`，**起訖含
+ * 當日**（含當日語意本身由 `buildOfficialMileageWhere` 之 `gte`/`lte` 保證，
+ * 本函式只負責兩個端點日期）。
+ *
+ * UTC 建構（006 T1 AR-6③／T3 AR-3 之 `utcDateOnly` UTC 慣例）：**不得**以本地
+ * 時區建構，否則東八區會使 01-01 之查詢下界落到前一年 12-31T16:00Z。
+ */
+export function depreciationYearRange(applicationYear: number): {
+  dateFrom: Date;
+  dateTo: Date;
+} {
+  return {
+    dateFrom: new Date(Date.UTC(applicationYear, 0, 1)),
+    dateTo: new Date(Date.UTC(applicationYear, 11, 31)),
+  };
+}
+
+export interface ComputeDepreciationComputedInput {
+  /**
+   * 年度里程之歸屬人。**恆為 `Application.ownerId`**（代操作時亦然），由呼叫端
+   * （`routes.ts` 之 `resolveOwnerId`／DB 載入之 `ownerId`）決定——本函式從不
+   * 知道「誰在呼叫」，故不可能誤用操作者身分（AC-14 之結構性保證）。
+   */
+  ownerId: string;
+  /** 申請年度；`null` ＝ 尚未選擇（§9.2：不查 DB）。值域驗證屬 `routes.ts`。 */
+  applicationYear: number | null;
+}
+
+/**
+ * 計算折舊補貼預覽之 `computed`（§7.2 `DepreciationComputedDto`）。
+ *
+ * 本 Task（T6）落地其**年度公務里程**部分（§9.2 前半，AC-09~12）：
+ *   `applicationYear == null` → `calculable=false` ＋ `[YEAR_REQUIRED]`，
+ *     **不查 DB**（§9.2 逐字）；
+ *   否則 → `sumOfficialMileage(db, { ownerId, YYYY-01-01, YYYY-12-31 })`
+ *     （唯讀聚合，零寫入）→ `officialKm`（2 位小數字串）與
+ *     `officialApplicationCount`（AC-13：後者僅供顯示，**絕不**進入金額計算）。
+ *
+ * ── T7 之接線縫（明示留白，不提前實作半套） ──────────────────────────────
+ * §9.2 後半（`findEffectiveVersion` 選版 → `deriveDepreciation` → 單價 →
+ * `calculateDepreciation` → 容量判定）屬 **T7**。在 T7 落地之前，本函式**沒有
+ * 任何取得每公里單價的程式路徑**，故 `perKmUnitPrice` 恆為不可得——即 §7.5
+ * 第 3 碼之觸發條件「該年度尚無有效折舊參數」於此 commit 為**恆真**，據此回
+ * `PARAMETER_NOT_AVAILABLE` 並保持 §7.5 不變式「`calculable=false ⇒
+ * blockingCodes 至少一項」成立。T7 只需將下方標示之常數 `null` 換成真實選版
+ * 結果，並依 T3 即審 FW-3 以 `pure.calculable && !overCapacity` 合成
+ * `calculable`（**不得**由 `blockingCodes.length` 反推）。
+ *
+ * 唯讀：本函式只呼叫聚合查詢，無任何 `.create`／`.update`／`.delete`
+ * （§9.2 零寫入不變式）。
+ */
+export async function computeDepreciationComputed(
+  db: PrismaLike,
+  input: ComputeDepreciationComputedInput
+): Promise<DepreciationComputedDto> {
+  const { ownerId, applicationYear } = input;
+
+  if (applicationYear === null) {
+    return {
+      calculable: false,
+      officialKm: null,
+      officialApplicationCount: null,
+      perKmUnitPrice: null,
+      rawAmount: null,
+      amount: null,
+      blockingCodes: ["YEAR_REQUIRED"],
+    };
+  }
+
+  const { dateFrom, dateTo } = depreciationYearRange(applicationYear);
+  // AC-09/14：唯一呼叫點；`ownerId` 逐次由呼叫端傳入之擁有人，無任何預設值。
+  const { totalKm, applicationCount } = await sumOfficialMileage(db, {
+    ownerId,
+    dateFrom,
+    dateTo,
+  });
+
+  // T7 接線縫：參數選版與單價推導尚未落地 ⇒ 單價恆不可得（見上方文件註解）。
+  const perKmUnitPrice: string | null = null;
+
+  return {
+    calculable: false,
+    officialKm: totalKm.toFixed(2),
+    officialApplicationCount: applicationCount,
+    perKmUnitPrice,
+    rawAmount: null,
+    amount: null,
+    blockingCodes: ["PARAMETER_NOT_AVAILABLE"],
+  };
 }
 
 /**
