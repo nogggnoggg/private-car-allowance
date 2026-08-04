@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `ACTIVE`（Spec Gate 通過：人類 leonchih 2026-08-04，D1~D12 全數照推薦批准（含 D11 追認）；**T1~T9 共 9 項 High 之事前批准已於本 Gate 一併取得**。見 §18 修訂紀錄） |
+| **Spec 狀態** | `COMPLETED`（PR #14 經人類批准以 Merge 合併：`9bfeb8e`，2026-08-04。Gate 通過、41/41 AC GREEN、Review 清零（含 SF-4 裁定 (a) T9R2 落地）。移交：D9(a) keyword 限制→PHASE-008；rawAmount 4dp 外觀矛盾→PHASE-008 對帳說明；AR-1 代修改停用者草稿（差旅同型既有）→PHASE-011 候選；§13 DOC-SYNC 待辦。見 §18） |
 | **Phase ID** | PHASE-006 |
 | **Task ID（本文件產出）** | PHASE-006-SPEC |
 | **Base Commit** | `f1a2909`；工作 branch `phase-006`（自 main `9fa0913` 切出） |

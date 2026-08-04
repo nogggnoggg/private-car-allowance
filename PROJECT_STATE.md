@@ -2,6 +2,12 @@
 
 State: ACTIVE
 
+> **PHASE-006：DONE（2026-08-04）**——PR #14 經人類批准以 Merge 合併（`9bfeb8e`），Spec 轉 COMPLETED。基準線終值：後端 **1801/0/0**、前端 **206/0/0**、E2E **30/30**。41/41 AC GREEN、終審＋十輪複審清零、Gate 通過（人類走查一筆保養）、SF-4 裁定 (a) 已落地（T9R2）。
+> - **下一站：PHASE-007（年度折舊補貼）**——等人類明示開工。開工 Packet 必引：PHASE-005 結案列補測遺項、005a/006 快照與容量守門慣例（D4(a) 同型）、006 附件三端點 on-behalf 一致模式、AR-1（代修改停用者草稿——差旅/保養同型）PHASE-011 候選。
+> - **PHASE-008 開工必引（006 移交）**：D9(a) keyword 不匹配保養列；snapshot.rawAmount 4dp 與最終金額 [x.49995,x.5) 窗口外觀矛盾——對帳說明必以三來源值重算（已向人類揭露於 PR 說明）。
+> - **結案義務**：usage 復盤報告（常設規則）派工中；§13 DOC-SYNC（ARCHITECTURE/DATA_FLOW）待辦——併 PHASE-007 開工前或獨立 Lite。
+> - 環境註記：Gate 容器 @ PHASE-006；ASCII worktree 建置慣例沿用；dev 服務（3000/5173）可停。
+
 > **PHASE-006（保養費用分攤）開工記錄（2026-08-04，使用者指令「開工」）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、格式化、單行修改）一律派 implementer。
 > - branch：`phase-006`（自 main @ `9fa0913` 切出）。流程：spec-writer 產 Phase Spec（DRAFT）→ 大總管驗收 → **人類 Spec Gate（含 T5/T6/T7 High 事前批准）** → implementer TDD → reviewer → Mock Gate → 整合 Gate → Draft PR + CI → 人類合併批准。
