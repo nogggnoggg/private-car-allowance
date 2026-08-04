@@ -32,9 +32,13 @@
  * 亦由本次擴充填入。授權（D7(a)：僅本人，不使用 `assertOwnershipOrAdmin`）
  * 由 `routes.ts` 之路由層判定，本函式本身不做任何授權檢查（與
  * `completeTravelApplication` 同型分工）。
+ * T9 範圍（本次擴充，AC-30/31）：`createMaintenanceDraft`／`updateMaintenanceDraft`
+ * 新增 OPTIONAL `onCreated`／`onUpdated` 代操作稽核 hook 參數，逐字比照
+ * `travel-service.ts` 之 `OnTravelDraftCreated`／`OnTravelDraftUpdated`／
+ * `TravelDraftUpdateAuditContext` 既有模式（同一交易內呼叫、before 為交易內
+ * 新鮮讀取、呼叫端——`admin/routes.ts`／`applications/routes.ts`——自行判斷
+ * 是否建構 hook，本檔本身不知道「誰在呼叫」）。
  * 仍**不含**：
- *   - 代操作稽核 hook（T9）——本檔不提供 `onCreated`/`onUpdated` 參數
- *     （與 `travel-service.ts` 不同）；T9 依 Files Allowed 清單將擴充本檔。
  *   - 快照不可變之 spy 零重查證明與後端權威夾帶矩陣、併發恰一成功之正式
  *     斷言（T8，`phase6-snapshot-immutability.test.ts`）——本 Task 只需
  *     完成流程本身之交易切點回滾實證（見下方
@@ -105,6 +109,43 @@ function formatDateOrNull(value: Date | null): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// PHASE-006-T9 audit hooks — AC-30/31
+//
+// Same shape/discipline as `travel-service.ts`'s `OnTravelDraftCreated`/
+// `OnTravelDraftUpdated` (PHASE-004-T12 precedent, see that file's header
+// "PHASE-004-T12 audit hooks" section for the full rationale — not repeated
+// here). Both hooks run INSIDE the same transaction that writes the primary
+// Application/MaintenanceApplication rows; callers (`admin/routes.ts`,
+// `applications/routes.ts`) decide WHETHER to pass a hook at all based on
+// `actorId !== ownerId` (C3 boundary) — this file has no notion of "who is
+// calling".
+// ---------------------------------------------------------------------------
+
+export type OnMaintenanceDraftCreated = (
+  tx: Prisma.TransactionClient,
+  application: MaintenanceApplicationRecord
+) => Promise<void>;
+
+/** Before-state snapshot passed to `OnMaintenanceDraftUpdated`, read fresh inside the same transaction attempt (never a stale pre-transaction read — mirrors `updateTravelDraft`'s existing SERIALIZABLE re-read discipline). */
+export interface MaintenanceDraftUpdateAuditContext {
+  ownerId: string;
+  ownerLoginName: string;
+  before: {
+    lastMaintenanceDate: Date | null;
+    currentMaintenanceDate: Date | null;
+    lastOdometerKm: Prisma.Decimal | null;
+    currentOdometerKm: Prisma.Decimal | null;
+    actualCost: Prisma.Decimal | null;
+  };
+}
+
+export type OnMaintenanceDraftUpdated = (
+  tx: Prisma.TransactionClient,
+  context: MaintenanceDraftUpdateAuditContext,
+  application: MaintenanceApplicationRecord
+) => Promise<void>;
+
+// ---------------------------------------------------------------------------
 // createMaintenanceDraft (AC-02)
 // ---------------------------------------------------------------------------
 
@@ -126,10 +167,17 @@ export interface CreateMaintenanceDraftInput {
  * owner 恆為呼叫者提供（自建＝自己；T9 代建立＝指定使用者），從不讀取
  * request body 的任何 ownerId/createdById（§6.2 資料隔離不變式 1，同
  * `createTravelDraft` 既有紀律）。
+ *
+ * PHASE-006-T9（AC-30/83 同型原子性）: wrapped in `prisma.$transaction` so the
+ * OPTIONAL `onCreated` audit hook runs in the SAME transaction as the insert
+ * — a hook failure rolls back the whole insert. `onCreated` defaults to a
+ * no-op when omitted (self-service `POST /applications/maintenance` never
+ * passes one — self create/update is never audited, same as travel).
  */
 export async function createMaintenanceDraft(
   prisma: PrismaClient,
-  input: CreateMaintenanceDraftInput
+  input: CreateMaintenanceDraftInput,
+  onCreated?: OnMaintenanceDraftCreated
 ): Promise<MaintenanceApplicationRecord> {
   const currentMaintenanceDate = input.currentMaintenanceDate
     ? utcDateOnly(input.currentMaintenanceDate)
@@ -139,24 +187,32 @@ export async function createMaintenanceDraft(
     : null;
   const primaryDate = derivePrimaryDate(currentMaintenanceDate, new Date());
 
-  return prisma.application.create({
-    data: {
-      type: "MAINTENANCE",
-      status: "DRAFT",
-      ownerId: input.ownerId,
-      createdById: input.createdById,
-      primaryDate,
-      maintenance: {
-        create: {
-          lastMaintenanceDate,
-          currentMaintenanceDate,
-          lastOdometerKm: input.lastOdometerKm ?? null,
-          currentOdometerKm: input.currentOdometerKm ?? null,
-          actualCost: input.actualCost ?? null,
+  return prisma.$transaction(async (tx) => {
+    const application = await tx.application.create({
+      data: {
+        type: "MAINTENANCE",
+        status: "DRAFT",
+        ownerId: input.ownerId,
+        createdById: input.createdById,
+        primaryDate,
+        maintenance: {
+          create: {
+            lastMaintenanceDate,
+            currentMaintenanceDate,
+            lastOdometerKm: input.lastOdometerKm ?? null,
+            currentOdometerKm: input.currentOdometerKm ?? null,
+            actualCost: input.actualCost ?? null,
+          },
         },
       },
-    },
-    include: maintenanceApplicationInclude,
+      include: maintenanceApplicationInclude,
+    });
+
+    if (onCreated) {
+      await onCreated(tx, application);
+    }
+
+    return application;
   });
 }
 
@@ -338,7 +394,8 @@ function retryBackoffMs(attempt: number): number {
 export async function updateMaintenanceDraft(
   prisma: PrismaClient,
   id: string,
-  patch: UpdateMaintenanceDraftPatch
+  patch: UpdateMaintenanceDraftPatch,
+  onUpdated?: OnMaintenanceDraftUpdated
 ): Promise<MaintenanceApplicationRecord> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= UPDATE_DRAFT_MAX_RETRIES; attempt++) {
@@ -355,6 +412,10 @@ export async function updateMaintenanceDraft(
               status: true,
               createdAt: true,
               ownerId: true,
+              // owner.loginName（PHASE-006-T9 新增）: 供 on-behalf 稽核 hook
+              // 組 targetLabel 用，讀自本次交易嘗試的新鮮快照（同
+              // updateTravelDraft 既有紀律，非交易外的過期讀取）。
+              owner: { select: { loginName: true } },
               maintenance: {
                 select: {
                   lastMaintenanceDate: true,
@@ -421,10 +482,38 @@ export async function updateMaintenanceDraft(
             );
           }
 
-          return await tx.application.findUniqueOrThrow({
+          const after = await tx.application.findUniqueOrThrow({
             where: { id },
             include: maintenanceApplicationInclude,
           });
+
+          // PHASE-006-T9 audit hook (AC-30/83/86, FW-1): only invoked when the
+          // CALLER supplied one (routes.ts decides based on
+          // `actorId !== existing.ownerId`) — same discipline as
+          // `updateTravelDraft`'s `onUpdated`. Runs on THIS attempt's `tx`,
+          // after every primary write and BEFORE the transaction commits, so
+          // a throw here rolls back everything written above in the SAME
+          // attempt; on retry, the whole callback (including this hook call)
+          // replays against the fresh transaction.
+          if (onUpdated) {
+            await onUpdated(
+              tx,
+              {
+                ownerId: existing.ownerId,
+                ownerLoginName: existing.owner.loginName,
+                before: {
+                  lastMaintenanceDate: existing.maintenance?.lastMaintenanceDate ?? null,
+                  currentMaintenanceDate: existing.maintenance?.currentMaintenanceDate ?? null,
+                  lastOdometerKm: existing.maintenance?.lastOdometerKm ?? null,
+                  currentOdometerKm: existing.maintenance?.currentOdometerKm ?? null,
+                  actualCost: existing.maintenance?.actualCost ?? null,
+                },
+              },
+              after
+            );
+          }
+
+          return after;
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );

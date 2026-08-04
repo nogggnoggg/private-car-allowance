@@ -62,6 +62,7 @@ import {
 import { assertApplicationMutable } from "./application-state-machine.js";
 import type {
   CreateMaintenanceDraftInput,
+  OnMaintenanceDraftUpdated,
   UpdateMaintenanceDraftPatch,
 } from "./maintenance-service.js";
 import {
@@ -350,7 +351,15 @@ interface ParsedMaintenanceFields {
   };
 }
 
-function parseMaintenanceFieldsInput(body: Record<string, unknown>): ParsedMaintenanceFields {
+/**
+ * Exported (PHASE-006-T9) so `admin/routes.ts`'s on-behalf maintenance-create
+ * endpoint can reuse the exact same body-parsing rule as
+ * `POST /applications/maintenance` — same rationale as
+ * `parseTripDateField`/`parsePurposeField`'s PHASE-004-T10 export above.
+ */
+export function parseMaintenanceFieldsInput(
+  body: Record<string, unknown>
+): ParsedMaintenanceFields {
   const errors: FieldError[] = [];
   const fields: ParsedMaintenanceFields["fields"] = {};
   const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
@@ -742,7 +751,56 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       // AC-20（前瞻）: 任何金額／里程／狀態欄位（totalAmount/status/ownerId/
       // createdById 等）一律忽略——本函式從未讀取這些 body 欄位。
-      const updated = await updateMaintenanceDraft(prisma, id, patch);
+      //
+      // PHASE-006-T9（AC-30/86，C3 同型判定，比照 TRAVEL 之 PUT 既有寫法）:
+      // 這個 PUT 端點同時服務「使用者改自己的草稿」與「管理員代改他人草稿」
+      // （`assertOwnershipOrAdmin` 對兩者皆放行）——分野純以
+      // `actorId !== existing.ownerId` 判定。只有代操作才建構 `onUpdated`
+      // hook；使用者改自己的草稿完全不傳 hook，天然滿足「不產生 AuditLog」。
+      const actorId = request.currentUser.id;
+      const isOnBehalf = actorId !== existing.ownerId;
+
+      const onUpdated: OnMaintenanceDraftUpdated | undefined = isOnBehalf
+        ? async (tx, context, after) => {
+            const fmtDate = (d: Date | null) => (d ? formatUtcDate(d) : null);
+            const fmtDecimal = (d: Prisma.Decimal | null) => (d ? d.toFixed(2) : null);
+            const afterMaintenance = after.maintenance;
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_UPDATED_ON_BEHALF",
+                actorId,
+                targetId: context.ownerId,
+                targetLabel: `${context.ownerLoginName}#${id}`,
+                summary: {
+                  applicationId: id,
+                  type: "MAINTENANCE",
+                  lastMaintenanceDate: {
+                    before: fmtDate(context.before.lastMaintenanceDate),
+                    after: fmtDate(afterMaintenance?.lastMaintenanceDate ?? null),
+                  },
+                  currentMaintenanceDate: {
+                    before: fmtDate(context.before.currentMaintenanceDate),
+                    after: fmtDate(afterMaintenance?.currentMaintenanceDate ?? null),
+                  },
+                  lastOdometerKm: {
+                    before: fmtDecimal(context.before.lastOdometerKm),
+                    after: fmtDecimal(afterMaintenance?.lastOdometerKm ?? null),
+                  },
+                  currentOdometerKm: {
+                    before: fmtDecimal(context.before.currentOdometerKm),
+                    after: fmtDecimal(afterMaintenance?.currentOdometerKm ?? null),
+                  },
+                  actualCost: {
+                    before: fmtDecimal(context.before.actualCost),
+                    after: fmtDecimal(afterMaintenance?.actualCost ?? null),
+                  },
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const updated = await updateMaintenanceDraft(prisma, id, patch, onUpdated);
       const dto = await buildMaintenanceApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
     }
