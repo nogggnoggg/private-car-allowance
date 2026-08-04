@@ -195,6 +195,53 @@ describe("calculateMaintenance — AC-16 ratio = officialKm ÷ intervalKm (exact
 });
 
 // ---------------------------------------------------------------------------
+// §2.5 T2R MF-1 — NaN/Infinity 輸入防禦（除 intervalKm≤0 以外之非有限值守門）
+// ---------------------------------------------------------------------------
+
+describe("calculateMaintenance — T2R MF-1: NaN/Infinity inputs never produce NaN/Infinity amounts or silent zeros", () => {
+  it("officialKm = NaN is reported as not calculable — never NaN ratio/amount", () => {
+    const result = calculateMaintenance({
+      lastOdometerKm: d("0"),
+      currentOdometerKm: d("100.00"),
+      officialKm: new Prisma.Decimal(Number.NaN),
+      actualCost: d("500.00"),
+    });
+    expect(result.calculable).toBe(false);
+    expect(result.ratio).toBeNull();
+    expect(result.ratioString).toBeNull();
+    expect(result.ratioPercentString).toBeNull();
+    expect(result.rawAmount).toBeNull();
+    expect(result.amount).toBeNull();
+  });
+
+  it("actualCost = Infinity is reported as not calculable — never an Infinity amount", () => {
+    const result = calculateMaintenance({
+      lastOdometerKm: d("0"),
+      currentOdometerKm: d("100.00"),
+      officialKm: d("10.00"),
+      actualCost: new Prisma.Decimal(Number.POSITIVE_INFINITY),
+    });
+    expect(result.calculable).toBe(false);
+    expect(result.rawAmount).toBeNull();
+    expect(result.amount).toBeNull();
+  });
+
+  it("currentOdometerKm = Infinity yields a non-finite intervalKm — reported as not calculable, never a silent zero amount", () => {
+    const result = calculateMaintenance({
+      lastOdometerKm: d("100.00"),
+      currentOdometerKm: new Prisma.Decimal(Number.POSITIVE_INFINITY),
+      officialKm: d("10.00"),
+      actualCost: d("500.00"),
+    });
+    expect(result.intervalKm.isFinite()).toBe(false);
+    expect(result.calculable).toBe(false);
+    expect(result.ratio).toBeNull();
+    expect(result.rawAmount).toBeNull();
+    expect(result.amount).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // §3 AC-17 分攤金額：驗表 ＋ 取整 kill pair ＋ 取整層級 kill case ＋ 浮點鑑別
 // ---------------------------------------------------------------------------
 
@@ -213,6 +260,13 @@ describe("calculateMaintenance — AC-17 amount = ROUND_HALF_UP(cost × official
       interval: "3",
       expected: 1000000,
       note: "取整層級 kill case",
+    },
+    {
+      cost: "40431.36",
+      official: "0.25",
+      interval: "1.92",
+      expected: 5265,
+      note: "T2R SF-1 kill case：`actualCost.times(ratio)` 全精度相乘會得 5264（受限 precision=20 之捨入路徑不同，見下方 mutant 對照測試），直接三值計算須為 5265",
     },
   ];
 
@@ -279,6 +333,35 @@ describe("calculateMaintenance — AC-17 amount = ROUND_HALF_UP(cost × official
     const wrongAmount = wrongRaw.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
     expect(wrongAmount).toBe(1000001);
     expect(wrongAmount).not.toBe(result.amount);
+  });
+
+  it("T2R SF-1 kill case: cost=40431.36, official=0.25, interval=1.92 → 5265 (proves `actualCost.times(ratio)` mutant C is NOT equivalent, off by 1)", () => {
+    const result = calculateMaintenance({
+      lastOdometerKm: d("0"),
+      currentOdometerKm: d("1.92"),
+      officialKm: d("0.25"),
+      actualCost: d("40431.36"),
+    });
+    // Correct implementation: raw = cost × official ÷ interval, computed
+    // directly (no intermediate `ratio` multiplication).
+    expect(result.rawAmount?.toFixed(4)).toBe("5264.5000");
+    expect(result.amount).toBe(5265);
+
+    // Demonstrate mutant C ("pre-divide into `ratio`, then multiply")
+    // WITHOUT touching production code. Even though `ratio` here is the
+    // *unrounded* full-precision quotient (not rounded to 6dp), it is still
+    // NOT equivalent to computing cost × official ÷ interval directly —
+    // `Prisma.Decimal`/decimal.js division is bounded by a fixed significant
+    // -digit precision (default 20), so `O ÷ I` already incurs rounding at
+    // that precision before the subsequent multiplication by `cost`, and the
+    // two rounding paths ("multiply then divide" vs. "divide then multiply")
+    // can disagree by 1 unit at the final ROUND_HALF_UP step.
+    const mutantRatio = new Prisma.Decimal("0.25").div("1.92");
+    const mutantRaw = new Prisma.Decimal("40431.36").times(mutantRatio);
+    const mutantAmount = mutantRaw.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+    expect(mutantRaw.toString()).not.toBe(result.rawAmount?.toString());
+    expect(mutantAmount).toBe(5264);
+    expect(mutantAmount).not.toBe(result.amount);
   });
 
   it("AC-17(c) rounding happens exactly once (source-level scan: a single toDecimalPlaces call on the amount path)", () => {
@@ -525,5 +608,30 @@ describe("AC-28 零浮點中介 — PHASE-006 source files contain no Number()/p
     // Four named constants (KM/RATIO/RAW_AMOUNT capacity bounds) — all string
     // literals; no bare-number or expression construction anywhere else.
     expect(args).toEqual(['"10000000000"', '"1000"', '"10000000000"']);
+  });
+
+  // T2R SF-2 — 逐字移植自
+  // backend/test/unit/fuel-price-engine.test.ts:333-354（scanner self-proof）。
+  it("scanner self-proof (discriminating power): a synthetic legacy snippet using Number() as an intermediary must be caught; Number( inside comments/strings must not false-positive", () => {
+    const oldImplementation = blankCommentsAndStrings(
+      [
+        "function deriveFuelUnitPrice(p, c) {",
+        "  const priceNum = Number(p);",
+        "  const kmNum = Number(c);",
+        "  return Math.round(priceNum / kmNum);",
+        "}",
+      ].join("\n")
+    );
+    expect(findCoercionCalls(oldImplementation)).toEqual(["Number(p)", "Number(c)"]);
+
+    const commentOnly = blankCommentsAndStrings(
+      [
+        "// 這一步刻意不使用 Number(input) 中介",
+        "/* 舊路徑：const x = Number(y); */",
+        'const message = "Number(unsafe) 僅是文案";',
+        "const safe = toDecimal(input);",
+      ].join("\n")
+    );
+    expect(findCoercionCalls(commentOnly)).toEqual([]);
   });
 });

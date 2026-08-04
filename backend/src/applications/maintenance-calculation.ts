@@ -16,10 +16,15 @@
  *                                                          避免第二處取整 — 見 AC-17(d) kill case）
  *   amount     = ROUND_HALF_UP(rawAmount, 0)             （AC-17(b)/(c)，全案唯一一處取整）
  *
- * 防禦（AC-16）：`intervalKm ≤ 0`（含 0）在業務上不應發生（AC-08 已於上游
- * 完成度檢查擋下），但本函式仍獨立防禦——回傳 `calculable=false`，**絕不**
- * 除以零、**絕不**回傳 `NaN`/`Infinity`、**絕不**拋錯（純函式零 IO，錯誤語意
- * 由呼叫端決定，此處只回報狀態）。
+ * 防禦（AC-16，T2R MF-1 修復）：`intervalKm ≤ 0`（含 0）在業務上不應發生
+ * （AC-08 已於上游完成度檢查擋下），但本函式仍獨立防禦——回傳
+ * `calculable=false`，**絕不**除以零、**絕不**回傳 `NaN`/`Infinity`、**絕不**
+ * 拋錯（純函式零 IO，錯誤語意由呼叫端決定，此處只回報狀態）。守門同時涵蓋
+ * 輸入為 `NaN`/`Infinity` 之防禦性情形——`officialKm`／`actualCost` 本身即為
+ * 非有限值、或 `lastOdometerKm`/`currentOdometerKm` 相減後之 `intervalKm`
+ * 為非有限值（例如兩者皆為 `Infinity` 相減得 `NaN`，或其一為 `Infinity` 相減
+ * 得 `Infinity`），一律回 `calculable=false`，不得產生 `NaN`/`Infinity`
+ * 金額、亦不得靜默回傳看似合法的 `0`。
  *
  * 本模組刻意「不做輸入驗證」（完成度驗證屬 T3 `maintenance-blockers.ts`；
  * 本引擎假設輸入已合法）。本模組刻意「不接線」（不新增 route、不碰 DB；
@@ -79,9 +84,19 @@ export function calculateMaintenance(input: CalculateMaintenanceInput): Calculat
   // AC-06: intervalKm = C − L（Decimal 減法，全程無浮點中介，不取整）。
   const intervalKm = currentOdometerKm.minus(lastOdometerKm);
 
-  // AC-16 防禦：intervalKm ≤ 0 視為不可計算（AC-08 應已於上游擋下此輸入，
-  // 此處為獨立第二道防線）——絕不除以零、絕不回 NaN/Infinity、絕不拋錯。
-  if (!intervalKm.greaterThan(0)) {
+  // AC-16 防禦（T2R MF-1）：intervalKm ≤ 0 視為不可計算（AC-08 應已於上游擋下
+  // 此輸入，此處為獨立第二道防線）——絕不除以零、絕不回 NaN/Infinity、絕不
+  // 拋錯。同時守門 officialKm/actualCost/intervalKm 三者之非有限值
+  // （NaN／±Infinity）——`.isFinite()` 對 NaN 與 Infinity 皆回 false；
+  // intervalKm 之非有限值涵蓋 lastOdometerKm/currentOdometerKm 任一為
+  // Infinity 之相減結果（Infinity − 有限值 = Infinity；Infinity − Infinity =
+  // NaN），故不需另外檢查兩個 odometer 輸入本身。
+  if (
+    !intervalKm.isFinite() ||
+    !officialKm.isFinite() ||
+    !actualCost.isFinite() ||
+    !intervalKm.greaterThan(0)
+  ) {
     return {
       intervalKm,
       officialKm,
@@ -101,10 +116,16 @@ export function calculateMaintenance(input: CalculateMaintenanceInput): Calculat
   const ratioPercentString = ratio.times(100).toFixed(4, Prisma.Decimal.ROUND_HALF_UP);
 
   // AC-17(a): raw = P × O ÷ I —— 直接以 actualCost、officialKm、intervalKm
-  // 三者計算，**不** 透過上面已存在的 `ratio` 變數相乘。若改為
-  // `actualCost.times(ratio)`（`ratio` 為未取整之全精度值仍可接受，但一旦
-  // `ratio` 先被取整為 6 位小數再相乘，即引入第二處取整，違反 AC-17(c)
-  // 「全案取整恰一處」——AC-17(d) kill case 即專門鑑別此錯誤實作路徑）。
+  // 三者計算，**不** 透過上面已存在的 `ratio` 變數相乘。`actualCost.times(ratio)`
+  // **不等價**於 `actualCost.times(officialKm).div(intervalKm)`——即使 `ratio`
+  // 是未取整之全精度值也一樣，因 `Prisma.Decimal`／decimal.js 之除法結果受限於
+  // 固定有效位數（預設 precision=20），`O÷I` 先求值一次即已在此有效位數處
+  // 產生捨入，再乘上 `P` 與「先乘後除」之捨入路徑不同，兩者可能相差 1 元
+  // （T2R SF-1 reviewer 反例：`P=40431.36, O=0.25, I=1.92` → 直接計算
+  // `raw=5264.5→ROUND_HALF_UP→5265`；經 `actualCost.times(ratio)` 計算則
+  // `raw=5264.4999999999999999→5264`，整整少 1 元）。改為經由 `ratio` 相乘
+  // 即引入額外一次捨入，違反 AC-17(c)「全案取整恰一處」——AC-17(d) kill case
+  // 即專門鑑別此錯誤實作路徑，禁止將本行改寫為 `actualCost.times(ratio)`。
   const rawAmount = actualCost.times(officialKm).div(intervalKm);
 
   // AC-17(b)/(c): 全案唯一一處取整 —— ROUND_HALF_UP 至整數（新臺幣）。
