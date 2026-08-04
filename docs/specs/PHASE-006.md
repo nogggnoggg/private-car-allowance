@@ -59,7 +59,7 @@
 > 來源：BE-US-18 第 2 條「Given 保養申請完成／When 保存資料／Then 應保存保養區間里程、期間公務里程、公務比例、實際費用及最終金額。」；DATA_FLOW §1.1「MaintenanceApplication｜上次/本次保養日期、上次/本次里程表、實際費用；(快照:區間里程/公務里程/比例/分攤金額)」
 
 **AC-01 保養資料模型與零改寫 migration（BE-US-18 / DATA_FLOW §1.1 / T1）** — Given 既有資料庫（含 PHASE-005a 之已完成差旅申請與附件）。When 套用本 Phase migration。Then：
-(a) 新增 `MaintenanceApplication` 表（1:1 於 `Application`，PK ＝ `applicationId`），含五個業務欄位與六個快照欄位（§8.2）；
+(a) 新增 `MaintenanceApplication` 表（1:1 於 `Application`，PK ＝ `applicationId`），含五個業務欄位與五個快照欄位（§8.2；D11(a) 不另存 snapshotActualCost）；
 (b) **既有所有表之所有既有欄位值逐位元不變**（跨 `Application`／`TravelApplication`／`TripSegment`／`Attachment`／`User` 五表逐欄比對）；
 (c) **零回填**：不新增任何非空預設值、不寫入任何既有資料列；
 (d) `prisma migrate` 於**乾淨 DB** 與**既有 DB** 皆成功；
@@ -156,7 +156,7 @@
 
 **AC-27 完成僅能由擁有人本人執行（PHASE-004 D17 沿用 / T7）** — Given 保養草稿之擁有人為 U。When 管理員 A（非擁有人）呼叫 `POST /applications/:id/complete`。Then **403 `FORBIDDEN`**，DB 零寫入。（授權在 route 層以嚴格 `actor.id === application.ownerId` 判定，**不得**使用 `assertOwnershipOrAdmin`——該函式會放行 ADMIN。裁定見 §16 D7。）
 
-**AC-28 快照不可變（BE-US-18 第 4 條 / T8）** — Given 保養申請已完成。When 事後於該保養期間內新增／完成新的差旅申請，或修改任何差旅資料。Then 該保養申請之 `snapshot` **逐位元不變**（六個快照欄位＋`Application.totalAmount` 逐一等值斷言），且讀取已完成之保養申請時**不執行任何期間公務里程查詢**（以 spy 計數證明：讀 DRAFT 計數 +1、讀 COMPLETED 計數 +0）。
+**AC-28 快照不可變（BE-US-18 第 4 條 / T8）** — Given 保養申請已完成。When 事後於該保養期間內新增／完成新的差旅申請，或修改任何差旅資料。Then 該保養申請之 `snapshot` **逐位元不變**（五個快照欄位＋`Application.totalAmount` 逐一等值斷言），且讀取已完成之保養申請時**不執行任何期間公務里程查詢**（以 spy 計數證明：讀 DRAFT 計數 +1、讀 COMPLETED 計數 +0）。
 
 **AC-29 併發完成（PHASE-004 B-29 既有紀律 / T8）** — Given 同一保養草稿。When 兩個請求同時完成。Then **恰一個成功**、另一個得 403（來源狀態已鎖定），**不得雙重完成、不得雙重快照**、不得 500；序列化衝突以重試處理，重試耗盡以 503 呈現（沿用既有 `isRetryableTransactionConflict` 慣例）。
 
@@ -223,7 +223,7 @@
 ② 讀附件數 → `computeMaintenanceBlockers(...)`；非空 → 400 `VALIDATION_ERROR` ＋ `fields[]` ＋ `details.blockers[]`（全部未通過項）
 ③ `sumOfficialMileage(tx, {...})`（**同一交易**）
 ④ `calculateMaintenance(...)` → 容量守門（§16 D10）
-⑤ 寫 `MaintenanceApplication` 六個快照欄位 → 寫 `Application.status/totalAmount/completedAt`
+⑤ 寫 `MaintenanceApplication` 五個快照欄位 → 寫 `Application.status/totalAmount/completedAt`
 ⑥ 交易提交；附件因 `deriveContainerState` 推導為 `completed` 而自動鎖定（AC-23）
 
 ### 3.4 管理員代操作（AD-US-07/08）
@@ -1005,6 +1005,7 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5 ──┐
 
 | 日期 | 變更 | 依據 |
 |---|---|---|
+| 2026-08-04 | `ACTIVE`（T1 即審 SF-2(b) 更正） | AC-01(a)/AC-28/§9⑤ 之「六個快照欄位」更正為「五個」——與 §8.2 及已批 D11(a)（不另存 snapshotActualCost）一致；「六」為 DRAFT 撰寫殘留（原含 snapshotActualCost 之草案計數），非產品決策變更。DB 實查 11 欄（1 PK＋5 業務＋5 快照）。 | T1 即審 SF-2(b)；D11(a) 批准原文；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（PRD-SYNC 落地） | §19 三項 PRD 修正已由 PHASE-006-PRD-SYNC 落地（spec-writer Lite 派工）；§19 標題之「本 Task 未編輯 docs/PRD.md」註記自此為歷史敘述。 | PHASE-006-PRD-SYNC Handoff；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（Spec Gate 通過） | **人類 leonchih 裁定（AskUserQuestion）：D1~D12 全數照推薦批准**——D1(a) MaintenanceApplication 子表、D2(a) deriveContainerState 擴充＋deleteApplication detach、D3 精度組（10,2/12,2/12,2/9,6＋ratio/ratioPercent 雙欄）、**D4(a) ROUND_HALF_UP(cost×officialKm÷intervalKm, 0) 單次取整（不得先取整比例）**、D5(a) 400+details.blockers[]、D6(a) 內嵌 computed＋stateless preview＋generic complete、D7(a) 僅本人完成、D8(a) 不變式測試不加執行期守門、D9 列表映射與 keyword 限制列已知限制、D10(a) Decimal(12,2)＋AMOUNT_OUT_OF_RANGE blocker、**D11(a) 不另存 snapshotActualCost（人類明示追認）**、D12(a) 期間重疊不阻擋列已知限制。**T1~T9 共 9 項 High 之事前批准同場取得**。 | 人類 leonchih Spec Gate（2026-08-04）；PROJECT_STATE 開工記錄 |
 | 2026-08-04 | `DRAFT` 建立：依 Task Context Packet `PHASE-006-SPEC` 產出完整 Phase Spec（§1~§19：41 條 AC 全溯源、正常流程、五態、35 項邊界、40 格授權矩陣、API contract、資料模型與 migration、Data Flow、NFR、測試策略、AC↔測試映射表 41 列、Rollback、14 Task 之 Task Graph、決策點 D1~D12、PRD 建議修正清單） | `userstory.md` FE-US-04/05/13/14/15/16/21/27、AD-US-06/07/08、BE-US-03/10/11/12/13/18/20/22/23/24/25/30、NFR-US-10/16；`docs/PRD.md` §PHASE-006（402–422 行）與 §4 US 索引表、§6 High 總覽；`docs/ARCHITECTURE.md` §4.1/4.2/4.3/4.4/4.5/4.6/4.10；`docs/DATA_FLOW.md` §1.1/§1.2/§2.2/§2.3/§2.8；PHASE-003 Spec（附件生命週期 D1/D2）、PHASE-003a Spec §14（欄位驗證合約）、PHASE-004 Spec（狀態機／快照／代操作／D6 修訂／D14/D16/D17/D19）、PHASE-005 Spec §16 D2(a)/D5(a)/D8(a)/D9(a) 與 §5 補測清單、PHASE-005a Spec §16 D4(a)/D5(a)/D6(a) 與 §18；`PROJECT_STATE.md` PHASE-006 開工記錄與 PHASE-005/005a 結案移交；程式現況實查（`schema.prisma`、`mileage-engine.ts`、`mileage-range.ts`、`travel-service.ts`、`travel-calculation.ts`、`completion-blockers.ts`、`application-state-machine.ts`、`application-query.ts`、`applications/routes.ts`、`admin/routes.ts`、`attachment/lifecycle-service.ts`、`attachment/attachment-limit-engine.ts`、`attachment/routes.ts`、`users/history.ts`、`platform/errors.ts`、`infra001-isolation-self-check.test.ts`、`ApplicationListSection.tsx`） |
