@@ -169,6 +169,43 @@ describeWithDb("PHASE-007-T12 — GET /applications 折舊列映射與篩選", (
     return application;
   }
 
+  /** 直接建立保養 Application（含 MaintenanceApplication 子表），供 SF-1
+   * 混合排序情境使用——比照 phase6-application-list.test.ts 之
+   * `createMaintenanceApp` 同型，僅本檔沿用最小欄位集。 */
+  async function createMaintenanceApp(opts: {
+    ownerId: string;
+    primaryDate: string;
+    createdAt?: Date;
+    lastMaintenanceDate?: string | null;
+    currentMaintenanceDate?: string | null;
+    status?: "DRAFT" | "COMPLETED" | "VOIDED";
+  }) {
+    const application = await prisma.application.create({
+      data: {
+        type: "MAINTENANCE",
+        status: opts.status ?? "DRAFT",
+        ownerId: opts.ownerId,
+        createdById: opts.ownerId,
+        primaryDate: new Date(opts.primaryDate),
+        ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+        maintenance: {
+          create: {
+            lastMaintenanceDate:
+              opts.lastMaintenanceDate !== undefined && opts.lastMaintenanceDate !== null
+                ? new Date(opts.lastMaintenanceDate)
+                : null,
+            currentMaintenanceDate:
+              opts.currentMaintenanceDate !== undefined && opts.currentMaintenanceDate !== null
+                ? new Date(opts.currentMaintenanceDate)
+                : null,
+          },
+        },
+      },
+    });
+    track(application.id);
+    return application;
+  }
+
   /** 直接建立折舊 Application（含 DepreciationApplication 子表），完整控制
    * `primaryDate`/`createdAt`/`applicationYear`/status，供 AC-36/37 情境
    * 使用；刻意不經由折舊草稿端點，天然不呼叫 buildDepreciationApplicationDto
@@ -252,13 +289,17 @@ describeWithDb("PHASE-007-T12 — GET /applications 折舊列映射與篩選", (
   // ===========================================================================
 
   describe("AC-36 綜合列表", () => {
-    it("depreciation, maintenance-shaped travel, and travel rows are interleaved in primaryDate DESC, createdAt DESC, id DESC order — including a null-year depreciation row", async () => {
-      // 鑑別力設計：三筆共用「相同 primaryDate、相同 createdAt」，逼迫 id
+    it("depreciation, maintenance, and travel rows are interleaved in primaryDate DESC, createdAt DESC, id DESC order — including a null-year depreciation row", async () => {
+      // 鑑別力設計：四筆共用「相同 primaryDate、相同 createdAt」，逼迫 id
       // DESC 才能決定順序（比照 PHASE-006 AC-32 同型手法）；另有一筆不同
       // primaryDate 之折舊列驗證跨類型的 primaryDate DESC 排序。
       // FW-1：其中一筆折舊列 applicationYear=null，primaryDate=建立日
       // （沿 §16 D2 null fallback 語意），確保全序穩定性不只在有年度樣本上
       // 被驗證。
+      // T12R-LITE SF-1：補一筆真實 MAINTENANCE 列（而非僅有差旅／折舊兩型）
+      // 進同一組 tie-breaker 集合，並斷言其 title 走保養期間格式——守護
+      // `toApplicationListItemDto` title 三元鏈 `isMaintenance` 分支先於
+      // `isDepreciation` 分支互不誤入（見下方 mutant 自證）。
       const sameDate = "2130-01-15";
       const sameCreatedAt = new Date("2130-01-15T09:00:00.000Z");
 
@@ -285,6 +326,13 @@ describeWithDb("PHASE-007-T12 — GET /applications 折舊列映射與篩選", (
         createdAt: sameCreatedAt,
         applicationYear: 2130,
       });
+      const maintenanceRow = await createMaintenanceApp({
+        ownerId: mixedOwnerId,
+        primaryDate: sameDate,
+        createdAt: sameCreatedAt,
+        lastMaintenanceDate: "2129-12-15",
+        currentMaintenanceDate: sameDate,
+      });
 
       const resp = await getList(mixedOwnerCookie, {
         dateFrom: "2130-01-01",
@@ -298,17 +346,27 @@ describeWithDb("PHASE-007-T12 — GET /applications 折舊列映射與篩選", (
         travelA.id,
         depreciationNullYear.id,
         depreciationB.id,
+        maintenanceRow.id,
       ]);
       const ordered = body.items.filter((i) => relevantIds.has(i.id)).map((i) => i.id);
 
-      const sameKeyIds = [travelA.id, depreciationNullYear.id, depreciationB.id].sort((a, b) =>
-        a < b ? 1 : a > b ? -1 : 0
-      );
+      const sameKeyIds = [
+        travelA.id,
+        depreciationNullYear.id,
+        depreciationB.id,
+        maintenanceRow.id,
+      ].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
       expect(ordered).toEqual([laterDepreciation.id, ...sameKeyIds]);
 
       // FW-1 附帶斷言：null-year 折舊列的 title 走「未指定年度」分支。
       const nullYearItem = body.items.find((i) => i.id === depreciationNullYear.id);
       expect(nullYearItem?.title).toBe("年度折舊（未指定年度）");
+
+      // SF-1 附帶斷言：真實 MAINTENANCE 列的 title 走保養期間格式（D9(a)），
+      // 而非誤入折舊的「年度折舊（未指定年度）」分支。
+      const maintenanceItem = body.items.find((i) => i.id === maintenanceRow.id);
+      expect(maintenanceItem?.type).toBe("MAINTENANCE");
+      expect(maintenanceItem?.title).toBe("保養 2129-12-15 ~ 2130-01-15");
     });
 
     it("depreciation rows carry type=DEPRECIATION and the correct status", async () => {
@@ -491,6 +549,66 @@ describeWithDb("PHASE-007-T12 — GET /applications 折舊列映射與篩選", (
       for (const item of body.items) {
         expect(item.ownerId).toBe(filterOwnerId);
         expect(item.type).toBe("DEPRECIATION");
+      }
+    });
+
+    it("T12R-LITE SF-2: status=DRAFT returns the draft depreciation row and excludes the completed one", async () => {
+      const draft = await createDepreciationApp({
+        ownerId: filterOwnerId,
+        primaryDate: "2130-09-01",
+        applicationYear: 2130,
+        status: "DRAFT",
+      });
+      const completed = await createDepreciationApp({
+        ownerId: filterOwnerId,
+        primaryDate: "2130-09-01",
+        applicationYear: 2130,
+        status: "COMPLETED",
+        totalAmount: 999,
+      });
+
+      const resp = await getList(filterOwnerCookie, {
+        type: "DEPRECIATION",
+        status: "DRAFT",
+        dateFrom: "2130-09-01",
+        dateTo: "2130-09-01",
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      expect(body.items.some((i) => i.id === draft.id)).toBe(true);
+      expect(body.items.some((i) => i.id === completed.id)).toBe(false);
+      for (const item of body.items) {
+        expect(item.status).toBe("DRAFT");
+      }
+    });
+
+    it("T12R-LITE SF-2: status=COMPLETED returns the completed depreciation row and excludes the draft one", async () => {
+      const draft = await createDepreciationApp({
+        ownerId: filterOwnerId,
+        primaryDate: "2130-09-02",
+        applicationYear: 2130,
+        status: "DRAFT",
+      });
+      const completed = await createDepreciationApp({
+        ownerId: filterOwnerId,
+        primaryDate: "2130-09-02",
+        applicationYear: 2130,
+        status: "COMPLETED",
+        totalAmount: 999,
+      });
+
+      const resp = await getList(filterOwnerCookie, {
+        type: "DEPRECIATION",
+        status: "COMPLETED",
+        dateFrom: "2130-09-02",
+        dateTo: "2130-09-02",
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+      expect(body.items.some((i) => i.id === completed.id)).toBe(true);
+      expect(body.items.some((i) => i.id === draft.id)).toBe(false);
+      for (const item of body.items) {
+        expect(item.status).toBe("COMPLETED");
       }
     });
 
