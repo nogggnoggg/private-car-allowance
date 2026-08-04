@@ -698,7 +698,16 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
   );
 
   // -------------------------------------------------------------------------
-  // PUT /applications/maintenance/:id (PHASE-006-T4, AC-02/03/04/05, 三態語意)
+  // PUT /applications/maintenance/:id (PHASE-006-T4/T6, AC-02/03/04/05/21/22,
+  // 三態語意 ＋ attachmentIds[] 對帳)
+  //
+  // `attachmentIds`（PHASE-006-T6 新增）：格式驗證沿用既有 `parseAttachmentIdsField`
+  // （必須為非空字串組成的陣列），不重寫解析邏輯（比照 §15 T6「files allowed」
+  // 之最小 diff 要求——本檔未列入 T6 Packet 之封閉清單，僅因 body 解析需擴充
+  // `attachmentIds` 而動；業務規則（擁有權、上限 5、409 CONFLICT）全部留給
+  // `maintenance-service.ts` 的 `reconcileMaintenanceAttachments` 在交易內
+  // 處理，此處刻意不查 DB，維持這層純格式驗證的職責——與 §9「segments[]」
+  // 之既有分工原則一致）。
   // -------------------------------------------------------------------------
 
   fastify.put(
@@ -718,13 +727,20 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       assertApplicationMutable(existing.status); // AC-04: 已完成 → 403 FORBIDDEN
 
       const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+
+      const patch: UpdateMaintenanceDraftPatch = { ...fields };
+      if (Object.prototype.hasOwnProperty.call(body, "attachmentIds")) {
+        const result = parseAttachmentIdsField(body.attachmentIds, "attachmentIds");
+        if (!result.ok) fieldErrors.push(result.error);
+        else patch.attachmentIds = result.value;
+      }
+
       if (fieldErrors.length > 0) {
         throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
       }
 
       // AC-20（前瞻）: 任何金額／里程／狀態欄位（totalAmount/status/ownerId/
       // createdById 等）一律忽略——本函式從未讀取這些 body 欄位。
-      const patch: UpdateMaintenanceDraftPatch = fields;
       const updated = await updateMaintenanceDraft(prisma, id, patch);
       const dto = await buildMaintenanceApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });

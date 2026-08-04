@@ -1,29 +1,33 @@
 /**
- * Maintenance application service — PHASE-006-T4／T5
+ * Maintenance application service — PHASE-006-T4／T5／T6
  *
- * Spec §2 群組 B（AC-02/03/04/05）、群組 D／E（AC-11~20）、§7.2
- * `MaintenanceApplicationDto`／`MaintenanceComputedDto`、§7.3（引擎呼叫）、
- * §9.1「草稿儲存」、§9.2「分攤預覽」、§16 D1(a)（子表模式）/D6(a)（generic
- * complete/內嵌 computed／stateless preview 端點）/D7(a)（僅本人完成）/
- * D11(a)（不另存 snapshotActualCost）。
+ * Spec §2 群組 B（AC-02/03/04/05）、群組 D／E（AC-11~20）、群組 F
+ * （AC-21~24 附件）、§7.2 `MaintenanceApplicationDto`／`MaintenanceComputedDto`、
+ * §7.3（引擎呼叫）、§9.1「草稿儲存」（含步驟④附件對帳）、§9.2「分攤預覽」、
+ * §16 D1(a)（子表模式）/D2(a)（附件容器＝`refId=Application.id`）/D6(a)
+ * （generic complete/內嵌 computed／stateless preview 端點）/D7(a)（僅本人
+ * 完成）/D11(a)（不另存 snapshotActualCost）。
  *
  * Owns the DB-touching half of the maintenance draft CRUD vertical;
  * `routes.ts` (Fastify plugin) is the thin HTTP layer that calls into this
  * module — same split as `travel-service.ts` + `applications/routes.ts`
  * (T4 Packet「複用既有模式」義務).
  *
- * T4 範圍（Packet 明文）：僅草稿 CRUD＋欄位驗證＋狀態／授權守門（AC-02~05）。
- * T5 範圍（本次擴充）：期間公務里程接線（`computeMaintenanceComputed`，唯一
- * 呼叫 `sumOfficialMileage` 之處，AC-11~15）＋草稿 DTO／預覽端點之 `computed`
- * 填充（AC-16~20 之接線層）。仍**不含**：
+ * T4 範圍：僅草稿 CRUD＋欄位驗證＋狀態／授權守門（AC-02~05）。
+ * T5 範圍：期間公務里程接線（`computeMaintenanceComputed`，唯一呼叫
+ * `sumOfficialMileage` 之處，AC-11~15）＋草稿 DTO／預覽端點之 `computed`
+ * 填充（AC-16~20 之接線層）。
+ * T6 範圍（本次擴充）：`PUT` 之 `attachmentIds[]` 對帳（`reconcileMaintenanceAttachments`，
+ * AC-21/22、B-25~B-28）、`MAINTENANCE_ATTACHMENT_LIMIT=5`（AC-21）、DTO
+ * 之 `attachments`／`completionBlockers` 第 10 項改讀真實 `LINKED` 計數
+ * （`buildMaintenanceApplicationDto` 一次查詢後傳入，T4 即審 FW-T6 節義務：
+ * DTO builder 不得偷查 DB）。附件之完成鎖定（`deriveContainerState`）與草稿
+ * 刪除 detach 補洞（B-29）落在 `attachment/lifecycle-service.ts` 與
+ * `travel-service.ts`（僅 `deleteApplication` 之 detach 範圍），非本檔。
+ * 仍**不含**：
  *   - 完成流程與快照寫入（T7）——`snapshot` 恆為 `null`（本 Task 從不轉換
  *     `status` 至 `COMPLETED`；AC-04 測試以直接 `prisma.application.update`
  *     建立 COMPLETED fixture，模擬「未來由 T7 完成」的既有列）。
- *   - 附件關聯（T6）——`attachments` 恆為 `[]`（PUT 不接受 `attachmentIds[]`，
- *     没有任何程式路徑可以把附件關聯到保養申請；`attachmentCount` 傳給
- *     `computeMaintenanceBlockers` 恆為 `0`，故第 10 項
- *     `MAINTENANCE_ATTACHMENT_REQUIRED` 恆出現於五欄齊備但無附件的 DRAFT
- *     之 blockers）。
  *   - 代操作稽核 hook（T9）——本檔不提供 `onCreated`/`onUpdated` 參數
  *     （與 `travel-service.ts` 不同）；T9 依 Files Allowed 清單將擴充本檔。
  *
@@ -40,6 +44,12 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
+import {
+  type AttachmentDto,
+  detachAttachmentsByIdsTx,
+  linkAttachmentTx,
+  toDto as toAttachmentDto,
+} from "../attachment/lifecycle-service.js";
 import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.js";
 import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
@@ -181,6 +191,88 @@ export interface UpdateMaintenanceDraftPatch {
   lastOdometerKm?: Prisma.Decimal | null;
   currentOdometerKm?: Prisma.Decimal | null;
   actualCost?: Prisma.Decimal | null;
+  /**
+   * PHASE-006-T6 (AC-21/22, §9.1 步驟④「附件對帳」)：三態語意與其他欄位不同
+   * ——這是一個**宣告式全集**（declarative full set），key 缺席＝不對帳（不
+   * 動任何附件關聯）；key 存在＝把目前 LINKED 集合與此陣列做差集，多出者
+   * detach、缺少者 link（見 `reconcileMaintenanceAttachments`）。無「清空」
+   * 之 `null` 值——空陣列 `[]` 本身就代表「全部 detach」。
+   */
+  attachmentIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// MAINTENANCE_ATTACHMENT_LIMIT — PHASE-006-T6 (AC-21, Spec §7.1「上限常數…
+// 定義於後端且不得由用戶端提供」)
+// ---------------------------------------------------------------------------
+
+export const MAINTENANCE_ATTACHMENT_LIMIT = 5;
+
+// ---------------------------------------------------------------------------
+// reconcileMaintenanceAttachments — PHASE-006-T6 (AC-21/22, B-25~B-28)
+//
+// Single-container declarative reconciliation: unlike travel-service.ts's
+// per-segment `computeAttachmentDeltas`/`applyAttachmentDeltas` (which must
+// handle attachments moving BETWEEN several segments in one PUT), a
+// MaintenanceApplication has exactly one container (`refId = Application.id`
+// itself, Spec §16 D2(a)) — so the diff is a plain set difference against the
+// single currently-LINKED set. Detach-then-link ordering is kept anyway
+// (mirrors the travel pattern) so re-declaring the exact same id set is a
+// true no-op and any request-order assumption elsewhere is not violated.
+//
+// MUST be called inside the SAME transaction as the rest of
+// `updateMaintenanceDraft`'s write (its business-field update) so that a
+// TOO_MANY_ATTACHMENTS/403/409 thrown here rolls back the whole PUT
+// (AC-21: "整份儲存 rollback（附件與業務欄位皆不變）").
+// ---------------------------------------------------------------------------
+
+async function reconcileMaintenanceAttachments(
+  tx: Prisma.TransactionClient,
+  applicationId: string,
+  applicationOwnerId: string,
+  requestedIds: string[]
+): Promise<void> {
+  const currentRows = await tx.attachment.findMany({
+    where: { refType: "MAINTENANCE", refId: applicationId, status: "LINKED" },
+    select: { id: true },
+  });
+  const current = new Set(currentRows.map((row) => row.id));
+  const requested = new Set(requestedIds);
+
+  const toRemove = [...current].filter((attachmentId) => !requested.has(attachmentId));
+  const toLink = requestedIds.filter((attachmentId) => !current.has(attachmentId));
+
+  if (toRemove.length > 0) {
+    await detachAttachmentsByIdsTx(tx, toRemove);
+  }
+
+  for (const attachmentId of toLink) {
+    // B-27/B-28 per-attachment checks (same shape as travel-service.ts's
+    // `applyAttachmentDeltas` link pass — not imported/reused across files
+    // because that function is segment-refType-specific and not exported;
+    // this is the same three checks, independently applied to refType=MAINTENANCE).
+    const attachment = await tx.attachment.findUnique({ where: { id: attachmentId } });
+    if (!attachment) {
+      throw new AppError("NOT_FOUND", 404, "找不到附件");
+    }
+    if (attachment.ownerId !== applicationOwnerId) {
+      throw new AppError("FORBIDDEN", 403, "附件擁有人與申請擁有人不一致，無法關聯");
+    }
+    if (attachment.status !== "TEMP") {
+      throw new AppError("CONFLICT", 409, "附件已關聯，無法重複關聯");
+    }
+
+    // AC-21: `linkAttachmentTx` recomputes the live LINKED count for this
+    // (refType, refId) container on every call inside this same transaction,
+    // so the 6th call in a single PUT declaring 6 new ids correctly sees
+    // count=5 and throws TOO_MANY_ATTACHMENTS (B-26), rolling back the tx.
+    await linkAttachmentTx(tx, {
+      attachmentId,
+      refType: "MAINTENANCE",
+      refId: applicationId,
+      limit: MAINTENANCE_ATTACHMENT_LIMIT,
+    });
+  }
 }
 
 function hasKey(obj: object, key: string): boolean {
@@ -251,6 +343,7 @@ export async function updateMaintenanceDraft(
             select: {
               status: true,
               createdAt: true,
+              ownerId: true,
               maintenance: {
                 select: {
                   lastMaintenanceDate: true,
@@ -304,6 +397,18 @@ export async function updateMaintenanceDraft(
               },
             },
           });
+
+          // AC-21/22 附件對帳（key 缺席＝不對帳，見 `UpdateMaintenanceDraftPatch`
+          // 文件註解）：與上面的業務欄位寫入同一交易，任一附件錯誤（404/403/
+          // 409）皆使整份 PUT（含業務欄位）一併回滾。
+          if (hasKey(patch, "attachmentIds")) {
+            await reconcileMaintenanceAttachments(
+              tx,
+              id,
+              existing.ownerId,
+              patch.attachmentIds ?? []
+            );
+          }
 
           return await tx.application.findUniqueOrThrow({
             where: { id },
@@ -580,7 +685,7 @@ export interface MaintenanceApplicationDto {
   currentOdometerKm: string | null;
   actualCost: string | null;
 
-  attachments: unknown[];
+  attachments: AttachmentDto[];
   completionBlockers: Blocker[] | null;
   computed: MaintenanceComputedDto | null;
   snapshot: null;
@@ -589,26 +694,31 @@ export interface MaintenanceApplicationDto {
 /**
  * Builds the response DTO for a MAINTENANCE application.
  *
- * `attachments`：本 Task 恆為 `[]`（T6 範圍，見檔頭說明）。
+ * `attachments`（PHASE-006-T6 起）：呼叫端（見下方 `buildMaintenanceApplicationDto`）
+ * 一次查得真實 `LINKED` 附件列表後，經 `attachments` 參數傳入——本函式本身
+ * **不**碰 DB（T4 即審 FW-T6 節義務：DTO builder 不得偷查 DB）；省略時預設
+ * `[]`（與 T4/T5 之既有行為相容）。
  * `snapshot`：本 Task 恆為 `null`（T7 範圍——完成流程尚未接線；即使 fixture
  * 直接以 `prisma` 寫入 `status=COMPLETED`，本函式仍不讀取任何
  * `snapshot*` 欄位，因為 DTO 目前完全不宣告這些欄位對應的原始資料——
  * AC-04/AC-05 測試只驗證 403/404，不驗證 COMPLETED 的 `snapshot` 內容）。
- * `completionBlockers`：僅 DRAFT 才計算（COMPLETED 為 `null`，§7.2 明文）。
+ * `completionBlockers`：僅 DRAFT 才計算（COMPLETED 為 `null`，§7.2 明文）；
+ * 第 10 項 `attachmentCount`（PHASE-006-T6 起）＝ `attachments.length`（本函式
+ * 只查詢 `status="LINKED"` 之附件，故 `.length` 即為 AC-22 之真實計數）。
  *
- * `computed`（PHASE-006-T5 起）：呼叫端（見下方 `buildMaintenanceApplicationDto`）
- * 一次呼叫 `computeMaintenanceComputed` 取得期間公務里程與計算結果後，經
- * `computed` 參數傳入——本函式本身**不**碰 DB（T4 即審 FW-T5 節義務：DTO
- * builder 不得偷查 DB）。`computed` 省略、為 `null`，或 `hasAllFields=false`
- * （五欄尚未齊備，連嘗試計算都沒有——沿 §4「分攤預覽」五態表之 Empty 狀態，
- * 與 T4「空 body → computed=null」既有行為逐位元相容）時，對外 `computed`
- * 欄位維持 `null`；`completionBlockers` 之 `officialKm`/`amountOutOfRange`
- * 亦沿用第一段語意（`null`/`false`）。五欄齊備後（無論是否 `calculable`）
- * `computed` 欄位即為非 `null` 之 `MaintenanceComputedDto` 物件。
+ * `computed`（PHASE-006-T5 起）：呼叫端一次呼叫 `computeMaintenanceComputed`
+ * 取得期間公務里程與計算結果後，經 `computed` 參數傳入。`computed` 省略、為
+ * `null`，或 `hasAllFields=false`（五欄尚未齊備，連嘗試計算都沒有——沿 §4
+ * 「分攤預覽」五態表之 Empty 狀態，與 T4「空 body → computed=null」既有行為
+ * 逐位元相容）時，對外 `computed` 欄位維持 `null`；`completionBlockers` 之
+ * `officialKm`/`amountOutOfRange` 亦沿用第一段語意（`null`/`false`）。五欄
+ * 齊備後（無論是否 `calculable`）`computed` 欄位即為非 `null` 之
+ * `MaintenanceComputedDto` 物件。
  */
 export function toMaintenanceApplicationDto(
   application: MaintenanceApplicationRecord,
-  computed: MaintenanceComputedResult | null = null
+  computed: MaintenanceComputedResult | null = null,
+  attachments: AttachmentDto[] = []
 ): MaintenanceApplicationDto {
   const maintenance = application.maintenance;
   const isDraft = application.status === "DRAFT";
@@ -620,7 +730,7 @@ export function toMaintenanceApplicationDto(
         lastOdometerKm: maintenance?.lastOdometerKm ?? null,
         currentOdometerKm: maintenance?.currentOdometerKm ?? null,
         actualCost: maintenance?.actualCost ?? null,
-        attachmentCount: 0,
+        attachmentCount: attachments.length,
         officialKm: computed?.officialKmForBlockers ?? null,
         amountOutOfRange: computed?.amountOutOfRange ?? false,
       })
@@ -644,7 +754,7 @@ export function toMaintenanceApplicationDto(
     currentOdometerKm: formatDecimalOrNull(maintenance?.currentOdometerKm ?? null),
     actualCost: formatDecimalOrNull(maintenance?.actualCost ?? null),
 
-    attachments: [],
+    attachments,
     completionBlockers,
     computed: isDraft && computed?.hasAllFields ? computed.dto : null,
     snapshot: null,
@@ -652,19 +762,29 @@ export function toMaintenanceApplicationDto(
 }
 
 // ---------------------------------------------------------------------------
-// buildMaintenanceApplicationDto — routes.ts 呼叫的薄編排層（T5）
+// buildMaintenanceApplicationDto — routes.ts 呼叫的薄編排層（T5／T6）
 //
 // 「呼叫端一次取得後傳入」之呼叫端本體：COMPLETED 申請**不**查詢期間公務
 // 里程（呼應 AC-28 之精神——已完成申請讀取不應觸發任何期間里程查詢；正式
 // spy 零重查驗證屬 T8，本函式之設計已提前滿足該不變式）。
+//
+// PHASE-006-T6：一次查詢真實 `LINKED` 附件（`refType="MAINTENANCE"`,
+// `refId=application.id`）並映射為 `AttachmentDto[]`——DRAFT／COMPLETED 皆
+// 查（已完成之保養詳情頁仍需顯示證明縮圖，AC-26），差異僅在是否另查
+// `computed`。
 // ---------------------------------------------------------------------------
 
 export async function buildMaintenanceApplicationDto(
   db: PrismaLike,
   application: MaintenanceApplicationRecord
 ): Promise<MaintenanceApplicationDto> {
+  const attachmentRows = await db.attachment.findMany({
+    where: { refType: "MAINTENANCE", refId: application.id, status: "LINKED" },
+  });
+  const attachments = attachmentRows.map(toAttachmentDto);
+
   if (application.status !== "DRAFT") {
-    return toMaintenanceApplicationDto(application, null);
+    return toMaintenanceApplicationDto(application, null, attachments);
   }
 
   const maintenance = application.maintenance;
@@ -677,5 +797,5 @@ export async function buildMaintenanceApplicationDto(
     actualCost: maintenance?.actualCost ?? null,
   });
 
-  return toMaintenanceApplicationDto(application, computed);
+  return toMaintenanceApplicationDto(application, computed, attachments);
 }

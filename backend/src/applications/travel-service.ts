@@ -982,6 +982,18 @@ export async function deleteApplication(prisma: PrismaClient, id: string): Promi
               segments.map((s) => s.id)
             );
           }
+          // PHASE-006-T6 (B-29): this route is generic across Application
+          // types (§8.1 "既有 generic 端點"), so deleting a MAINTENANCE draft
+          // also lands here. Its LINKED attachments use `refId = Application.id`
+          // itself (Spec §16 D2(a) — no child-table id to join through), so a
+          // single detach call by the application's own id is sufficient. For
+          // TRAVEL/other application ids this is a harmless no-op (no
+          // attachment ever carries refType=MAINTENANCE with that refId).
+          // Previously this call was absent, leaving deleted maintenance
+          // drafts' attachments LINKED forever (an orphan that
+          // `isEligibleForCleanup` can never sweep, since LINKED is always
+          // ineligible) — a real gap now closed.
+          await detachAttachmentsByRefTx(tx, "MAINTENANCE", [id]);
           await tx.application.delete({ where: { id } });
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
