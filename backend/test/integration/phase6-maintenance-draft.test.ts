@@ -319,36 +319,77 @@ describeWithDb("PHASE-006-T4 — 保養草稿 CRUD + 欄位驗證 + 授權隔離
   // ===========================================================================
 
   describe("PUT /applications/maintenance/:id > AC-03 ordered gate table: $label returns its own reason (400, never 500)", () => {
-    const cases: { label: string; field: string; value: unknown }[] = [
+    const cases: { label: string; field: string; value: unknown; exactReason?: string }[] = [
       { label: "date 非 YYYY-MM-DD 格式", field: "lastMaintenanceDate", value: "20260101" },
       { label: "date 非法曆日", field: "currentMaintenanceDate", value: "2026-02-30" },
       { label: "date 型別錯誤（數字）", field: "lastMaintenanceDate", value: 20260101 },
       { label: "odometer 非數字字串", field: "lastOdometerKm", value: "abc" },
       { label: "odometer 千分位", field: "lastOdometerKm", value: "1,000" },
       { label: "odometer 科學記號", field: "currentOdometerKm", value: "1e2" },
-      { label: "odometer 超過 2 位小數", field: "lastOdometerKm", value: "12.345" },
-      { label: "odometer 容量超出（1e8）", field: "currentOdometerKm", value: "100000000" },
+      {
+        label: "odometer 超過 2 位小數",
+        field: "lastOdometerKm",
+        value: "12.345",
+        exactReason: "最多允許 2 位小數",
+      },
+      {
+        label: "odometer 容量超出（1e8）",
+        field: "currentOdometerKm",
+        value: "100000000",
+        exactReason: "數值超出可儲存範圍（整數部分最多 8 位）",
+      },
       // 注意：JSON 無法傳輸實際的 NaN/Infinity 數字字面值（JSON.stringify 會將
       // 其序列化為 null，等同「清空」而非「非法值」）——故 HTTP 層以字串
       // "NaN"/"Infinity" 驗證 NaN/Infinity 防禦（純函式層之數字型別防禦已由
       // trip-validation.test.ts 之單元測試覆蓋，見該檔 Number.NaN 案例）。
       { label: "odometer NaN 字串", field: "lastOdometerKm", value: "NaN" },
       { label: "odometer Infinity 字串", field: "currentOdometerKm", value: "Infinity" },
-      { label: "odometer 型別錯誤（陣列）", field: "lastOdometerKm", value: [] },
+      {
+        label: "odometer 型別錯誤（陣列）",
+        field: "lastOdometerKm",
+        value: [],
+        exactReason: "必須為有效的數值（字串、數字或 null）",
+      },
       { label: "actualCost 非數字字串", field: "actualCost", value: "not-a-number" },
       { label: "actualCost 千分位", field: "actualCost", value: "1,234.00" },
       { label: "actualCost 科學記號", field: "actualCost", value: "1e5" },
       { label: "actualCost 超過 2 位小數", field: "actualCost", value: "100.005" },
-      { label: "actualCost 容量超出（1e10）", field: "actualCost", value: "10000000000" },
+      {
+        label: "actualCost 容量超出（1e10）",
+        field: "actualCost",
+        value: "10000000000",
+        exactReason: "數值超出可儲存範圍（整數部分最多 10 位）",
+      },
       { label: "actualCost NaN 字串", field: "actualCost", value: "NaN" },
       { label: "actualCost Infinity 字串", field: "actualCost", value: "Infinity" },
       { label: "actualCost 型別錯誤（布林）", field: "actualCost", value: true },
     ];
 
-    for (const { label, field, value } of cases) {
+    for (const { label, field, value, exactReason } of cases) {
       it(`${label} → 400 VALIDATION_ERROR，fields[] 定位到 ${field}`, async () => {
         const draft = await createOwnerDraft({});
         const resp = await putDraft(ownerCookie, draft.id as string, { [field]: value });
+        expect(resp.statusCode).toBe(400);
+        const body = resp.json<{
+          error: { code: string; fields?: { field: string; reason: string }[] };
+        }>();
+        expect(body.error.code).toBe("VALIDATION_ERROR");
+        const match = (body.error.fields ?? []).find((f) => f.field === field);
+        expect(match).toBeDefined();
+        if (exactReason !== undefined) {
+          expect(match?.reason).toBe(exactReason);
+        } else {
+          expect(match?.reason.length).toBeGreaterThan(0);
+        }
+      });
+    }
+
+    // SF-1（T4R Lite）：mutant V11 移除 POST 400 守門後全綠存活——POST 路徑
+    // 完全未覆蓋欄位驗證。此處以 POST 重跑同一組 gate table cases，確保
+    // POST（建立）與 PUT（更新）共享同一驗證路徑，兩者皆 400，不得靜默 201。
+    for (const { label, field, value } of cases) {
+      it(`POST ${label} → 400 VALIDATION_ERROR，fields[] 定位到 ${field}`, async () => {
+        const resp = await createDraft(ownerCookie, { [field]: value });
         expect(resp.statusCode).toBe(400);
         const body = resp.json<{
           error: { code: string; fields?: { field: string; reason: string }[] };
@@ -441,6 +482,23 @@ describeWithDb("PHASE-006-T4 — 保養草稿 CRUD + 欄位驗證 + 授權隔離
         where: { applicationId: draft.id as string },
       });
       expect(stillThere?.actualCost?.toFixed(2)).toBe("111.00");
+    });
+
+    // SF-2（T4R Lite）：mutant V10 將 assertApplicationMutable 移至欄位驗證
+    // 之後仍全綠存活——本人對已完成申請送出「畸形 body」時，若順序被移位，
+    // 會先撞到 400 格式驗證而非 403 狀態機守門。此測試釘住判定順序：
+    // 狀態機（403）先於格式驗證（400），即使 body 本身也不合法。
+    it("本人 PUT 已完成申請＋畸形 body → 仍為 403 FORBIDDEN，訊息逐字符合（狀態機先於格式驗證）", async () => {
+      const draft = await createOwnerDraft({ actualCost: "555.00" });
+      await markCompleted(draft.id as string);
+
+      const resp = await putDraft(ownerCookie, draft.id as string, {
+        actualCost: "not-a-number-at-all",
+      });
+      expect(resp.statusCode).toBe(403);
+      const body = resp.json<{ error: { code: string; message: string } }>();
+      expect(body.error.code).toBe("FORBIDDEN");
+      expect(body.error.message).toBe("已完成的申請不可修改，請建立修正版");
     });
 
     it("… > and rejects DELETE with 403", async () => {
