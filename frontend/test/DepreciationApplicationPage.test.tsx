@@ -501,6 +501,12 @@ describe("DepreciationApplicationPage", () => {
       expect(screen.getByText("0")).toBeInTheDocument();
       // 非錯誤狀態：不應出現「無法計算」文案
       expect(screen.queryByText("年度補貼金額：無法計算")).not.toBeInTheDocument();
+      // SF-3／Spec §4：Empty 列須有說明文字（非錯誤、為何是 0、仍可完成）
+      expect(
+        screen.getByText("該年度尚無已完成之差旅公務里程，補貼金額為 0；申請仍可完成。")
+      ).toBeInTheDocument();
+      // SF-3：Empty 態不得因 amount=0 而停用「完成申請」
+      expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
     });
 
     it("Error：讀取草稿 500 時顯示錯誤訊息與重試按鈕，點擊重試重新呼叫 GET", async () => {

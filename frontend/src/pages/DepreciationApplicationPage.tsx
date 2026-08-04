@@ -599,14 +599,22 @@ export default function DepreciationApplicationPage(): React.ReactElement {
                       ))}
                     </div>
                   ) : (
-                    <dl className="detail-list">
-                      <dt>年度公務里程</dt>
-                      <dd>{preview.officialKm} 公里</dd>
-                      <dt>折舊每公里補助單價</dt>
-                      <dd>{preview.perKmUnitPrice}</dd>
-                      <dt>年度補貼金額</dt>
-                      <dd>{preview.amount}</dd>
-                    </dl>
+                    <>
+                      <dl className="detail-list">
+                        <dt>年度公務里程</dt>
+                        <dd>{preview.officialKm} 公里</dd>
+                        <dt>折舊每公里補助單價</dt>
+                        <dd>{preview.perKmUnitPrice}</dd>
+                        <dt>年度補貼金額</dt>
+                        <dd>{preview.amount}</dd>
+                      </dl>
+                      {/* SF-3／Spec §4 Empty 列：calculable=true 但 amount=0 時非
+                          錯誤、非空白頁，須額外說明「為何是 0」＋「仍可完成」，
+                          金額本身不改帶「元」（全站既有慣例，§18 記勘誤）。 */}
+                      {preview.amount === 0 && (
+                        <p>該年度尚無已完成之差旅公務里程，補貼金額為 0；申請仍可完成。</p>
+                      )}
+                    </>
                   ))}
               </>
             )}
