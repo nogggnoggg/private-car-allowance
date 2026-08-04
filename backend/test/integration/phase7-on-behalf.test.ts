@@ -1,6 +1,6 @@
 /**
- * Integration tests for PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-34）
- * 與 AC-35 之非稽核面（本人自改不寫稽核／管理員改已完成 403）。
+ * Integration tests for PHASE-007-T11／T11b — 折舊代操作（代建立＋代修改）
+ * ＋ 稽核（AC-34／AC-35 全面）。
  *
  * Covers Spec §2 群組 J：
  *   - **AC-34** `POST /admin/users/:userId/applications/depreciation`（管理員
@@ -10,21 +10,26 @@
  *     一致性義務，文案沿差旅／保養既有端點）。稽核
  *     `APPLICATION_CREATED_ON_BEHALF`、`summary.type = "DEPRECIATION"`，
  *     **與業務寫入同交易**（回滾時稽核亦不留，以真交易而非 stub 證明）。
- *   - **AC-35（部分）** 本人自建／自改**不寫稽核**（沿 PHASE-004 AC-86）；
- *     管理員修改**已完成**申請 → **403**（AD-US-08 第 3 條）。
+ *   - **AC-35** 管理員 `PUT /applications/depreciation/:id` 於他人草稿 →
+ *     **200** 且寫 `APPLICATION_UPDATED_ON_BEHALF`（`summary.type =
+ *     "DEPRECIATION"`，含 `applicationYear` 變更前後值，不含密碼／token／
+ *     session）；本人自建／自改**不寫稽核**（沿 PHASE-004 AC-86）；管理員修改
+ *     **已完成**申請 → **403**（AD-US-08 第 3 條）。**不新增 `AuditAction`**。
  *   - **AC-29／§16 D9(a)** 無代完成路徑之負向斷言（三候選路徑 404 ＋
  *     `admin/routes.ts` 不得出現 complete 動詞之結構性掃描）。
  *
- * ── 本檔未涵蓋之 AC-35 稽核面（Packet 範圍衝突，見 Task Handoff） ─────────
- *   AC-35 之「管理員 `PUT /applications/depreciation/:id` 於他人草稿 → 寫
- *   `APPLICATION_UPDATED_ON_BEHALF`」需於 `backend/src/applications/routes.ts`
- *   之 PUT handler 建構 `onUpdated` hook（該處為唯一持有 actorId 者）——該檔
- *   為本 Task 之 **Files Forbidden**。故本檔**不**斷言「代修改不寫稽核」
- *   （避免把待修行為固化成測試），僅以 service 層注入證明 `onUpdated` 之
- *   同交易原子性已就緒（見「同交易回滾」段）。
+ * ── AC-35 稽核面之落地歷程（誠實記錄，勿據舊註解推論現況） ────────────────
+ *   AC-35 之稽核 hook 唯一正當落點為 `backend/src/applications/routes.ts` 之
+ *   PUT depreciation handler（呼叫端為唯一持有 `actorId` 者；service 層刻意
+ *   無 actor 概念以免新增夾帶面）。該檔原不在 T11 之 Files Allowed（Spec §15
+ *   T11 檔案清單漏列），故 T11 交付時 AC-35 稽核面暫缺、由 implementer 以
+ *   BLOCKED 回報；大總管裁定 (a) 後以 **T11b-LITE** 限縮授權補齊（見 Spec §18
+ *   2026-08-05「§15 T11 檔案清單勘誤」列）。**現況：AC-34／AC-35 皆已全面落地
+ *   並由本檔覆蓋**（代修改稽核見「AC-35 代修改」段 :521-602 一帶）。
  *
- * TDD: written BEFORE `POST /admin/users/:userId/applications/depreciation`
- * existed — 首輪 RED（404 route not found；見 Task Handoff 之 RED 輸出）。
+ * TDD: T11 之測試寫在 `POST /admin/users/:userId/applications/depreciation`
+ * 存在之前（首輪 RED：404 route not found）；T11b 之三條代修改稽核斷言寫在
+ * `onUpdated` hook 接線之前（RED：稽核列數 0）。兩份 RED 輸出見各自 Handoff。
  *
  * 沿用既有先例：`phase6-on-behalf.test.ts`（AC-30/31 同型全套覆蓋、直接呼叫
  * service 注入失敗以證交易回滾、sentinel AuditLog 釘死 hook 收到的是 `tx`
@@ -849,6 +854,81 @@ describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-
           `admin route "${path}" 含 complete 動詞（§16 D9(a) 禁止代完成路徑）`
         ).not.toMatch(/complete/i);
       }
+    });
+  });
+
+  // ===========================================================================
+  // SF-1（T11 即審）— 路由層稽核 hook 必須用交易 client `tx`，不得用外層
+  // `prisma`（結構性掃描）
+  // ===========================================================================
+
+  describe("SF-1 — 兩個路由層稽核 hook 皆以 tx.auditLog.create 寫入（結構性掃描）", () => {
+    // ─────────────────────────────────────────────────────────────────────
+    // 證據性質之誠實聲明（勿高估本段強度）：
+    //
+    // 這是**結構性（原始碼字面）證據，不是行為性證據**。「同交易回滾」段之
+    // sentinel 測試（直呼 service 並注入失敗）能真正殺死 service 層的
+    // `onCreated(prisma, …)`／`onUpdated(prisma, …)` mutant，因為那裡的 hook
+    // 由測試自己提供；但**路由層 hook 主體**內把 `tx.auditLog.create` 改成
+    // `prisma.auditLog.create`（reviewer M4／M4b）在全套 2256 條下零紅存活——
+    // 該 mutant 只在「業務寫入於 hook 之後失敗並回滾」時才有可觀測差異，而
+    // 路由層 hook 是交易內最後一步、其後無失敗點，故行為上不可達。
+    //
+    // runtime 觀測（spy `prisma.auditLog.create`）亦不可行：`buildServer` 內部
+    // 自建 PrismaClient，測試持有的 client 與其非同一實例，delegate spy 恆零
+    // 觀測（PHASE-007-T10 W-1 已就同一限制作成裁定並實證）。
+    //
+    // 因此本段以原始碼掃描補上這道縫：改壞即紅（M4 重放已實證），代價是它綁在
+    // 字面寫法上——重構 hook 寫法時請一併更新本段，而非刪除它。
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** 擷取指定 src 檔中，折舊代操作 hook 之整段賦值（`const onX: OnDepreciation… ? … : undefined;`）。 */
+    function extractDepreciationHookBlock(
+      relativePath: string,
+      declaration: string
+    ): { source: string; block: string } {
+      const absolutePath = fileURLToPath(new URL(relativePath, import.meta.url));
+      const source = readFileSync(absolutePath, "utf8");
+      const pattern = new RegExp(`${declaration}[\\s\\S]*?\\n\\s*: undefined;`);
+      const match = source.match(pattern);
+      // 防恆真：擷取失敗（重構改名／改寫法）必須讓本段紅燈，不得靜默略過而
+      // 使下方 `not.toMatch` 對空字串恆真。
+      expect(
+        match,
+        `無法於 ${relativePath} 擷取 hook 區塊（宣告樣式 "${declaration}" 已變更？請更新本掃描而非刪除）`
+      ).not.toBeNull();
+      const block = match?.[0] ?? "";
+      expect(block.length).toBeGreaterThan(0);
+      return { source, block };
+    }
+
+    it("admin/routes.ts 之 onCreated（AC-34）區塊：出現 tx.auditLog.create、不出現 prisma.auditLog.create", () => {
+      const { block } = extractDepreciationHookBlock(
+        "../../src/admin/routes.ts",
+        "const onCreated: OnDepreciationDraftCreated"
+      );
+
+      expect(block).toContain("tx.auditLog.create");
+      expect(
+        block,
+        "AC-34 稽核 hook 以交易外 prisma 寫入 → 主體回滾時將殘留孤兒稽核列"
+      ).not.toMatch(/prisma\.auditLog\.create/);
+      // hook 內只應有這一處寫入，避免日後夾帶第二個（可能用錯 client 的）寫入點。
+      expect(block.match(/auditLog\.create/g)?.length).toBe(1);
+    });
+
+    it("applications/routes.ts 之 onUpdated（AC-35）區塊：出現 tx.auditLog.create、不出現 prisma.auditLog.create", () => {
+      const { block } = extractDepreciationHookBlock(
+        "../../src/applications/routes.ts",
+        "const onUpdated: OnDepreciationDraftUpdated"
+      );
+
+      expect(block).toContain("tx.auditLog.create");
+      expect(
+        block,
+        "AC-35 稽核 hook 以交易外 prisma 寫入 → 主體回滾時將殘留孤兒稽核列"
+      ).not.toMatch(/prisma\.auditLog\.create/);
+      expect(block.match(/auditLog\.create/g)?.length).toBe(1);
     });
   });
 
