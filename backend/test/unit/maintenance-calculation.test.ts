@@ -53,6 +53,7 @@ const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
 const PHASE_006_SRC_FILES = [
   "src/applications/maintenance-calculation.ts",
   "src/applications/maintenance-blockers.ts", // PHASE-006-T3
+  "src/applications/maintenance-service.ts", // PHASE-006-T4
 ] as const;
 
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_006_SRC_FILES[0]);

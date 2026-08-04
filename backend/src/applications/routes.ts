@@ -60,6 +60,16 @@ import {
   toApplicationListItemDto,
 } from "./application-query.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
+import type {
+  CreateMaintenanceDraftInput,
+  UpdateMaintenanceDraftPatch,
+} from "./maintenance-service.js";
+import {
+  createMaintenanceDraft,
+  getMaintenanceApplication,
+  toMaintenanceApplicationDto,
+  updateMaintenanceDraft,
+} from "./maintenance-service.js";
 import { resolveTravelParameters } from "./travel-parameters.js";
 import type { OnTravelDraftUpdated, SegmentPatch } from "./travel-service.js";
 import {
@@ -72,7 +82,7 @@ import {
   toTravelApplicationDto,
   updateTravelDraft,
 } from "./travel-service.js";
-import { parseKmField, parseLocationField } from "./trip-validation.js";
+import { parseActualCostField, parseKmField, parseLocationField } from "./trip-validation.js";
 
 // ---------------------------------------------------------------------------
 // Plugin options
@@ -140,6 +150,36 @@ export function parsePurposeField(value: unknown): FieldParseResult<string | nul
     };
   }
   return { ok: true, value };
+}
+
+/**
+ * PHASE-006-T4: `lastMaintenanceDate`／`currentMaintenanceDate` 格式驗證
+ * （`YYYY-MM-DD`）——參數化版的 `parseTripDateField`（沿用同一個
+ * `parseUtcDate`，不重寫日期解析；field 名稱可帶入以定位錯誤欄位，二者
+ * 錯誤文案一致）。`null` = 清空；合法字串 = 設定；其餘 = 400。
+ */
+export function parseMaintenanceDateField(
+  value: unknown,
+  field: string,
+  label: string
+): FieldParseResult<Date | null> {
+  if (value === null) {
+    return { ok: true, value: null };
+  }
+  if (typeof value !== "string") {
+    return {
+      ok: false,
+      error: { field, reason: `${label}格式錯誤（必須為字串或 null）` },
+    };
+  }
+  const parsed = parseUtcDate(value);
+  if (!parsed) {
+    return {
+      ok: false,
+      error: { field, reason: `${label}必須為合法日期（格式：YYYY-MM-DD）` },
+    };
+  }
+  return { ok: true, value: parsed };
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +328,66 @@ function parsePreviewSegmentsInput(segmentsRaw: unknown): ParsedPreviewSegmentsR
   });
 
   return { errors, segments };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-006-T4: 保養草稿五欄格式驗證（三態語意共用，POST/PUT 皆呼叫）。
+// AC-02：缺席欄位一律視為「不提供」（POST 建立時 = null；PUT 更新時 = 不變，
+// 由 routes.ts 呼叫端依 hasOwnProperty 決定是否寫入 patch 物件的對應 key，
+// 與 `updateMaintenanceDraft` 的三態語意銜接一致）。
+// ---------------------------------------------------------------------------
+
+interface ParsedMaintenanceFields {
+  errors: FieldError[];
+  fields: {
+    lastMaintenanceDate?: Date | null;
+    currentMaintenanceDate?: Date | null;
+    lastOdometerKm?: Prisma.Decimal | null;
+    currentOdometerKm?: Prisma.Decimal | null;
+    actualCost?: Prisma.Decimal | null;
+  };
+}
+
+function parseMaintenanceFieldsInput(body: Record<string, unknown>): ParsedMaintenanceFields {
+  const errors: FieldError[] = [];
+  const fields: ParsedMaintenanceFields["fields"] = {};
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
+
+  if (has("lastMaintenanceDate")) {
+    const result = parseMaintenanceDateField(
+      body.lastMaintenanceDate,
+      "lastMaintenanceDate",
+      "上次保養日期"
+    );
+    if (!result.ok) errors.push(result.error);
+    else fields.lastMaintenanceDate = result.value;
+  }
+  if (has("currentMaintenanceDate")) {
+    const result = parseMaintenanceDateField(
+      body.currentMaintenanceDate,
+      "currentMaintenanceDate",
+      "本次保養日期"
+    );
+    if (!result.ok) errors.push(result.error);
+    else fields.currentMaintenanceDate = result.value;
+  }
+  if (has("lastOdometerKm")) {
+    const result = parseKmField(body.lastOdometerKm, "lastOdometerKm");
+    if (!result.ok) errors.push(result.error);
+    else fields.lastOdometerKm = result.value;
+  }
+  if (has("currentOdometerKm")) {
+    const result = parseKmField(body.currentOdometerKm, "currentOdometerKm");
+    if (!result.ok) errors.push(result.error);
+    else fields.currentOdometerKm = result.value;
+  }
+  if (has("actualCost")) {
+    const result = parseActualCostField(body.actualCost, "actualCost");
+    if (!result.ok) errors.push(result.error);
+    else fields.actualCost = result.value;
+  }
+
+  return { errors, fields };
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +638,95 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       );
 
       return reply.status(200).send({ preview });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/maintenance (PHASE-006-T4, AC-02)
+  // body { lastMaintenanceDate?, currentMaintenanceDate?, lastOdometerKm?,
+  //        currentOdometerKm?, actualCost? } — all entirely optional.
+  // owner is ALWAYS request.currentUser.id — any body.ownerId is silently
+  // ignored (never read at all, below; §6.2 資料隔離不變式 1).
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/maintenance",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const selfId = request.currentUser.id;
+      const createInput: CreateMaintenanceDraftInput = {
+        ownerId: selfId,
+        createdById: selfId,
+        ...fields,
+      };
+
+      const application = await createMaintenanceDraft(prisma, createInput);
+      const dto = toMaintenanceApplicationDto(application);
+      return reply.status(201).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /applications/maintenance/:id (PHASE-006-T4, AC-05, B-34)
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/applications/maintenance/:id",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const application = await getMaintenanceApplication(prisma, id);
+      if (!application) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // §6.2 資料隔離不變式 1: 授權一律以 DB 查得之 ownerId 為準。
+      assertOwnershipOrAdmin(request.currentUser, application.ownerId);
+
+      const dto = toMaintenanceApplicationDto(application);
+      return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /applications/maintenance/:id (PHASE-006-T4, AC-02/03/04/05, 三態語意)
+  // -------------------------------------------------------------------------
+
+  fastify.put(
+    "/applications/maintenance/:id",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      const existing = await getMaintenanceApplication(prisma, id);
+      if (!existing) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // 判定順序（§6.1 明文）：授權（401/403）先於格式驗證（400）。
+      assertOwnershipOrAdmin(request.currentUser, existing.ownerId);
+      assertApplicationMutable(existing.status); // AC-04: 已完成 → 403 FORBIDDEN
+
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      // AC-20（前瞻）: 任何金額／里程／狀態欄位（totalAmount/status/ownerId/
+      // createdById 等）一律忽略——本函式從未讀取這些 body 欄位。
+      const patch: UpdateMaintenanceDraftPatch = fields;
+      const updated = await updateMaintenanceDraft(prisma, id, patch);
+      const dto = toMaintenanceApplicationDto(updated);
+      return reply.status(200).send({ application: dto });
     }
   );
 
