@@ -21,6 +21,23 @@
  * 邏輯」，本檔對 spy 呼叫次數／參數之斷言會觀察到 0 次呼叫而必然轉紅——這即是
  * 「刪除 import 改為私有複製必紅」的具體實現。
  *
+ * ── PHASE-007-T6b（本檔第二批，追加於 T6 之 18 條之後） ────────────────
+ *   Gate 裁定將 AC-13／AC-14 自 T6 切出為獨立 Task（Spec §15 T6/T9 之 AC 數
+ *   說明，處置 (i)）。本批為**純測試 Task，零 src 變更**：所釘住的全部是
+ *   `sumOfficialMileage` 之**既有**行為（D2(a) `count`／`SUM` 不對稱）與 T6
+ *   已落地之 `resolveOwnerId` 授權面，非新行為。
+ *
+ *   「紅燈」以突變自證替代（Packet 明示）：見各 `it` 上方之 MUTANT 註記，
+ *   每條均列出「把斷言改成相反語意即紅」之具體形式，Handoff 附實跑輸出。
+ *
+ *   已知限制（移交 T7）：`perKmUnitPrice`／`rawAmount`／`amount` 於 T7 參數
+ *   選版落地前恆為 `null`（`computeDepreciationComputed` 之 T7 接線縫），
+ *   故 AC-13「金額只用 `totalKm`」目前以**不變式形式**釘住——「`officialKm`
+ *   相同而 `officialApplicationCount` 不同時，全部金額面欄位必須逐欄全等」
+ *   ——此斷言於 T7 之後會自動升級為對真實金額的鑑別；另 AC-14 之「草稿 DTO
+ *   側 `computed`」斷言亦俟 T7 接入 `computed` 後方可行（本批經預覽端點與
+ *   `computeDepreciationComputed` 服務函式觀察）。
+ *
  * Test discipline (Spec §11.0 / Packet):
  *   - loginName prefix "p7t6_" + per-run random suffix；synthetic data only.
  *   - cleanup scoped to this suite's own tracked application ids + loginName
@@ -32,6 +49,7 @@ import { fileURLToPath } from "node:url";
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { computeDepreciationComputed } from "../../src/applications/depreciation-service.js";
 import { hashPassword } from "../../src/auth/password.js";
 import * as mileageEngine from "../../src/mileage/mileage-engine.js";
 import { buildServer } from "../../src/server.js";
@@ -97,6 +115,15 @@ const YEAR_ATTRIBUTION = 2082;
 const YEAR_ELIGIBILITY = 2093;
 const YEAR_CONTRAST = 2054;
 const YEAR_PREVIEW_MISC = 2045;
+
+// T6b（AC-13／AC-14）專用年度；同樣彼此相隔 ≥3 年，且與上方 T6 年度相隔 ≥3。
+const YEAR_NULL_SNAPSHOT = 2036;
+const YEAR_NULL_ONLY = 2033;
+const YEAR_COUNT_NEUTRAL_B = 2030;
+const YEAR_COUNT_NEUTRAL_A = 2027;
+const YEAR_AC14_CONTRAST = 2021;
+const YEAR_ON_BEHALF = 2018;
+const YEAR_AC14_MISC = 2015;
 
 type PreviewDto = {
   calculable: boolean;
@@ -625,6 +652,286 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
     it("otherId 之獨立性自證：他人以自己的身分預覽同一年度 → 200（403 僅來自「帶他人 ownerId」而非端點不可用）", async () => {
       const preview = await previewOk(otherCookie, { applicationYear: YEAR_PREVIEW_MISC });
       expect(preview.officialKm).toBe("0.00");
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-007-T6b
+  // AC-13 — D2(a) `count`／`SUM` 不對稱之折舊處置（Spec §2 AC-13 逐字、B-13）
+  // ===========================================================================
+
+  describe("AC-13: a null snapshot row is counted by applicationCount but ignored by totalKm; only totalKm feeds the amount", () => {
+    /**
+     * `null` 快照 fixture（Packet 明示，沿 PHASE-006 AC-15 同型手法）：已完成
+     * 差旅之 `snapshotTotalKm` 直寫 `null`（`createApplicationRow` 收到
+     * `null` 時該欄留空，DB 端即為 `NULL`）。
+     */
+    it("已完成差旅之 snapshotTotalKm 為 null 時：officialApplicationCount 計入該列、officialKm 忽略該列", async () => {
+      const y = YEAR_NULL_SNAPSHOT;
+
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${y}-03-03`,
+        tripDate: `${y}-03-03`,
+        snapshotTotalKm: "60.00",
+      });
+      const nullRowId = await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${y}-09-09`,
+        tripDate: `${y}-09-09`,
+        snapshotTotalKm: null,
+      });
+
+      // fixture 自證：該列之 snapshotTotalKm 確實為 DB 層 NULL（若 fixture 實
+      // 際寫入了 0.00，本測試對「SUM 忽略 null」之鑑別力即不成立）。
+      const nullRow = await prisma.travelApplication.findUniqueOrThrow({
+        where: { applicationId: nullRowId },
+        select: { snapshotTotalKm: true },
+      });
+      expect(nullRow.snapshotTotalKm).toBeNull();
+
+      const preview = await previewOk(ownerCookie, { applicationYear: y });
+
+      // MUTANT：把下一行改為 `toBe(1)`（「count 不計入 null 列」）即紅——
+      // 本斷言釘住的正是引擎既有之不對稱行為本身。
+      expect(preview.officialApplicationCount).toBe(2);
+      // MUTANT：把下一行改為 `"0.00"` 或任何含該列貢獻的值即紅。
+      expect(preview.officialKm).toBe("60.00");
+    });
+
+    it("極端外觀（B-13 逐字）：該年只有一筆 null 快照之已完成差旅 → 筆數 1 而里程 0.00（偏差方向保守：偏低、不溢付）", async () => {
+      const y = YEAR_NULL_ONLY;
+
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${y}-07-07`,
+        tripDate: `${y}-07-07`,
+        snapshotTotalKm: null,
+      });
+
+      const preview = await previewOk(ownerCookie, { applicationYear: y });
+      expect(preview.officialApplicationCount).toBe(1);
+      expect(preview.officialKm).toBe("0.00");
+    });
+
+    /**
+     * AC-13 後半逐字：「折舊之任何金額計算一律只使用 `totalKm`；
+     * `applicationCount` 純供顯示，**不得**參與分子、分母或任何推導」。
+     *
+     * 不變式形式：兩個年度之 `officialKm` 完全相同、`officialApplicationCount`
+     * 相異（1 vs 3）時，**全部金額面欄位必須逐欄全等**。若任何實作把
+     * `applicationCount` 帶進金額推導（例如以之為分母求平均、或以之為「有無
+     * 資料」之判準），兩者必產生可觀測差異而必紅。
+     *
+     * T7 接入參數選版後，本斷言比較的會是真實的
+     * `perKmUnitPrice`／`rawAmount`／`amount`，鑑別力自動升級——不需改寫。
+     */
+    it("applicationCount 不參與任何金額推導：officialKm 相同而筆數相異（1 vs 3）時，全部金額面欄位逐欄全等", async () => {
+      const yA = YEAR_COUNT_NEUTRAL_A;
+      const yB = YEAR_COUNT_NEUTRAL_B;
+
+      // A 年：單一筆 100.00。
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${yA}-06-06`,
+        tripDate: `${yA}-06-06`,
+        snapshotTotalKm: "100.00",
+      });
+
+      // B 年：同樣是 100.00 之 totalKm，但另有兩筆 null 快照列（筆數 3）。
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${yB}-06-06`,
+        tripDate: `${yB}-06-06`,
+        snapshotTotalKm: "100.00",
+      });
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${yB}-06-07`,
+        tripDate: `${yB}-06-07`,
+        snapshotTotalKm: null,
+      });
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${yB}-06-08`,
+        tripDate: `${yB}-06-08`,
+        snapshotTotalKm: null,
+      });
+
+      const a = await previewOk(ownerCookie, { applicationYear: yA });
+      const b = await previewOk(ownerCookie, { applicationYear: yB });
+
+      // 前提自證：兩年之 totalKm 相同、筆數確實相異（否則本不變式無鑑別力）。
+      expect(a.officialKm).toBe("100.00");
+      expect(b.officialKm).toBe("100.00");
+      expect(a.officialApplicationCount).toBe(1);
+      expect(b.officialApplicationCount).toBe(3);
+
+      // 金額面逐欄全等（`officialApplicationCount` 為唯一允許相異之欄位）。
+      expect(b.perKmUnitPrice).toEqual(a.perKmUnitPrice);
+      expect(b.rawAmount).toEqual(a.rawAmount);
+      expect(b.amount).toEqual(a.amount);
+      expect(b.calculable).toEqual(a.calculable);
+      expect(b.blockingCodes).toEqual(a.blockingCodes);
+      expect({ ...b, officialApplicationCount: a.officialApplicationCount }).toEqual(a);
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-007-T6b
+  // AC-14 — `ownerId` 恆為擁有人；預覽 `resolveOwnerId` fail-closed
+  // ===========================================================================
+
+  describe("AC-14: ownerId is always the application owner; preview resolves ownerId fail-closed (403 for another user) and authorises before field validation", () => {
+    /**
+     * 代操作草稿列（管理員代建）——`POST /admin/users/:userId/applications/
+     * depreciation` 屬 T10（AC-34）尚未落地，故此處以 DB fixture 直建等價
+     * 資料形狀：`ownerId` ＝ 擁有人、`createdById` ＝ 操作者（管理員）。
+     */
+    async function createOnBehalfDepreciationDraft(applicationYear: number): Promise<string> {
+      const application = await prisma.application.create({
+        data: {
+          type: "DEPRECIATION",
+          status: "DRAFT",
+          ownerId,
+          createdById: adminId,
+          primaryDate: new Date(Date.UTC(applicationYear, 11, 31)),
+          depreciation: { create: { applicationYear } },
+        },
+      });
+      track(application.id);
+      return application.id;
+    }
+
+    it("代操作草稿之年度里程以擁有人計算：computeDepreciationComputed 收到 Application.ownerId（絕非 createdById）", async () => {
+      const y = YEAR_ON_BEHALF;
+
+      // 擁有人與操作者於同一年度各有差旅，且金額顯著相異（鑑別力來源）。
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${y}-02-02`,
+        tripDate: `${y}-02-02`,
+        snapshotTotalKm: "88.00",
+      });
+      await createApplicationRow({
+        ownerId: adminId,
+        status: "COMPLETED",
+        primaryDate: `${y}-02-02`,
+        tripDate: `${y}-02-02`,
+        snapshotTotalKm: "777.00",
+      });
+
+      const draftId = await createOnBehalfDepreciationDraft(y);
+
+      // 006 T8 MF-1 教訓：代操作夾帶一律以**頂層純量**斷言（不比整包物件）。
+      const draftRow = await prisma.application.findUniqueOrThrow({
+        where: { id: draftId },
+        select: { ownerId: true, createdById: true },
+      });
+      expect(draftRow.ownerId).toBe(ownerId);
+      expect(draftRow.createdById).toBe(adminId);
+      expect(draftRow.ownerId).not.toBe(draftRow.createdById);
+
+      // 服務函式面：以草稿之擁有人計算 → 擁有人的 88.00。
+      const byOwner = await computeDepreciationComputed(prisma, {
+        ownerId: draftRow.ownerId,
+        applicationYear: y,
+      });
+      // MUTANT：把上一行的 `draftRow.ownerId` 改為 `draftRow.createdById`
+      // （即「以操作者計算」之錯誤實作）→ 下一行得到 "777.00" 而必紅。
+      expect(byOwner.officialKm).toBe("88.00");
+      expect(byOwner.officialApplicationCount).toBe(1);
+
+      // 鑑別力自證：操作者於同年度確實有一筆顯著相異的里程（非「查無資料」假綠）。
+      const byOperator = await computeDepreciationComputed(prisma, {
+        ownerId: draftRow.createdById,
+        applicationYear: y,
+      });
+      expect(byOperator.officialKm).toBe("777.00");
+
+      // 端點面：管理員以該草稿之擁有人預覽 → 同為擁有人之值。
+      const preview = await previewOk(adminCookie, {
+        ownerId: draftRow.ownerId,
+        applicationYear: y,
+      });
+      expect(preview.officialKm).toBe("88.00");
+    });
+
+    it("對照組（AC-14 括號逐字）：管理員本人該年有差旅、擁有人無差旅 → 擁有人之里程為 0.00", async () => {
+      const y = YEAR_AC14_CONTRAST;
+      await createApplicationRow({
+        ownerId: adminId,
+        status: "COMPLETED",
+        primaryDate: `${y}-10-10`,
+        tripDate: `${y}-10-10`,
+        snapshotTotalKm: "555.00",
+      });
+
+      const forOwner = await previewOk(adminCookie, { ownerId, applicationYear: y });
+      expect(forOwner.officialKm).toBe("0.00");
+      expect(forOwner.officialApplicationCount).toBe(0);
+
+      // 反向對照：同一年度、同一端點，管理員查自己 → 555.00（資料確實存在）。
+      const forAdmin = await previewOk(adminCookie, { ownerId: adminId, applicationYear: y });
+      expect(forAdmin.officialKm).toBe("555.00");
+    });
+
+    it("B-28 fail-closed：一般使用者帶他人 ownerId → 403 FORBIDDEN，不靜默降級為自己，且回應不含任何數值", async () => {
+      const y = YEAR_AC14_MISC;
+      await createApplicationRow({
+        ownerId: otherId,
+        status: "COMPLETED",
+        primaryDate: `${y}-01-20`,
+        tripDate: `${y}-01-20`,
+        snapshotTotalKm: "444.00",
+      });
+
+      const resp = await previewRequest(ownerCookie, { ownerId: otherId, applicationYear: y });
+      expect(resp.statusCode).toBe(403);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("FORBIDDEN");
+      // 不洩漏他人里程：回應本文不得出現任何數值欄位或該值本身。
+      expect(resp.body).not.toContain("officialKm");
+      expect(resp.body).not.toContain("444");
+      // 「不靜默降級為自己」：若實作把 ownerId 降級為呼叫者，會得到 200。
+      expect(resp.statusCode).not.toBe(200);
+    });
+
+    it("B-29／B-30：一般使用者帶自己的 ownerId → 200（等同不帶）；管理員指定他人 ownerId → 200", async () => {
+      const y = YEAR_ON_BEHALF;
+
+      const selfExplicit = await previewOk(ownerCookie, { ownerId, applicationYear: y });
+      const selfImplicit = await previewOk(ownerCookie, { applicationYear: y });
+      expect(selfExplicit).toEqual(selfImplicit);
+      expect(selfExplicit.officialKm).toBe("88.00");
+
+      const adminForOther = await previewOk(adminCookie, {
+        ownerId: otherId,
+        applicationYear: y,
+      });
+      expect(adminForOther.officialKm).toBe("0.00");
+    });
+
+    it("授權先於欄位格式驗證（§6.1 明文、沿 PHASE-005 B-26／006 §6.1）：他人 ownerId ＋ 畸形 applicationYear → 403 而非 400", async () => {
+      const resp = await previewRequest(ownerCookie, {
+        ownerId: otherId,
+        applicationYear: "not-a-year",
+      });
+      expect(resp.statusCode).toBe(403);
+      expect(resp.json<{ error: { code: string } }>().error.code).toBe("FORBIDDEN");
+
+      // 判定順序自證：同一畸形年度、不帶他人 ownerId → 400（證明格式驗證確實
+      // 在場，403 是「先授權」而非「該 body 根本不會被驗證」）。
+      const sameBodySelf = await previewRequest(ownerCookie, { applicationYear: "not-a-year" });
+      expect(sameBodySelf.statusCode).toBe(400);
+      expect(sameBodySelf.json<{ error: { code: string } }>().error.code).toBe("VALIDATION_ERROR");
     });
   });
 });
