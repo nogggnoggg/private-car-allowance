@@ -103,18 +103,46 @@ function isActualCostInvalid(cost: Prisma.Decimal): boolean {
 }
 
 /**
- * 計算保養申請草稿的「尚未完成項」清單（§7.4 固定順序，AC-07/08/09/10/18）。
- * 回傳全部未通過項（AC-10），不可只回第一項；輸出順序穩定可預期，逐項對應
- * §7.4 表格 1~11 之固定順序。
+ * AC-18 共用 predicate（PHASE-006-T5R SF-1 修復）：`期間公務里程 > 保養區間里程`。
+ * 單一事實來源——供本檔（第 9 項）與 `maintenance-service.ts`
+ * （`computeMaintenanceComputed` 之 `blockingCodes` 組裝）共同呼叫，避免同一條
+ * AC-18 規則出現兩份互相獨立、可各自漂移的實作（T5 即審 SF-1：`maintenance-
+ * service.ts` 曾就地重寫 `result.officialKm.greaterThan(result.intervalKm)`，
+ * 與本檔判定式各自獨立，mutant 可分別存活）。
+ *
+ * 非有限值（防禦性，官方里程理論上恆為有限）視同超出，保守失敗而非靜默放行
+ * （同檔頭 NaN 防禦原則）。AC-18 明文要求以 `O`／`I` 之 Decimal 直接比較，
+ * 不得以取整後之 ratio 比較。
  */
-export function computeMaintenanceBlockers(input: ComputeMaintenanceBlockersInput): Blocker[] {
-  // 先依 1~8 之判定填入 fieldLevelBlockers（決定 9/11 之啟用閘門），
-  // 最終輸出時再依 §7.4 固定順序（1..11）組裝——第 10 項雖與 1~8 同屬
-  // 「結構性」（判定不需 officialKm），但**輸出順序**仍須排在第 9 項之後
-  // （§7.4 表格順序），故不可直接 append 在 1~8 之後即回傳。
+export function isOfficialKmExceedsInterval(
+  officialKm: Prisma.Decimal,
+  intervalKm: Prisma.Decimal
+): boolean {
+  return !officialKm.isFinite() || !intervalKm.isFinite() || officialKm.greaterThan(intervalKm);
+}
+
+/**
+ * §7.4 第 1~8 項（結構性）判定——PHASE-006-T5R SF-2 修復：抽出為獨立可匯出
+ * 函式，供 `maintenance-service.ts` 之 `computeMaintenanceComputed` 於「不可
+ * 計算」分支（欄位未齊 / `intervalKm ≤ 0`）重用，填充 `MaintenanceComputedDto.
+ * blockingCodes`（§7.2），避免對同一組結構性規則另寫第三份實作。
+ *
+ * 僅回傳第 1~8 項（不含第 9/10/11 項——這三項屬「計算性」或「附件」，與
+ * 本函式「欄位是否齊備、順序是否合法」之結構性判定無關）。
+ */
+export function computeMaintenanceStructuralBlockers(
+  input: Pick<
+    ComputeMaintenanceBlockersInput,
+    | "lastMaintenanceDate"
+    | "currentMaintenanceDate"
+    | "lastOdometerKm"
+    | "currentOdometerKm"
+    | "actualCost"
+  >
+): Blocker[] {
+  const fieldLevelBlockers: Blocker[] = [];
 
   // ── 1~3：保養日期 ────────────────────────────────────────────────────
-  const fieldLevelBlockers: Blocker[] = [];
   const { lastMaintenanceDate, currentMaintenanceDate } = input;
   if (lastMaintenanceDate === null) {
     fieldLevelBlockers.push({
@@ -187,6 +215,22 @@ export function computeMaintenanceBlockers(input: ComputeMaintenanceBlockersInpu
     });
   }
 
+  return fieldLevelBlockers;
+}
+
+/**
+ * 計算保養申請草稿的「尚未完成項」清單（§7.4 固定順序，AC-07/08/09/10/18）。
+ * 回傳全部未通過項（AC-10），不可只回第一項；輸出順序穩定可預期，逐項對應
+ * §7.4 表格 1~11 之固定順序。
+ */
+export function computeMaintenanceBlockers(input: ComputeMaintenanceBlockersInput): Blocker[] {
+  // 先依 1~8 之判定填入 fieldLevelBlockers（決定 9/11 之啟用閘門），
+  // 最終輸出時再依 §7.4 固定順序（1..11）組裝——第 10 項雖與 1~8 同屬
+  // 「結構性」（判定不需 officialKm），但**輸出順序**仍須排在第 9 項之後
+  // （§7.4 表格順序），故不可直接 append 在 1~8 之後即回傳。
+  const fieldLevelBlockers = computeMaintenanceStructuralBlockers(input);
+  const { lastOdometerKm, currentOdometerKm } = input;
+
   // 第 9、11 項僅在第 1~8 項全通過時才可能出現（§7.4 註記逐字：「否則
   // 無法計算」）——與第 10 項（結構性，判斷本身不需 1~8 通過）無關。
   const fieldLevelPassed = fieldLevelBlockers.length === 0;
@@ -203,10 +247,10 @@ export function computeMaintenanceBlockers(input: ComputeMaintenanceBlockersInpu
     );
     const officialKm = input.officialKm;
     // AC-18 明文要求：必須以 O 與 I 之 Decimal 直接比較，不得以取整後之
-    // ratio 比較。非有限值（防禦性，官方里程理論上恆為有限）視同超出，
-    // 保守失敗而非靜默放行（同檔頭 NaN 防禦原則）。
-    const officialExceedsInterval =
-      !officialKm.isFinite() || !intervalKm.isFinite() || officialKm.greaterThan(intervalKm);
+    // ratio 比較——共用 predicate（見上方 `isOfficialKmExceedsInterval`
+    // 文件註解，PHASE-006-T5R SF-1：單一事實來源，供本檔與
+    // `maintenance-service.ts` 共同呼叫）。
+    const officialExceedsInterval = isOfficialKmExceedsInterval(officialKm, intervalKm);
     if (officialExceedsInterval) {
       item9 = {
         code: "OFFICIAL_KM_EXCEEDS_INTERVAL",

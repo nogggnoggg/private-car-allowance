@@ -44,7 +44,11 @@ import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.j
 import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
 import type { Blocker } from "./maintenance-blockers.js";
-import { computeMaintenanceBlockers } from "./maintenance-blockers.js";
+import {
+  computeMaintenanceBlockers,
+  computeMaintenanceStructuralBlockers,
+  isOfficialKmExceedsInterval,
+} from "./maintenance-blockers.js";
 import {
   calculateMaintenance,
   isMaintenanceCalculationOverCapacity,
@@ -395,22 +399,47 @@ function formatRawAmountOrNull(value: Prisma.Decimal | null): string | null {
   return value === null ? null : value.toFixed(4);
 }
 
-const NOT_CALCULABLE_RESULT: MaintenanceComputedResult = {
-  dto: {
-    calculable: false,
-    intervalKm: null,
-    officialKm: null,
-    officialApplicationCount: null,
-    ratio: null,
-    ratioPercent: null,
-    rawAmount: null,
-    amount: null,
-    blockingCodes: [],
-  },
-  officialKmForBlockers: null,
-  amountOutOfRange: false,
-  hasAllFields: false,
-};
+/**
+ * 「欄位未齊」之不可計算結果（PHASE-006-T5R SF-2 修復）：`blockingCodes`
+ * 依當下傳入之五欄現況，重用 `computeMaintenanceStructuralBlockers`（§7.4
+ * 第 1~8 項結構性判定，與 `computeMaintenanceBlockers` 內部第一段同一份
+ * 實作）計算，**不**回傳固定空陣列——沿 §7.2 `blockingCodes` 定義「不可
+ * 計算之原因代碼」，欄位未齊本身即為原因，應可見對應 `*_REQUIRED`／
+ * `*_ORDER_INVALID` 碼。
+ *
+ * （T5R 即審 AR-1 一併修復）本函式**逐請求建構**新物件，不再回傳模組級
+ * 共用單例——原 `NOT_CALCULABLE_RESULT` 為模組級可變常數，各請求共享同一
+ * 物件參照；本次修復使 `blockingCodes` 依請求輸入而異，若繼續共用同一
+ * 物件將導致跨請求污染（同一參照被不同呼叫端各自解讀成不同語意）。
+ */
+function buildFieldsIncompleteResult(
+  input: Pick<
+    ComputeMaintenanceComputedInput,
+    | "lastMaintenanceDate"
+    | "currentMaintenanceDate"
+    | "lastOdometerKm"
+    | "currentOdometerKm"
+    | "actualCost"
+  >
+): MaintenanceComputedResult {
+  const structuralBlockers = computeMaintenanceStructuralBlockers(input);
+  return {
+    dto: {
+      calculable: false,
+      intervalKm: null,
+      officialKm: null,
+      officialApplicationCount: null,
+      ratio: null,
+      ratioPercent: null,
+      rawAmount: null,
+      amount: null,
+      blockingCodes: structuralBlockers.map((b) => b.code),
+    },
+    officialKmForBlockers: null,
+    amountOutOfRange: false,
+    hasAllFields: false,
+  };
+}
 
 /**
  * 計算保養分攤預覽（AC-11~20 之核心編排）。五欄任一為 `null`（未齊）→
@@ -444,7 +473,13 @@ export async function computeMaintenanceComputed(
     currentOdometerKm === null ||
     actualCost === null
   ) {
-    return NOT_CALCULABLE_RESULT;
+    return buildFieldsIncompleteResult({
+      lastMaintenanceDate,
+      currentMaintenanceDate,
+      lastOdometerKm,
+      currentOdometerKm,
+      actualCost,
+    });
   }
 
   // AC-14：唯一呼叫點；ownerId 恆為呼叫端傳入之擁有人，本函式從不讀取
@@ -463,6 +498,18 @@ export async function computeMaintenanceComputed(
   });
 
   if (!result.calculable) {
+    // PHASE-006-T5R SF-2 修復：五欄皆非 null（已通過上方 guard），
+    // `calculable=false` 於此僅可能因 `intervalKm ≤ 0`（含相等，同
+    // `ODOMETER_ORDER_INVALID` 條件）或防禦性非有限值——重用同一份結構性
+    // 判定（`computeMaintenanceStructuralBlockers`）填充 `blockingCodes`，
+    // 不再回傳固定空陣列，亦不另寫第三份 `intervalKm ≤ 0` 判定。
+    const structuralBlockers = computeMaintenanceStructuralBlockers({
+      lastMaintenanceDate,
+      currentMaintenanceDate,
+      lastOdometerKm,
+      currentOdometerKm,
+      actualCost,
+    });
     return {
       dto: {
         calculable: false,
@@ -473,7 +520,7 @@ export async function computeMaintenanceComputed(
         ratioPercent: null,
         rawAmount: null,
         amount: null,
-        blockingCodes: [],
+        blockingCodes: structuralBlockers.map((b) => b.code),
       },
       // AC-08 已於上游擋下此輸入（本函式獨立防禦）；此處與 fieldLevelBlockers
       // 之互斥語意呼應，抑制第 9/11 項（見 maintenance-blockers.ts 檔頭）。
@@ -484,8 +531,10 @@ export async function computeMaintenanceComputed(
   }
 
   const overCapacity = isMaintenanceCalculationOverCapacity(result);
-  // AC-18 明文：以 O 與 I 之 Decimal 直接比較，不得以取整後之 ratio 比較。
-  const officialExceedsInterval = result.officialKm.greaterThan(result.intervalKm);
+  // AC-18 明文：以 O 與 I 之 Decimal 直接比較，不得以取整後之 ratio 比較——
+  // 共用 predicate（PHASE-006-T5R SF-1：單一事實來源，見
+  // `maintenance-blockers.ts` 之 `isOfficialKmExceedsInterval` 文件註解）。
+  const officialExceedsInterval = isOfficialKmExceedsInterval(result.officialKm, result.intervalKm);
 
   const blockingCodes: string[] = [];
   if (officialExceedsInterval) blockingCodes.push("OFFICIAL_KM_EXCEEDS_INTERVAL");

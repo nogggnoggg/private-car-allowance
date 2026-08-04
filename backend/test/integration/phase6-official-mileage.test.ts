@@ -29,7 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -172,7 +172,16 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
   // Fixture helpers
   // ===========================================================================
 
-  /** 直接建立一筆 TRAVEL/MAINTENANCE 之 Application 列（不經 API，控制精確狀態）。 */
+  /**
+   * 直接建立一筆 TRAVEL/MAINTENANCE 之 Application 列（不經 API，控制精確狀態）。
+   *
+   * `segments`（PHASE-006-T5R SF-3 修復）：若提供，則建立對應之 `TripSegment`
+   * 列，且 `snapshotTotalKm` 一律由 `Σ segments[].totalKm` 推導（忽略呼叫端
+   * 另傳的 `snapshotTotalKm`，避免兩者互相矛盾）——沿
+   * `phase5-mileage-endpoint.test.ts` 之 `createCompletedTravel` 同型 fixture
+   * （見該檔 180~219 行）。未提供 `segments` 時維持既有行為（僅設定
+   * `snapshotTotalKm`，不建 `TripSegment`）。
+   */
   async function createTravelRow(opts: {
     ownerId: string;
     type?: "TRAVEL" | "MAINTENANCE";
@@ -180,9 +189,15 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
     primaryDate: string;
     tripDate?: string | null;
     snapshotTotalKm?: string | null;
+    segments?: Array<{ totalKm: string; highwayKm: string }>;
   }): Promise<string> {
     const type = opts.type ?? "TRAVEL";
     const hasTravel = type === "TRAVEL";
+    const snapshotTotalKm = opts.segments
+      ? opts.segments
+          .reduce((acc, seg) => acc.plus(new Prisma.Decimal(seg.totalKm)), new Prisma.Decimal("0"))
+          .toFixed(2)
+      : (opts.snapshotTotalKm ?? undefined);
     const application = await prisma.application.create({
       data: {
         type,
@@ -200,7 +215,7 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
                       : opts.tripDate === null
                         ? undefined
                         : new Date(opts.tripDate),
-                  snapshotTotalKm: opts.snapshotTotalKm ?? undefined,
+                  snapshotTotalKm,
                 },
               },
             }
@@ -209,6 +224,20 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
       include: { travel: true },
     });
     track(application.id);
+    if (opts.segments) {
+      for (const [i, seg] of opts.segments.entries()) {
+        await prisma.tripSegment.create({
+          data: {
+            travelApplicationId: application.id,
+            sortOrder: i,
+            origin: "合成起點",
+            destination: "合成迄點",
+            totalKm: seg.totalKm,
+            highwayKm: seg.highwayKm,
+          },
+        });
+      }
+    }
     return application.id;
   }
 
@@ -520,7 +549,7 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
   // ===========================================================================
 
   describe("AC-13 高速里程不重複加總", () => {
-    it("officialKm equals the exact sum of snapshotTotalKm (highwayKm is never a separate addend by construction — snapshotTotalKm is already the post-completion total, PHASE-004 AC-50)", async () => {
+    it("officialKm equals the exact sum of snapshotTotalKm, including a segment where highwayKm == totalKm (highwayKm is never a separate addend by construction — snapshotTotalKm is already the post-completion total, PHASE-004 AC-50)", async () => {
       const D1 = "2026-11-01";
       const D2 = "2026-11-30";
       await createTravelRow({
@@ -528,7 +557,14 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
         status: "COMPLETED",
         primaryDate: "2026-11-05",
         tripDate: "2026-11-05",
-        snapshotTotalKm: "12.34",
+        // 2 段 TripSegment（PHASE-006-T5R SF-3 修復）：其一 highwayKm ==
+        // totalKm（全程高速），其一 highwayKm > 0 但 < totalKm（部分高速）——
+        // snapshotTotalKm 由 Σ totalKm 推導 = 8.34 + 4.00 = 12.34（與修復前
+        // fixture 之值逐位元相同，不改變本測試之既有斷言）。
+        segments: [
+          { totalKm: "8.34", highwayKm: "8.34" },
+          { totalKm: "4.00", highwayKm: "1.00" },
+        ],
       });
       await createTravelRow({
         ownerId,
@@ -959,6 +995,131 @@ describeWithDb("PHASE-006-T5 — 期間公務里程接線 + 預覽端點 + compu
       expect(preview.calculable).toBe(true);
       expect(preview.blockingCodes).not.toContain("AMOUNT_OUT_OF_RANGE");
       expect(preview.amount).toBe(2000000000);
+    });
+  });
+
+  // ===========================================================================
+  // SF-1（T5R 複審修復）：AC-18 於 `computeMaintenanceComputed`（呼叫端接線層）
+  // 之補測——原單元測試（maintenance-blockers.test.ts）僅覆蓋
+  // `maintenance-blockers.ts` 內之第一份實作；`maintenance-service.ts:488`
+  // 曾為獨立第二份實作，零整合測試覆蓋，M5（改 `>=`）/M6（移除 push）兩型
+  // mutant 皆可存活（詳見 Task Handoff 之 mutant 紅燈證據）。共用 predicate
+  // 抽出後（`isOfficialKmExceedsInterval`），本節同時驗證 preview 與草稿
+  // completionBlockers 第 9 項。
+  // ===========================================================================
+
+  describe("SF-1：AC-18 於 preview／草稿 DTO 接線層之補測", () => {
+    it("officialKm == intervalKm（恰 100%）：preview／草稿 computed／completionBlockers 均不含 OFFICIAL_KM_EXCEEDS_INTERVAL", async () => {
+      const D1 = "2029-01-01";
+      const D2 = "2029-01-31";
+      await createTravelRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: "2029-01-15",
+        tripDate: "2029-01-15",
+        snapshotTotalKm: "100.00",
+      });
+
+      const fields = {
+        lastMaintenanceDate: D1,
+        currentMaintenanceDate: D2,
+        lastOdometerKm: "0",
+        currentOdometerKm: "100", // intervalKm = 100 == officialKm
+        actualCost: "100",
+      };
+
+      const previewResp = await previewRequest(ownerCookie, fields);
+      expect(previewResp.statusCode).toBe(200);
+      const preview = previewResp.json<{ preview: PreviewDto }>().preview;
+      expect(preview.officialKm).toBe("100.00");
+      expect(preview.intervalKm).toBe("100.00");
+      expect(preview.blockingCodes).not.toContain("OFFICIAL_KM_EXCEEDS_INTERVAL");
+
+      const draftId = await createDraftFull(ownerCookie, fields);
+      const draftResp = await getDraft(ownerCookie, draftId);
+      expect(draftResp.statusCode).toBe(200);
+      const application = draftResp.json<{
+        application: { computed: PreviewDto; completionBlockers: { code: string }[] };
+      }>().application;
+      expect(application.computed.blockingCodes).not.toContain("OFFICIAL_KM_EXCEEDS_INTERVAL");
+      const blockerCodes = application.completionBlockers.map((b) => b.code);
+      expect(blockerCodes).not.toContain("OFFICIAL_KM_EXCEEDS_INTERVAL");
+    });
+
+    it("officialKm == intervalKm + 0.01：preview／草稿 computed／completionBlockers 均含 OFFICIAL_KM_EXCEEDS_INTERVAL", async () => {
+      const D1 = "2029-02-01";
+      const D2 = "2029-02-28";
+      await createTravelRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: "2029-02-15",
+        tripDate: "2029-02-15",
+        snapshotTotalKm: "100.01",
+      });
+
+      const fields = {
+        lastMaintenanceDate: D1,
+        currentMaintenanceDate: D2,
+        lastOdometerKm: "0",
+        currentOdometerKm: "100", // intervalKm = 100；officialKm = 100.01 > 100
+        actualCost: "100",
+      };
+
+      const previewResp = await previewRequest(ownerCookie, fields);
+      expect(previewResp.statusCode).toBe(200);
+      const preview = previewResp.json<{ preview: PreviewDto }>().preview;
+      expect(preview.officialKm).toBe("100.01");
+      expect(preview.intervalKm).toBe("100.00");
+      expect(preview.blockingCodes).toContain("OFFICIAL_KM_EXCEEDS_INTERVAL");
+
+      const draftId = await createDraftFull(ownerCookie, fields);
+      const draftResp = await getDraft(ownerCookie, draftId);
+      expect(draftResp.statusCode).toBe(200);
+      const application = draftResp.json<{
+        application: { computed: PreviewDto; completionBlockers: { code: string }[] };
+      }>().application;
+      expect(application.computed.blockingCodes).toContain("OFFICIAL_KM_EXCEEDS_INTERVAL");
+      const blockerCodes = application.completionBlockers.map((b) => b.code);
+      expect(blockerCodes).toContain("OFFICIAL_KM_EXCEEDS_INTERVAL");
+    });
+  });
+
+  // ===========================================================================
+  // SF-2（T5R 複審修復）：不可計算狀態之 `blockingCodes` 不再恆為空陣列
+  // ===========================================================================
+  //
+  // 大總管裁定採 reviewer 選項 (a)：欄位未齊分支填對應 `*_REQUIRED`／
+  // `*_ORDER_INVALID` 碼，`intervalKm ≤ 0` 分支填 `ODOMETER_ORDER_INVALID`
+  // （§7.4 碼值，複用 `computeMaintenanceBlockers` 第一段
+  // `computeMaintenanceStructuralBlockers` 輸出，避免第三份實作）。
+
+  describe("SF-2：不可計算狀態之 blockingCodes（§7.4 對應原因代碼）", () => {
+    it("欄位未齊（缺 actualCost）：preview blockingCodes 含對應之 ACTUAL_COST_REQUIRED，不再是空陣列", async () => {
+      const resp = await previewRequest(ownerCookie, {
+        lastMaintenanceDate: "2029-03-01",
+        currentMaintenanceDate: "2029-03-31",
+        lastOdometerKm: "0",
+        currentOdometerKm: "100",
+        // actualCost 缺席
+      });
+      expect(resp.statusCode).toBe(200);
+      const preview = resp.json<{ preview: PreviewDto }>().preview;
+      expect(preview.calculable).toBe(false);
+      expect(preview.blockingCodes).toEqual(["ACTUAL_COST_REQUIRED"]);
+    });
+
+    it("intervalKm ≤ 0（本次里程 == 上次里程）：preview blockingCodes 含 ODOMETER_ORDER_INVALID，不再是空陣列", async () => {
+      const resp = await previewRequest(ownerCookie, {
+        lastMaintenanceDate: "2029-04-01",
+        currentMaintenanceDate: "2029-04-30",
+        lastOdometerKm: "1000",
+        currentOdometerKm: "1000", // intervalKm = 0
+        actualCost: "100",
+      });
+      expect(resp.statusCode).toBe(200);
+      const preview = resp.json<{ preview: PreviewDto }>().preview;
+      expect(preview.calculable).toBe(false);
+      expect(preview.blockingCodes).toEqual(["ODOMETER_ORDER_INVALID"]);
     });
   });
 
