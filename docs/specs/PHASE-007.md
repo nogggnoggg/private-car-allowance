@@ -674,13 +674,13 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | AC-33 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-33 雙完成併發`（**20 輪**恰一成功、敗方 403）＋`AC-33 parameterHasReferences('DEPRECIATION') 正負例`（真實完成流程正例＋型別鑑別） | T10 | GREEN |
 | AC-34 | integration | `phase7-on-behalf.test.ts` | 實名（逐字）：`POST /admin/users/:userId/applications/depreciation → 201，owner/creator 分離且 AuditLog action/actorId/targetId/targetLabel/summary 精確`（＋真交易回滾 sentinel、停用 400、頂層純量夾帶） | T11 | GREEN |
 | AC-35 | integration | `phase7-on-behalf.test.ts` | 實名（逐字）：`PUT /applications/depreciation/:id（admin 對 U 之草稿）→ 200，AuditLog action/actorId/targetId/targetLabel/summary（含前後值）精確`（＋前後值雙方向、自改零稽核鑑別、COMPLETED 403） | T11 ＋ T11b | GREEN |
-| AC-36 | integration | `phase7-application-list.test.ts` | `AC-36: depreciation rows appear in the combined list with the correct title and null for inapplicable columns, in a stable total order` | T12 | PENDING |
-| AC-37 | integration | `phase7-application-list.test.ts` | `AC-37: type/status/date filters apply to depreciation rows; keyword yields no depreciation rows (documented limitation)` | T12 | PENDING |
-| AC-38 | frontend | `frontend/test/DepreciationApplicationPage.test.tsx` | `AC-38: the form exposes only the year and proof inputs — there is no input that can overwrite the annual official mileage` | T13 | PENDING |
-| AC-39 | frontend | `DepreciationApplicationPage.test.tsx` | `AC-39: the preview shows unit price, annual mileage and amount from the backend verbatim, and never shows vehicle price / useful life / estimated annual km` | T13 | PENDING |
-| AC-40 | frontend | `DepreciationApplicationPage.test.tsx` | `AC-40: five states — loading, empty, error, success, permission denied; a non-calculable state never renders 0 元` | T14 | PENDING |
-| AC-41 | frontend | `DepreciationApplicationPage.test.tsx` | `AC-41: a year without an effective parameter shows the contact-admin notice and disables Complete while still allowing the draft to be saved` | T13 | PENDING |
-| AC-42 | frontend | `DepreciationApplicationPage.test.tsx` | `AC-42: the duplicate-year notice is shown without blocking; proof upload/delete works on drafts, the 6th is rejected, and a completed application exposes no upload or delete control` | T14 | PENDING |
+| AC-36 | integration | `phase7-application-list.test.ts` | 實名：`depreciation, maintenance, and travel rows are interleaved in primaryDate DESC, createdAt DESC, id DESC order — including a null-year depreciation row`（T12R 補真實保養列＋tie-breaker；mutant 分支對調恰 1 紅） | T12 ＋ T12R | GREEN |
+| AC-37 | integration | `phase7-application-list.test.ts` | 實名：AC-37 describe 五條（type/date/ownerId/keyword 已知限制）＋`T12R-LITE SF-2: status=DRAFT returns the draft depreciation row and excludes the completed one`／`…status=COMPLETED…`（正負例對照） | T12 ＋ T12R | GREEN |
+| AC-38 | frontend | `frontend/test/DepreciationApplicationPage.test.tsx` | 實名：`AC-38：表單僅有申請年度一個可輸入欄位（逐字標籤）`；`AC-38：年度可為空值儲存（null 為合法值，前端轉為 JSON number｜null）`；`AC-38：填入年度後以 JSON number（非字串）送出` | T13 | GREEN |
+| AC-39 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`AC-39：預覽顯示折舊每公里單價／年度公務里程／年度補貼金額，逐字取自後端回應`；`AC-39：前端零自算鑑別——mock 之 amount 與 officialKm×perKmUnitPrice 刻意不符，畫面仍顯示 mock 值`；`AC-39：車價／折舊年限／預估年度行駛公里數三推導值於草稿頁不出現`（＋已完成頁同型負向） | T13 | GREEN |
+| AC-40 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`AC-39：不可計算時不得顯示金額 0，須顯示「無法計算」＋zh-TW 說明`；`Empty：年度無任何有效差旅（totalKm=0.00、applicationCount=0）時顯示 0 值＋說明，非錯誤、非空白頁`（T14R 補說明文字＋完成鈕可用）；`Error：讀取草稿 500 時顯示錯誤訊息與重試按鈕，點擊重試重新呼叫 GET`；`blockingCodes 驅動顯示：未知代碼原樣顯示（非以 calculable 單一旗標決定文案內容）`；Loading/Permission denied 各一 | T13 ＋ T14 ＋ T14R | GREEN |
+| AC-41 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`AC-41：缺參數時顯示聯絡管理員文案、停用「完成申請」，但「儲存草稿」仍可用`；`AC-41：條件齊備（無 blocker）時「完成申請」鈕可用，點擊後呼叫完成端點` | T13 | GREEN |
+| AC-42 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`同年度已有其他申請時顯示提醒文字，但不阻擋建立與完成（提醒在場且完成鈕可用）`；`已有 5 張再上傳（第 6 張）→ 前端拒絕並顯示上限訊息、零上傳呼叫`；`B-22／FW-11 裁定 A：attachmentIds 送出前去重（重複 id 不重複送出）`；`已完成之折舊申請不存在任何上傳／刪除入口（負向斷言）`（等） | T14 | GREEN |
 | AC-43 | integration | `phase7-contract.test.ts` | `AC-43: the ErrorCode union exactly matches the baseline (BOGUS mutant turns red) and error bodies keep a closed top-level key set` | T15 | PENDING |
 | AC-44 | integration | `phase7-contract.test.ts` | `AC-44: logStream contains no password, token, session cookie or attachment bytes across the depreciation paths` | T15 | PENDING |
 | AC-45 | e2e | `e2e/depreciation-allowance.spec.ts` | `AC-45: full depreciation flow — draft, year, mileage, unit price, amount, proof, complete, list; parameter change afterwards leaves the amount unchanged` | T16 | PENDING |
@@ -1112,6 +1112,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 | 2026-08-05 | **B-22 措辭修訂（T8 即審 SF-1，人類裁定 A 案）**：§5 B-22 由「去重後計數」改為如實描述現況行為（重複 id → 409 `CONFLICT`、全交易回滾、零關聯；上限繞過天然封閉；前端自行去重列 T13/T14 義務）。選項 B（改程式去重）經評估否決：行為變更且折舊與保養分岔，為異常輸入邊角動兩個已驗證功能不划算。現況行為與 PHASE-006 逐行同型、fail-closed，reviewer P5b 探針實證。 | 人類 leonchih 2026-08-05 裁定「A」（大總管以產品語言解說 A/B 後）；T8 即審報告 SF-1 建議措辭照錄 |
 
 | 2026-08-05 | **§15 T11 檔案清單勘誤（大總管，§11.2 內部技術細節記錄）**：AC-35 之 `onUpdated` 稽核 hook 唯一正當落點為 `applications/routes.ts` 之 PUT depreciation handler（呼叫端持有 actorId；service 層刻意無 actor 概念防夾帶面；006 T9 同型先例修同檔 :865-910）——T11 檔案清單漏列該檔致 implementer 正確 BLOCKED。處置：T11b-LITE 限縮授權（僅該 handler 之 onUpdated 建構）。 | T11 Handoff W-1 落點分析（實查非推測）；大總管裁定 (a) |
+
+| 2026-08-05 | **§4 Empty 態勘誤（T12~T14 複審 SF-3 處置）**：Empty 列字面「補貼金額 0 元」之「元」單位——全站既有慣例為金額不帶單位字（Maintenance/快照頁同型），維持慣例；說明文字與「完成仍可執行」已由 T14R 補齊（`29632df`）。 | 大總管裁定（沿全站慣例）；T12~T14 合併複審 SF-3 |
 
 > Gate 固化義務已履行（上列 2026-08-04 第二列）。
 
