@@ -288,8 +288,9 @@ model Application {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  travel      TravelApplication?
-  maintenance MaintenanceApplication?
+  travel       TravelApplication?
+  maintenance  MaintenanceApplication?
+  depreciation DepreciationApplication?
 
   @@index([ownerId, status, primaryDate])
   @@index([ownerId, primaryDate])
@@ -377,4 +378,32 @@ model MaintenanceApplication {
   calculatedAt       DateTime?
 
   @@index([currentMaintenanceDate])
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-007 models（§8.2；D1(a) 子表、D2(a) applicationYear Int?、
+// D3(a) 年度 [1900,2999] 之值域收斂於驗證層、D7(a) 快照 8 欄）
+// ---------------------------------------------------------------------------
+
+// ── 折舊子表（1:1） ─────────────────────────────────────────────────
+model DepreciationApplication {
+  applicationId String      @id
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  // ── 業務欄位（草稿可為 null；完成後不可變）──
+  applicationYear Int? // 申請年度（西元年）；primaryDate 之來源（§16 D2）
+
+  // ── 完成快照（BE-US-18 第 3 條）；一經寫入不可變 ──
+  snapshotVehiclePrice           Decimal?  @db.Decimal(12, 2) // 車價（＝參數版本值）
+  snapshotUsefulLifeYears        Int? // 折舊年限
+  snapshotEstimatedAnnualKm      Int? // 預估年度行駛公里數
+  snapshotPerKmUnitPrice         Decimal?  @db.Decimal(14, 4) // 折舊每公里單價（003a 之 4dp；§8.3 容量缺口 #1：不可沿差旅 (10,4)）
+  snapshotOfficialKm             Decimal?  @db.Decimal(12, 2) // 年度公務里程
+  snapshotRawAmount              Decimal?  @db.Decimal(14, 4) // 取整前補貼金額
+  calculatedAt                   DateTime?
+  depreciationParameterVersionId String? // 引用保護來源（§16 D12）
+  // 註：最終金額落於既有 `Application.totalAmount`（Int），不重複持久化。
+
+  @@index([applicationYear])
+  @@index([depreciationParameterVersionId])
 }
