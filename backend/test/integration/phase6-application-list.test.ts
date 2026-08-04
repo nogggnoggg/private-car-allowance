@@ -600,4 +600,85 @@ describeWithDb("PHASE-006-T10 — GET /applications 保養列映射與篩選", (
       );
     });
   });
+
+  // ===========================================================================
+  // T10R-LITE MF-1：AC-33「primaryDate＝本次保養日期（未填回退建立日期）」
+  // 之真實驗證——經 HTTP `POST`/`PUT /applications/maintenance(/:id)` 端點
+  // （而非本檔其餘測試沿用之「直接以 prisma.application.create 同時寫
+  // primaryDate 與 currentMaintenanceDate 同值」捷徑），讀 DB 列驗證
+  // `derivePrimaryDate` 真的有被呼叫、真的驅動了 `Application.primaryDate`。
+  // ===========================================================================
+
+  describe("T10R-LITE MF-1 — primaryDate 由 derivePrimaryDate 經端點驅動", () => {
+    async function createDraft(cookie: string, payload: Record<string, unknown> = {}) {
+      return app.inject({
+        method: "POST",
+        url: "/applications/maintenance",
+        headers: { cookie },
+        payload,
+      });
+    }
+
+    async function putDraft(cookie: string, id: string, payload: Record<string, unknown>) {
+      return app.inject({
+        method: "PUT",
+        url: `/applications/maintenance/${id}`,
+        headers: { cookie },
+        payload,
+      });
+    }
+
+    it("① POST 帶 currentMaintenanceDate=X → Application.primaryDate===X", async () => {
+      const resp = await createDraft(mixedOwnerCookie, {
+        currentMaintenanceDate: "2027-09-10",
+      });
+      expect(resp.statusCode).toBe(201);
+      const body = resp.json<{ application: { id: string } }>();
+      track(body.application.id);
+
+      const row = await prisma.application.findUniqueOrThrow({
+        where: { id: body.application.id },
+      });
+      expect(row.primaryDate.toISOString().slice(0, 10)).toBe("2027-09-10");
+    });
+
+    it("② POST 不帶日期 → primaryDate＝建立日期（日粒度）", async () => {
+      const resp = await createDraft(mixedOwnerCookie, {});
+      expect(resp.statusCode).toBe(201);
+      const body = resp.json<{ application: { id: string } }>();
+      track(body.application.id);
+
+      const row = await prisma.application.findUniqueOrThrow({
+        where: { id: body.application.id },
+      });
+      expect(row.primaryDate.toISOString().slice(0, 10)).toBe(
+        row.createdAt.toISOString().slice(0, 10)
+      );
+    });
+
+    it("③ PUT 改 currentMaintenanceDate=Y → primaryDate===Y；清 null → 回退 createdAt", async () => {
+      const createResp = await createDraft(mixedOwnerCookie, {
+        currentMaintenanceDate: "2027-09-11",
+      });
+      expect(createResp.statusCode).toBe(201);
+      const created = createResp.json<{ application: { id: string } }>().application;
+      track(created.id);
+
+      const putResp = await putDraft(mixedOwnerCookie, created.id, {
+        currentMaintenanceDate: "2027-09-20",
+      });
+      expect(putResp.statusCode).toBe(200);
+      const afterPut = await prisma.application.findUniqueOrThrow({ where: { id: created.id } });
+      expect(afterPut.primaryDate.toISOString().slice(0, 10)).toBe("2027-09-20");
+
+      const clearResp = await putDraft(mixedOwnerCookie, created.id, {
+        currentMaintenanceDate: null,
+      });
+      expect(clearResp.statusCode).toBe(200);
+      const afterClear = await prisma.application.findUniqueOrThrow({ where: { id: created.id } });
+      expect(afterClear.primaryDate.toISOString().slice(0, 10)).toBe(
+        afterClear.createdAt.toISOString().slice(0, 10)
+      );
+    });
+  });
 });

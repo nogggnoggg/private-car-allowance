@@ -529,6 +529,35 @@ describeWithDb("PHASE-004-T11 — AR-D 閉環鑑別力測試", () => {
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error.code).toBe("VALIDATION_ERROR");
     });
+
+    // T10R-LITE 殘留缺陷（SF-2）：`?ownerId=A&ownerId=B` 重複 query 鍵，Fastify
+    // 執行期型別為 `string[]`，非本端點原本假設的 `string | undefined`——沿用
+    // mileage/routes.ts `assertScalarQueryParams`／application-query.ts
+    // `resolveOwnerId` 之既有收斂慣例：非字串一律 400 VALIDATION_ERROR，
+    // 而非讓陣列值流入 Prisma `findUnique` 造成未預期 500。
+    it("ADMIN 帶重複 ownerId（陣列）→ 400 VALIDATION_ERROR，不得 500", async () => {
+      const { body, contentType } = buildMultipartBody("owner-dup-admin.jpg", makeJpegBytes());
+      const res = await app.inject({
+        method: "POST",
+        url: `/attachments?ownerId=${ownerId}&ownerId=${otherId}`,
+        headers: { "content-type": contentType, cookie: adminCookie },
+        payload: body,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("非 ADMIN 帶重複 ownerId（陣列）→ 403 FORBIDDEN（fail-closed 行為不變）", async () => {
+      const { body, contentType } = buildMultipartBody("owner-dup-nonadmin.jpg", makeJpegBytes());
+      const res = await app.inject({
+        method: "POST",
+        url: `/attachments?ownerId=${ownerId}&ownerId=${otherId}`,
+        headers: { "content-type": contentType, cookie: ownerCookie },
+        payload: body,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error.code).toBe("FORBIDDEN");
+    });
   });
 
   // ===========================================================================
