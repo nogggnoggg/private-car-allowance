@@ -672,8 +672,8 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | AC-31 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-31 事後改參數，歷史不變`（三種生效日 8 欄逐位元＋鑑別力探針＋spy 零重算——B1 mutant 6 紅） | T10 | GREEN |
 | AC-32 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-32 後端為唯一權威 — 建立端點（POST /applications/depreciation)`／`— 更新端點（PUT /applications/depreciation/:id)`／`— 完成端點（POST /applications/:id/complete)`（頂層純量矩陣 DB 指紋；三恆真格 T10R 修復——T10 即審 SF-1） | T10 ＋ T10R | GREEN（T10R 補三格） |
 | AC-33 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-33 雙完成併發`（**20 輪**恰一成功、敗方 403）＋`AC-33 parameterHasReferences('DEPRECIATION') 正負例`（真實完成流程正例＋型別鑑別） | T10 | GREEN |
-| AC-34 | integration | `phase7-on-behalf.test.ts` | `AC-34: admin on-behalf create sets ownerId/createdById, writes the audit row in the same transaction, 404s for an unknown user and 400s for a deactivated one` | T11 | PENDING |
-| AC-35 | integration | `phase7-on-behalf.test.ts` | `AC-35: admin editing another user's draft writes APPLICATION_UPDATED_ON_BEHALF with summary.type="DEPRECIATION"; self-edit writes nothing; editing a COMPLETED application is 403` | T11 | PENDING |
+| AC-34 | integration | `phase7-on-behalf.test.ts` | 實名（逐字）：`POST /admin/users/:userId/applications/depreciation → 201，owner/creator 分離且 AuditLog action/actorId/targetId/targetLabel/summary 精確`（＋真交易回滾 sentinel、停用 400、頂層純量夾帶） | T11 | GREEN |
+| AC-35 | integration | `phase7-on-behalf.test.ts` | 實名（逐字）：`PUT /applications/depreciation/:id（admin 對 U 之草稿）→ 200，AuditLog action/actorId/targetId/targetLabel/summary（含前後值）精確`（＋前後值雙方向、自改零稽核鑑別、COMPLETED 403） | T11 ＋ T11b | GREEN |
 | AC-36 | integration | `phase7-application-list.test.ts` | `AC-36: depreciation rows appear in the combined list with the correct title and null for inapplicable columns, in a stable total order` | T12 | PENDING |
 | AC-37 | integration | `phase7-application-list.test.ts` | `AC-37: type/status/date filters apply to depreciation rows; keyword yields no depreciation rows (documented limitation)` | T12 | PENDING |
 | AC-38 | frontend | `frontend/test/DepreciationApplicationPage.test.tsx` | `AC-38: the form exposes only the year and proof inputs — there is no input that can overwrite the annual official mileage` | T13 | PENDING |
@@ -1110,6 +1110,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 | 2026-08-04 | **T3 即審後澄清（大總管，§11.1 不改變產品含義之澄清）**：§7.5 補「完整清單之定義」段（reviewer 建議措辭照錄）——blockers[] 為本次已評估之未通過項目、兩段式互斥、至多兩碼、呼叫端不得補算被抑制項。§12 AC-16/18/24 轉 PARTIAL（判定層 GREEN）。 | T3 即審報告裁量 (c)（無矛盾、建議澄清）；T3 Handoff New Risks 同源 |
 
 | 2026-08-05 | **B-22 措辭修訂（T8 即審 SF-1，人類裁定 A 案）**：§5 B-22 由「去重後計數」改為如實描述現況行為（重複 id → 409 `CONFLICT`、全交易回滾、零關聯；上限繞過天然封閉；前端自行去重列 T13/T14 義務）。選項 B（改程式去重）經評估否決：行為變更且折舊與保養分岔，為異常輸入邊角動兩個已驗證功能不划算。現況行為與 PHASE-006 逐行同型、fail-closed，reviewer P5b 探針實證。 | 人類 leonchih 2026-08-05 裁定「A」（大總管以產品語言解說 A/B 後）；T8 即審報告 SF-1 建議措辭照錄 |
+
+| 2026-08-05 | **§15 T11 檔案清單勘誤（大總管，§11.2 內部技術細節記錄）**：AC-35 之 `onUpdated` 稽核 hook 唯一正當落點為 `applications/routes.ts` 之 PUT depreciation handler（呼叫端持有 actorId；service 層刻意無 actor 概念防夾帶面；006 T9 同型先例修同檔 :865-910）——T11 檔案清單漏列該檔致 implementer 正確 BLOCKED。處置：T11b-LITE 限縮授權（僅該 handler 之 onUpdated 建構）。 | T11 Handoff W-1 落點分析（實查非推測）；大總管裁定 (a) |
 
 > Gate 固化義務已履行（上列 2026-08-04 第二列）。
 
