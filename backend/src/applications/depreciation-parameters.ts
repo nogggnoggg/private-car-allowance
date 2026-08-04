@@ -83,12 +83,23 @@ export function depreciationParameterQueryDate(applicationYear: number): Date {
   return new Date(Date.UTC(applicationYear, 0, 1));
 }
 
-const NOT_AVAILABLE: ResolvedDepreciationParameters = {
-  perKmUnitPrice: null,
-  version: null,
-  derivationFailed: false,
-  missing: ["DEPRECIATION"],
-};
+/**
+ * 「查無有效版本」之結果——**工廠而非共用常數**（T7 即審 SF-1）。
+ *
+ * 曾以 `const NOT_AVAILABLE` ＋ `{ ...NOT_AVAILABLE }` 回傳：淺複製只複製外層
+ * 物件，`missing` 內層陣列仍是同一個參考，跨呼叫共用。Spec §7.4 ② 之字面即為
+ * `missing += "DEPRECIATION_DERIVATION_FAILED"`，呼叫端（T9 完成端點）對回傳
+ * 值 `push` 是預期用法——一次變異就會同時污染先前已回傳之結果與後續全部新
+ * 呼叫。故此處每次建構**全新物件與全新陣列**，回傳值一律可安全變異。
+ */
+function notAvailable(): ResolvedDepreciationParameters {
+  return {
+    perKmUnitPrice: null,
+    version: null,
+    derivationFailed: false,
+    missing: ["DEPRECIATION"],
+  };
+}
 
 /**
  * 解析某申請年度之折舊參數與每公里單價（§7.4 ①②③）。
@@ -107,7 +118,7 @@ export async function resolveDepreciationParameters(
   applicationYear: number | null
 ): Promise<ResolvedDepreciationParameters> {
   if (applicationYear === null || !Number.isInteger(applicationYear)) {
-    return { ...NOT_AVAILABLE };
+    return notAvailable();
   }
 
   // AC-15：取回該類全部版本，選版一律交給純函式（見檔頭紀律說明）。
@@ -127,7 +138,7 @@ export async function resolveDepreciationParameters(
   );
 
   if (version === null) {
-    return { ...NOT_AVAILABLE };
+    return notAvailable();
   }
 
   // AC-17：單價之唯一來源；本檔不含任何推導算式。

@@ -569,6 +569,44 @@ describeWithDb("PHASE-007-T7 — 折舊參數選版 ＋ 單價套用 ＋ compute
       // 兩來源必須可區分（若實作把兩者折成同一形狀，本斷言必紅）。
       expect(derivationFailed.missing).not.toEqual(noVersion.missing);
     });
+
+    /**
+     * T7 即審 SF-1（reviewer PROBE-7 實測之潛伏缺陷）：`missing` 陣列**絕不可**
+     * 跨呼叫共用同一參考。
+     *
+     * 為什麼這件事會咬人：Spec §7.4 ② 之字面就是 `missing += "DEPRECIATION_
+     * DERIVATION_FAILED"`——T9 完成端點組 409 `details.missing` 時極可能直接
+     * 對回傳值 `push`。若回傳的是共用常數之淺複製（`{ ...NOT_AVAILABLE }`），
+     * 內層陣列仍是同一個物件，一次 `push` 會同時污染**先前已回傳**的結果與
+     * **後續全部新呼叫**——症狀是「某些申請莫名多出一個 missing 代碼」，且
+     * 因程序重啟即消失而極難重現。
+     *
+     * 本測試同時釘住兩個性質：(1) 不同呼叫之 `missing` 非同一參考；
+     * (2) 對回傳值變異後，新呼叫之結果逐字不受影響。
+     */
+    it("T7 即審 SF-1：每次呼叫回傳全新的 missing 陣列——變異其一不得污染既有結果或後續呼叫", async () => {
+      const first = await resolveDepreciationParameters(prisma, YEAR_NO_VERSION);
+      const second = await resolveDepreciationParameters(prisma, YEAR_NO_VERSION);
+
+      // (1) 值相同但**參考相異**（`{ ...常數 }` 之淺複製於此必紅）。
+      expect(second.missing).toEqual(first.missing);
+      expect(second.missing).not.toBe(first.missing);
+      expect(second).not.toBe(first);
+
+      // (2) 模擬 §7.4 ② 之 `missing +=`（T9 之預期用法）。
+      first.missing.push("DEPRECIATION_DERIVATION_FAILED");
+
+      // 既有結果不得被牽連。
+      expect(second.missing).toEqual(["DEPRECIATION"]);
+      // 後續全新呼叫亦不得帶著上一次的污染（含「查無版本」與「推導失敗」
+      // 兩條 return 路徑）。
+      const third = await resolveDepreciationParameters(prisma, YEAR_NO_VERSION);
+      expect(third.missing).toEqual(["DEPRECIATION"]);
+      const nullYear = await resolveDepreciationParameters(prisma, null);
+      expect(nullYear.missing).toEqual(["DEPRECIATION"]);
+      const failed = await resolveDepreciationParameters(prisma, YEAR_DERIVATION_FAILED);
+      expect(failed.missing).toEqual(["DEPRECIATION_DERIVATION_FAILED"]);
+    });
   });
 
   // ===========================================================================
