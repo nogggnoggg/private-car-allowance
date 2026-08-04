@@ -518,6 +518,24 @@ describeWithDb("PHASE-006-T4 — 保養草稿 CRUD + 欄位驗證 + 授權隔離
       expect(stillThere).not.toBeNull();
       expect(stillThere?.status).toBe("COMPLETED");
     });
+
+    // T7R S-1 修復：`markCompleted` 直接以 Prisma 將 status 撥為 COMPLETED，
+    // 五個 snapshot* 欄位（`completeMaintenanceApplication` 才會寫入）仍為
+    // null——GET 必須優雅回傳 `snapshot:null`，而非因 `null.toFixed()` 500。
+    it("status=COMPLETED 但 snapshot* 欄位皆仍為 null（未經正式完成流程）→ GET 200，snapshot:null（不 500）", async () => {
+      const draft = await createOwnerDraft({ actualCost: "666.00" });
+      await markCompleted(draft.id as string);
+
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/maintenance/${draft.id}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<{ application: Record<string, unknown> }>();
+      expect(body.application.status).toBe("COMPLETED");
+      expect(body.application.snapshot).toBeNull();
+    });
   });
 
   // ===========================================================================

@@ -25,10 +25,21 @@
  */
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { completeMaintenanceApplication } from "../../src/applications/maintenance-service.js";
 import { hashPassword } from "../../src/auth/password.js";
+import * as mileageEngine from "../../src/mileage/mileage-engine.js";
 import { buildServer } from "../../src/server.js";
+
+// T7R S-3 突變自證（mutant M6）：包裝真實實作為 spy，行為不變，只加可觀測性
+// ——沿 `phase6-official-mileage.test.ts` 之既有慣例（見該檔檔頭說明）。
+vi.mock("../../src/mileage/mileage-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/mileage/mileage-engine.js")>();
+  return {
+    ...actual,
+    sumOfficialMileage: vi.fn(actual.sumOfficialMileage),
+  };
+});
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -688,6 +699,70 @@ describeWithDb("PHASE-006-T7 — 完成流程 + 快照寫入 + 原子性 + 僅�
       expect(resp.statusCode).toBe(200);
       const application = resp.json<{ application: MaintenanceApplicationJson }>().application;
       expect(application.snapshot?.totalAmount).toBe(2000000000);
+    });
+  });
+
+  // ===========================================================================
+  // T7R 複審修復 — S-2（mutant M2 kill）/ S-3（mutant M6 kill）
+  // ===========================================================================
+
+  describe("T7R S-2 — 最終金額取整層級整合層鑑別（mutant M2 kill）", () => {
+    it("actualCost=99999.00, officialKm=1.00, intervalKm=200000.00 → rawAmount=0.499995 恰在 0.5 進位邊界下側：totalAmount 必為 0（非由 4dp snapshotRawAmount='0.5000' 反推取整得 1）", async () => {
+      await seedCompletedTravel({
+        tripDate: "2058-01-15",
+        segments: [{ totalKm: "1.00", highwayKm: "0.00" }], // officialKm=1.00
+      });
+      const id = await buildCompletableDraft({
+        lastMaintenanceDate: "2058-01-01",
+        currentMaintenanceDate: "2058-02-01",
+        lastOdometerKm: "0.00",
+        currentOdometerKm: "200000.00", // intervalKm=200000.00
+        actualCost: "99999.00",
+      });
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(200);
+      const application = resp.json<{ application: MaintenanceApplicationJson }>().application;
+
+      // rawAmount = 99999 * 1 / 200000 = 0.499995 → toFixed(4) = "0.5000"
+      // （5 位小數 9 進位第 4 位），但正解 totalAmount 必須以未取整之
+      // 0.499995 四捨五入（0.5 進位）為 0，而非把已取整的 4dp 字串
+      // "0.5000" 再解讀為 0.5 而進位成 1（M2 之存活形狀）。
+      expect(application.snapshot?.rawAmount).toBe("0.5000");
+      expect(application.snapshot?.totalAmount).toBe(0);
+
+      const dbApp = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(dbApp.totalAmount).toBe(0);
+    });
+  });
+
+  describe("T7R S-3 — 完成路徑同 tx 呼叫引擎鑑別（mutant M6 kill）", () => {
+    it("completeMaintenanceApplication 呼叫 sumOfficialMileage 之首引數為交易客戶端（tx），非頂層 PrismaClient（M6：改傳頂層 prisma 必紅）", async () => {
+      await seedCompletedTravel({
+        tripDate: "2059-01-15",
+        segments: [{ totalKm: "10.00", highwayKm: "0.00" }],
+      });
+      const id = await buildCompletableDraft({
+        lastMaintenanceDate: "2059-01-01",
+        currentMaintenanceDate: "2059-02-01",
+        lastOdometerKm: "0.00",
+        currentOdometerKm: "100.00",
+        actualCost: "200.00",
+      });
+
+      const spy = vi.mocked(mileageEngine.sumOfficialMileage);
+      const callsBefore = spy.mock.calls.length;
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(200);
+      expect(spy.mock.calls.length).toBe(callsBefore + 1);
+
+      const lastCall = spy.mock.calls.at(-1) as unknown as [object, unknown];
+      // `Prisma.TransactionClient` 型別上即不含 `$transaction`（denylist），
+      // 頂層 `PrismaClient` 則有——以此區分「同一交易內之 tx」與「頂層
+      // prisma 實例」，不依賴物件參照比較（tx 每次交易皆為新代理物件）。
+      expect((lastCall[0] as { $transaction?: unknown }).$transaction).toBeUndefined();
+      expect(lastCall[0]).not.toBe(prisma);
     });
   });
 

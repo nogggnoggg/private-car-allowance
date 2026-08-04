@@ -456,9 +456,11 @@ export async function updateMaintenanceDraft(
 // computeMaintenanceComputed (§7.2 MaintenanceComputedDto, §7.3 引擎呼叫,
 // §9.2 分攤預覽, AC-11~15) — PHASE-006-T5
 //
-// 唯一呼叫 `sumOfficialMileage` 之處（AC-14：不得在任何檔案重寫過濾條件或
-// 加總邏輯）。`db` 之型別為 `PrismaLike`（`PrismaClient | Prisma.TransactionClient`，
-// 沿 mileage-engine.ts 既有簽章），使本函式未來（T7）可於同一交易 `tx` 內呼叫。
+// 草稿/預覽路徑之呼叫點；完成路徑於 completeMaintenanceApplication 同 tx
+// 另有一處（AC-14：不得在任何檔案重寫過濾條件或加總邏輯）。`db` 之型別為
+// `PrismaLike`（`PrismaClient | Prisma.TransactionClient`，沿 mileage-engine.ts
+// 既有簽章），使本函式可於草稿/預覽（非 tx）與完成流程（同一交易 `tx`）
+// 兩種呼叫端下皆可運作。
 //
 // 本函式本身即為「呼叫端」（§9.1/9.2 pseudocode 之編排層），负责一次取得
 // 期間公務里程並往下傳給純函式 `calculateMaintenance`；`toMaintenanceApplicationDto`
@@ -726,24 +728,43 @@ export interface MaintenanceApplicationDto {
  * （§8.2），且 6dp 值 ×100 為單純小數點位移，不產生第二次捨入（100 ＝
  * 10^2，位移 2 位小數點恰對應 6dp→4dp，數學上與直接對未捨入比例
  * 取 4dp 結果逐位元相同）。
+ *
+ * T7R S-1 修復：五個 snapshot* 欄位 ＋ `calculatedAt` ＋
+ * `Application.totalAmount` 逐欄 `!= null` 守門後才組裝，任一缺席即回傳
+ * `null`——沿 `travel-service.ts` 之 `toTravelApplicationDto` 既有慣例（該檔
+ * `snapshot` 建構前之逐欄非 null 判定）。`status="COMPLETED"` 但快照欄位仍
+ * 為 null 的列（例如測試直接以 Prisma 撥動 `status` 而未經
+ * `completeMaintenanceApplication` 寫入快照）先前會在此處以 `as
+ * Prisma.Decimal` 轉型後呼叫 `.toFixed()` 於 `null` 上而 500；修復後與 T4
+ * 既有「未齊備 → Empty 狀態」精神一致，優雅回傳 `null`。
  */
 function buildSnapshotDto(
   application: MaintenanceApplicationRecord
 ): MaintenanceSnapshotDto | null {
   const maintenance = application.maintenance;
-  if (application.status !== "COMPLETED" || !maintenance) {
+  if (
+    application.status !== "COMPLETED" ||
+    !maintenance ||
+    maintenance.snapshotIntervalKm == null ||
+    maintenance.snapshotOfficialKm == null ||
+    maintenance.snapshotRatio == null ||
+    maintenance.snapshotRawAmount == null ||
+    maintenance.actualCost == null ||
+    maintenance.calculatedAt == null ||
+    application.totalAmount == null
+  ) {
     return null;
   }
-  const snapshotRatio = maintenance.snapshotRatio as Prisma.Decimal;
+  const snapshotRatio = maintenance.snapshotRatio;
   return {
-    intervalKm: (maintenance.snapshotIntervalKm as Prisma.Decimal).toFixed(2),
-    officialKm: (maintenance.snapshotOfficialKm as Prisma.Decimal).toFixed(2),
+    intervalKm: maintenance.snapshotIntervalKm.toFixed(2),
+    officialKm: maintenance.snapshotOfficialKm.toFixed(2),
     ratio: snapshotRatio.toFixed(6),
     ratioPercent: snapshotRatio.times(100).toFixed(4),
-    actualCost: (maintenance.actualCost as Prisma.Decimal).toFixed(2),
-    rawAmount: (maintenance.snapshotRawAmount as Prisma.Decimal).toFixed(4),
-    totalAmount: application.totalAmount as number,
-    calculatedAt: (maintenance.calculatedAt as Date).toISOString(),
+    actualCost: maintenance.actualCost.toFixed(2),
+    rawAmount: maintenance.snapshotRawAmount.toFixed(4),
+    totalAmount: application.totalAmount,
+    calculatedAt: maintenance.calculatedAt.toISOString(),
   };
 }
 
