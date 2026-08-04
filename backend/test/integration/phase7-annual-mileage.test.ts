@@ -30,13 +30,18 @@
  *   「紅燈」以突變自證替代（Packet 明示）：見各 `it` 上方之 MUTANT 註記，
  *   每條均列出「把斷言改成相反語意即紅」之具體形式，Handoff 附實跑輸出。
  *
- *   已知限制（移交 T7）：`perKmUnitPrice`／`rawAmount`／`amount` 於 T7 參數
- *   選版落地前恆為 `null`（`computeDepreciationComputed` 之 T7 接線縫），
- *   故 AC-13「金額只用 `totalKm`」目前以**不變式形式**釘住——「`officialKm`
- *   相同而 `officialApplicationCount` 不同時，全部金額面欄位必須逐欄全等」
- *   ——此斷言於 T7 之後會自動升級為對真實金額的鑑別；另 AC-14 之「草稿 DTO
- *   側 `computed`」斷言亦俟 T7 接入 `computed` 後方可行（本批經預覽端點與
- *   `computeDepreciationComputed` 服務函式觀察）。
+ *   已知限制（移交 T7；T6R S-1 更正）：`perKmUnitPrice`／`rawAmount`／
+ *   `amount` 於 T7 參數選版落地前恆為 `null`（`computeDepreciationComputed`
+ *   之 T7 接線縫），故 AC-13「金額只用 `totalKm`」目前僅以**不變式形式**釘住
+ *   ——「`officialKm` 相同而 `officialApplicationCount` 不同時，全部金額面欄位
+ *   必須逐欄全等」。**此鑑別力目前是 `null` 對 `null` 的比較**：本檔完全未
+ *   播種 `DepreciationParameterVersion`，且測試隔離為 per-file TRUNCATE（不
+ *   繼承他檔資料），故**即使 T7 落地，本檔的斷言仍會是 null vs null，不會
+ *   自動升級**。要取得對真實金額的鑑別力，前置條件是「播種一筆
+ *   `effectiveFrom ≤ 該年度 1/1` 之折舊參數版本」——該播種與正向鑑別之義務
+ *   **移交 T7**（`phase7-depreciation-parameters.test.ts`），本檔不代行。
+ *   另 AC-14 之「草稿 DTO 側 `computed`」斷言亦俟 T7 接入 `computed` 後方可
+ *   行（本批經預覽端點與 `computeDepreciationComputed` 服務函式觀察）。
  *
  * Test discipline (Spec §11.0 / Packet):
  *   - loginName prefix "p7t6_" + per-run random suffix；synthetic data only.
@@ -726,8 +731,13 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
      * `applicationCount` 帶進金額推導（例如以之為分母求平均、或以之為「有無
      * 資料」之判準），兩者必產生可觀測差異而必紅。
      *
-     * T7 接入參數選版後，本斷言比較的會是真實的
-     * `perKmUnitPrice`／`rawAmount`／`amount`，鑑別力自動升級——不需改寫。
+     * **鑑別力邊界（T6R S-1 更正）**：本測試比較的三個金額面欄位目前皆為
+     * `null`，故實際鑑別的是「`applicationCount` 不影響 `officialKm` 與
+     * 金額面欄位之出現與否」。本檔未播種任何 `DepreciationParameterVersion`，
+     * 且測試隔離為 per-file TRUNCATE，**T7 落地後本斷言仍是 null vs null，
+     * 不會自動升級**。對真實 `perKmUnitPrice`／`rawAmount`／`amount` 之正向
+     * 鑑別，須在有播種「`effectiveFrom ≤ 該年度 1/1` 之版本」的前提下進行
+     * ——該義務移交 T7 之 `phase7-depreciation-parameters.test.ts`。
      */
     it("applicationCount 不參與任何金額推導：officialKm 相同而筆數相異（1 vs 3）時，全部金額面欄位逐欄全等", async () => {
       const yA = YEAR_COUNT_NEUTRAL_A;
@@ -932,6 +942,67 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       const sameBodySelf = await previewRequest(ownerCookie, { applicationYear: "not-a-year" });
       expect(sameBodySelf.statusCode).toBe(400);
       expect(sameBodySelf.json<{ error: { code: string } }>().error.code).toBe("VALIDATION_ERROR");
+    });
+  });
+
+  // ===========================================================================
+  // T6R S-2 — 服務層之非整數年度守門（與純函式同一判準）
+  //
+  // `routes.ts` 之 `parseApplicationYearField` 於 HTTP 面已擋下非整數年度，
+  // 但 `computeDepreciationComputed` 是 **exported 服務函式**：T7／T9 之呼叫端
+  // 若由別處（例如 DB 讀出之 `applicationYear`、或未來的內部批次）取得年度，
+  // 就不再有該道 HTTP 驗證。`depreciation-blockers.ts:92-94` 對同一語意採
+  // `Number.isInteger()` 守門（`NaN`／`Invalid Date` 推導視同缺漏），本服務層
+  // 必須採**同一判準**，否則非有限值會直接落入 `Date.UTC(NaN, ...)` →
+  // Prisma 驗證錯誤（500），而非保守地回 `YEAR_REQUIRED`。
+  // ===========================================================================
+
+  describe("T6R S-2：非整數／非有限之 applicationYear 守門（與 depreciation-blockers 同一判準）", () => {
+    it("NaN → YEAR_REQUIRED，不拋錯、引擎零呼叫", async () => {
+      const spy = vi.mocked(mileageEngine.sumOfficialMileage);
+      const callsBefore = spy.mock.calls.length;
+
+      const computed = await computeDepreciationComputed(prisma, {
+        ownerId,
+        applicationYear: Number.NaN,
+      });
+
+      expect(computed.calculable).toBe(false);
+      expect(computed.blockingCodes).toEqual(["YEAR_REQUIRED"]);
+      expect(computed.officialKm).toBeNull();
+      expect(computed.officialApplicationCount).toBeNull();
+      expect(spy.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("Infinity → YEAR_REQUIRED，不拋錯、引擎零呼叫", async () => {
+      const spy = vi.mocked(mileageEngine.sumOfficialMileage);
+      const callsBefore = spy.mock.calls.length;
+
+      const computed = await computeDepreciationComputed(prisma, {
+        ownerId,
+        applicationYear: Number.POSITIVE_INFINITY,
+      });
+
+      expect(computed.calculable).toBe(false);
+      expect(computed.blockingCodes).toEqual(["YEAR_REQUIRED"]);
+      expect(spy.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("非整數（2025.7）→ YEAR_REQUIRED，不得靜默截斷為 2025 而回傳里程", async () => {
+      const spy = vi.mocked(mileageEngine.sumOfficialMileage);
+      const callsBefore = spy.mock.calls.length;
+
+      const computed = await computeDepreciationComputed(prisma, {
+        ownerId,
+        applicationYear: 2025.7,
+      });
+
+      expect(computed.calculable).toBe(false);
+      expect(computed.blockingCodes).toEqual(["YEAR_REQUIRED"]);
+      expect(computed.officialKm).toBeNull();
+      // 靜默截斷之反證：若實作把 2025.7 交給 `Date.UTC`（截斷為 2025），
+      // 引擎會被呼叫一次而本斷言必紅。
+      expect(spy.mock.calls.length).toBe(callsBefore);
     });
   });
 });

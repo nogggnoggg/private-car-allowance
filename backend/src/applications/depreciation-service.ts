@@ -523,7 +523,17 @@ export async function computeDepreciationComputed(
 ): Promise<DepreciationComputedDto> {
   const { ownerId, applicationYear } = input;
 
-  if (applicationYear === null) {
+  // T6R S-2：判準與 `depreciation-blockers.ts` 之 `isApplicationYearMissing`
+  // （`Number.isInteger()` 守門）**逐字相同**——非整數／非有限值（`NaN`、
+  // `±Infinity`、`2025.7`，典型來源為 `Invalid Date` 推導之 `getUTCFullYear()`）
+  // 一律視同「未選擇年度」，保守回 `YEAR_REQUIRED`。`routes.ts` 之
+  // `parseApplicationYearField` 只覆蓋 HTTP 面，本函式為 exported 服務函式，
+  // 另有 T7／T9 之非 HTTP 呼叫端，故必須自行守門：否則 `Date.UTC(NaN, ...)`
+  // 會產生 Invalid Date 而使 Prisma 拋驗證錯誤（500），`2025.7` 則被靜默截斷
+  // 為 2025 並回傳一個「看似合法」的里程。
+  // （過渡期實作：T7 會將 `blockingCodes` 改為一律經 `computeDepreciationBlockers`
+  //  產生，屆時本判準即由該純函式單一事實來源承擔，此處的重複判定應一併移除。）
+  if (applicationYear === null || !Number.isInteger(applicationYear)) {
     return {
       calculable: false,
       officialKm: null,
