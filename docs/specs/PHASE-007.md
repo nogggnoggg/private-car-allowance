@@ -665,8 +665,8 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | AC-24 | unit ＋ integration | `depreciation-blockers.test.ts`；`phase7-depreciation-complete.test.ts` | 判定層實名：AC-24 判定層 0/1/5 張測試（`depreciation-blockers.test.ts` §2）。整合層實名：`PHASE-007-T9b — AC-24 折舊證明附件（草稿可缺、完成須 ≥1）`（全生命週期）＋T9 之 tx 內現算鑑別測試（交易外 DTO 可完成、完成前刪→400） | T3 ＋ T9 ＋ T9b | GREEN |
 | AC-25 | integration | `phase7-depreciation-attachment.test.ts` | describe 逐字實名：`AC-25 完成後鎖定（deriveContainerState DEPRECIATION 分支）`（7 條；修復前紅燈 3 條 200→403 實證＋reviewer 獨立重現）。真實流程重驗已落地：T9 `跨 Task 移交項` describe 之「經真實完成端點完成之折舊，其證明附件 DELETE → 403（AC-25 真實流程重驗）」 | T8 ＋ T9 | GREEN |
 | AC-26 | integration | `phase7-depreciation-attachment.test.ts` | describe 逐字實名：`AC-26 授權：附件讀取端點之五身分 ＋ 掛入守門 ＋ B-25 孤兒補洞`（10 條；B-25 活體突變恰 1 紅） | T8 | GREEN |
-| AC-27 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-27 完成流程與 §9.3 步驟順序`。**殘留：tx 邊界守門（里程/參數同交易之 spy 斷言）待 T9R2**（T9 即審 S-1——M2/M3 mutant 存活，006 先例手法補齊中） | T9 ＋ T9R2 | GREEN（tx 邊界守門 T9R2 補） |
-| AC-28 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-28 快照欄位與精度`（8 欄＋totalAmount 落父表；三來源逐位元重算經 T9 即審 P3 獨立實證）。顯式量化觀測待 T9R2（S-2） | T9 ＋ T9R2 | GREEN（量化觀測 T9R2 補） |
+| AC-27 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-27 完成流程與 §9.3 步驟順序`＋`S-1 完成路徑同 tx 呼叫（mutant M2／M3 kill）`（T9R2 describe 實名；M2/M3 各恰 1 紅） | T9 ＋ T9R2 | GREEN |
+| AC-28 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-28 快照欄位與精度`（8 欄＋totalAmount 落父表；三來源逐位元重算經 T9 即審 P3 獨立實證）＋`S-2 快照寫入 payload 已於服務層量化（mutant M4 kill）`（T9R2 describe 實名；M4 恰 1 紅） | T9 ＋ T9R2 | GREEN |
 | AC-29 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-29 完成授權：僅擁有人本人`（管理員 403＋本人 200 對照；三候選路徑 404 負向；M6 mutant 殺） | T9 | GREEN |
 | AC-30 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-30 原子性`（快照寫入後注入失敗全回滾；P2025→404；M11 快照逃逸交易 mutant 殺） | T9 | GREEN |
 | AC-31 | integration | `phase7-snapshot-immutability.test.ts` | `AC-31: creating new depreciation parameter versions after completion leaves the snapshot byte-for-byte unchanged, with a spy proving zero recomputation` | T10 | PENDING |
