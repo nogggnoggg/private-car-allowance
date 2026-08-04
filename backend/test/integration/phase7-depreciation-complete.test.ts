@@ -8,9 +8,10 @@
  * （切點回滾 ＋ `P2025` 不得 500）；併 AC-16／AC-18 之**完成端點 409 段**
  * （§7.5 拒絕形狀、§16 D5(a)）。
  *
- * **不在本檔範圍**（Gate 裁定切出）：AC-22／AC-24 之整合層正式斷言屬 T9b；
- * AC-31/32/33（快照不可變、後端權威、雙完成併發）屬 T10。本檔僅就 T9 之
- * Done When 與 FW 指派項落地必要證據。
+ * **PHASE-007-T9b 追加**（Gate 裁定自 T9 切出之 AC-22／AC-24 整合層，落於本檔
+ * 末段 `describe("PHASE-007-T9b …")`）：AC-22(b)(c)(d) 之「草稿／預覽／完成三處
+ * 同步暴露」與 AC-24 之全生命週期序列。T9 之 27 條測試零改動。
+ * **仍不在本檔範圍**：AC-31/32/33（快照不可變、後端權威、雙完成併發）屬 T10。
  *
  * Test discipline (Spec §11.0 / Packet)：
  *   - loginName 前綴 "p7t9_" ＋ 每次執行之隨機後綴。
@@ -938,6 +939,316 @@ describeWithDb("PHASE-007-T9 — 折舊完成流程 ＋ 快照 ＋ 原子性 ＋
           expect(linked).toBe(0);
         }
       }
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-007-T9b — AC-22（整合層）／AC-24（整合層）
+  //
+  // Gate 裁定將 T9 之 AC-22／AC-24 整合層切出為獨立 Task（Spec §15 T6/T9 規模
+  // 例外處置 (i)）。本段之覆蓋**只補 T9 未覆蓋之缺口**，不重複 T9 已有之：
+  //   - 完成端點 400 ＋ `blockers=[AMOUNT_OUT_OF_RANGE]` ＋ 全表零寫入；
+  //   - 4dp 量化窄窗不成 500；
+  //   - 附件計數於 tx 內現算之鑑別（交易外 1 張、完成前刪除 → 400）。
+  // 本段新增者為三項：
+  //   ① AC-22(c) **同一 fixture 三處一致**：預覽／草稿 DTO／完成端點同步暴露
+  //      `AMOUNT_OUT_OF_RANGE` 與 `calculable=false`（§16 D11(a) 逐字）；
+  //   ② AC-22(d) 整合層防誤殺對照組：容量內之同型 fixture 三處皆不暴露該碼；
+  //   ③ AC-24 **全生命週期序列**：草稿零附件可存（201/200）→ 完成被擋（400）
+  //      → 掛附件後完成成功（200 ＋ 快照）；併三處 blocker 文案逐字一致。
+  //
+  // 年度配置（不與 T9 之年度重疊，避免年度里程互相污染）：
+  //   2067 → 超容量 fixture；2068 → 容量內對照組；2069 → AC-24 生命週期。
+  // 三者皆落在參數階梯之 V_KILL 區間（2061~2069，perKm 2468.9999）。
+  // ===========================================================================
+
+  /**
+   * `depreciation-blockers.ts` 之 blocker 文案（zh-TW）。三處（草稿 DTO 之
+   * `completionBlockers`、完成端點之 `details.blockers`、以及──就 code 而言──
+   * 預覽之 `blockingCodes`）皆源自同一純函式，本常數用於**逐字**固定該對外
+   * 文案，任一處漂移即紅。
+   */
+  const BLOCKER_MESSAGE = {
+    AMOUNT_OUT_OF_RANGE: "計算結果超出可儲存之金額範圍，請聯絡管理員檢查折舊參數",
+    DEPRECIATION_ATTACHMENT_REQUIRED: "請至少上傳 1 張折舊證明",
+  } as const;
+
+  /** §7.2 `DepreciationComputedDto`（預覽回應與草稿 DTO 之 `computed` 同型）。 */
+  type ComputedDto = {
+    calculable: boolean;
+    officialKm: string | null;
+    officialApplicationCount: number | null;
+    perKmUnitPrice: string | null;
+    rawAmount: string | null;
+    amount: number | null;
+    blockingCodes: string[];
+  };
+
+  type DraftDto = ApplicationDto & {
+    attachments: { id: string }[];
+    computed: ComputedDto | null;
+  };
+
+  function previewHttp(cookie: string, applicationYear: number | null) {
+    return app.inject({
+      method: "POST",
+      url: "/applications/depreciation/preview",
+      headers: { cookie },
+      payload: applicationYear === null ? {} : { applicationYear },
+    });
+  }
+
+  async function readPreview(cookie: string, applicationYear: number): Promise<ComputedDto> {
+    const resp = await previewHttp(cookie, applicationYear);
+    expect(resp.statusCode).toBe(200);
+    return resp.json<{ preview: ComputedDto }>().preview;
+  }
+
+  async function readDraft(cookie: string, id: string): Promise<DraftDto> {
+    const resp = await getHttp(cookie, id);
+    expect(resp.statusCode).toBe(200);
+    return resp.json<{ application: DraftDto }>().application;
+  }
+
+  describe("PHASE-007-T9b — AC-22 容量守門三處一致", () => {
+    it("超容量之同一 fixture：預覽／草稿／完成三處同步暴露 AMOUNT_OUT_OF_RANGE ＋ calculable=false，完成 400 且全表零寫入", async () => {
+      // fixture 自證（§8.3 容量推導）：`snapshotRawAmount` 為 Decimal(14,4)
+      // （上界 1e10）、`Application.totalAmount` 為 int4（上界 2147483647）。
+      const raw = new Prisma.Decimal("400000000.00").times(new Prisma.Decimal("2468.9999"));
+      expect(raw.toFixed(4)).toBe("987599960000.0000");
+      expect(raw.greaterThanOrEqualTo(new Prisma.Decimal("1e10"))).toBe(true);
+      expect(
+        raw
+          .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
+          .greaterThan(new Prisma.Decimal("2147483647"))
+      ).toBe(true);
+
+      await seedCompletedTravel({ date: "2067-03-03", snapshotTotalKm: "400000000.00" });
+      const id = await createCompletableDraft(2067);
+
+      // ── 第 1 處：預覽（stateless，AC-22(c)）─────────────────────────────
+      const preview = await readPreview(ownerCookie, 2067);
+      expect(preview.calculable).toBe(false);
+      expect(preview.blockingCodes).toEqual(["AMOUNT_OUT_OF_RANGE"]);
+      expect(preview.officialKm).toBe("400000000.00");
+      expect(preview.officialApplicationCount).toBe(1);
+      expect(preview.perKmUnitPrice).toBe("2468.9999");
+      // 存不進去的金額一律不呈現（不得靜默截斷後顯示）。
+      expect(preview.rawAmount).toBeNull();
+      expect(preview.amount).toBeNull();
+
+      // ── 第 2 處：草稿 DTO（AC-22(c)）───────────────────────────────────
+      const draft = await readDraft(ownerCookie, id);
+      expect(draft.computed?.calculable).toBe(false);
+      expect(draft.computed?.blockingCodes).toEqual(preview.blockingCodes);
+      expect(draft.computed?.rawAmount).toBeNull();
+      expect(draft.computed?.amount).toBeNull();
+      expect(draft.completionBlockers).toEqual([
+        { code: "AMOUNT_OUT_OF_RANGE", message: BLOCKER_MESSAGE.AMOUNT_OUT_OF_RANGE },
+      ]);
+      expect(draft.snapshot).toBeNull();
+
+      // ── 第 3 處：完成端點（AC-22(b)：寫入前拒絕、4xx、零寫入）──────────
+      const before = await tableCounts();
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).not.toBe(500);
+      expect(resp.statusCode).toBe(400);
+      const body = resp.json<ErrorBody>();
+      expect(body.error.code).toBe("VALIDATION_ERROR");
+      expect(body.error.details?.blockers).toEqual([
+        { code: "AMOUNT_OUT_OF_RANGE", message: BLOCKER_MESSAGE.AMOUNT_OUT_OF_RANGE },
+      ]);
+
+      expect(await tableCounts()).toEqual(before);
+      const dbApp = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(dbApp.status).toBe("DRAFT");
+      expect(dbApp.totalAmount).toBeNull();
+      expect(dbApp.completedAt).toBeNull();
+      const row = await prisma.depreciationApplication.findUniqueOrThrow({
+        where: { applicationId: id },
+      });
+      expect(row.snapshotRawAmount).toBeNull();
+      expect(row.calculatedAt).toBeNull();
+
+      // 完成被拒後三處仍一致（拒絕不改變任何一處之呈現）。
+      const draftAfter = await readDraft(ownerCookie, id);
+      expect(draftAfter.computed?.calculable).toBe(false);
+      expect(draftAfter.completionBlockers).toEqual(draft.completionBlockers);
+      expect((await readPreview(ownerCookie, 2067)).blockingCodes).toEqual(["AMOUNT_OUT_OF_RANGE"]);
+    });
+
+    it("AMOUNT_OUT_OF_RANGE 之文案於草稿與完成兩處逐字一致；預覽依契約僅暴露 code（無 message 欄）", async () => {
+      const id = await createCompletableDraft(2067);
+
+      const draft = await readDraft(ownerCookie, id);
+      const draftBlocker = (draft.completionBlockers as BlockerDto[])[0];
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(400);
+      const completeBlocker = (resp.json<ErrorBody>().error.details?.blockers as BlockerDto[])[0];
+
+      expect(draftBlocker.code).toBe("AMOUNT_OUT_OF_RANGE");
+      expect(completeBlocker.code).toBe(draftBlocker.code);
+      expect(completeBlocker.message).toBe(draftBlocker.message);
+      expect(draftBlocker.message).toBe(BLOCKER_MESSAGE.AMOUNT_OUT_OF_RANGE);
+      // 第 4 碼無 `field`（非欄位級錯誤）——兩處同形。
+      expect(draftBlocker.field).toBeUndefined();
+      expect(completeBlocker.field).toBeUndefined();
+
+      // 預覽之 §7.2 契約為 `blockingCodes: string[]`——只有 code、沒有文案；
+      // 「三處一致」於預覽處以 code 相等表達（此為契約差異，非漏測）。
+      const preview = await readPreview(ownerCookie, 2067);
+      expect(preview.blockingCodes).toEqual([draftBlocker.code]);
+      expect(preview.blockingCodes.every((code) => typeof code === "string")).toBe(true);
+    });
+
+    it("零附件之超容量草稿：completionBlockers 僅第 2 碼（兩段式抑制），但 computed.blockingCodes 仍如實暴露 AMOUNT_OUT_OF_RANGE", async () => {
+      // §7.5 兩段式之必然結果（T3 即審 FW-3）：結構性未過即抑制第 3/4 碼；
+      // AC-16(b)／AC-22(c) 之「不可計算真因」由 `computed` 承擔，不靠 blocker 清單。
+      const id = await createDraft(2067);
+
+      const draft = await readDraft(ownerCookie, id);
+      expect(draft.attachments).toEqual([]);
+      expect((draft.completionBlockers as BlockerDto[]).map((b) => b.code)).toEqual([
+        "DEPRECIATION_ATTACHMENT_REQUIRED",
+      ]);
+      expect(draft.computed?.calculable).toBe(false);
+      expect(draft.computed?.blockingCodes).toEqual(["AMOUNT_OUT_OF_RANGE"]);
+      expect(draft.computed?.amount).toBeNull();
+    });
+
+    it("AC-22(d) 防誤殺對照組：容量內之同型 fixture 三處皆不暴露 AMOUNT_OUT_OF_RANGE，完成 200 且金額精確等值", async () => {
+      await seedCompletedTravel({ date: "2068-03-03", snapshotTotalKm: "12.34" });
+      const id = await createCompletableDraft(2068);
+
+      const preview = await readPreview(ownerCookie, 2068);
+      expect(preview.calculable).toBe(true);
+      expect(preview.blockingCodes).toEqual([]);
+      expect(preview.officialKm).toBe("12.34");
+      expect(preview.perKmUnitPrice).toBe("2468.9999");
+      // 12.34 × 2468.9999 = 30467.458766 → 4dp 量化 30467.4588；金額取整 30467
+      expect(preview.rawAmount).toBe("30467.4588");
+      expect(preview.amount).toBe(30467);
+
+      const draft = await readDraft(ownerCookie, id);
+      expect(draft.computed?.calculable).toBe(true);
+      expect(draft.computed?.blockingCodes).toEqual([]);
+      expect(draft.computed?.amount).toBe(30467);
+      expect(draft.completionBlockers).toEqual([]);
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(200);
+      const snapshot = resp.json<{ application: ApplicationDto }>().application.snapshot;
+      expect(snapshot?.officialKm).toBe("12.34");
+      expect(snapshot?.perKmUnitPrice).toBe("2468.9999");
+      expect(snapshot?.rawAmount).toBe("30467.4588");
+      expect(snapshot?.totalAmount).toBe(30467);
+    });
+  });
+
+  describe("PHASE-007-T9b — AC-24 折舊證明附件（草稿可缺、完成須 ≥1）", () => {
+    it("全生命週期：草稿零附件可建立(201)可更新(200) → 完成被擋(400 ＋ 零寫入) → 掛 1 張後完成成功(200 ＋ 快照)", async () => {
+      await seedCompletedTravel({ date: "2069-04-04", snapshotTotalKm: "25.00" });
+
+      // ── 階段 1：草稿零附件可儲存（AC-24 前半、FE-US-17 第 5 條）──────────
+      const createResp = await app.inject({
+        method: "POST",
+        url: "/applications/depreciation",
+        headers: { cookie: ownerCookie },
+        payload: { applicationYear: 2069 },
+      });
+      expect(createResp.statusCode).toBe(201);
+      const id = trackApp(createResp.json<{ application: { id: string } }>().application.id);
+
+      const updateResp = await app.inject({
+        method: "PUT",
+        url: `/applications/depreciation/${id}`,
+        headers: { cookie: ownerCookie },
+        payload: { applicationYear: 2069 },
+      });
+      expect(updateResp.statusCode).toBe(200);
+      const afterUpdate = updateResp.json<{ application: DraftDto }>().application;
+      expect(afterUpdate.attachments).toEqual([]);
+      expect(afterUpdate.status).toBe("DRAFT");
+      // 零附件之草稿：計算面完全可算（金額不因缺附件而消失），只是不可完成。
+      expect(afterUpdate.computed?.calculable).toBe(true);
+      expect(afterUpdate.computed?.blockingCodes).toEqual([]);
+      expect((afterUpdate.completionBlockers as BlockerDto[]).map((b) => b.code)).toEqual([
+        "DEPRECIATION_ATTACHMENT_REQUIRED",
+      ]);
+
+      // ── 階段 2：零附件完成 → 400 ＋ 全表零寫入（AC-24 後半）───────────
+      const before = await tableCounts();
+      const blockedResp = await completeHttp(ownerCookie, id);
+      expect(blockedResp.statusCode).not.toBe(500);
+      expect(blockedResp.statusCode).toBe(400);
+      const blockedBody = blockedResp.json<ErrorBody>();
+      expect(blockedBody.error.code).toBe("VALIDATION_ERROR");
+      expect(blockedBody.error.details?.blockers).toEqual([
+        {
+          code: "DEPRECIATION_ATTACHMENT_REQUIRED",
+          message: BLOCKER_MESSAGE.DEPRECIATION_ATTACHMENT_REQUIRED,
+        },
+      ]);
+
+      expect(await tableCounts()).toEqual(before);
+      const blockedApp = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(blockedApp.status).toBe("DRAFT");
+      expect(blockedApp.totalAmount).toBeNull();
+      expect(blockedApp.completedAt).toBeNull();
+      const blockedRow = await prisma.depreciationApplication.findUniqueOrThrow({
+        where: { applicationId: id },
+      });
+      expect(blockedRow.snapshotRawAmount).toBeNull();
+      expect(blockedRow.calculatedAt).toBeNull();
+
+      // ── 階段 3：掛上 1 張證明 → 阻擋消失 → 完成 200（同一草稿，唯一變因
+      //    為附件數 0→1；鑑別力來源）─────────────────────────────────────
+      await linkProof(id);
+      const readyDraft = await readDraft(ownerCookie, id);
+      expect(readyDraft.attachments).toHaveLength(1);
+      expect(readyDraft.completionBlockers).toEqual([]);
+
+      const okResp = await completeHttp(ownerCookie, id);
+      expect(okResp.statusCode).toBe(200);
+      const completed = okResp.json<{ application: ApplicationDto }>().application;
+      expect(completed.status).toBe("COMPLETED");
+      // 25.00 × 2468.9999 = 61724.9975
+      expect(completed.snapshot?.officialKm).toBe("25.00");
+      expect(completed.snapshot?.rawAmount).toBe("61724.9975");
+      expect(completed.snapshot?.totalAmount).toBe(61725);
+
+      const completedApp = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(completedApp.status).toBe("COMPLETED");
+      expect(completedApp.totalAmount).toBe(61725);
+      expect(
+        await prisma.attachment.count({
+          where: { refType: "DEPRECIATION", refId: id, status: "LINKED" },
+        })
+      ).toBe(1);
+    });
+
+    it("DEPRECIATION_ATTACHMENT_REQUIRED 之文案於草稿與完成兩處逐字一致；預覽（stateless、無附件概念）恆不暴露該碼", async () => {
+      const id = await createDraft(2069);
+
+      const draft = await readDraft(ownerCookie, id);
+      const draftBlocker = (draft.completionBlockers as BlockerDto[])[0];
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(400);
+      const completeBlocker = (resp.json<ErrorBody>().error.details?.blockers as BlockerDto[])[0];
+
+      expect(draftBlocker.code).toBe("DEPRECIATION_ATTACHMENT_REQUIRED");
+      expect(completeBlocker.code).toBe(draftBlocker.code);
+      expect(completeBlocker.message).toBe(draftBlocker.message);
+      expect(draftBlocker.message).toBe(BLOCKER_MESSAGE.DEPRECIATION_ATTACHMENT_REQUIRED);
+
+      // 預覽為 stateless（§16 D13(a)：無 `applicationId`、無附件可數），故
+      // `blockingCodes` 依設計恆不含第 2 碼——此為契約，明文釘住以防日後
+      // 誤把「附件缺漏」灌進預覽而使預覽對無草稿之使用者恆為不可計算。
+      const preview = await readPreview(ownerCookie, 2069);
+      expect(preview.blockingCodes).not.toContain("DEPRECIATION_ATTACHMENT_REQUIRED");
+      expect(preview.calculable).toBe(true);
     });
   });
 });
