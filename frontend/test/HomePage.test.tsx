@@ -221,6 +221,13 @@ describe("HomePage — MileageSummarySection 嵌入（D6(a) 共用元件）", ()
     // 僅 /me、/me/fuel-consumption 與 /applications 三次 fetch（PHASE-005a-T11
     // 新增 <MyFuelConsumptionSection /> 之自動查詢，見上方 mockMyFuelConsumptionEmpty
     // 註解）；統計區塊掛載時仍不得多打一次 fetch。
+    // PHASE-006-T11R-LITE：CI 慢環境下掛載後的非同步 fetch 可能尚未全數送出，
+    // 改以 waitFor 等待穩定為 3 次；隨後短暫等待確認不會「稍後多打」而退化，
+    // 鑑別方向（不自動查詢統計區塊）維持不變。
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
