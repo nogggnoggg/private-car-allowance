@@ -354,6 +354,14 @@ const applicationListInclude = {
       currentMaintenanceDate: true,
     },
   },
+  // PHASE-007-T12／AC-36／§16 D2：折舊列摘要欄（title）取自 applicationYear；
+  // 不影響差旅／保養列（`isTravel`/`isMaintenance` 分支優先），亦不新增索引
+  // （僅隨主查詢一併撈欄位）。
+  depreciation: {
+    select: {
+      applicationYear: true,
+    },
+  },
 } satisfies Prisma.ApplicationInclude;
 
 type ApplicationListRow = Prisma.ApplicationGetPayload<{ include: typeof applicationListInclude }>;
@@ -429,9 +437,20 @@ function formatMaintenanceTitle(
   return `保養 ${formatUtcDate(maintenance.lastMaintenanceDate)} ~ ${formatUtcDate(maintenance.currentMaintenanceDate)}`;
 }
 
+/**
+ * PHASE-007-T12／AC-36／§16 D2 裁定形式：`applicationYear` 有值時
+ * 「年度折舊 YYYY」；為 `null` 時「年度折舊（未指定年度）」（沿 D9(a) 保養列
+ * 「不適用欄位一律 null」之同一精神，但折舊列 title 恆有值——年度未指定本身
+ * 就是可顯示的狀態，不同於保養列日期兩者皆缺才回 null 的情形）。
+ */
+function formatDepreciationTitle(applicationYear: number | null): string {
+  return applicationYear === null ? "年度折舊（未指定年度）" : `年度折舊 ${applicationYear}`;
+}
+
 export function toApplicationListItemDto(app: ApplicationListRow): ApplicationListItemDto {
   const isTravel = app.type === "TRAVEL";
   const isMaintenance = app.type === "MAINTENANCE";
+  const isDepreciation = app.type === "DEPRECIATION";
   const travel = app.travel;
 
   return {
@@ -439,13 +458,15 @@ export function toApplicationListItemDto(app: ApplicationListRow): ApplicationLi
     type: app.type,
     status: app.status,
     primaryDate: formatUtcDate(app.primaryDate),
-    // AC-68: 非差旅類型（尚無子表，PHASE-007 前）一律 null，前端顯示「—」。
+    // AC-68: 非差旅類型一律 null，前端顯示「—」。
     tripDate: isTravel && travel?.tripDate ? formatUtcDate(travel.tripDate) : null,
     title: isTravel
       ? (travel?.purpose ?? null)
       : isMaintenance
         ? formatMaintenanceTitle(app.maintenance)
-        : null,
+        : isDepreciation
+          ? formatDepreciationTitle(app.depreciation?.applicationYear ?? null)
+          : null,
     // 差旅已完成才有里程快照；草稿或非差旅一律 null。
     totalKm:
       isTravel && app.status === "COMPLETED" && travel?.snapshotTotalKm != null
