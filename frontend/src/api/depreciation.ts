@@ -110,10 +110,9 @@ export async function apiGetDepreciationDraft(
 
 export interface DepreciationUpdateFields extends DepreciationDraftFields {
   /**
-   * PHASE-007-T14 使用：宣告式全集（比照保養／差旅既有慣例）。本 Task
-   * （T13）刻意不掛載任何附件上傳 UI（Files Allowed 未涵蓋
-   * `AttachmentUploader.tsx`），此欄位型別先行宣告以固定契約，尚未有呼叫端
-   * 傳入。
+   * PHASE-007-T14：宣告式全集（比照保養／差旅既有慣例）。
+   * `DepreciationApplicationPage` 之 `buildSaveRequestBody` 於送出前以
+   * `Set` 去重（B-22／T8 即審 FW-11 裁定 A）。
    */
   attachmentIds?: string[];
 }

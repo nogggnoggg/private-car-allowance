@@ -1,22 +1,26 @@
 /**
- * DepreciationApplicationPage 前端單元測試 — PHASE-007-T13
+ * DepreciationApplicationPage 前端單元測試 — PHASE-007-T13／T14
  *
  * 涵蓋 AC-38（表單僅提供申請年度一項可輸入欄位；年度公務里程無任何可輸入／
  * 覆寫欄位之負向斷言）、AC-39（預覽顯示折舊每公里單價／年度公務里程／
  * 取整後金額，直取後端；前端零自算鑑別；車價／折舊年限／預估年度行駛公里
- * 數三推導值於任何狀態下皆不出現之負向斷言）、AC-41（缺參數時顯示聯絡管理
- * 員文案並停用「完成申請」，仍允許儲存草稿）。
+ * 數三推導值於任何狀態下皆不出現之負向斷言）、AC-40（五態：Loading／
+ * Empty／Error／Success／Permission denied；blockingCodes 驅動顯示）、
+ * AC-41（缺參數時顯示聯絡管理員文案並停用「完成申請」，仍允許儲存草稿）、
+ * AC-42（同年度重複提醒但不阻擋；折舊證明上傳／預覽／刪除；已完成無上傳／
+ * 刪除入口之負向斷言）。
  *
  * 採用 URL/method 路由式 fetch mock（比照 MaintenanceApplicationPage.test.tsx
  * 既有慣例）——本頁掛載後會自動觸發一次 debounced 預覽請求，佇列式 mock 容易
  * 被插隊而錯位。
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
+import type { AttachmentDto } from "../src/api/attachments.js";
 import type {
   DepreciationApplicationDto,
   DepreciationComputedDto,
@@ -54,8 +58,8 @@ function draftFixture(
   };
 }
 
-// 已填年度、已有證明（fixture 直接注入，本 Task 不掛載上傳 UI）之草稿——供
-// AC-41「僅缺參數」情境使用：唯一 blocker 為 PARAMETER_NOT_AVAILABLE。
+// 已填年度之草稿——供 AC-41「僅缺參數」情境使用：唯一 blocker 為
+// PARAMETER_NOT_AVAILABLE（各測試視需要另以 overrides 補上 attachments）。
 function filledDraftFixture(
   overrides: Partial<DepreciationApplicationDto> = {}
 ): DepreciationApplicationDto {
@@ -64,6 +68,21 @@ function filledDraftFixture(
     completionBlockers: [],
     ...overrides,
   });
+}
+
+function attachmentFixture(overrides: Partial<AttachmentDto> = {}): AttachmentDto {
+  return {
+    id: "att-1",
+    status: "LINKED",
+    mimeType: "image/jpeg",
+    byteSize: 12345,
+    originalFilename: "receipt.jpg",
+    refType: "DEPRECIATION",
+    refId: "app-1",
+    previewUrl: "/attachments/att-1/thumbnail",
+    downloadUrl: "/attachments/att-1/download",
+    ...overrides,
+  };
 }
 
 function previewFixture(overrides: Partial<DepreciationComputedDto> = {}): DepreciationComputedDto {
@@ -138,6 +157,15 @@ const isPutDraft = (p: string) => p === "/api/applications/depreciation/app-1";
 const isCreate = (p: string) => p === "/api/applications/depreciation";
 const isPreview = (p: string) => p === "/api/applications/depreciation/preview";
 const isComplete = (p: string) => p === "/api/applications/app-1/complete";
+const isDelete = (p: string) => p === "/api/applications/app-1";
+const isAttachmentsPost = (p: string) => p === "/api/attachments";
+
+// Helper: create a synthetic File with given size and type (比照
+// AttachmentUploader.test.tsx／006 T12 既有 makeFile 慣例)
+function makeFile(name: string, size: number, type: string): File {
+  const buf = new Uint8Array(size);
+  return new File([buf], name, { type });
+}
 
 describe("DepreciationApplicationPage", () => {
   beforeEach(() => {
@@ -149,7 +177,7 @@ describe("DepreciationApplicationPage", () => {
   });
 
   // ===========================================================================
-  // 基本骨架（Loading／Permission denied）——完整五態覆蓋屬 T14（AC-40）。
+  // 基本骨架（Loading／Permission denied）——AC-40 補齊段見下方「AC-40：五態」。
   // ===========================================================================
 
   it("Loading：讀取草稿中顯示載入中", () => {
@@ -214,7 +242,7 @@ describe("DepreciationApplicationPage", () => {
       expect(router.countCalls("PUT", isPutDraft)).toBe(1);
     });
     const body = router.lastBody("PUT", isPutDraft);
-    expect(body).toEqual({ applicationYear: null });
+    expect(body).toEqual({ applicationYear: null, attachmentIds: [] });
   });
 
   it("AC-38：填入年度後以 JSON number（非字串）送出", async () => {
@@ -236,7 +264,7 @@ describe("DepreciationApplicationPage", () => {
       expect(router.countCalls("PUT", isPutDraft)).toBe(1);
     });
     const body = router.lastBody("PUT", isPutDraft);
-    expect(body).toEqual({ applicationYear: 2025 });
+    expect(body).toEqual({ applicationYear: 2025, attachmentIds: [] });
     expect(typeof body?.applicationYear).toBe("number");
   });
 
@@ -440,6 +468,321 @@ describe("DepreciationApplicationPage", () => {
       expect(
         screen.getByRole("heading", { name: "年度折舊補貼申請（已完成）" })
       ).toBeInTheDocument();
+    });
+  });
+
+  // ===========================================================================
+  // AC-40：五態（Loading／Empty／Error／Success／Permission denied）。
+  // Loading／Permission denied 已於前段覆蓋，本段補齊 Empty／Error／
+  // blockingCodes 驅動之顯示邏輯（非 calculable 單一旗標）。
+  // ===========================================================================
+
+  describe("AC-40：五態", () => {
+    it("Empty：年度無任何有效差旅（totalKm=0.00、applicationCount=0）時顯示 0 值＋說明，非錯誤、非空白頁", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            officialKm: "0.00",
+            officialApplicationCount: 0,
+            perKmUnitPrice: "1.1111",
+            rawAmount: "0.0000",
+            amount: 0,
+          }),
+        })
+      );
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("0.00 公里")).toBeInTheDocument();
+      });
+      expect(screen.getByText("0")).toBeInTheDocument();
+      // 非錯誤狀態：不應出現「無法計算」文案
+      expect(screen.queryByText("年度補貼金額：無法計算")).not.toBeInTheDocument();
+    });
+
+    it("Error：讀取草稿 500 時顯示錯誤訊息與重試按鈕，點擊重試重新呼叫 GET", async () => {
+      const router = installFetchRouter();
+      let getCalls = 0;
+      router.on("GET", isGetDraft, () => {
+        getCalls += 1;
+        return jsonRes(
+          { error: { code: "INTERNAL_ERROR", message: "系統發生錯誤，請稍後再試" } },
+          500
+        );
+      });
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("系統發生錯誤，請稍後再試")).toBeInTheDocument();
+      });
+      expect(getCalls).toBe(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "重試" }));
+      await waitFor(() => {
+        expect(getCalls).toBe(2);
+      });
+    });
+
+    it("blockingCodes 驅動顯示：未知代碼原樣顯示（非以 calculable 單一旗標決定文案內容）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            calculable: false,
+            perKmUnitPrice: null,
+            rawAmount: null,
+            amount: null,
+            blockingCodes: ["SOME_UNKNOWN_BLOCKER_CODE"],
+          }),
+        })
+      );
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("SOME_UNKNOWN_BLOCKER_CODE")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("0")).not.toBeInTheDocument();
+    });
+  });
+
+  // ===========================================================================
+  // AC-42：重複年度提醒（不阻擋）＋ 折舊證明上傳／預覽／刪除（草稿階段）＋
+  // 已完成無上傳／刪除入口之負向斷言。
+  // ===========================================================================
+
+  describe("AC-42：重複提醒與證明", () => {
+    it("同年度已有其他申請時顯示提醒文字，但不阻擋建立與完成（提醒在場且完成鈕可用）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({
+            attachments: [attachmentFixture()],
+            duplicateYearNotice: { count: 3, hasCompleted: true },
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/提醒：您在西元 2025 年度已有 3 筆其他折舊補貼申請/)
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByText(/含已完成之申請/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
+    });
+
+    it("無其他申請時不顯示重複提醒（count=0）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({
+            attachments: [attachmentFixture()],
+            duplicateYearNotice: { count: 0, hasCompleted: false },
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("500.00 公里")).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/提醒：您在西元/)).not.toBeInTheDocument();
+    });
+
+    it("Empty：尚無證明", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("尚無證明")).toBeInTheDocument();
+      });
+    });
+
+    it("上傳支援格式圖片 → 顯示縮圖預覽", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("POST", isAttachmentsPost, () =>
+        jsonRes(
+          { attachment: attachmentFixture({ id: "att-new", originalFilename: "photo.jpg" }) },
+          201
+        )
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("尚無證明")).toBeInTheDocument();
+      });
+
+      const input = screen.getByLabelText(/選擇圖片/) as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(input, { target: { files: [makeFile("photo.jpg", 1024, "image/jpeg")] } });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("img", { name: "photo.jpg" })).toBeInTheDocument();
+      });
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(1);
+    });
+
+    it("已有 5 張再上傳（第 6 張）→ 前端拒絕並顯示上限訊息、零上傳呼叫", async () => {
+      const router = installFetchRouter();
+      const fiveAttachments = Array.from({ length: 5 }, (_, i) =>
+        attachmentFixture({ id: `att-${i + 1}`, originalFilename: `photo-${i + 1}.jpg` })
+      );
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: fiveAttachments }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(
+          screen.getByText("已達上限（5 張），如需新增請先刪除現有附件。")
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText(/選擇圖片/)).not.toBeInTheDocument();
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(0);
+    });
+
+    it("刪除草稿階段附件 → 呼叫 DELETE /attachments/:id", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [attachmentFixture()] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on(
+        "DELETE",
+        (p) => p === "/api/attachments/att-1",
+        () => jsonRes({}, 200)
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("img", { name: "receipt.jpg" })).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "刪除 receipt.jpg" }));
+
+      await waitFor(() => {
+        expect(router.countCalls("DELETE", (p) => p === "/api/attachments/att-1")).toBe(1);
+      });
+      await waitFor(() => {
+        expect(screen.queryByRole("img", { name: "receipt.jpg" })).not.toBeInTheDocument();
+      });
+    });
+
+    it("完成前無證明 → 完成鈕停用並顯示提示；草稿仍可儲存", async () => {
+      const router = installFetchRouter();
+      const noAttachmentBlocker = [
+        { code: "DEPRECIATION_ATTACHMENT_REQUIRED", message: "請至少上傳 1 張折舊證明" },
+      ];
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({
+            attachments: [],
+            completionBlockers: noAttachmentBlocker,
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("PUT", isPutDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({
+            attachments: [],
+            completionBlockers: noAttachmentBlocker,
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("請至少上傳 1 張折舊證明")).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => {
+        expect(screen.getByText("草稿已儲存。")).toBeInTheDocument();
+      });
+      expect(router.countCalls("PUT", isPutDraft)).toBe(1);
+      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+    });
+
+    it("B-22／FW-11 裁定 A：attachmentIds 送出前去重（重複 id 不重複送出）", async () => {
+      const router = installFetchRouter();
+      const dupA = attachmentFixture({ id: "att-dup" });
+      const dupB = attachmentFixture({ id: "att-dup" });
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [dupA, dupB] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("PUT", isPutDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [dupA] }) })
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("500.00 公里")).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => {
+        expect(screen.getByText("草稿已儲存。")).toBeInTheDocument();
+      });
+
+      const body = router.lastBody("PUT", isPutDraft);
+      expect(body?.attachmentIds).toEqual(["att-dup"]);
+    });
+
+    it("已完成之折舊申請不存在任何上傳／刪除入口（負向斷言）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            status: "COMPLETED",
+            applicationYear: 2025,
+            completionBlockers: null,
+            computed: null,
+            attachments: [attachmentFixture()],
+            snapshot: {
+              officialKm: "500.00",
+              perKmUnitPrice: "1.1111",
+              rawAmount: "555.5500",
+              totalAmount: 556,
+              calculatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(
+          screen.getByRole("heading", { name: "年度折舊補貼申請（已完成）" })
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByText("receipt.jpg")).toBeInTheDocument();
+      expect(screen.queryByLabelText(/選擇圖片/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /刪除/ })).not.toBeInTheDocument();
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(0);
+      expect(router.countCalls("DELETE", (p) => p.startsWith("/api/attachments/"))).toBe(0);
     });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * DepreciationApplicationPage — PHASE-007-T13
+ * DepreciationApplicationPage — PHASE-007-T13／T14
  *
  * Routes: `/applications/depreciation/new`（建立草稿後導向 `:id`）、
  * `/applications/depreciation/:id`（草稿編輯 / 已完成檢視）。
@@ -7,19 +7,25 @@
  * 涵蓋 AC-38（表單僅提供申請年度一項可輸入欄位；年度公務里程無任何可輸入／
  * 覆寫欄位）、AC-39（預覽顯示折舊每公里單價／年度公務里程／取整後金額，
  * 三推導值——車價／折舊年限／預估年度行駛公里數——絕不出現；前端零自算，
- * 一律取自後端回應）、AC-41（該年度無有效折舊參數時顯示聯絡管理員文案並
- * 停用「完成申請」，但不阻擋草稿儲存）。
+ * 一律取自後端回應）、AC-40（五態：Loading／Empty／Error／Success／
+ * Permission denied；不可計算時不顯示金額 `0`，一律以 `blockingCodes`
+ * 驅動顯示）、AC-41（該年度無有效折舊參數時顯示聯絡管理員文案並停用
+ * 「完成申請」，但不阻擋草稿儲存）、AC-42（同年度重複申請提醒但不阻擋；
+ * 折舊證明上傳／預覽／刪除——草稿階段；已完成申請無任何上傳／刪除入口之
+ * 負向斷言）。
  *
- * ── 本 Task 明示留白（PHASE-007-T14 之範圍，Packet FW 認知：勿半套） ──────
- *   - 折舊證明上傳／刪除（`AttachmentUploader`）：本頁尚無任何附件輸入
- *     介面；`DEPRECIATION_ATTACHMENT_REQUIRED` 因而恆出現於
- *     `completionBlockers`，「完成申請」鈕在附件功能落地前恆為停用狀態
- *     （不影響 AC-41 之獨立驗證：測試以 fixture 直接注入僅含
- *     `PARAMETER_NOT_AVAILABLE` 之 `completionBlockers`）。
- *   - AC-40（五態完整覆蓋，含 `blockingCodes` 驅動之完整顯示規則）與
- *     AC-42（重複年度提醒 UI、已完成無上傳/刪除入口之負向斷言）：留待
- *     T14 補齊。本頁已具備基本五態骨架（沿既有 Travel/Maintenance 頁面
- *     慣例）以支撐路由可用，但正式 AC-40/42 測試不在本 Task 範圍。
+ * T14 新增（折舊證明，沿用既有 `AttachmentUploader`，PHASE-003／006 同型）：
+ *   - 上傳/刪除為即時 API 呼叫；關聯至本申請透過下一次「儲存草稿」PUT 之
+ *     `attachmentIds[]` 宣告式全集對帳。B-22／T8 即審 FW-11 裁定 A：
+ *     `attachmentIds` 送出前以 `Set` 去重（後端重複 id 觸發 409 且整筆
+ *     回滾，前端去重使其不可達，同 006 T12 AR-3 同型）。
+ *   - `completionBlockers` 含 `DEPRECIATION_ATTACHMENT_REQUIRED` 時已由既有
+ *     `hasBlockers`（任一 blocker 即停用）涵蓋，無需額外判斷。
+ *   - COMPLETED 檢視僅呈現唯讀縮圖清單，不掛載 `AttachmentUploader`（負向
+ *     斷言：無任何上傳/刪除入口；T8 即審 FW-13：完成後附件讀取仍 200，
+ *     AC-42「無上傳/刪除入口」為前端義務，後端不擋讀取）。
+ *   - 重複年度提醒（AC-42 前半）：`duplicateYearNotice.count > 0` 時顯示
+ *     提醒文字，但不停用任何操作（US 定稿「顯示提醒但允許繼續」）。
  *
  * 硬性約束落地重點（比照 MaintenanceApplicationPage.tsx 既有模式）：
  *   - §11.3／AC-39 不自算鑑別：本頁從不自行計算 `officialKm`／
@@ -41,19 +47,25 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiDeleteApplication } from "../api/applications.js";
+import { type AttachmentDto, toFrontendUrl } from "../api/attachments.js";
 import {
   type DepreciationApplicationDto,
   type DepreciationComputedDto,
   type DepreciationDraftFields,
+  type DepreciationUpdateFields,
   apiCompleteDepreciationApplication,
   apiCreateDepreciationDraft,
   apiGetDepreciationDraft,
   apiPreviewDepreciation,
   apiUpdateDepreciationDraft,
 } from "../api/depreciation.js";
+import AttachmentUploader from "../components/AttachmentUploader.js";
 import type { ApiError } from "../types/api.js";
 
 const PREVIEW_DEBOUNCE_MS = 300; // D8
+
+/** AC-42／§3.3：折舊證明上限 5 張（後端為權威來源，本常數僅供前端提示文案/UI）。 */
+const DEPRECIATION_ATTACHMENT_LIMIT = 5;
 
 /**
  * §7.5 完成阻擋碼（blocker codes）固定文案——逐字對應後端
@@ -109,6 +121,22 @@ function isFormEntirelyBlank(form: FormFields): boolean {
   return form.applicationYear.trim() === "";
 }
 
+/**
+ * PUT 儲存用 body——申請年度同 `buildPreviewRequestBody` ＋ `attachmentIds`
+ * 宣告式全集。B-22／T8 即審 FW-11 裁定 A：`attachmentIds` 送出前以 `Set`
+ * 去重，避免觸發後端「附件已關聯」409（該訊息對使用者具誤導性，前端去重
+ * 使其不可達；同 006 T12 AR-3 同型）。
+ */
+function buildSaveRequestBody(
+  form: FormFields,
+  attachments: AttachmentDto[]
+): DepreciationUpdateFields {
+  return {
+    ...buildPreviewRequestBody(form),
+    attachmentIds: Array.from(new Set(attachments.map((a) => a.id))),
+  };
+}
+
 export default function DepreciationApplicationPage(): React.ReactElement {
   const { id: routeId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -136,6 +164,8 @@ export default function DepreciationApplicationPage(): React.ReactElement {
 
   const [previewState, setPreviewState] = useState<PreviewState>({ kind: "idle" });
 
+  const [attachments, setAttachments] = useState<AttachmentDto[]>([]);
+
   const createdRef = useRef(false);
 
   const loadApplication = useCallback(async (targetId: string) => {
@@ -144,6 +174,7 @@ export default function DepreciationApplicationPage(): React.ReactElement {
       const { application: app } = await apiGetDepreciationDraft(targetId);
       setApplication(app);
       setForm(toFormFields(app));
+      setAttachments(app.attachments);
       setDirty(false);
       setSaveSuccess(null);
       setPageState({ kind: "ready" });
@@ -210,6 +241,14 @@ export default function DepreciationApplicationPage(): React.ReactElement {
     setDirty(true);
   }
 
+  // AC-42：附件上傳/刪除為即時 API 呼叫（同 MaintenanceApplicationPage 既有
+  // 慣例），但關聯至本申請仍待下一次「儲存草稿」之 PUT attachmentIds 對帳；
+  // 故本地清單變動視為未儲存變更（dirty=true），與其他表單欄位一致。
+  function updateAttachments(next: AttachmentDto[]) {
+    setAttachments(next);
+    setDirty(true);
+  }
+
   // ---- Save（整份 PUT）----
   async function handleSave() {
     if (!application || saving) return;
@@ -220,10 +259,11 @@ export default function DepreciationApplicationPage(): React.ReactElement {
     try {
       const { application: updated } = await apiUpdateDepreciationDraft(
         application.id,
-        buildPreviewRequestBody(form)
+        buildSaveRequestBody(form, attachments)
       );
       setApplication(updated);
       setForm(toFormFields(updated));
+      setAttachments(updated.attachments);
       setDirty(false);
       setSaveSuccess("草稿已儲存。");
     } catch (err) {
@@ -407,6 +447,32 @@ export default function DepreciationApplicationPage(): React.ReactElement {
               </dl>
             </section>
           )}
+
+          {/* AC-42 負向斷言：已完成之折舊申請不得出現任何上傳／刪除入口——
+              僅呈現唯讀縮圖清單（比照 MaintenanceApplicationPage COMPLETED
+              分支既有慣例），不掛載 AttachmentUploader。T8 即審 FW-13：完成
+              後附件讀取仍 200，此為前端義務，非後端擋讀取。 */}
+          <section aria-labelledby="depreciation-attachments-heading">
+            <h2 id="depreciation-attachments-heading">折舊證明</h2>
+            {application.attachments.length > 0 ? (
+              <ul className="attachment-list" aria-label="折舊證明清單">
+                {application.attachments.map((att) => (
+                  <li key={att.id} className="attachment-item">
+                    <img
+                      src={toFrontendUrl(att.previewUrl)}
+                      alt={att.originalFilename}
+                      className="attachment-thumb"
+                      width={64}
+                      height={64}
+                    />
+                    <span className="attachment-filename">{att.originalFilename}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>尚無證明</p>
+            )}
+          </section>
         </main>
       </div>
     );
@@ -431,6 +497,19 @@ export default function DepreciationApplicationPage(): React.ReactElement {
       </header>
 
       <main className="page-main">
+        {/* AC-42 前半（FE-US-17 第 4 條）：同年度已有其他申請時顯示提醒，
+            但不阻擋建立與完成——僅提示，不停用任何按鈕。 */}
+        {application.duplicateYearNotice && application.duplicateYearNotice.count > 0 && (
+          <output className="warn-text">
+            <p>
+              提醒：您在西元 {application.applicationYear} 年度已有{" "}
+              {application.duplicateYearNotice.count} 筆其他折舊補貼申請
+              {application.duplicateYearNotice.hasCompleted ? "（含已完成之申請）" : ""}
+              ，仍可繼續建立與完成本筆申請。
+            </p>
+          </output>
+        )}
+
         {application.completionBlockers && application.completionBlockers.length > 0 && (
           <div className="warn-text" aria-live="polite" aria-label="尚未完成項目">
             <p>尚未完成項目：</p>
@@ -532,6 +611,23 @@ export default function DepreciationApplicationPage(): React.ReactElement {
               </>
             )}
           </div>
+        </section>
+
+        <section aria-labelledby="depreciation-attachments-heading">
+          <h2 id="depreciation-attachments-heading">折舊證明</h2>
+          {/* AC-42：上傳/刪除即時呼叫既有 AttachmentUploader（PHASE-003）；
+              key 隨 application.updatedAt 變動以便儲存成功後以後端回應之
+              attachments 重新初始化子元件內部狀態（AttachmentUploader 為
+              initialAttachments-驅動的非受控元件，比照 006 T12 既有慣例）。 */}
+          <AttachmentUploader
+            key={`att-${application.updatedAt}`}
+            refType="DEPRECIATION"
+            refId={application.id}
+            limit={DEPRECIATION_ATTACHMENT_LIMIT}
+            initialAttachments={attachments}
+            onListChange={updateAttachments}
+            emptyMessage="尚無證明"
+          />
         </section>
 
         <div className="btn-row">
