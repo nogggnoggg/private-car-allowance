@@ -535,10 +535,8 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
   // （AC-30 同 PHASE-004-T10 之 C2 原則）。
   //
   // `:userId` must exist（404 NOT_FOUND if not，AC-30 明文「不得建立任何
-  // 列」）——Spec §2 AC-30 對此端點僅要求 404-vs-existence 判定，未如
-  // PHASE-004-T10 的差旅代操作端點另要求 isActive 檢查（該檢查為差旅端點
-  // 額外裁定，非本 AC 文字要求），故本端點刻意不重現該項，維持與 Spec 逐字
-  // 一致（Governance：不得自行擴張 Spec 未明文之行為）。
+  // 列」）；`isActive=false` → 400 VALIDATION_ERROR，比照 PHASE-004-T10 差旅
+  // 代操作端點既有文案（人類裁定，Spec §18 SF-4，AC-30 增補）。
   //
   // AC-30/83 同型原子性：`createMaintenanceDraft` 的 `onCreated` hook 於
   // `userId !== actorId`（C3：管理員代自己＝自己操作，非代操作）時才建構，
@@ -556,6 +554,11 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       const targetUser = await prisma.user.findUnique({ where: { id: userId } });
       if (!targetUser) {
         throw new AppError("NOT_FOUND", 404, "指定的使用者不存在");
+      }
+      if (!targetUser.isActive) {
+        throw new AppError("VALIDATION_ERROR", 400, "指定的使用者已停用，無法代其建立申請", [
+          { field: "userId", reason: "指定的使用者已停用" },
+        ]);
       }
 
       const body = (request.body ?? {}) as Record<string, unknown>;

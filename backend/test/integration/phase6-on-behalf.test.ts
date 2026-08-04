@@ -75,6 +75,7 @@ const OWNER_LOGIN = `${LOGIN_PREFIX}owner_${RUN_ID}`;
 const ADMIN_LOGIN = `${LOGIN_PREFIX}admin_${RUN_ID}`;
 const OTHER_LOGIN = `${LOGIN_PREFIX}other_${RUN_ID}`;
 const MCP_LOGIN = `${LOGIN_PREFIX}mcp_${RUN_ID}`;
+const INACTIVE_LOGIN = `${LOGIN_PREFIX}inactive_${RUN_ID}`;
 
 interface ErrorJson {
   error: { code: string; message: string };
@@ -139,6 +140,7 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
   let adminId: string;
   let otherId: string;
   let mcpId: string;
+  let inactiveId: string;
 
   let ownerCookie: string;
   let adminCookie: string;
@@ -204,11 +206,22 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
         mustChangePassword: true,
       },
     });
+    const inactive = await prisma.user.create({
+      data: {
+        loginName: INACTIVE_LOGIN,
+        displayName: "P6T9 停用使用者（SF-4 代建立擋下）",
+        passwordHash: hash,
+        role: "USER",
+        isActive: false,
+        mustChangePassword: false,
+      },
+    });
 
     ownerId = owner.id;
     adminId = admin.id;
     otherId = other.id;
     mcpId = mcp.id;
+    inactiveId = inactive.id;
 
     app = await buildServer({ databaseUrl: DB_URL, logLevel: "error" });
     await app.ready();
@@ -232,7 +245,7 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
       // ownerLoginName 恆含本次 RUN_ID，故 `contains: RUN_ID` 精準限定本次執行
       // 寫入的列（Packet C4：嚴禁全域 deleteMany({})）。
       await prisma.auditLog.deleteMany({ where: { targetLabel: { contains: RUN_ID } } });
-      const userIds = [ownerId, adminId, otherId, mcpId].filter(Boolean);
+      const userIds = [ownerId, adminId, otherId, mcpId, inactiveId].filter(Boolean);
       if (userIds.length > 0) {
         await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
       }
@@ -549,6 +562,36 @@ describeWithDb("PHASE-006-T9 — 代操作（代建立／代修改）＋ 稽核�
       const auditCountAfter = await prisma.auditLog.count();
       expect(appCountAfter).toBe(appCountBefore);
       expect(auditCountAfter).toBe(auditCountBefore);
+    });
+  });
+
+  describe("SF-4（§18 人類裁定）— :userId 已停用 → 400 VALIDATION_ERROR，比照差旅代建立端點", () => {
+    it("代建立指向已停用之 userId → 400 VALIDATION_ERROR，訊息與差旅代建立端點逐字相同，不得建立任何列", async () => {
+      const appCountBefore = await prisma.application.count();
+      const auditCountBefore = await prisma.auditLog.count();
+
+      const resp = await onBehalfCreate(adminCookie, inactiveId, { actualCost: "1.00" });
+      expect(resp.statusCode).toBe(400);
+      const body = JSON.parse(resp.body) as ErrorJson & {
+        error: { fields?: Array<{ field: string; reason: string }> };
+      };
+      expect(body.error.code).toBe("VALIDATION_ERROR");
+      expect(body.error.message).toBe("指定的使用者已停用，無法代其建立申請");
+      expect(body.error.fields).toEqual([{ field: "userId", reason: "指定的使用者已停用" }]);
+
+      const appCountAfter = await prisma.application.count();
+      const auditCountAfter = await prisma.auditLog.count();
+      expect(appCountAfter).toBe(appCountBefore);
+      expect(auditCountAfter).toBe(auditCountBefore);
+    });
+
+    it("啟用者代建立仍 201（正例不誤殺）", async () => {
+      const resp = await onBehalfCreate(adminCookie, ownerId, { actualCost: "1.00" });
+      expect(resp.statusCode).toBe(201);
+      const body = JSON.parse(resp.body) as { application: MaintenanceApplicationJson };
+      trackApp(body.application.id);
+      expect(body.application.ownerId).toBe(ownerId);
+      expect(body.application.createdById).toBe(adminId);
     });
   });
 
