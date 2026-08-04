@@ -42,7 +42,8 @@ State: ACTIVE
 > - **T13（錯誤合約）：DONE**（29 測試；1799）＋**T14（E2E＋375px）：DONE**（`90fad67`，E2E 23→**30** 大總管親跑、AR-5 CSS 補）＋§12 41/41 GREEN 回填（`a41f750`＋`43dead1`）。usage：T13 ~140k、T14 ~184k。
 > - **終審：REQUEST_CHANGES（0 Must/1 Should 純文件/4 AR）→ SF-1 關閉（`43dead1`）→ 依 reviewer 明示條件轉 APPROVE**。程式面零 finding：T10R/T13/T14 全 CLOSED、基準線獨立重現（1799×2/206×2/tsc/biome）、37 檔零孤兒、travel-calculation 與 mileage-engine 全 Phase 零改動、D4(a)/D7(a)/D10(a)/D11(a) 落實抽查全過、白名單 commit 合規、零 secrets/新依賴/.only。SF-1（§12 AC-19 列結構破損＋AC-39/40/41 測試名非實名——上一 commit 過度宣稱）→ 白名單修復。AR 記錄：AR-1 掃描清單漏 travel-service.ts＋fail-open（PHASE-011）；AR-2 「錯誤仍有日誌」近恆真（沿 005a 慣例）；AR-3 授權矩陣 3 格 PCR 無明文測試（同源 preHandler，低風險）；AR-4 E2E 資料累積（既有慣例）。**Review 清零（除 SF-4 開放項）。**
 > - 基準線終值：後端 **1799/0/0**、前端 **206/0/0**、E2E **30/30**（親跑）。41/41 AC GREEN。
-> - 下一步：Draft PR + CI → 晨間人類 Gate（**SF-4 裁定 (a)/(b)**、Mock/整合走查一筆保養、合併批准）。
+> - **Draft PR #14 + CI 三 job 全綠（run 30888073677 @ `31c8ec2`）**。CI flaky 事件：HomePage 計數斷言 CI 慢環境假紅（重跑即綠確認 flaky）→ T11R-LITE waitFor 加固根治（`31c8ec2`，本地四輪綠）。Gate 容器已重建至 PHASE-006（`29111f1`，migration 乾淨、資料保留；`31c8ec2` 僅測試檔差異不需重建）。
+> - **★ 停等人類 Gate ★** 三項待決：①**SF-4 裁定**（(a) 停用者代建補檢查與差旅一致／(b) 接受不對稱記錄——現況為 (b) 行為）②Mock/整合走查一筆保養（步驟已交付使用者）③PR #14 合併批准（Merge 方式；main 無分岔）。合併後義務：usage 復盤報告（常設規則）、Spec 轉 COMPLETED、DOC-SYNC（ARCHITECTURE/DATA_FLOW §13 清單）。
 
 > **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
 > - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
