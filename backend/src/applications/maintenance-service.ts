@@ -317,7 +317,7 @@ function retryBackoffMs(attempt: number): number {
 
 /**
  * Updates a MAINTENANCE draft's five business fields + `primaryDate`
- * （§9.1 步驟；本 Task 不含附件對帳與代操作稽核 hook，見檔頭說明）。
+ * （§9.1 步驟；本函式含附件對帳（T6）；不含代操作稽核 hook（T9），見檔頭說明）。
  *
  * SERIALIZABLE + `SELECT ... FOR UPDATE` + 重試（沿
  * `updateTravelDraft` 既有交易紀律，§10.3 NFR「所有寫入路徑 SERIALIZABLE
