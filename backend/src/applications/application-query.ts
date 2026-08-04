@@ -111,10 +111,17 @@ export function escapeLikePattern(value: string): string {
  * 刻意不查 DB 驗證目標使用者是否存在——Spec AC-84 只要求「只回 U 的紀錄」，
  * 不存在的 `ownerId` 自然查無資料（`items: []`），無需額外一次使用者查詢。
  */
-export function resolveOwnerId(
-  actor: { id: string; role: string },
-  rawOwnerId: string | undefined
-): string {
+export function resolveOwnerId(actor: { id: string; role: string }, rawOwnerId: unknown): string {
+  // B-35（沿 PHASE-005 T6-AR-1 之既有收斂，mileage/routes.ts `assertScalarQueryParams`
+  // 同型）：重複 query key（如 `?ownerId=a&ownerId=b`）在 Fastify 執行期會是
+  // `string[]`，而非本函式簽章原本假設的 `string | undefined`——這是比「是否
+  // 等於 actor.id」更底層的結構前提，必須先擋，否則陣列值會被當成合法
+  // ownerId 一路傳進 Prisma `where`（管理員路徑）並在 DB 層才爆炸成 500。
+  if (rawOwnerId !== undefined && typeof rawOwnerId !== "string") {
+    throw new AppError("VALIDATION_ERROR", 400, "查詢參數有誤，請檢查標示欄位。", [
+      { field: "ownerId", reason: "僅接受單一字串值，不得重複帶入此參數" },
+    ]);
+  }
   if (rawOwnerId === undefined || rawOwnerId === "" || rawOwnerId === actor.id) {
     return actor.id;
   }
@@ -231,11 +238,17 @@ export function parseApplicationListQuery(
   }
 
   // ── keyword（AC-64：空字串／純空白視同未提供）──────────────────────────
+  // B-35：陣列值（重複 query key）在此若不擋型別，`.trim()` 會直接 TypeError
+  // → 未捕捉例外 → 500（見 resolveOwnerId 之同型註解）。
   let keyword: string | null = null;
   if (raw.keyword !== undefined) {
-    const trimmed = raw.keyword.trim();
-    if (trimmed.length > 0) {
-      keyword = trimmed;
+    if (typeof raw.keyword !== "string") {
+      errors.push({ field: "keyword", reason: "僅接受單一字串值，不得重複帶入此參數" });
+    } else {
+      const trimmed = raw.keyword.trim();
+      if (trimmed.length > 0) {
+        keyword = trimmed;
+      }
     }
   }
 
@@ -333,6 +346,14 @@ const applicationListInclude = {
       _count: { select: { segments: true } },
     },
   },
+  // PHASE-006-T10／AC-32／D9(a)：保養列摘要欄（title）取自保養期間；不影響
+  // 差旅列（`isTravel` 分支優先），亦不新增索引（僅隨主查詢一併撈欄位）。
+  maintenance: {
+    select: {
+      lastMaintenanceDate: true,
+      currentMaintenanceDate: true,
+    },
+  },
 } satisfies Prisma.ApplicationInclude;
 
 type ApplicationListRow = Prisma.ApplicationGetPayload<{ include: typeof applicationListInclude }>;
@@ -393,8 +414,24 @@ export interface ApplicationListItemDto {
   updatedAt: string;
 }
 
+/**
+ * D9(a)（PHASE-006-T10）：保養列之列表摘要標題 ＝ 保養期間字串
+ * `"保養 YYYY-MM-DD ~ YYYY-MM-DD"`；上次／本次保養日期任一未齊（含尚未建立
+ * `MaintenanceApplication` 子表列——理論上不會發生，但防禦性處理）一律回
+ * `null`（沿 AC-32「不適用欄位一律回 null」之同一語意，而非顯示半截日期）。
+ */
+function formatMaintenanceTitle(
+  maintenance: { lastMaintenanceDate: Date | null; currentMaintenanceDate: Date | null } | null
+): string | null {
+  if (!maintenance?.lastMaintenanceDate || !maintenance?.currentMaintenanceDate) {
+    return null;
+  }
+  return `保養 ${formatUtcDate(maintenance.lastMaintenanceDate)} ~ ${formatUtcDate(maintenance.currentMaintenanceDate)}`;
+}
+
 export function toApplicationListItemDto(app: ApplicationListRow): ApplicationListItemDto {
   const isTravel = app.type === "TRAVEL";
+  const isMaintenance = app.type === "MAINTENANCE";
   const travel = app.travel;
 
   return {
@@ -402,9 +439,13 @@ export function toApplicationListItemDto(app: ApplicationListRow): ApplicationLi
     type: app.type,
     status: app.status,
     primaryDate: formatUtcDate(app.primaryDate),
-    // AC-68: 非差旅類型（尚無子表，PHASE-006/007 前）一律 null，前端顯示「—」。
+    // AC-68: 非差旅類型（尚無子表，PHASE-007 前）一律 null，前端顯示「—」。
     tripDate: isTravel && travel?.tripDate ? formatUtcDate(travel.tripDate) : null,
-    title: isTravel ? (travel?.purpose ?? null) : null,
+    title: isTravel
+      ? (travel?.purpose ?? null)
+      : isMaintenance
+        ? formatMaintenanceTitle(app.maintenance)
+        : null,
     // 差旅已完成才有里程快照；草稿或非差旅一律 null。
     totalKm:
       isTravel && app.status === "COMPLETED" && travel?.snapshotTotalKm != null
