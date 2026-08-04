@@ -62,6 +62,7 @@ import {
 import { assertApplicationMutable } from "./application-state-machine.js";
 import type { CreateDepreciationDraftInput } from "./depreciation-service.js";
 import {
+  type OnDepreciationDraftUpdated,
   type UpdateDepreciationDraftPatch,
   buildDepreciationApplicationDto,
   completeDepreciationApplication,
@@ -1050,8 +1051,42 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       // AC-32（前瞻）: 任何金額／里程／狀態／識別欄位（totalAmount、status、
       // ownerId、createdById、snapshot* 等）一律不採用——本函式從未讀取這些
-      // body 欄位。代操作稽核 hook（AC-35）屬 T11，本 Task 不傳入 hook。
-      const updated = await updateDepreciationDraft(prisma, id, patch);
+      // body 欄位。
+      //
+      // PHASE-007-T11b（AC-35，逐字比照同檔保養分支之 PHASE-006-T9 寫法）:
+      // 這個 PUT 端點同時服務「使用者改自己的草稿」與「管理員代改他人草稿」
+      // （`assertOwnershipOrAdmin` 對兩者皆放行）——分野純以
+      // `actorId !== existing.ownerId` 判定。只有代操作才建構 `onUpdated`
+      // hook；使用者改自己的草稿完全不傳 hook，天然滿足「本人自改不產生
+      // AuditLog」（沿 PHASE-004 AC-86）。hook 於 `updateDepreciationDraft`
+      // 的同一交易內執行，稽核與業務寫入一併提交或一併回滾（AC-34/35）。
+      // 沿用既有 `AuditAction.APPLICATION_UPDATED_ON_BEHALF`，以
+      // `summary.type = "DEPRECIATION"` 區分型別——不新增 enum 值（§6.2）。
+      const actorId = request.currentUser.id;
+      const isOnBehalf = actorId !== existing.ownerId;
+
+      const onUpdated: OnDepreciationDraftUpdated | undefined = isOnBehalf
+        ? async (tx, context, after) => {
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_UPDATED_ON_BEHALF",
+                actorId,
+                targetId: context.ownerId,
+                targetLabel: `${context.ownerLoginName}#${id}`,
+                summary: {
+                  applicationId: id,
+                  type: "DEPRECIATION",
+                  applicationYear: {
+                    before: context.before.applicationYear,
+                    after: after.depreciation?.applicationYear ?? null,
+                  },
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const updated = await updateDepreciationDraft(prisma, id, patch, onUpdated);
       const dto = await buildDepreciationApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
     }
