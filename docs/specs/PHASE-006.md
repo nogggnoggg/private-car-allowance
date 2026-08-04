@@ -1005,6 +1005,7 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5 ──┐
 
 | 日期 | 變更 | 依據 |
 |---|---|---|
+| 2026-08-04 | `ACTIVE`（SF-4 人類裁定：選項 (a)） | **人類 leonchih 裁定（Gate 現場，2026-08-04）**：管理員代建保養草稿對**停用**使用者比照差旅端點**擋下（400）**——AC-30 增補「`targetUser.isActive=false` → 400 `VALIDATION_ERROR`（沿差旅代建立既有文案）」；§6.1 矩陣第 7 列加停用維度註記。消除 T9 即審 SF-4 所指不對稱與「永遠無法完成之殭屍草稿＋帳號不可刪」副作用。落地：T9R2-LITE。 | 人類 leonchih（AskUserQuestion）；T9 即審 SF-4 |
 | 2026-08-04 | `ACTIVE`（T9 即審 SF-3 更正） | §6.2 與 §19（PHASE-010 前瞻）之 `summary.applicationType` 兩處更正為 `summary.type`——對齊 PHASE-004 既有稽核 summary 鍵名（差旅代操作 `summary.type="TRAVEL"`，admin/routes.ts:500 實作在先）；Spec 原文為撰寫筆誤，非產品決策變更。T9 實作採 `type` 為正確一致性選擇（reviewer 判讀）。 | T9 即審 SF-3；PHASE-004 既有實作；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（T6 即審 SF-2 更正） | §13 授權矩陣第 8 列（保養證明附件讀取）之 PCR 格由「403 PCR」更正為「200」——原列與**已批准之 PHASE-003 D8**（人類 2026-08-01：附件讀取端點不掛 requirePasswordChanged）及現行實作（attachment/routes.ts:164 明文註記）相牴觸；本更正為對齊既有人類批准，非新產品決策。上傳端點（POST /attachments）仍掛 PCR 不變（reviewer 實測）。 | T6 即審 SF-2；PHASE-003 Spec D8 批准原文；大總管白名單 |
 | 2026-08-04 | `ACTIVE`（T1 即審 SF-2(b) 更正） | AC-01(a)/AC-28/§9⑤ 之「六個快照欄位」更正為「五個」——與 §8.2 及已批 D11(a)（不另存 snapshotActualCost）一致；「六」為 DRAFT 撰寫殘留（原含 snapshotActualCost 之草案計數），非產品決策變更。DB 實查 11 欄（1 PK＋5 業務＋5 快照）。 | T1 即審 SF-2(b)；D11(a) 批准原文；大總管白名單 |
