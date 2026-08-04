@@ -42,7 +42,19 @@
 
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { parsePurposeField, parseTripDateField } from "../applications/routes.js";
+import type {
+  CreateMaintenanceDraftInput,
+  OnMaintenanceDraftCreated,
+} from "../applications/maintenance-service.js";
+import {
+  buildMaintenanceApplicationDto,
+  createMaintenanceDraft,
+} from "../applications/maintenance-service.js";
+import {
+  parseMaintenanceFieldsInput,
+  parsePurposeField,
+  parseTripDateField,
+} from "../applications/routes.js";
 import type { OnTravelDraftCreated } from "../applications/travel-service.js";
 import { createTravelDraft, toTravelApplicationDto } from "../applications/travel-service.js";
 import { writeAudit } from "../audit/audit.js";
@@ -508,6 +520,93 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       );
 
       const dto = await toTravelApplicationDto(prisma, application);
+      return reply.status(201).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:userId/applications/maintenance — 管理員代建立保養草稿
+  // (PHASE-006-T9, AC-30/31, Spec §2 群組 K)
+  //
+  // Body shape identical to POST /applications/maintenance（同一組五欄位選填
+  // 語意）——reuse the exact same parser (`parseMaintenanceFieldsInput`,
+  // exported from applications/routes.ts for this purpose, T9). `ownerId` =
+  // `:userId`（被代理使用者），`createdById` = 呼叫端管理員——兩者刻意分離
+  // （AC-30 同 PHASE-004-T10 之 C2 原則）。
+  //
+  // `:userId` must exist（404 NOT_FOUND if not，AC-30 明文「不得建立任何
+  // 列」）；`isActive=false` → 400 VALIDATION_ERROR，比照 PHASE-004-T10 差旅
+  // 代操作端點既有文案（人類裁定，Spec §18 SF-4，AC-30 增補）。
+  //
+  // AC-30/83 同型原子性：`createMaintenanceDraft` 的 `onCreated` hook 於
+  // `userId !== actorId`（C3：管理員代自己＝自己操作，非代操作）時才建構，
+  // 與 `onBehalfCreate`（差旅）同一分野判定。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/admin/users/:userId/applications/maintenance",
+    { preHandler: adminPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { userId } = request.params as { userId: string };
+      const actorId = request.currentUser.id;
+
+      // AC-30: :userId 不存在 → 404，不得建立任何列（判定於任何欄位解析之前）。
+      const targetUser = await prisma.user.findUnique({ where: { id: userId } });
+      if (!targetUser) {
+        throw new AppError("NOT_FOUND", 404, "指定的使用者不存在");
+      }
+      if (!targetUser.isActive) {
+        throw new AppError("VALIDATION_ERROR", 400, "指定的使用者已停用，無法代其建立申請", [
+          { field: "userId", reason: "指定的使用者已停用" },
+        ]);
+      }
+
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const isOnBehalf = userId !== actorId;
+      const onCreated: OnMaintenanceDraftCreated | undefined = isOnBehalf
+        ? async (tx, created) => {
+            const maintenance = created.maintenance;
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_CREATED_ON_BEHALF",
+                actorId,
+                targetId: userId,
+                targetLabel: `${targetUser.loginName}#${created.id}`,
+                summary: {
+                  applicationId: created.id,
+                  type: "MAINTENANCE",
+                  lastMaintenanceDate: maintenance?.lastMaintenanceDate
+                    ? formatUtcDate(maintenance.lastMaintenanceDate)
+                    : null,
+                  currentMaintenanceDate: maintenance?.currentMaintenanceDate
+                    ? formatUtcDate(maintenance.currentMaintenanceDate)
+                    : null,
+                  lastOdometerKm: maintenance?.lastOdometerKm
+                    ? maintenance.lastOdometerKm.toFixed(2)
+                    : null,
+                  currentOdometerKm: maintenance?.currentOdometerKm
+                    ? maintenance.currentOdometerKm.toFixed(2)
+                    : null,
+                  actualCost: maintenance?.actualCost ? maintenance.actualCost.toFixed(2) : null,
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const createInput: CreateMaintenanceDraftInput = {
+        ownerId: userId,
+        createdById: actorId,
+        ...fields,
+      };
+
+      const application = await createMaintenanceDraft(prisma, createInput, onCreated);
+      const dto = await buildMaintenanceApplicationDto(prisma, application);
       return reply.status(201).send({ application: dto });
     }
   );

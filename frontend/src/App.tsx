@@ -10,6 +10,7 @@ import ChangePasswordPage from "./pages/ChangePasswordPage.js";
 import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
 import HomePage from "./pages/HomePage.js";
 import LoginPage from "./pages/LoginPage.js";
+import MaintenanceApplicationPage from "./pages/MaintenanceApplicationPage.js";
 import ParametersPage from "./pages/ParametersPage.js";
 import TravelApplicationPage from "./pages/TravelApplicationPage.js";
 
@@ -104,6 +105,19 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <TravelApplicationPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-006-T11: 保養草稿建立／編輯／已完成檢視。單一 :id 路由
+              涵蓋「/applications/maintenance/new」與
+              「/applications/maintenance/:id」——理由同上方 TRAVEL 路由的
+              既有註解（React Router 對靜態片段的比對優先於動態參數）。 */}
+          <Route
+            path="/applications/maintenance/:id"
+            element={
+              <RequireAuth>
+                <MaintenanceApplicationPage />
               </RequireAuth>
             }
           />

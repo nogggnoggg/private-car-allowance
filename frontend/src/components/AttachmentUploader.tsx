@@ -22,6 +22,11 @@ interface AttachmentUploaderProps {
   initialAttachments?: AttachmentDto[];
   /** Called when the list changes (upload or delete) */
   onListChange?: (attachments: AttachmentDto[]) => void;
+  /**
+   * PHASE-006-T12：Empty 狀態文案（AC-37）。未提供時維持既有行為——沒有附件
+   * 時不顯示任何提示文字（`AttachmentsDemoPage` 等既有呼叫方零回歸）。
+   */
+  emptyMessage?: string;
 }
 
 /**
@@ -38,6 +43,7 @@ export default function AttachmentUploader({
   limit,
   initialAttachments = [],
   onListChange,
+  emptyMessage,
 }: AttachmentUploaderProps): React.ReactElement {
   const [attachments, setAttachments] = useState<AttachmentDto[]>(initialAttachments);
   const [uploading, setUploading] = useState(false);
@@ -107,6 +113,11 @@ export default function AttachmentUploader({
         <div role="alert" className="attachment-error">
           {error}
         </div>
+      )}
+
+      {/* Empty 狀態（AC-37）——僅在呼叫方提供 emptyMessage 時顯示，維持既有零回歸 */}
+      {attachments.length === 0 && emptyMessage && (
+        <p className="attachment-empty-note">{emptyMessage}</p>
       )}
 
       {/* Existing attachments list */}

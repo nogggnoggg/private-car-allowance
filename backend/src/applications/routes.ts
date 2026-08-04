@@ -60,6 +60,19 @@ import {
   toApplicationListItemDto,
 } from "./application-query.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
+import type {
+  CreateMaintenanceDraftInput,
+  OnMaintenanceDraftUpdated,
+  UpdateMaintenanceDraftPatch,
+} from "./maintenance-service.js";
+import {
+  buildMaintenanceApplicationDto,
+  completeMaintenanceApplication,
+  computeMaintenanceComputed,
+  createMaintenanceDraft,
+  getMaintenanceApplication,
+  updateMaintenanceDraft,
+} from "./maintenance-service.js";
 import { resolveTravelParameters } from "./travel-parameters.js";
 import type { OnTravelDraftUpdated, SegmentPatch } from "./travel-service.js";
 import {
@@ -72,7 +85,7 @@ import {
   toTravelApplicationDto,
   updateTravelDraft,
 } from "./travel-service.js";
-import { parseKmField, parseLocationField } from "./trip-validation.js";
+import { parseActualCostField, parseKmField, parseLocationField } from "./trip-validation.js";
 
 // ---------------------------------------------------------------------------
 // Plugin options
@@ -140,6 +153,36 @@ export function parsePurposeField(value: unknown): FieldParseResult<string | nul
     };
   }
   return { ok: true, value };
+}
+
+/**
+ * PHASE-006-T4: `lastMaintenanceDate`／`currentMaintenanceDate` 格式驗證
+ * （`YYYY-MM-DD`）——參數化版的 `parseTripDateField`（沿用同一個
+ * `parseUtcDate`，不重寫日期解析；field 名稱可帶入以定位錯誤欄位，二者
+ * 錯誤文案一致）。`null` = 清空；合法字串 = 設定；其餘 = 400。
+ */
+export function parseMaintenanceDateField(
+  value: unknown,
+  field: string,
+  label: string
+): FieldParseResult<Date | null> {
+  if (value === null) {
+    return { ok: true, value: null };
+  }
+  if (typeof value !== "string") {
+    return {
+      ok: false,
+      error: { field, reason: `${label}格式錯誤（必須為字串或 null）` },
+    };
+  }
+  const parsed = parseUtcDate(value);
+  if (!parsed) {
+    return {
+      ok: false,
+      error: { field, reason: `${label}必須為合法日期（格式：YYYY-MM-DD）` },
+    };
+  }
+  return { ok: true, value: parsed };
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +331,74 @@ function parsePreviewSegmentsInput(segmentsRaw: unknown): ParsedPreviewSegmentsR
   });
 
   return { errors, segments };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-006-T4: 保養草稿五欄格式驗證（三態語意共用，POST/PUT 皆呼叫）。
+// AC-02：缺席欄位一律視為「不提供」（POST 建立時 = null；PUT 更新時 = 不變，
+// 由 routes.ts 呼叫端依 hasOwnProperty 決定是否寫入 patch 物件的對應 key，
+// 與 `updateMaintenanceDraft` 的三態語意銜接一致）。
+// ---------------------------------------------------------------------------
+
+interface ParsedMaintenanceFields {
+  errors: FieldError[];
+  fields: {
+    lastMaintenanceDate?: Date | null;
+    currentMaintenanceDate?: Date | null;
+    lastOdometerKm?: Prisma.Decimal | null;
+    currentOdometerKm?: Prisma.Decimal | null;
+    actualCost?: Prisma.Decimal | null;
+  };
+}
+
+/**
+ * Exported (PHASE-006-T9) so `admin/routes.ts`'s on-behalf maintenance-create
+ * endpoint can reuse the exact same body-parsing rule as
+ * `POST /applications/maintenance` — same rationale as
+ * `parseTripDateField`/`parsePurposeField`'s PHASE-004-T10 export above.
+ */
+export function parseMaintenanceFieldsInput(
+  body: Record<string, unknown>
+): ParsedMaintenanceFields {
+  const errors: FieldError[] = [];
+  const fields: ParsedMaintenanceFields["fields"] = {};
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
+
+  if (has("lastMaintenanceDate")) {
+    const result = parseMaintenanceDateField(
+      body.lastMaintenanceDate,
+      "lastMaintenanceDate",
+      "上次保養日期"
+    );
+    if (!result.ok) errors.push(result.error);
+    else fields.lastMaintenanceDate = result.value;
+  }
+  if (has("currentMaintenanceDate")) {
+    const result = parseMaintenanceDateField(
+      body.currentMaintenanceDate,
+      "currentMaintenanceDate",
+      "本次保養日期"
+    );
+    if (!result.ok) errors.push(result.error);
+    else fields.currentMaintenanceDate = result.value;
+  }
+  if (has("lastOdometerKm")) {
+    const result = parseKmField(body.lastOdometerKm, "lastOdometerKm");
+    if (!result.ok) errors.push(result.error);
+    else fields.lastOdometerKm = result.value;
+  }
+  if (has("currentOdometerKm")) {
+    const result = parseKmField(body.currentOdometerKm, "currentOdometerKm");
+    if (!result.ok) errors.push(result.error);
+    else fields.currentOdometerKm = result.value;
+  }
+  if (has("actualCost")) {
+    const result = parseActualCostField(body.actualCost, "actualCost");
+    if (!result.ok) errors.push(result.error);
+    else fields.actualCost = result.value;
+  }
+
+  return { errors, fields };
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +653,199 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
   );
 
   // -------------------------------------------------------------------------
+  // POST /applications/maintenance (PHASE-006-T4, AC-02)
+  // body { lastMaintenanceDate?, currentMaintenanceDate?, lastOdometerKm?,
+  //        currentOdometerKm?, actualCost? } — all entirely optional.
+  // owner is ALWAYS request.currentUser.id — any body.ownerId is silently
+  // ignored (never read at all, below; §6.2 資料隔離不變式 1).
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/maintenance",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const selfId = request.currentUser.id;
+      const createInput: CreateMaintenanceDraftInput = {
+        ownerId: selfId,
+        createdById: selfId,
+        ...fields,
+      };
+
+      const application = await createMaintenanceDraft(prisma, createInput);
+      const dto = await buildMaintenanceApplicationDto(prisma, application);
+      return reply.status(201).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /applications/maintenance/:id (PHASE-006-T4, AC-05, B-34)
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/applications/maintenance/:id",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const application = await getMaintenanceApplication(prisma, id);
+      if (!application) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // §6.2 資料隔離不變式 1: 授權一律以 DB 查得之 ownerId 為準。
+      assertOwnershipOrAdmin(request.currentUser, application.ownerId);
+
+      const dto = await buildMaintenanceApplicationDto(prisma, application);
+      return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /applications/maintenance/:id (PHASE-006-T4/T6, AC-02/03/04/05/21/22,
+  // 三態語意 ＋ attachmentIds[] 對帳)
+  //
+  // `attachmentIds`（PHASE-006-T6 新增）：格式驗證沿用既有 `parseAttachmentIdsField`
+  // （必須為非空字串組成的陣列），不重寫解析邏輯（比照 §15 T6「files allowed」
+  // 之最小 diff 要求——本檔未列入 T6 Packet 之封閉清單，僅因 body 解析需擴充
+  // `attachmentIds` 而動；業務規則（擁有權、上限 5、409 CONFLICT）全部留給
+  // `maintenance-service.ts` 的 `reconcileMaintenanceAttachments` 在交易內
+  // 處理，此處刻意不查 DB，維持這層純格式驗證的職責——與 §9「segments[]」
+  // 之既有分工原則一致）。
+  // -------------------------------------------------------------------------
+
+  fastify.put(
+    "/applications/maintenance/:id",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      const existing = await getMaintenanceApplication(prisma, id);
+      if (!existing) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // 判定順序（§6.1 明文）：授權（401/403）先於格式驗證（400）。
+      assertOwnershipOrAdmin(request.currentUser, existing.ownerId);
+      assertApplicationMutable(existing.status); // AC-04: 已完成 → 403 FORBIDDEN
+
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+
+      const patch: UpdateMaintenanceDraftPatch = { ...fields };
+      if (Object.prototype.hasOwnProperty.call(body, "attachmentIds")) {
+        const result = parseAttachmentIdsField(body.attachmentIds, "attachmentIds");
+        if (!result.ok) fieldErrors.push(result.error);
+        else patch.attachmentIds = result.value;
+      }
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      // AC-20（前瞻）: 任何金額／里程／狀態欄位（totalAmount/status/ownerId/
+      // createdById 等）一律忽略——本函式從未讀取這些 body 欄位。
+      //
+      // PHASE-006-T9（AC-30/86，C3 同型判定，比照 TRAVEL 之 PUT 既有寫法）:
+      // 這個 PUT 端點同時服務「使用者改自己的草稿」與「管理員代改他人草稿」
+      // （`assertOwnershipOrAdmin` 對兩者皆放行）——分野純以
+      // `actorId !== existing.ownerId` 判定。只有代操作才建構 `onUpdated`
+      // hook；使用者改自己的草稿完全不傳 hook，天然滿足「不產生 AuditLog」。
+      const actorId = request.currentUser.id;
+      const isOnBehalf = actorId !== existing.ownerId;
+
+      const onUpdated: OnMaintenanceDraftUpdated | undefined = isOnBehalf
+        ? async (tx, context, after) => {
+            const fmtDate = (d: Date | null) => (d ? formatUtcDate(d) : null);
+            const fmtDecimal = (d: Prisma.Decimal | null) => (d ? d.toFixed(2) : null);
+            const afterMaintenance = after.maintenance;
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_UPDATED_ON_BEHALF",
+                actorId,
+                targetId: context.ownerId,
+                targetLabel: `${context.ownerLoginName}#${id}`,
+                summary: {
+                  applicationId: id,
+                  type: "MAINTENANCE",
+                  lastMaintenanceDate: {
+                    before: fmtDate(context.before.lastMaintenanceDate),
+                    after: fmtDate(afterMaintenance?.lastMaintenanceDate ?? null),
+                  },
+                  currentMaintenanceDate: {
+                    before: fmtDate(context.before.currentMaintenanceDate),
+                    after: fmtDate(afterMaintenance?.currentMaintenanceDate ?? null),
+                  },
+                  lastOdometerKm: {
+                    before: fmtDecimal(context.before.lastOdometerKm),
+                    after: fmtDecimal(afterMaintenance?.lastOdometerKm ?? null),
+                  },
+                  currentOdometerKm: {
+                    before: fmtDecimal(context.before.currentOdometerKm),
+                    after: fmtDecimal(afterMaintenance?.currentOdometerKm ?? null),
+                  },
+                  actualCost: {
+                    before: fmtDecimal(context.before.actualCost),
+                    after: fmtDecimal(afterMaintenance?.actualCost ?? null),
+                  },
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const updated = await updateMaintenanceDraft(prisma, id, patch, onUpdated);
+      const dto = await buildMaintenanceApplicationDto(prisma, updated);
+      return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/maintenance/preview (PHASE-006-T5, AC-11~20, §16 D6(a))
+  // stateless；絕不寫入任何 Application/MaintenanceApplication 資料列（AC-36
+  // 同型鑑別）——`sumOfficialMileage` 為唯讀聚合，本路由亦從未呼叫任何
+  // `.create`/`.update`。
+  //
+  // 授權（T4 即審 FW-T5 節義務）：先 `resolveOwnerId`（一般使用者帶他人
+  // `ownerId` → 403 fail-closed，不靜默降級；管理員可指定任一 `ownerId`），
+  // 再做欄位格式驗證——判定順序沿 §6.1 明文「授權先於格式驗證」，複用既有
+  // `/applications/travel/preview`（PHASE-005a-T7）之相同順序與慣例。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/maintenance/preview",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      const rawOwnerId = typeof body.ownerId === "string" ? body.ownerId : undefined;
+      const ownerId = resolveOwnerId(request.currentUser, rawOwnerId);
+
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const computed = await computeMaintenanceComputed(prisma, {
+        ownerId,
+        lastMaintenanceDate: fields.lastMaintenanceDate ?? null,
+        currentMaintenanceDate: fields.currentMaintenanceDate ?? null,
+        lastOdometerKm: fields.lastOdometerKm ?? null,
+        currentOdometerKm: fields.currentOdometerKm ?? null,
+        actualCost: fields.actualCost ?? null,
+      });
+
+      return reply.status(200).send({ preview: computed.dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
   // POST /applications/:id/complete (PHASE-004-T8)
   // AC-49~54/43/48/59, §9「完成申請」. Body 一律忽略（AC-54）——below, only
   // `request.params.id` and `request.currentUser` are ever read; there is no
@@ -553,6 +857,35 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
     { preHandler: authPreHandlers },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
+
+      // PHASE-006-T7 (§16 D6(a) 附帶裁定)：既有 generic 完成路徑依
+      // `Application.type` 分派——本路由本即與型別無關，前端與 E2E 只需一套
+      // 完成流程。type 探測本身不構成授權判定（下方各分支各自判定），找不到
+      // 對應型別時（`typeProbe` 為 null 或非 MAINTENANCE）落入既有 TRAVEL
+      // 分支——`getTravelApplication` 對不存在或非 TRAVEL 型別的 id 一律回
+      // `null` → 404（既有行為，零改動）。
+      const typeProbe = await prisma.application.findUnique({
+        where: { id },
+        select: { type: true },
+      });
+
+      if (typeProbe?.type === "MAINTENANCE") {
+        const existing = await getMaintenanceApplication(prisma, id);
+        if (!existing) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+
+        // D7(a)（同 D17 之判定原則，Packet AC-27 明文）：完成僅能由申請擁有
+        // 人本人執行——不呼叫 `assertOwnershipOrAdmin`（會放行 ADMIN），改用
+        // 嚴格的 owner-only 判定；ADMIN 若非擁有人，同一般他人一樣得 403。
+        if (request.currentUser.id !== existing.ownerId) {
+          throw new AppError("FORBIDDEN", 403, "無權存取此資源");
+        }
+
+        const completed = await completeMaintenanceApplication(prisma, id);
+        const dto = await buildMaintenanceApplicationDto(prisma, completed);
+        return reply.status(200).send({ application: dto });
+      }
 
       const existing = await getTravelApplication(prisma, id);
       if (!existing) {

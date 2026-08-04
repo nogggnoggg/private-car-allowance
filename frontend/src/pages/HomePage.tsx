@@ -50,6 +50,14 @@ export default function HomePage(): React.ReactElement {
         <MileageSummarySection />
         <MyFuelConsumptionSection />
         <h2>我的私車補助紀錄</h2>
+        {/* PHASE-006-T11（§3.1）：保養費用申請入口。ApplicationListSection.tsx
+            未列入本 Task 可修改清單，故入口連結置於此處（Packet Files
+            Allowed 明文歸屬 HomePage.tsx）。 */}
+        <div className="btn-row">
+          <Link to="/applications/maintenance/new" className="btn btn-primary">
+            新增保養費用申請
+          </Link>
+        </div>
         <ApplicationListSection />
       </main>
     </div>

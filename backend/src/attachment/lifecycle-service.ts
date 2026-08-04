@@ -178,9 +178,13 @@ export function assertContainerMutable(containerState: ContainerState): void {
  *   refType = TRIP_SEGMENT → TripSegment → TravelApplication → Application.status
  *        COMPLETED → 'completed'
  *        DRAFT     → 'draft'
- *   refType = MAINTENANCE / DEPRECIATION         → 'draft' (子表尚不存在，本 Phase
- *                                                   不可能真的產生此關聯，防禦性)
- *   refId 指向已不存在的 TripSegment（孤兒）      → 'draft'（記錄 log；不得 500）
+ *   refType = MAINTENANCE → Application.status（PHASE-006-T6：子表已存在，
+ *        `MaintenanceApplication.applicationId` ＝ `Application.id`，故
+ *        `refId` 直接就是要查的 `Application.id`，一次 `findUnique` 即可）
+ *        COMPLETED → 'completed'；否則（DRAFT／不存在）→ 'draft'
+ *   refType = DEPRECIATION                        → 'draft' (子表尚不存在，
+ *                                                   PHASE-007，防禦性)
+ *   refId 指向已不存在的 TripSegment／Application（孤兒）→ 'draft'（記錄 log；不得 500）
  *
  * The ONLY caller in this Phase is `routes.ts`'s `DELETE /attachments/:id` —
  * it no longer reads any client-supplied containerState at all (AC-27b).
@@ -223,8 +227,34 @@ export async function deriveContainerState(
     return segment.travel.application.status === "COMPLETED" ? "completed" : "draft";
   }
 
-  // MAINTENANCE/DEPRECIATION: sub-tables don't exist this Phase (PHASE-006/007) —
-  // no real attachment can carry these refTypes yet, but handled defensively.
+  if (attachment.refType === "MAINTENANCE" && attachment.refId) {
+    // PHASE-006-T6 (AC-23): `MaintenanceApplication` now exists, and per Spec
+    // §16 D2(a) its `attachmentIds[]` relation uses `refId = Application.id`
+    // (not a separate child-table id) — so deriving the real container state
+    // only needs `Application.status`, no join through MaintenanceApplication.
+    // Previously this branch unconditionally returned 'draft' (a PHASE-003-era
+    // placeholder comment said "sub-table doesn't exist yet"), which meant a
+    // COMPLETED maintenance application's proof attachments could still be
+    // deleted/replaced — a real safety gap now closed.
+    const application = await prisma.application.findUnique({
+      where: { id: attachment.refId },
+      select: { status: true },
+    });
+    if (!application) {
+      // Orphan: refId points to an Application row that no longer exists.
+      // Should not normally happen (deleteApplication detaches MAINTENANCE
+      // attachments in the same transaction, B-29) but handled defensively
+      // per Spec §9 rather than allowed to throw/500.
+      log?.warn(
+        `deriveContainerState: orphan attachment ref — Application ${attachment.refId} (MAINTENANCE) not found; treating as draft`
+      );
+      return "draft";
+    }
+    return application.status === "COMPLETED" ? "completed" : "draft";
+  }
+
+  // DEPRECIATION: sub-table doesn't exist this Phase (PHASE-007) — no real
+  // attachment can carry this refType yet, but handled defensively.
   return "draft";
 }
 

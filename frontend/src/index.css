@@ -688,7 +688,8 @@ body {
 }
 
 .attachment-limit-hint,
-.attachment-limit-note {
+.attachment-limit-note,
+.attachment-empty-note {
   font-size: 0.8rem;
   color: #666;
 }

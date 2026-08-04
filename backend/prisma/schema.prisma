@@ -289,6 +289,7 @@ model Application {
   updatedAt   DateTime @updatedAt
 
   travel      TravelApplication?
+  maintenance MaintenanceApplication?
 
   @@index([ownerId, status, primaryDate])
   @@index([ownerId, primaryDate])
@@ -351,4 +352,29 @@ model TripSegment {
   updatedAt DateTime @updatedAt
 
   @@index([travelApplicationId, sortOrder])
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-006 models（§8.2；D3 批准之精度組）
+// ---------------------------------------------------------------------------
+
+// ── 保養子表（1:1） ─────────────────────────────────────────────────
+model MaintenanceApplication {
+  applicationId String      @id
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  lastMaintenanceDate    DateTime? @db.Date
+  currentMaintenanceDate DateTime? @db.Date
+  lastOdometerKm         Decimal?  @db.Decimal(10, 2)
+  currentOdometerKm      Decimal?  @db.Decimal(10, 2)
+  actualCost             Decimal?  @db.Decimal(12, 2)
+
+  // ── 完成快照（一經寫入不可變）──
+  snapshotIntervalKm Decimal?  @db.Decimal(12, 2)
+  snapshotOfficialKm Decimal?  @db.Decimal(12, 2)
+  snapshotRatio      Decimal?  @db.Decimal(9, 6)
+  snapshotRawAmount  Decimal?  @db.Decimal(14, 4)
+  calculatedAt       DateTime?
+
+  @@index([currentMaintenanceDate])
 }

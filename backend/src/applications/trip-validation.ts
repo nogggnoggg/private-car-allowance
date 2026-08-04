@@ -49,23 +49,35 @@ const DECIMAL_LITERAL_PATTERN = /^-?\d+(\.\d+)?$/;
  */
 const KM_MAGNITUDE_LIMIT = new Prisma.Decimal("100000000"); // 10^8
 
+/**
+ * Decimal(12,2) capacity (PHASE-006-T4：`MaintenanceApplication.actualCost`):
+ * precision 12, scale 2 → at most 10 digits before the decimal point.
+ */
+const ACTUAL_COST_MAGNITUDE_LIMIT = new Prisma.Decimal("10000000000"); // 10^10
+
 export type ParseKmFieldResult =
   | { ok: true; value: Prisma.Decimal | null }
   | { ok: false; error: FieldError };
 
 /**
- * Parses a mileage field (`totalKm` / `highwayKm`) per D5: accepts `string`,
- * `number`, or `null`; rejects anything else. Decimal precision is checked
- * against the VALUE (via `Prisma.Decimal#decimalPlaces()`), not the literal
- * string — trailing zeros (`"12.340"`) carry no additional precision and are
- * normalized to `"12.34"` rather than rejected (documented decision, see
- * Task Handoff).
+ * PHASE-006-T4 即審義務（AC-03「不新增第二套驗證實作」＋ T1 AR-6⑤）：本函式
+ * 為 `parseKmField`／`parseActualCostField` 共用的參數化實作——僅有 1 套
+ * 格式／容量驗證邏輯，兩個匯出函式只是帶著不同的「容量上界」與「容量錯誤
+ * 文案」呼叫同一份程式碼，而非各自複製一份判斷式。
  *
- * Negative values are deliberately ALLOWED to pass this format-level check
- * (AC-21: a draft may store `totalKm ≤ 0`) — the ≤0 / <0 business rules are
- * enforced only at completion time by `validateSegmentMileage`.
+ * 分層（沿 CHORE-003／PHASE-003a §14.2 既有 gate table 慣例）：
+ *   1. 型別層：非 `string`／`number`／`null` → 400
+ *   2. 格式層（字面樣式）：非合法十進位字面（千分位、科學記號、非數字字串、
+ *      `NaN`/`Infinity` 字串）→ 400（`DECIMAL_LITERAL_PATTERN` 不接受任何
+ *      千分位逗號或指數記號，`Number.isFinite` 擋 `NaN`/`Infinity` 數字輸入）
+ *   3. 小數位層：超過 `maxDecimalPlaces` → 400
+ *   4. 容量層：超過 `magnitudeLimit`（欄位精度推導，非魔術數）→ 400
  */
-export function parseKmField(value: unknown, field: string): ParseKmFieldResult {
+function parseDecimalField(
+  value: unknown,
+  field: string,
+  options: { maxDecimalPlaces: number; magnitudeLimit: Prisma.Decimal; capacityReason: string }
+): ParseKmFieldResult {
   if (value === null) {
     return { ok: true, value: null };
   }
@@ -96,19 +108,54 @@ export function parseKmField(value: unknown, field: string): ParseKmFieldResult 
     return { ok: false, error: { field, reason: "必須為有效的十進位數值" } };
   }
 
-  // AC-19 / B-05: 超過 2 位小數 → 400 拒絕，不靜默取整。Decimal#decimalPlaces()
+  // AC-19 / B-05: 超過允許小數位 → 400 拒絕，不靜默取整。Decimal#decimalPlaces()
   // is computed on the normalized value (trailing zeros already stripped by
   // decimal.js during parsing), so "12.340" reports 2, not 3 — see Handoff.
-  if (decimalValue.decimalPlaces() > 2) {
-    return { ok: false, error: { field, reason: "最多允許 2 位小數" } };
+  if (decimalValue.decimalPlaces() > options.maxDecimalPlaces) {
+    return { ok: false, error: { field, reason: `最多允許 ${options.maxDecimalPlaces} 位小數` } };
   }
 
-  // Decimal(10,2) column capacity guard — reject before it can fail at the DB layer.
-  if (decimalValue.abs().greaterThanOrEqualTo(KM_MAGNITUDE_LIMIT)) {
-    return { ok: false, error: { field, reason: "數值超出可儲存範圍（整數部分最多 8 位）" } };
+  // Column capacity guard — reject before it can fail at the DB layer.
+  if (decimalValue.abs().greaterThanOrEqualTo(options.magnitudeLimit)) {
+    return { ok: false, error: { field, reason: options.capacityReason } };
   }
 
   return { ok: true, value: decimalValue };
+}
+
+/**
+ * Parses a mileage field (`totalKm` / `highwayKm` / PHASE-006-T4 起亦用於
+ * `lastOdometerKm`/`currentOdometerKm`，皆為 `Decimal(10,2)`) per D5: accepts
+ * `string`, `number`, or `null`; rejects anything else.
+ *
+ * Negative values are deliberately ALLOWED to pass this format-level check
+ * (AC-21: a draft may store `totalKm ≤ 0`) — the ≤0 / <0 business rules are
+ * enforced only at completion time (`validateSegmentMileage`／
+ * `computeMaintenanceBlockers`).
+ *
+ * 既有匯出簽章不變（2 參數）——PHASE-006-T4 僅在內部改為呼叫參數化的
+ * `parseDecimalField`，呼叫端完全無感知。
+ */
+export function parseKmField(value: unknown, field: string): ParseKmFieldResult {
+  return parseDecimalField(value, field, {
+    maxDecimalPlaces: 2,
+    magnitudeLimit: KM_MAGNITUDE_LIMIT,
+    capacityReason: "數值超出可儲存範圍（整數部分最多 8 位）",
+  });
+}
+
+/**
+ * PHASE-006-T4 新增：解析 `MaintenanceApplication.actualCost`
+ * （`Decimal(12,2)`，§8.3）。與 `parseKmField` 共用同一套格式／容量驗證程式碼
+ * （`parseDecimalField`），僅小數位／容量上界／容量錯誤文案不同——不是第二套
+ * 驗證實作（AC-03 明文禁止）。
+ */
+export function parseActualCostField(value: unknown, field: string): ParseKmFieldResult {
+  return parseDecimalField(value, field, {
+    maxDecimalPlaces: 2,
+    magnitudeLimit: ACTUAL_COST_MAGNITUDE_LIMIT,
+    capacityReason: "數值超出可儲存範圍（整數部分最多 10 位）",
+  });
 }
 
 // ---------------------------------------------------------------------------

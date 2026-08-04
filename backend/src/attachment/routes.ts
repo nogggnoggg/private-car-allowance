@@ -134,6 +134,20 @@ export const attachmentPlugin: FastifyPluginAsync<AttachmentPluginOptions> = asy
         if (actor.role !== "ADMIN") {
           throw new AppError("FORBIDDEN", 403, "無權為他人上傳附件");
         }
+        // T10R-LITE（SF-2 殘留缺陷）：重複 query 鍵（`?ownerId=A&ownerId=B`）在
+        // Fastify 執行期型別為 `string[]`，非本端點原本假設的
+        // `string | undefined`——沿用 mileage/routes.ts
+        // `assertScalarQueryParams`／application-query.ts `resolveOwnerId` 之
+        // 既有收斂慣例：非字串一律 400 VALIDATION_ERROR，避免陣列值流入下方
+        // `prisma.user.findUnique` 觸發 PrismaClientValidationError → 未預期
+        // 500。刻意置於 ADMIN 角色判定「之後」——非 ADMIN 呼叫者帶重複
+        // ownerId 沿用既有 fail-closed 行為（403 FORBIDDEN，見上方判定），不
+        // 因本次型別收斂而變成 400，兩者判定順序互不影響。
+        if (typeof requestedOwnerId !== "string") {
+          throw new AppError("VALIDATION_ERROR", 400, "查詢參數有誤，請檢查標示欄位。", [
+            { field: "ownerId", reason: "僅接受單一字串值，不得重複帶入此參數" },
+          ]);
+        }
         const targetUser = await prisma.user.findUnique({ where: { id: requestedOwnerId } });
         if (!targetUser) {
           throw new AppError("NOT_FOUND", 404, "指定的擁有人不存在");
