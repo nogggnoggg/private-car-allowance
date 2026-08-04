@@ -593,9 +593,19 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
       // 模擬「外層檢查通過後、交易開啟前該申請才被完成」之 TOCTOU 競態：
       // 直接呼叫 service（外層 assertApplicationMutable 完全未執行），交易內
       // `FOR UPDATE` 後之新鮮讀取必須再擋一次。
-      await expect(
-        updateDepreciationDraft(prisma, draft.id as string, { applicationYear: 2099 })
-      ).rejects.toThrow(AppError);
+      // T4 即審 AR-3：不只斷言「有拋 AppError」——釘住 403 FORBIDDEN 與逐字
+      // 訊息，否則任何其他 AppError（例如 404／503）都會讓本測試恆綠。
+      const error = await updateDepreciationDraft(prisma, draft.id as string, {
+        applicationYear: 2099,
+      }).then(
+        () => null,
+        (err: unknown) => err
+      );
+      expect(error).toBeInstanceOf(AppError);
+      const appError = error as AppError;
+      expect(appError.httpStatus).toBe(403);
+      expect(appError.code).toBe("FORBIDDEN");
+      expect(appError.userMessage).toBe("已完成的申請不可修改，請建立修正版");
 
       const child = await prisma.depreciationApplication.findUnique({
         where: { applicationId: draft.id as string },
@@ -644,6 +654,35 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
         attachmentIds: ["p7t4-no-such-attachment"],
       });
       expect(resp.statusCode).toBe(404);
+
+      const child = await prisma.depreciationApplication.findUnique({
+        where: { applicationId: draft.id as string },
+      });
+      expect(child?.applicationYear).toBe(2025);
+    });
+
+    // T4 即審 SF-1（mutant M13 之鑑別測試）：上一條只送「單一不存在 id」，
+    // 404 於任何附件寫入之前就拋出，故即使對帳走的是**非交易** client 也不會
+    // 留下痕跡——不具鑑別力。本條送「合法 id 在前、不存在 id 在後」之混合批次：
+    // 合法附件先被 link，隨後第二個 id 才觸發 404。唯有對帳與業務欄位寫入處於
+    // 同一交易，那次 link 才會被一併回滾。M13（reconcile 改用非交易 client）下，
+    // 該合法附件會殘留為 LINKED 且指向一個已回滾的申請狀態（部分關聯損毀，
+    // B-25 同類），本條必紅。
+    it("attachmentIds[] 混合批次（合法 id ＋ 不存在 id）→ 404，且先前已 link 之合法附件一併回滾為 TEMP（AC-04「同一交易內完成」之鑑別測試）", async () => {
+      const draft = await createOwnerDraft({ applicationYear: 2025 });
+      const legit = await createTempAttachment(ownerId);
+
+      const resp = await putDraft(ownerCookie, draft.id as string, {
+        applicationYear: 2026,
+        attachmentIds: [legit, "p7t4-no-such-attachment-mixed"],
+      });
+      expect(resp.statusCode).toBe(404);
+
+      const row = await prisma.attachment.findUnique({ where: { id: legit } });
+      expect(row?.status).toBe("TEMP");
+      expect(row?.refType).toBeNull();
+      expect(row?.refId).toBeNull();
+      expect(row?.linkedAt).toBeNull();
 
       const child = await prisma.depreciationApplication.findUnique({
         where: { applicationId: draft.id as string },
