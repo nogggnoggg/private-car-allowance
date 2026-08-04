@@ -41,11 +41,49 @@
  */
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import * as depreciationParameters from "../../src/applications/depreciation-parameters.js";
 import { completeDepreciationApplication } from "../../src/applications/depreciation-service.js";
 import { hashPassword } from "../../src/auth/password.js";
+import * as mileageEngine from "../../src/mileage/mileage-engine.js";
 import { AppError } from "../../src/platform/errors.js";
 import { buildServer } from "../../src/server.js";
+
+// ── T9 即審 S-1 突變自證（mutant M2／M3） ─────────────────────────────────
+// 包裝**真實實作**為 spy，行為完全不變，只加可觀測性——沿
+// `phase6-maintenance-complete.test.ts` 之 T7R S-3 既有慣例（該檔以同一手法
+// kill mutant M6）。缺少此觀測面時，「里程與參數於同一 SERIALIZABLE 交易內
+// 查詢」（AC-27）在全 Phase 無任何鑑別力：把 `tx` 改為頂層 `prisma` 後所有
+// 既有斷言（金額、快照、狀態、回滾）仍全數通過，因為兩者查到的資料相同——
+// 差別只在隔離級別與 write-skew 防禦，那不會顯現在結果值上。
+vi.mock("../../src/mileage/mileage-engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/mileage/mileage-engine.js")>();
+  return {
+    ...actual,
+    sumOfficialMileage: vi.fn(actual.sumOfficialMileage),
+  };
+});
+
+vi.mock("../../src/applications/depreciation-parameters.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../src/applications/depreciation-parameters.js")>();
+  return {
+    ...actual,
+    resolveDepreciationParameters: vi.fn(actual.resolveDepreciationParameters),
+  };
+});
+
+/**
+ * 「首引數是交易客戶端而非頂層 PrismaClient」之判準（逐字沿 006 T7R S-3）。
+ *
+ * `Prisma.TransactionClient` 型別上即不含 `$transaction`（denylist），頂層
+ * `PrismaClient` 則有——以此區分，不依賴物件參照比較（`tx` 每次交易皆為新的
+ * 代理物件，參照比較無從進行）。
+ */
+function expectFirstArgIsTransactionClient(firstArg: unknown, topLevel: PrismaClient): void {
+  expect((firstArg as { $transaction?: unknown }).$transaction).toBeUndefined();
+  expect(firstArg).not.toBe(topLevel);
+}
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -845,6 +883,109 @@ describeWithDb("PHASE-007-T9 — 折舊完成流程 ＋ 快照 ＋ 原子性 ＋
       expect((caught as AppError).httpStatus).toBe(404);
       expect((caught as AppError).code).toBe("NOT_FOUND");
       expect((caught as AppError).httpStatus).not.toBe(500);
+    });
+  });
+
+  // ===========================================================================
+  // T9 即審 S-1 — 里程與參數皆於同一交易內查詢（AC-27 之鑑別力）
+  //
+  // 手法逐字沿 006 T7R S-3（`phase6-maintenance-complete.test.ts`）：spy 包裝
+  // 真實實作，取最後一次呼叫之首引數，斷言其為交易客戶端而非頂層 PrismaClient。
+  // ===========================================================================
+
+  describe("S-1 完成路徑同 tx 呼叫（mutant M2／M3 kill）", () => {
+    it("M3：completeDepreciationApplication 呼叫 sumOfficialMileage 之首引數為 tx，非頂層 prisma", async () => {
+      await seedCompletedTravel({ date: "2053-09-09", snapshotTotalKm: "25.00" });
+      const id = await createCompletableDraft(2053);
+
+      const spy = vi.mocked(mileageEngine.sumOfficialMileage);
+      const callsBefore = spy.mock.calls.length;
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(200);
+      expect(spy.mock.calls.length).toBe(callsBefore + 1);
+
+      expectFirstArgIsTransactionClient(spy.mock.calls.at(-1)?.[0], prisma);
+    });
+
+    it("M2：completeDepreciationApplication 呼叫 resolveDepreciationParameters 之首引數為 tx，非頂層 prisma", async () => {
+      await seedCompletedTravel({ date: "2056-09-09", snapshotTotalKm: "25.00" });
+      const id = await createCompletableDraft(2056);
+
+      const spy = vi.mocked(depreciationParameters.resolveDepreciationParameters);
+      const callsBefore = spy.mock.calls.length;
+
+      const resp = await completeHttp(ownerCookie, id);
+      expect(resp.statusCode).toBe(200);
+      expect(spy.mock.calls.length).toBe(callsBefore + 1);
+
+      expectFirstArgIsTransactionClient(spy.mock.calls.at(-1)?.[0], prisma);
+    });
+  });
+
+  // ===========================================================================
+  // T9 即審 S-2 — 快照寫入 payload 之顯式量化（AC-28「顯式定精度」之鑑別力）
+  //
+  // 既有之 `::text` 小數位斷言對 mutant M4（四快照欄去量化直寫）**恆真**：
+  // `numeric(p,s)` 讀出必為 s 位，且 Postgres 之捨入與 `ROUND_HALF_UP` 同向，
+  // 故 DB 端無從區分「服務層已量化」與「交給 Postgres 靜默量化」。本組改為
+  // 觀測**寫入 payload 本身**（Prisma middleware，不改 src、不耦合實作細節：
+  // 只斷言送進 DB 的值已是目標精度，不規定用哪個 API 達成）。
+  // ===========================================================================
+
+  describe("S-2 快照寫入 payload 已於服務層量化（mutant M4 kill）", () => {
+    it("送進 depreciationApplication.update 之四個 Decimal 欄，小數位皆已 ≤ §8.2 DDL scale（未量化直寫必紅）", async () => {
+      // 2061 → perKm 2468.9999；officialKm 0.50 → rawAmount = 1234.49995（6dp）
+      // ——未量化直寫時 payload 為 6dp，超過 snapshotRawAmount 之 scale 4。
+      //
+      // 本 fixture 掛在**另一位擁有人**（`otherId`）名下：年度公務里程之加總為
+      // 擁有人範圍（AC-14），故 2061 年之 V_KILL 版本可與既有 owner 案例共用而
+      // 互不污染（V_KILL 帶 2061~2069 之 owner 年度已全被既有測試佔用）。
+      await seedCompletedTravel({
+        forOwnerId: otherId,
+        date: "2061-09-09",
+        snapshotTotalKm: "0.50",
+      });
+      const id = await createCompletableDraft(2061, otherCookie, otherId);
+
+      const payloads: Record<string, unknown>[] = [];
+      prisma.$use(async (params, next) => {
+        if (params.model === "DepreciationApplication" && params.action === "update") {
+          payloads.push(params.args.data as Record<string, unknown>);
+        }
+        return next(params);
+      });
+
+      // 直接呼叫服務層（本檔之 prisma 實例才掛得上 middleware）。
+      const record = await completeDepreciationApplication(prisma, id);
+      expect(record.status).toBe("COMPLETED");
+
+      expect(payloads.length).toBe(1);
+      const data = payloads[0];
+
+      const decimalPlacesOf = (value: unknown): number =>
+        new Prisma.Decimal(value as Prisma.Decimal).decimalPlaces();
+
+      // 判別力來源：rawAmount 之真值為 6dp，量化後為 4dp。
+      expect(decimalPlacesOf(data.snapshotRawAmount)).toBeLessThanOrEqual(SNAPSHOT_SCALE.rawAmount);
+      expect(new Prisma.Decimal(data.snapshotRawAmount as Prisma.Decimal).toFixed(4)).toBe(
+        "1234.5000"
+      );
+
+      // 其餘三欄之來源天然即為目標 scale（參數表 2dp／引擎 4dp／里程和 2dp），
+      // 故對 M4 為等價變異——一併斷言以固定「送進 DB 的值即為目標精度」之契約。
+      expect(decimalPlacesOf(data.snapshotVehiclePrice)).toBeLessThanOrEqual(
+        SNAPSHOT_SCALE.vehiclePrice
+      );
+      expect(decimalPlacesOf(data.snapshotPerKmUnitPrice)).toBeLessThanOrEqual(
+        SNAPSHOT_SCALE.perKmUnitPrice
+      );
+      expect(decimalPlacesOf(data.snapshotOfficialKm)).toBeLessThanOrEqual(
+        SNAPSHOT_SCALE.officialKm
+      );
+
+      // 量化僅作用於寫入呈現，`totalAmount` 仍取自未量化之 rawAmount。
+      expect(record.totalAmount).toBe(1234);
     });
   });
 
