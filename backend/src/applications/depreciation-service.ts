@@ -24,7 +24,8 @@
  *     `pure.calculable && !overCapacity` 合成 `calculable`，**不得**由
  *     `completionBlockers.length === 0` 反推（T3 即審 FW-3：附件缺漏會抑制
  *     第 3/4 碼，空清單 ≠ 可計算）。
- *   - `duplicateYearNotice`（AC-07）：屬 T5；本檔對外恆回 `null`。
+ *   - `duplicateYearNotice`（AC-07）：**PHASE-007-T5 已落地**（見
+ *     `computeDuplicateYearNotice`／`buildDepreciationApplicationDto`）。
  *   - 完成流程與快照寫入（AC-27~30）：屬 T9；本檔只讀取快照欄位組 DTO。
  *   - 附件上限 5 之正式斷言、完成鎖定、跨使用者掛入之封閉（AC-23/25/26）：
  *     屬 T8。本檔已於對帳時傳入上限常數與三道 per-attachment 檢查（沿保養
@@ -542,7 +543,8 @@ function buildSnapshotDto(
  */
 export function toDepreciationApplicationDto(
   application: DepreciationApplicationRecord,
-  attachments: AttachmentDto[] = []
+  attachments: AttachmentDto[] = [],
+  duplicateYearNotice: { count: number; hasCompleted: boolean } | null = null
 ): DepreciationApplicationDto {
   const depreciation = application.depreciation;
   const isDraft = application.status === "DRAFT";
@@ -569,8 +571,7 @@ export function toDepreciationApplicationDto(
 
     applicationYear: depreciation?.applicationYear ?? null,
 
-    // AC-07（重複年度提示）屬 T5——本 Task 明示留白。
-    duplicateYearNotice: null,
+    duplicateYearNotice,
 
     attachments,
     completionBlockers,
@@ -581,9 +582,44 @@ export function toDepreciationApplicationDto(
 }
 
 /**
+ * §16 D4(a)（AC-07）：同 `ownerId`、同 `applicationYear`、排除自身、狀態 ∈
+ * {`DRAFT`,`COMPLETED`}（未來之 `VOIDED` 天然排除——本 Phase `VOIDED` 尚不可
+ * 達，見 §16 D4 附註 9）之筆數與是否已有 `COMPLETED`。
+ *
+ * `applicationYear` 為 `null` 時回 `null`（無年度即無重複語意，AC-07 逐字）。
+ *
+ * **不倚賴 DB 唯一約束**（T1 即審 FW-4 認知，AC-08）：本查詢單純計數既存列，
+ * 即使將來同 `(ownerId, applicationYear)` 有任意筆數之列也不會拋錯——這正是
+ * AC-08「無唯一約束」之查詢面對應。
+ */
+export async function computeDuplicateYearNotice(
+  db: PrismaLike,
+  applicationId: string,
+  ownerId: string,
+  applicationYear: number | null
+): Promise<{ count: number; hasCompleted: boolean } | null> {
+  if (applicationYear === null) {
+    return null;
+  }
+  const rows = await db.depreciationApplication.findMany({
+    where: {
+      applicationYear,
+      applicationId: { not: applicationId },
+      application: { ownerId, status: { in: ["DRAFT", "COMPLETED"] } },
+    },
+    select: { application: { select: { status: true } } },
+  });
+  return {
+    count: rows.length,
+    hasCompleted: rows.some((row) => row.application.status === "COMPLETED"),
+  };
+}
+
+/**
  * `routes.ts` 呼叫的薄編排層：一次查得真實 `LINKED` 附件（`refType=
- * "DEPRECIATION"`、`refId = Application.id`，§16 D2(a)）後組裝 DTO。
- * `DRAFT`／`COMPLETED` 皆查——已完成之折舊詳情頁仍需顯示證明縮圖。
+ * "DEPRECIATION"`、`refId = Application.id`，§16 D2(a)）與 `duplicateYearNotice`
+ * （AC-07）後組裝 DTO。`DRAFT`／`COMPLETED` 皆查——已完成之折舊詳情頁仍需顯示
+ * 證明縮圖與重複提示。
  */
 export async function buildDepreciationApplicationDto(
   db: PrismaLike,
@@ -592,5 +628,15 @@ export async function buildDepreciationApplicationDto(
   const attachmentRows = await db.attachment.findMany({
     where: { refType: "DEPRECIATION", refId: application.id, status: "LINKED" },
   });
-  return toDepreciationApplicationDto(application, attachmentRows.map(toAttachmentDto));
+  const duplicateYearNotice = await computeDuplicateYearNotice(
+    db,
+    application.id,
+    application.ownerId,
+    application.depreciation?.applicationYear ?? null
+  );
+  return toDepreciationApplicationDto(
+    application,
+    attachmentRows.map(toAttachmentDto),
+    duplicateYearNotice
+  );
 }
