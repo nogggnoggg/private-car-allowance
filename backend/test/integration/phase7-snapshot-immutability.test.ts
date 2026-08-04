@@ -186,8 +186,16 @@ type ApplicationDto = {
  *
  * `Decimal` 一律以 `.toString()` 取回 DB 實際保存之表示（含尾零），**不**經
  * `Number()`——四捨五入或精度漂移必須顯現為字串不等，而非被浮點吸收。
+ *
+ * **T10 即審 SF-1 修復**：原版遺漏 `Application.type` 與 `completedAt`，且把
+ * `calculatedAt` 降維成 `hasCalculatedAt: boolean`——reviewer C2 mutant（完成
+ * 流程把兩個時間戳寫成 `2000-01-01`）因此在全套 2219 條中零紅。現改為：
+ *   - `type`／`completedAt` 一併納入指紋（`type` 與對照組同型比較）；
+ *   - `calculatedAt`／`completedAt` 不做跨申請等值比較（各申請本就不同），改以
+ *     **值域視窗**斷言（見 `expectCompletionTimestamp`）＋「兩欄同值」不變式。
  */
 type DbFingerprint = {
+  type: string;
   status: string;
   ownerId: string;
   createdById: string;
@@ -200,11 +208,28 @@ type DbFingerprint = {
   snapshotOfficialKm: string | null;
   snapshotRawAmount: string | null;
   depreciationParameterVersionId: string | null;
-  hasCalculatedAt: boolean;
+  calculatedAt: Date | null;
+  completedAt: Date | null;
 };
 
 function decimalToString(value: Prisma.Decimal | null): string | null {
   return value === null ? null : value.toString();
+}
+
+/**
+ * 本檔模組載入時刻——早於本檔任何一次完成流程，故為所有完成時間戳的合法下界。
+ * 這是「不以回應自身值當期望」的替代基準（SF-1）：任何被寫死或被夾帶值覆寫的
+ * 時間戳（如 `2000-01-01`）都會落在視窗外而紅燈。
+ */
+const SUITE_START_MS = Date.now();
+
+/** 完成時間戳之值域視窗斷言：`[本檔載入時刻, 現在 + 1s]`。 */
+function expectCompletionTimestamp(value: Date | null, label: string): Date {
+  expect(value, `${label}: 期望非 null 之完成時間戳`).not.toBeNull();
+  const at = value as Date;
+  expect(at.getTime(), `${label} 不得早於本檔載入時刻`).toBeGreaterThanOrEqual(SUITE_START_MS);
+  expect(at.getTime(), `${label} 不得晚於現在`).toBeLessThanOrEqual(Date.now() + 1000);
+  return at;
 }
 
 describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 ＋ 引用保護", () => {
@@ -417,6 +442,7 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
       where: { applicationId: id },
     });
     return {
+      type: application.type,
       status: application.status,
       ownerId: application.ownerId,
       createdById: application.createdById,
@@ -429,8 +455,47 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
       snapshotOfficialKm: decimalToString(depreciation.snapshotOfficialKm),
       snapshotRawAmount: decimalToString(depreciation.snapshotRawAmount),
       depreciationParameterVersionId: depreciation.depreciationParameterVersionId,
-      hasCalculatedAt: depreciation.calculatedAt !== null,
+      calculatedAt: depreciation.calculatedAt,
+      completedAt: application.completedAt,
     };
+  }
+
+  /**
+   * 指紋比對（SF-1）：兩個時間戳以外之欄位一律與對照組**逐位元相同**；
+   * 兩個時間戳則走值域視窗 ＋「同一次完成寫入之兩欄必同值」不變式
+   * （`depreciation-service.ts` §9.3 ⑥a/⑥b 以同一個 `calculatedAt` 物件同時
+   * 寫入 `DepreciationApplication.calculatedAt` 與 `Application.completedAt`）。
+   * **絕不**以受測回應自身的時間戳當作期望值。
+   */
+  function expectFingerprintMatchesControl(
+    actual: DbFingerprint,
+    control: DbFingerprint,
+    label: string
+  ): void {
+    const {
+      calculatedAt: actualCalculatedAt,
+      completedAt: actualCompletedAt,
+      ...actualRest
+    } = actual;
+    const {
+      calculatedAt: _controlCalculatedAt,
+      completedAt: _controlCompletedAt,
+      ...controlRest
+    } = control;
+    expect(actualRest, label).toEqual(controlRest);
+
+    if (control.status !== "COMPLETED") {
+      // 草稿：兩個時間戳皆必須仍為 null（完成流程未跑過）。
+      expect(actualCalculatedAt, `${label} calculatedAt`).toBeNull();
+      expect(actualCompletedAt, `${label} completedAt`).toBeNull();
+      return;
+    }
+
+    const calculatedAt = expectCompletionTimestamp(actualCalculatedAt, `${label} calculatedAt`);
+    const completedAt = expectCompletionTimestamp(actualCompletedAt, `${label} completedAt`);
+    expect(completedAt.getTime(), `${label}: completedAt 與 calculatedAt 必為同一時刻`).toBe(
+      calculatedAt.getTime()
+    );
   }
 
   // ===========================================================================
@@ -503,13 +568,15 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
     }
 
     it("基準：完成快照為 officialKm 100.00 × perKm 6.0000 = 600.0000 → totalAmount 600", () => {
-      expect(baselineDto).toEqual({
+      // SF-1：`calculatedAt` 不得以受測值自身當期望。
+      const { calculatedAt, ...scalars } = baselineDto;
+      expect(scalars).toEqual({
         officialKm: "100.00",
         perKmUnitPrice: "6.0000",
         rawAmount: "600.0000",
         totalAmount: 600,
-        calculatedAt: baselineDto.calculatedAt,
       });
+      expectCompletionTimestamp(new Date(calculatedAt), "AC-31 baseline snapshot.calculatedAt");
       expect(baselineTotalAmount).toBe(600);
       expect(baselineSnapshotColumns.depreciationParameterVersionId).toBe(baseVersionId);
       expect(baselineSnapshotColumns.snapshotVehiclePrice).toBe("600000");
@@ -644,6 +711,7 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
 
     it("對照組：草稿之 DB 值為 DRAFT／ownerId=本人／全部快照欄 null", () => {
       expect(controlFingerprint).toEqual({
+        type: "DEPRECIATION",
         status: "DRAFT",
         ownerId,
         createdById: ownerId,
@@ -656,7 +724,8 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
         snapshotOfficialKm: null,
         snapshotRawAmount: null,
         depreciationParameterVersionId: null,
-        hasCalculatedAt: false,
+        calculatedAt: null,
+        completedAt: null,
       });
     });
 
@@ -664,7 +733,11 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
       "建立時夾帶頂層 %s → DB 值與對照組逐位元相同",
       async (_name, key, value) => {
         const id = await createDraft(2086, { [key]: value });
-        expect(await dbFingerprint(id)).toEqual(controlFingerprint);
+        expectFingerprintMatchesControl(
+          await dbFingerprint(id),
+          controlFingerprint,
+          `create ${_name}`
+        );
       }
     );
 
@@ -676,7 +749,7 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
       const fingerprint = await dbFingerprint(id);
       expect(fingerprint.ownerId).toBe(ownerId);
       expect(fingerprint.createdById).toBe(ownerId);
-      expect(fingerprint).toEqual(controlFingerprint);
+      expectFingerprintMatchesControl(fingerprint, controlFingerprint, `create ${_name}`);
     });
   });
 
@@ -696,7 +769,11 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
         const id = await createDraft(2086);
         const resp = await putHttp(id, { applicationYear: 2086, [key]: value });
         expect(resp.statusCode).toBe(200);
-        expect(await dbFingerprint(id)).toEqual(controlFingerprint);
+        expectFingerprintMatchesControl(
+          await dbFingerprint(id),
+          controlFingerprint,
+          `put ${_name}`
+        );
       }
     );
 
@@ -707,7 +784,7 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
       const id = await createDraft(2086);
       const resp = await putHttp(id, { applicationYear: 2086, [key]: otherId });
       expect(resp.statusCode).toBe(200);
-      expect(await dbFingerprint(id)).toEqual(controlFingerprint);
+      expectFingerprintMatchesControl(await dbFingerprint(id), controlFingerprint, `put ${_name}`);
     });
   });
 
@@ -727,16 +804,22 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
     });
 
     it("對照組：未夾帶任何欄位之完成結果（後端權威值）", () => {
-      expect(controlSnapshot).toEqual({
+      // SF-1：`calculatedAt` **不得**以受測值自身當期望——先剝離後逐值比對，
+      // 時間戳單獨走值域視窗斷言。
+      const { calculatedAt, ...scalars } = controlSnapshot;
+      expect(scalars).toEqual({
         officialKm: "250.50",
         perKmUnitPrice: "6.0000",
         rawAmount: "1503.0000",
         totalAmount: 1503,
-        calculatedAt: controlSnapshot.calculatedAt,
       });
+      expectCompletionTimestamp(new Date(calculatedAt), "control snapshot.calculatedAt");
+      expect(controlFingerprint.type).toBe("DEPRECIATION");
       expect(controlFingerprint.status).toBe("COMPLETED");
       expect(controlFingerprint.totalAmount).toBe(1503);
       expect(controlFingerprint.depreciationParameterVersionId).toBe(baseVersionId);
+      expectCompletionTimestamp(controlFingerprint.calculatedAt, "control calculatedAt");
+      expectCompletionTimestamp(controlFingerprint.completedAt, "control completedAt");
     });
 
     it.each(INJECTIONS)(
@@ -745,12 +828,23 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
         const id = await createCompletableDraft(2087);
         const resp = await completeHttp(id, { [key]: value });
         expect(resp.statusCode).toBe(200);
-        expect(await dbFingerprint(id)).toEqual(controlFingerprint);
-        expect(resp.json<{ application: ApplicationDto }>().application.snapshot).toEqual({
-          ...controlSnapshot,
-          calculatedAt: resp.json<{ application: ApplicationDto }>().application.snapshot
-            ?.calculatedAt as string,
-        });
+        expectFingerprintMatchesControl(
+          await dbFingerprint(id),
+          controlFingerprint,
+          `complete ${_name}`
+        );
+
+        // SF-1：wire 面亦不得以回應自身之 `calculatedAt` 當期望——剝離後與對照
+        // 組逐值比對，時間戳單獨走值域視窗。
+        const snapshot = resp.json<{ application: ApplicationDto }>().application
+          .snapshot as SnapshotDto;
+        const { calculatedAt, ...scalars } = snapshot;
+        const { calculatedAt: _controlCalculatedAt, ...controlScalars } = controlSnapshot;
+        expect(scalars, `complete ${_name}`).toEqual(controlScalars);
+        expectCompletionTimestamp(
+          new Date(calculatedAt),
+          `complete ${_name} snapshot.calculatedAt`
+        );
       }
     );
 
@@ -761,7 +855,11 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
       const id = await createCompletableDraft(2087);
       const resp = await completeHttp(id, { [key]: otherId });
       expect(resp.statusCode).toBe(200);
-      expect(await dbFingerprint(id)).toEqual(controlFingerprint);
+      expectFingerprintMatchesControl(
+        await dbFingerprint(id),
+        controlFingerprint,
+        `complete ${_name}`
+      );
     });
   });
 
@@ -795,11 +893,21 @@ describeWithDb("PHASE-007-T10 — 快照不可變 ＋ 後端權威 ＋ 併發 �
 
         // 事後 DB 斷言：狀態 COMPLETED、金額為後端權威值、快照只寫過一次。
         const fingerprint = await dbFingerprint(id);
+        expect(fingerprint.type, detail).toBe("DEPRECIATION");
         expect(fingerprint.status, detail).toBe("COMPLETED");
         expect(fingerprint.totalAmount, detail).toBe(240);
         expect(fingerprint.snapshotOfficialKm, detail).toBe("40");
         expect(fingerprint.snapshotRawAmount, detail).toBe("240");
         expect(fingerprint.depreciationParameterVersionId, detail).toBe(baseVersionId);
+        const calculatedAt = expectCompletionTimestamp(
+          fingerprint.calculatedAt,
+          `${detail} calculatedAt`
+        );
+        const completedAt = expectCompletionTimestamp(
+          fingerprint.completedAt,
+          `${detail} completedAt`
+        );
+        expect(completedAt.getTime(), detail).toBe(calculatedAt.getTime());
       }
 
       // 敗方一律為狀態機拒絕（403 FORBIDDEN），非隨機 4xx。
