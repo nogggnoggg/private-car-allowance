@@ -91,6 +91,9 @@ const PHASE_007_SRC_FILES = [
   "src/applications/depreciation-calculation.ts",
   // T3 新增（PHASE-007-T3；T2 即審 FW-7 之機械義務）。
   "src/applications/depreciation-blockers.ts",
+  // T4 新增（PHASE-007-T4；同一機械義務——本檔為草稿 CRUD service，雖不含
+  // 金額算術，仍納入掃描以固定「本 Phase 新增 src 檔一律零浮點中介」）。
+  "src/applications/depreciation-service.ts",
 ] as const;
 
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_007_SRC_FILES[0]);

@@ -60,6 +60,14 @@ import {
   toApplicationListItemDto,
 } from "./application-query.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
+import type { CreateDepreciationDraftInput } from "./depreciation-service.js";
+import {
+  type UpdateDepreciationDraftPatch,
+  buildDepreciationApplicationDto,
+  createDepreciationDraft,
+  getDepreciationApplication,
+  updateDepreciationDraft,
+} from "./depreciation-service.js";
 import type {
   CreateMaintenanceDraftInput,
   OnMaintenanceDraftUpdated,
@@ -396,6 +404,103 @@ export function parseMaintenanceFieldsInput(
     const result = parseActualCostField(body.actualCost, "actualCost");
     if (!result.ok) errors.push(result.error);
     else fields.actualCost = result.value;
+  }
+
+  return { errors, fields };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-007-T4: `applicationYear` 格式／值域驗證（AC-03；§16 D3(a) 已批准之
+// 值域 [1900, 2999]）。
+//
+// 為什麼值域驗證只存在於這一層（T1 即審 FW-4 ＋ T3 即審 FW-1 明文）：
+//   - DB 為裸 `int4`，schema 無任何 CHECK 約束；
+//   - `computeDepreciationBlockers`（T3 純函式）刻意不做值域判定（只判缺漏）。
+// 故 [1900, 2999] 之守門 **100% 落在本函式**——這是唯一的判定點，不得於他處
+// 複製第二份閾值。
+//
+// 分層（沿 CHORE-003／PHASE-003a §14.2 既有 gate table 慣例，形狀比照
+// `trip-validation.ts` 之 `parseDecimalField` 族；年度為 `Int` 而非
+// `Decimal`，故不套用該檔的 Decimal 解析路徑，改以同一分層順序的整數版）：
+//   1. 型別層：非 `number`／`null` → 400（含字串、布林、陣列、物件）
+//   2. 有限性／小數層：`NaN`／`±Infinity`／含小數 → 400
+//   3. 值域層：超出 [1900, 2999] → 400（含 int4 上界等更大的值）
+//
+// 為什麼**只收 JSON number、不收數值字串**（與 `parseKmField` 之「字串或
+// 數字皆可」刻意不同）：
+//   (a) 里程／金額必須以字串傳輸是為了保住十進位精度（`Decimal` 語意）；
+//       年度是小整數，JSON number 對 [1900, 2999] 完全無損，沒有同樣的需求。
+//   (b) 接受數值字串就需要一次字串→數字轉換，而本檔（`applications/routes.ts`）
+//       在 PHASE-005a 之零浮點中介掃描清單內（`fuel-price-engine.test.ts` 之
+//       `PHASE_005A_SRC_FILES`，明文禁止 `Number()`／`parseInt`／`parseFloat`）。
+//       收窄型別而非引入轉型，是唯一不弱化該既有防線的作法。
+//   (c) §7.2 之 DTO 亦宣告 `applicationYear: number | null`，收送一致。
+//   字串輸入落在 AC-03 之「非數值型」情形，回 400（有明文 gate table 覆蓋）。
+//
+// `fields[].field` 一律為字面 `"applicationYear"`（T3 即審 FW-2：與 blocker
+// 層之 `Blocker.field` 一致，前端依此定位欄位）。
+//
+// Exported 供 `admin/routes.ts` 之代建立端點（T11）沿用同一份規則——比照
+// `parseTripDateField`／`parseMaintenanceFieldsInput` 之既有匯出理由。
+// ---------------------------------------------------------------------------
+
+export const APPLICATION_YEAR_MIN = 1900; // §16 D3(a)
+export const APPLICATION_YEAR_MAX = 2999; // §16 D3(a)
+
+const APPLICATION_YEAR_FIELD = "applicationYear";
+
+export function parseApplicationYearField(value: unknown): FieldParseResult<number | null> {
+  const field = APPLICATION_YEAR_FIELD;
+
+  if (value === null) {
+    return { ok: true, value: null };
+  }
+
+  // 1. 型別層
+  if (typeof value !== "number") {
+    return { ok: false, error: { field, reason: "必須為整數年份（數字或 null）" } };
+  }
+
+  // 2. 有限性／小數層（`Number.isInteger` 對 `NaN`／`±Infinity` 亦為 false，
+  //    故 `NaN` 不會被靜默放行——沿 T3 之 `Number.isInteger` 保守守門）。
+  if (!Number.isInteger(value)) {
+    return { ok: false, error: { field, reason: "必須為整數年份（不得含小數）" } };
+  }
+
+  // 3. 值域層（§16 D3(a)；本函式是全案唯一的年度值域判定點）
+  if (value < APPLICATION_YEAR_MIN || value > APPLICATION_YEAR_MAX) {
+    return {
+      ok: false,
+      error: {
+        field,
+        reason: `申請年度必須介於 ${APPLICATION_YEAR_MIN} 與 ${APPLICATION_YEAR_MAX} 之間`,
+      },
+    };
+  }
+
+  return { ok: true, value };
+}
+
+/**
+ * 折舊 body 之欄位解析（POST／PUT 共用同一條驗證路徑——006 T4R SF-1 教訓：
+ * 只在 PUT 驗證會讓「POST 少一道守門」之 mutant 存活）。三態語意由呼叫端依
+ * `hasOwnProperty` 決定是否帶入 patch 的對應 key。
+ */
+interface ParsedDepreciationFields {
+  errors: FieldError[];
+  fields: { applicationYear?: number | null };
+}
+
+export function parseDepreciationFieldsInput(
+  body: Record<string, unknown>
+): ParsedDepreciationFields {
+  const errors: FieldError[] = [];
+  const fields: ParsedDepreciationFields["fields"] = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, APPLICATION_YEAR_FIELD)) {
+    const result = parseApplicationYearField(body.applicationYear);
+    if (!result.ok) errors.push(result.error);
+    else fields.applicationYear = result.value;
   }
 
   return { errors, fields };
@@ -842,6 +947,111 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       });
 
       return reply.status(200).send({ preview: computed.dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/depreciation (PHASE-007-T4, AC-02)
+  // body { applicationYear? } — 全選填（含 null／缺省）。
+  // owner 恆為 request.currentUser.id——body 之 ownerId/createdById/status/
+  // totalAmount 從未被讀取（不是「讀了再忽略」，是根本沒有存取的程式碼路徑；
+  // §6.2 資料隔離不變式 1）。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/depreciation",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const { errors: fieldErrors, fields } = parseDepreciationFieldsInput(body);
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const selfId = request.currentUser.id;
+      const createInput: CreateDepreciationDraftInput = {
+        ownerId: selfId,
+        createdById: selfId,
+        ...fields,
+      };
+
+      const application = await createDepreciationDraft(prisma, createInput);
+      const dto = await buildDepreciationApplicationDto(prisma, application);
+      return reply.status(201).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /applications/depreciation/:id (PHASE-007-T4, AC-05)
+  // 型別不符或不存在之 id 一律 404，且不洩漏該 id 之真實型別。
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/applications/depreciation/:id",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      const application = await getDepreciationApplication(prisma, id);
+      if (!application) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // §6.2 資料隔離不變式 1: 授權一律以 DB 查得之 ownerId 為準。
+      assertOwnershipOrAdmin(request.currentUser, application.ownerId);
+
+      const dto = await buildDepreciationApplicationDto(prisma, application);
+      return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /applications/depreciation/:id (PHASE-007-T4, AC-03/04)
+  //
+  // 判定順序（§6.1 明文，須有明文測試固定）：
+  //   認證（401）→ 授權（403）→ 狀態機（403）→ 欄位格式／值域驗證（400）。
+  // 已完成申請即使 body 也不合法，仍必須回 403（006 T4R V10 教訓）。
+  //
+  // `attachmentIds` 之格式驗證沿用既有 `parseAttachmentIdsField`（不重寫解析
+  // 邏輯）；業務規則（附件存在、擁有權一致、上限 5、409）全部留給
+  // `depreciation-service.ts` 於交易內處理，此處刻意不查 DB。
+  // -------------------------------------------------------------------------
+
+  fastify.put(
+    "/applications/depreciation/:id",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      const existing = await getDepreciationApplication(prisma, id);
+      if (!existing) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      assertOwnershipOrAdmin(request.currentUser, existing.ownerId);
+      assertApplicationMutable(existing.status); // AC-04: 已完成 → 403 FORBIDDEN
+
+      const { errors: fieldErrors, fields } = parseDepreciationFieldsInput(body);
+
+      const patch: UpdateDepreciationDraftPatch = { ...fields };
+      if (Object.prototype.hasOwnProperty.call(body, "attachmentIds")) {
+        const result = parseAttachmentIdsField(body.attachmentIds, "attachmentIds");
+        if (!result.ok) fieldErrors.push(result.error);
+        else patch.attachmentIds = result.value;
+      }
+
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      // AC-32（前瞻）: 任何金額／里程／狀態／識別欄位（totalAmount、status、
+      // ownerId、createdById、snapshot* 等）一律不採用——本函式從未讀取這些
+      // body 欄位。代操作稽核 hook（AC-35）屬 T11，本 Task 不傳入 hook。
+      const updated = await updateDepreciationDraft(prisma, id, patch);
+      const dto = await buildDepreciationApplicationDto(prisma, updated);
+      return reply.status(200).send({ application: dto });
     }
   );
 
