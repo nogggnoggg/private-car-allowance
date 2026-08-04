@@ -30,18 +30,14 @@
  *   「紅燈」以突變自證替代（Packet 明示）：見各 `it` 上方之 MUTANT 註記，
  *   每條均列出「把斷言改成相反語意即紅」之具體形式，Handoff 附實跑輸出。
  *
- *   已知限制（移交 T7；T6R S-1 更正）：`perKmUnitPrice`／`rawAmount`／
- *   `amount` 於 T7 參數選版落地前恆為 `null`（`computeDepreciationComputed`
- *   之 T7 接線縫），故 AC-13「金額只用 `totalKm`」目前僅以**不變式形式**釘住
- *   ——「`officialKm` 相同而 `officialApplicationCount` 不同時，全部金額面欄位
- *   必須逐欄全等」。**此鑑別力目前是 `null` 對 `null` 的比較**：本檔完全未
- *   播種 `DepreciationParameterVersion`，且測試隔離為 per-file TRUNCATE（不
- *   繼承他檔資料），故**即使 T7 落地，本檔的斷言仍會是 null vs null，不會
- *   自動升級**。要取得對真實金額的鑑別力，前置條件是「播種一筆
- *   `effectiveFrom ≤ 該年度 1/1` 之折舊參數版本」——該播種與正向鑑別之義務
- *   **移交 T7**（`phase7-depreciation-parameters.test.ts`），本檔不代行。
- *   另 AC-14 之「草稿 DTO 側 `computed`」斷言亦俟 T7 接入 `computed` 後方可
- *   行（本批經預覽端點與 `computeDepreciationComputed` 服務函式觀察）。
+ *   已知限制之清償（T6R S-1 登記 → **PHASE-007-T7 已處置**）：AC-13「金額只
+ *   用 `totalKm`」原以不變式形式釘住，但因本檔零播種參數版本，該比較實際上
+ *   是 `null` 對 `null`。T7 已於本檔 `beforeAll` 播種一筆
+ *   `effectiveFrom = 2000-01-01` 之折舊參數版本（早於本檔全部查詢年度之
+ *   1/1），使該不變式改以**真實金額**比較；並新增互補之正向鑑別（同筆數、
+ *   異里程 ⇒ 金額必異）。
+ *   AC-14 之「草稿 DTO 側 `computed`」斷言由 T7 之
+ *   `phase7-depreciation-parameters.test.ts` 補齊（該檔具備參數與里程 fixture）。
  *
  * Test discipline (Spec §11.0 / Packet):
  *   - loginName prefix "p7t6_" + per-run random suffix；synthetic data only.
@@ -130,6 +126,21 @@ const YEAR_AC14_CONTRAST = 2021;
 const YEAR_ON_BEHALF = 2018;
 const YEAR_AC14_MISC = 2015;
 
+/**
+ * PHASE-007-T7（T6 即審 FW-3）：本檔播種**一筆**折舊參數版本，生效日早於本檔
+ * 全部查詢年度之 1/1（最早為 2015），使 AC-13 之金額面斷言由「`null` 對
+ * `null`」升級為**真實金額**之正向鑑別（T6R S-1 登記之鑑別力邊界即由此清償）。
+ *
+ * 單一版本 ⇒ 本檔任一年度所選中的版本恆為同一版、單價恆為 `6.0000`，故所有
+ * 既有斷言（年度區間、歸屬、資格、`ownerId` 解析）之語意完全不受影響——本次
+ * 播種只讓金額面**從恆 `null` 變成可比較的真實值**。
+ */
+const PARAM_EFFECTIVE_FROM = "2000-01-01";
+const PARAM_PER_KM_UNIT_PRICE = "6.0000"; // 600000 ÷ 5 ÷ 20000
+/** FW-3 正向鑑別專用年度（與上方各年度相隔 ≥3）。 */
+const YEAR_AMOUNT_A = 2012;
+const YEAR_AMOUNT_B = 2009;
+
 type PreviewDto = {
   calculable: boolean;
   officialKm: string | null;
@@ -200,6 +211,17 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
     otherId = other.id;
     adminId = admin.id;
 
+    // FW-3（見上方常數說明）：單一折舊參數版本，生效日早於本檔全部查詢年度。
+    await prisma.depreciationParameterVersion.create({
+      data: {
+        vehiclePrice: "600000.00",
+        usefulLifeYears: 5,
+        estimatedAnnualKm: 20000,
+        effectiveFrom: new Date(`${PARAM_EFFECTIVE_FROM}T00:00:00.000Z`),
+        createdById: adminId,
+      },
+    });
+
     app = await buildServer({ databaseUrl: DB_URL, logLevel: "error" });
     await app.ready();
 
@@ -216,6 +238,9 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       }
       const userIds = [ownerId, otherId, adminId].filter(Boolean);
       if (userIds.length > 0) {
+        await prisma.depreciationParameterVersion.deleteMany({
+          where: { createdById: { in: userIds } },
+        });
         await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
       }
       await prisma.user.deleteMany({ where: { loginName: { startsWith: LOGIN_PREFIX } } });
@@ -731,13 +756,12 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
      * `applicationCount` 帶進金額推導（例如以之為分母求平均、或以之為「有無
      * 資料」之判準），兩者必產生可觀測差異而必紅。
      *
-     * **鑑別力邊界（T6R S-1 更正）**：本測試比較的三個金額面欄位目前皆為
-     * `null`，故實際鑑別的是「`applicationCount` 不影響 `officialKm` 與
-     * 金額面欄位之出現與否」。本檔未播種任何 `DepreciationParameterVersion`，
-     * 且測試隔離為 per-file TRUNCATE，**T7 落地後本斷言仍是 null vs null，
-     * 不會自動升級**。對真實 `perKmUnitPrice`／`rawAmount`／`amount` 之正向
-     * 鑑別，須在有播種「`effectiveFrom ≤ 該年度 1/1` 之版本」的前提下進行
-     * ——該義務移交 T7 之 `phase7-depreciation-parameters.test.ts`。
+     * **鑑別力邊界（T6R S-1 登記，PHASE-007-T7 已清償）**：本斷言原為
+     * `null` 對 `null` 之比較。T7（本次）已於 `beforeAll` 播種一筆
+     * `effectiveFrom = 2000-01-01` 之折舊參數版本，故三個金額面欄位皆為**真實
+     * 值**（單價 `6.0000`、`rawAmount "600.0000"`、`amount 600`），本不變式
+     * 因而具備正向鑑別力：任何把 `applicationCount` 帶進金額推導的實作，兩年
+     * 之金額必然分歧而必紅。
      */
     it("applicationCount 不參與任何金額推導：officialKm 相同而筆數相異（1 vs 3）時，全部金額面欄位逐欄全等", async () => {
       const yA = YEAR_COUNT_NEUTRAL_A;
@@ -791,6 +815,51 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       expect(b.calculable).toEqual(a.calculable);
       expect(b.blockingCodes).toEqual(a.blockingCodes);
       expect({ ...b, officialApplicationCount: a.officialApplicationCount }).toEqual(a);
+
+      // 鑑別力自證（T7 播種後）：比較的確實是真實金額，而非 null 對 null。
+      expect(a.perKmUnitPrice).toBe(PARAM_PER_KM_UNIT_PRICE);
+      expect(a.rawAmount).toBe("600.0000");
+      expect(a.amount).toBe(600);
+      expect(a.calculable).toBe(true);
+    });
+
+    /**
+     * FW-3 之正向鑑別（與上一條互補）：**同筆數、異里程 ⇒ 金額必異**。
+     *
+     * 上一條證明「筆數不影響金額」，本條證明「里程確實影響金額」——兩條合起來
+     * 才排除「金額根本沒有真的用到 `totalKm`」這一類假綠（例如實作把金額寫死
+     * 或誤用常數）。
+     */
+    it("同 applicationCount 而 totalKm 相異 ⇒ 金額相異（里程確實進入金額計算）", async () => {
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${YEAR_AMOUNT_A}-05-05`,
+        tripDate: `${YEAR_AMOUNT_A}-05-05`,
+        snapshotTotalKm: "100.00",
+      });
+      await createApplicationRow({
+        ownerId,
+        status: "COMPLETED",
+        primaryDate: `${YEAR_AMOUNT_B}-05-05`,
+        tripDate: `${YEAR_AMOUNT_B}-05-05`,
+        snapshotTotalKm: "250.00",
+      });
+
+      const a = await previewOk(ownerCookie, { applicationYear: YEAR_AMOUNT_A });
+      const b = await previewOk(ownerCookie, { applicationYear: YEAR_AMOUNT_B });
+
+      // 前提自證：筆數相同（1 vs 1），里程相異。
+      expect(a.officialApplicationCount).toBe(1);
+      expect(b.officialApplicationCount).toBe(1);
+      expect(a.officialKm).toBe("100.00");
+      expect(b.officialKm).toBe("250.00");
+
+      // 100.00 × 6.0000 = 600；250.00 × 6.0000 = 1500。
+      expect(a.amount).toBe(600);
+      expect(b.amount).toBe(1500);
+      expect(b.amount).not.toEqual(a.amount);
+      expect(b.rawAmount).toBe("1500.0000");
     });
   });
 

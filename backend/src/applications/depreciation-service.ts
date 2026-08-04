@@ -20,11 +20,10 @@
  *
  * ── 本 Task 明示留白（不提前實作半套，Packet FW-3 認知） ────────────────
  *   - `computed`（`DepreciationComputedDto`）：其內容需要年度公務里程（T6）
- *     與參數選版／單價（T7）。**PHASE-007-T6 已落地其年度里程部分**
- *     （`computeDepreciationComputed`，供 `POST /applications/depreciation/
- *     preview` 使用）；申請 DTO 之 `computed` 欄位仍恆回 `null`，其填充屬
- *     T7（Spec §15 T7 列「預覽端點 ＋ `computed`」）。T7 落地時必須以
- *     `pure.calculable && !overCapacity` 合成 `calculable`，**不得**由
+ *     與參數選版／單價（T7）。**PHASE-007-T6 已落地其年度里程部分、
+ *     PHASE-007-T7 已落地參數選版／單價與申請 DTO 之接入**（見
+ *     `computeDepreciationComputed`／`buildDepreciationApplicationDto`）。
+ *     `calculable` 一律以 `pure.calculable && !overCapacity` 合成，**不得**由
  *     `completionBlockers.length === 0` 反推（T3 即審 FW-3：附件缺漏會抑制
  *     第 3/4 碼，空清單 ≠ 可計算）。
  *   - `duplicateYearNotice`（AC-07）：**PHASE-007-T5 已落地**（見
@@ -34,10 +33,12 @@
  *     屬 T8。本檔已於對帳時傳入上限常數與三道 per-attachment 檢查（沿保養
  *     既有模式），T8 只需補齊測試與 `deriveContainerState` 之擴充。
  *
- * ── 兩段式 blocker 之呼叫紀律（T3 即審 FW-5） ──────────────────────────
- *   草稿階段尚未查詢年度里程與參數，故 `officialKm`／`perKmUnitPrice`
- *   **同不給**（兩者皆省略），使 `computeDepreciationBlockers` 完全抑制第
- *   3、4 碼。這是本檔唯一的 blocker 組裝點（單一組裝點義務）。
+ * ── 兩段式 blocker 之呼叫紀律（T3 即審 FW-5；T7 更新） ──────────────────
+ *   `officialKm`／`perKmUnitPrice` **同給或同不給**——年度缺漏（或年度為非
+ *   整數）時兩者皆未查詢，`computeDepreciationBlockers` 完全抑制第 3、4 碼；
+ *   年度可用時兩者皆由 `computeDepreciationComputedResult` 一次查得後同時
+ *   傳入。本檔是全案唯一的折舊 blocker 與 `computed` 組裝點（`routes.ts` 之
+ *   三個折舊端點一律經 `buildDepreciationApplicationDto`，不得各自補算）。
  *
  * ── 年度值域 ───────────────────────────────────────────────────────────
  *   `[1900, 2999]`（§16 D3(a)）之驗證 **100% 落在 `routes.ts` 的
@@ -58,6 +59,11 @@ import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
 import type { Blocker } from "./depreciation-blockers.js";
 import { computeDepreciationBlockers } from "./depreciation-blockers.js";
+import {
+  calculateDepreciation,
+  isDepreciationCalculationOverCapacity,
+} from "./depreciation-calculation.js";
+import { resolveDepreciationParameters } from "./depreciation-parameters.js";
 import { utcDateOnly } from "./travel-service.js";
 
 // ---------------------------------------------------------------------------
@@ -495,76 +501,185 @@ export interface ComputeDepreciationComputedInput {
 }
 
 /**
- * 計算折舊補貼預覽之 `computed`（§7.2 `DepreciationComputedDto`）。
+ * `computed` 路徑之附件計數哨兵（T6 即審 FW-2 之明示處置）。
  *
- * 本 Task（T6）落地其**年度公務里程**部分（§9.2 前半，AC-09~12）：
- *   `applicationYear == null` → `calculable=false` ＋ `[YEAR_REQUIRED]`，
- *     **不查 DB**（§9.2 逐字）；
- *   否則 → `sumOfficialMileage(db, { ownerId, YYYY-01-01, YYYY-12-31 })`
- *     （唯讀聚合，零寫入）→ `officialKm`（2 位小數字串）與
- *     `officialApplicationCount`（AC-13：後者僅供顯示，**絕不**進入金額計算）。
+ * §9.2 之預覽流程**完全不含附件計數步驟**（stateless 預覽根本沒有申請可掛
+ * 附件），且 §7.2 對 `computed.blockingCodes` 之定義為「**不可計算**之原因
+ * 代碼」——證明缺漏不影響「金額算不算得出來」，它是**完成度**條件，由 DTO
+ * 的 `completionBlockers` 承擔（§7.5 第 2 碼）。
  *
- * ── T7 之接線縫（明示留白，不提前實作半套） ──────────────────────────────
- * §9.2 後半（`findEffectiveVersion` 選版 → `deriveDepreciation` → 單價 →
- * `calculateDepreciation` → 容量判定）屬 **T7**。在 T7 落地之前，本函式**沒有
- * 任何取得每公里單價的程式路徑**，故 `perKmUnitPrice` 恆為不可得——即 §7.5
- * 第 3 碼之觸發條件「該年度尚無有效折舊參數」於此 commit 為**恆真**，據此回
- * `PARAMETER_NOT_AVAILABLE` 並保持 §7.5 不變式「`calculable=false ⇒
- * blockingCodes 至少一項」成立。T7 只需將下方標示之常數 `null` 換成真實選版
- * 結果，並依 T3 即審 FW-3 以 `pure.calculable && !overCapacity` 合成
- * `calculable`（**不得**由 `blockingCodes.length` 反推）。
- *
- * 唯讀：本函式只呼叫聚合查詢，無任何 `.create`／`.update`／`.delete`
- * （§9.2 零寫入不變式）。
+ * 故 `computed` 路徑以「附件條件視為已滿足」之哨兵值呼叫同一個純函式，使第
+ * 2 碼恆不產生；其餘三碼（`YEAR_REQUIRED`／`PARAMETER_NOT_AVAILABLE`／
+ * `AMOUNT_OUT_OF_RANGE`）仍**全部**由 `computeDepreciationBlockers` 這一個
+ * 事實來源產生（T6 即審 FW-1：不得在本檔重寫任何判定）。
  */
-export async function computeDepreciationComputed(
+const COMPUTED_PATH_ATTACHMENT_SENTINEL = 1;
+
+/**
+ * `computeDepreciationComputed` 之內部完整結果：DTO ＋ 供 DTO 之
+ * `completionBlockers` 第二段使用的原始 `Decimal` 值。
+ *
+ * 兩者必須來自**同一次查詢**（同一組 `officialKm`／`perKmUnitPrice`），否則
+ * `computed` 與 `completionBlockers` 可能各自看到不同的參數狀態——那正是
+ * 「預覽說可以、完成才擋」反模式的溫床（AC-16(b)）。
+ */
+interface DepreciationComputedResult {
+  dto: DepreciationComputedDto;
+  /** `null` ＝ 本次未查詢（§7.5 兩段式之「尚未查詢」語意）。 */
+  officialKm: Prisma.Decimal | null;
+  /** `null` ＝ 已查詢但無有效參數／推導失敗，或本次未查詢。 */
+  perKmUnitPrice: Prisma.Decimal | null;
+}
+
+/**
+ * 型別窄化用的薄包裝：判準**完全委派**給 `computeDepreciationBlockers` 之第
+ * 一段（單一事實來源），此處只是把「無結構性 blocker」翻譯成 TypeScript 看得
+ * 懂的 `applicationYear is number`，本身不含任何自己的判定。
+ */
+function hasUsableYear(
+  structuralBlockers: Blocker[],
+  applicationYear: number | null
+): applicationYear is number {
+  return structuralBlockers.length === 0 && applicationYear !== null;
+}
+
+/**
+ * 取整前金額之 DTO 呈現（§7.2：`rawAmount` 為 4 位小數字串）。
+ *
+ * **T2 即審 FW-4 紀律**：真實 `rawAmount` ＝ `officialKm`(2dp) ×
+ * `perKmUnitPrice`(4dp) 最多 6 位小數，故轉為 §7.2 之 4 位小數字串時必然發生
+ * 一次量化——此處**顯式**指定 `ROUND_HALF_UP`（不依賴 decimal.js 的預設值）。
+ * 這是**純呈現**用的量化：量化值**絕不**回餵 `amount`（`amount` 一律取自
+ * `calculateDepreciation` 以未量化之 `rawAmount` 算出的結果，AC-20「取整恰一
+ * 處」）。整合測試以 `1234.49995 → rawAmount "1234.5000" 而 amount 1234` 之
+ * kill case 鎖定（回餵之實作必得 1235）。
+ */
+function formatRawAmount(rawAmount: Prisma.Decimal): string {
+  return rawAmount.toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP).toFixed(4);
+}
+
+/**
+ * 計算折舊補貼之 `computed`（§7.2 `DepreciationComputedDto`）與其原始 Decimal
+ * 值（§9.2 唯讀路徑之完整實作）。
+ *
+ *   ① 結構性第一段（`computeDepreciationBlockers`）：`applicationYear` 缺漏或
+ *      非整數 → `[YEAR_REQUIRED]`，**不查 DB**（§9.2 逐字）。
+ *   ② `sumOfficialMileage(db, { ownerId, YYYY-01-01, YYYY-12-31 })`（唯讀聚合）
+ *      → `officialKm`（2 位小數字串）與 `officialApplicationCount`
+ *      （AC-13：後者僅供顯示，**絕不**進入金額計算）。
+ *   ③ `resolveDepreciationParameters`（選版 → `deriveDepreciation` → 4 位小數
+ *      單價）；查無版本或推導失敗一律 `perKmUnitPrice = null` → 第 3 碼。
+ *   ④ `calculateDepreciation` ＋ `isDepreciationCalculationOverCapacity`
+ *      （T2 純函式，全案唯一之金額與容量判定）。
+ *
+ * `calculable` ＝ `result.calculable && !overCapacity`（T3 即審 FW-3 逐字：
+ * **不得**由 `blockingCodes.length === 0` 反推——附件缺漏會抑制第 3/4 碼，
+ * 空清單 ≠ 可計算）。
+ *
+ * 唯讀：本函式只呼叫聚合與 `findMany`，無任何 `.create`／`.update`／
+ * `.delete`（§9.2 零寫入不變式）。
+ */
+async function computeDepreciationComputedResult(
   db: PrismaLike,
   input: ComputeDepreciationComputedInput
-): Promise<DepreciationComputedDto> {
+): Promise<DepreciationComputedResult> {
   const { ownerId, applicationYear } = input;
 
-  // T6R S-2：判準與 `depreciation-blockers.ts` 之 `isApplicationYearMissing`
-  // （`Number.isInteger()` 守門）**逐字相同**——非整數／非有限值（`NaN`、
-  // `±Infinity`、`2025.7`，典型來源為 `Invalid Date` 推導之 `getUTCFullYear()`）
-  // 一律視同「未選擇年度」，保守回 `YEAR_REQUIRED`。`routes.ts` 之
-  // `parseApplicationYearField` 只覆蓋 HTTP 面，本函式為 exported 服務函式，
-  // 另有 T7／T9 之非 HTTP 呼叫端，故必須自行守門：否則 `Date.UTC(NaN, ...)`
-  // 會產生 Invalid Date 而使 Prisma 拋驗證錯誤（500），`2025.7` 則被靜默截斷
-  // 為 2025 並回傳一個「看似合法」的里程。
-  // （過渡期實作：T7 會將 `blockingCodes` 改為一律經 `computeDepreciationBlockers`
-  //  產生，屆時本判準即由該純函式單一事實來源承擔，此處的重複判定應一併移除。）
-  if (applicationYear === null || !Number.isInteger(applicationYear)) {
+  // ① 第一段：結構性判定一律經純函式（T6 即審 FW-1；非整數／`NaN`／
+  //    `±Infinity` 由該函式之 `Number.isInteger()` 守門保守轉為 `YEAR_REQUIRED`，
+  //    本檔不再持有第二份判準）。
+  const structuralBlockers = computeDepreciationBlockers({
+    applicationYear,
+    attachmentCount: COMPUTED_PATH_ATTACHMENT_SENTINEL,
+  });
+
+  if (!hasUsableYear(structuralBlockers, applicationYear)) {
     return {
-      calculable: false,
+      dto: {
+        calculable: false,
+        officialKm: null,
+        officialApplicationCount: null,
+        perKmUnitPrice: null,
+        rawAmount: null,
+        amount: null,
+        blockingCodes: structuralBlockers.map((blocker) => blocker.code),
+      },
       officialKm: null,
-      officialApplicationCount: null,
       perKmUnitPrice: null,
-      rawAmount: null,
-      amount: null,
-      blockingCodes: ["YEAR_REQUIRED"],
     };
   }
 
+  // ② AC-09/14：引擎唯一呼叫點；`ownerId` 逐次由呼叫端傳入之擁有人。
   const { dateFrom, dateTo } = depreciationYearRange(applicationYear);
-  // AC-09/14：唯一呼叫點；`ownerId` 逐次由呼叫端傳入之擁有人，無任何預設值。
   const { totalKm, applicationCount } = await sumOfficialMileage(db, {
     ownerId,
     dateFrom,
     dateTo,
   });
 
-  // T7 接線縫：參數選版與單價推導尚未落地 ⇒ 單價恆不可得（見上方文件註解）。
-  const perKmUnitPrice: string | null = null;
+  // ③ AC-15/17/18：選版與單價（`depreciation-parameters.ts`，不重寫推導）。
+  const { perKmUnitPrice } = await resolveDepreciationParameters(db, applicationYear);
+
+  // 第二段：`officialKm`／`perKmUnitPrice` 同給（§7.5）。
+  const blockingCodes = computeDepreciationBlockers({
+    applicationYear,
+    attachmentCount: COMPUTED_PATH_ATTACHMENT_SENTINEL,
+    officialKm: totalKm,
+    perKmUnitPrice,
+  }).map((blocker) => blocker.code);
+
+  if (perKmUnitPrice === null) {
+    // AC-16(b)／AC-18：查無有效參數或推導失敗——金額面全 `null`，年度里程
+    // 仍如實回報（使用者看得到「該年度有多少公務里程」，只是還算不出金額）。
+    return {
+      dto: {
+        calculable: false,
+        officialKm: totalKm.toFixed(2),
+        officialApplicationCount: applicationCount,
+        perKmUnitPrice: null,
+        rawAmount: null,
+        amount: null,
+        blockingCodes,
+      },
+      officialKm: totalKm,
+      perKmUnitPrice: null,
+    };
+  }
+
+  // ④ 金額與容量：全案唯一之計算與判定（T2）。
+  const result = calculateDepreciation({ officialKm: totalKm, perKmUnitPrice });
+  const overCapacity = isDepreciationCalculationOverCapacity(result);
+  // T3 即審 FW-3：合成而非反推。
+  const calculable = result.calculable && !overCapacity;
 
   return {
-    calculable: false,
-    officialKm: totalKm.toFixed(2),
-    officialApplicationCount: applicationCount,
+    dto: {
+      calculable,
+      officialKm: totalKm.toFixed(2),
+      officialApplicationCount: applicationCount,
+      // D6(a)：單價逐字呈現（4 位小數），不再取整。
+      perKmUnitPrice: perKmUnitPrice.toFixed(4),
+      // 超出容量時不呈現金額（沿 PHASE-006 `computeMaintenanceComputed` 之既有
+      // 處置：不可計算即不給數字，避免前端顯示一個存不進去的金額）。
+      rawAmount: calculable && result.rawAmount !== null ? formatRawAmount(result.rawAmount) : null,
+      amount: calculable ? result.amount : null,
+      blockingCodes,
+    },
+    officialKm: totalKm,
     perKmUnitPrice,
-    rawAmount: null,
-    amount: null,
-    blockingCodes: ["PARAMETER_NOT_AVAILABLE"],
   };
+}
+
+/**
+ * `POST /applications/depreciation/preview` 之服務入口（§9.2）——回傳 §7.2 之
+ * `DepreciationComputedDto`。完整語意見
+ * `computeDepreciationComputedResult` 之文件註解。
+ */
+export async function computeDepreciationComputed(
+  db: PrismaLike,
+  input: ComputeDepreciationComputedInput
+): Promise<DepreciationComputedDto> {
+  return (await computeDepreciationComputedResult(db, input)).dto;
 }
 
 /**
@@ -647,9 +762,15 @@ function buildSnapshotDto(
  * builder 不得偷查 DB）。
  *
  * `completionBlockers`：僅 `DRAFT` 才計算（`COMPLETED` 為 `null`，§7.2 明
- * 文）。草稿階段為兩段式第一段——`officialKm`／`perKmUnitPrice` **同不給**
- * （T3 即審 FW-5），第 3、4 碼完全被抑制。附件計數 ＝ `attachments.length`
- * （本函式之呼叫端只查 `status="LINKED"` 之附件）。
+ * 文）。`officialKm`／`perKmUnitPrice` 由 `computed`（同一次查詢之結果，見
+ * `DepreciationComputedResult`）原樣轉入——年度不可用時兩者為 `null`（尚未
+ * 查詢，第 3、4 碼被抑制），年度可用時兩者同給（第二段）。附件計數 ＝
+ * `attachments.length`（本函式之呼叫端只查 `status="LINKED"` 之附件）。
+ *
+ * 注意兩段式之必然結果（T3 即審 FW-3，非缺陷）：草稿零附件時第 2 碼會**抑制**
+ * 第 3/4 碼，故 `completionBlockers` 可能不含 `PARAMETER_NOT_AVAILABLE`；但
+ * `computed.calculable=false` 與 `computed.blockingCodes` 一律如實反映不可
+ * 計算之真因（AC-16(b) 之反模式封閉靠 `computed`，不靠 blocker 清單）。
  *
  * 完成交易內之附件計數**不得**沿用本處之交易外結果（T3 即審 FW-10：須於
  * `FOR UPDATE` 鎖列後同 `tx` 現算）——該義務落在 T9 之完成流程。
@@ -657,7 +778,8 @@ function buildSnapshotDto(
 export function toDepreciationApplicationDto(
   application: DepreciationApplicationRecord,
   attachments: AttachmentDto[] = [],
-  duplicateYearNotice: { count: number; hasCompleted: boolean } | null = null
+  duplicateYearNotice: { count: number; hasCompleted: boolean } | null = null,
+  computed: DepreciationComputedResult | null = null
 ): DepreciationApplicationDto {
   const depreciation = application.depreciation;
   const isDraft = application.status === "DRAFT";
@@ -666,7 +788,8 @@ export function toDepreciationApplicationDto(
     ? computeDepreciationBlockers({
         applicationYear: depreciation?.applicationYear ?? null,
         attachmentCount: attachments.length,
-        // FW-5：草稿階段兩者同不給（尚未查詢）。
+        officialKm: computed?.officialKm ?? null,
+        perKmUnitPrice: computed?.perKmUnitPrice ?? null,
       })
     : null;
 
@@ -688,8 +811,9 @@ export function toDepreciationApplicationDto(
 
     attachments,
     completionBlockers,
-    // AC-09~18（年度里程／參數／單價）屬 T6/T7——本 Task 明示留白。
-    computed: null,
+    // §7.2：`computed` 僅 `DRAFT` 才有（呼叫端於 `COMPLETED` 一律不計算，
+    // 故此處為 `null`）。
+    computed: computed?.dto ?? null,
     snapshot: buildSnapshotDto(application),
   };
 }
@@ -730,9 +854,19 @@ export async function computeDuplicateYearNotice(
 
 /**
  * `routes.ts` 呼叫的薄編排層：一次查得真實 `LINKED` 附件（`refType=
- * "DEPRECIATION"`、`refId = Application.id`，§16 D2(a)）與 `duplicateYearNotice`
- * （AC-07）後組裝 DTO。`DRAFT`／`COMPLETED` 皆查——已完成之折舊詳情頁仍需顯示
- * 證明縮圖與重複提示。
+ * "DEPRECIATION"`、`refId = Application.id`，§16 D2(a)）、`duplicateYearNotice`
+ * （AC-07）與 `computed`（AC-09~18）後組裝 DTO。`DRAFT`／`COMPLETED` 皆查附件
+ * ——已完成之折舊詳情頁仍需顯示證明縮圖與重複提示。
+ *
+ * **查詢面（T6 即審 FW-5 之據實揭露）**：本函式為折舊 DTO 的**單一組裝點**，
+ * `routes.ts` 之 POST／GET／PUT 三處一律經此，不得各自補算。每次呼叫之查詢：
+ *   - `attachment.findMany`（既有）
+ *   - `depreciationApplication.findMany`（既有，`duplicateYearNotice`）
+ *   - **`DRAFT` 才有**：`sumOfficialMileage`（引擎內部之一次聚合查詢，+1）
+ *     ＋ `depreciationParameterVersion.findMany`（選版，+1）
+ *   - `COMPLETED`：上述兩項 **+0**（`computed` 為 `null`，§7.2；已完成之數字
+ *     一律取自快照，不重算——AC-31 之讀取路徑零重算即由此保證）。
+ * `toDepreciationApplicationDto` 本身**不碰 DB**（006 T4 即審 FW-T6 節義務）。
  */
 export async function buildDepreciationApplicationDto(
   db: PrismaLike,
@@ -741,15 +875,25 @@ export async function buildDepreciationApplicationDto(
   const attachmentRows = await db.attachment.findMany({
     where: { refType: "DEPRECIATION", refId: application.id, status: "LINKED" },
   });
+  const applicationYear = application.depreciation?.applicationYear ?? null;
   const duplicateYearNotice = await computeDuplicateYearNotice(
     db,
     application.id,
     application.ownerId,
-    application.depreciation?.applicationYear ?? null
+    applicationYear
   );
+  const computed =
+    application.status === "DRAFT"
+      ? await computeDepreciationComputedResult(db, {
+          // AC-14：恆為擁有人（代操作時亦然），絕不為操作者。
+          ownerId: application.ownerId,
+          applicationYear,
+        })
+      : null;
   return toDepreciationApplicationDto(
     application,
     attachmentRows.map(toAttachmentDto),
-    duplicateYearNotice
+    duplicateYearNotice,
+    computed
   );
 }

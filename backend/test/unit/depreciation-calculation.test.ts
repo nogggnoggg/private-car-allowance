@@ -94,7 +94,21 @@ const PHASE_007_SRC_FILES = [
   // T4 新增（PHASE-007-T4；同一機械義務——本檔為草稿 CRUD service，雖不含
   // 金額算術，仍納入掃描以固定「本 Phase 新增 src 檔一律零浮點中介」）。
   "src/applications/depreciation-service.ts",
+  // T7 新增（PHASE-007-T7；折舊參數選版與單價還原——`new Prisma.Decimal(字串)`
+  // 之還原點，正是零浮點中介最須守住的一處）。
+  "src/applications/depreciation-parameters.ts",
 ] as const;
+
+/**
+ * AR-3（T3 即審）：`.toNumber()` 掃描逐檔化——原本只掃 `ENGINE_SRC_PATH`
+ * 一檔，新增之 src 檔可自由降轉而不被發現。本表宣告每個受掃描檔案**允許**
+ * 的 `.toNumber()` 次數（金額路徑之唯一合法降轉點為最終金額）。新增檔案
+ * 未列於此表時預設為 0 次。
+ */
+const TO_NUMBER_ALLOWANCE: Record<string, number> = {
+  // 最終金額，且必須緊接於 ROUND_HALF_UP 取整之後（見下方鏈式斷言）。
+  "src/applications/depreciation-calculation.ts": 1,
+};
 
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_007_SRC_FILES[0]);
 
@@ -855,6 +869,11 @@ describe("AC-19 零浮點中介 — PHASE-007 source files contain no Number()/p
       const plusCoercionPattern = /(?<![+\-.\w])\+(?!\+)[a-zA-Z_$][\w$]*/g;
       expect([...blanked.matchAll(plusCoercionPattern)]).toEqual([]);
     });
+
+    it("AR-3（逐檔化）：`.toNumber()` 之出現次數不超過本檔之明文額度（未列表之檔案一律 0 次）", () => {
+      const occurrences = blanked.match(/\.toNumber\(/g) ?? [];
+      expect(occurrences.length).toBe(TO_NUMBER_ALLOWANCE[relativePath] ?? 0);
+    });
   });
 
   const rawSource = fs.readFileSync(ENGINE_SRC_PATH, "utf8");
@@ -906,8 +925,16 @@ describe("AC-19 零浮點中介 — PHASE-007 source files contain no Number()/p
   });
 
   it("whitelist self-proof: PHASE_007_SRC_FILES drives the scan and fails loudly on a missing path (no silent skip)", () => {
+    // AR-2（T3 即審）：**全等**斷言而非 `toContain`——新增 src 檔卻忘了登記
+    // 時，`toContain` 不會轉紅（清單只增不減亦通過），全等則必紅並強制實作者
+    // 於同一 commit 內補登記。
+    expect([...PHASE_007_SRC_FILES]).toEqual([
+      "src/applications/depreciation-calculation.ts",
+      "src/applications/depreciation-blockers.ts",
+      "src/applications/depreciation-service.ts",
+      "src/applications/depreciation-parameters.ts",
+    ]);
     expect(PHASE_007_SRC_FILES.length).toBeGreaterThan(0);
-    expect(PHASE_007_SRC_FILES).toContain("src/applications/depreciation-calculation.ts");
     expect(() =>
       fs.readFileSync(path.resolve(BACKEND_ROOT, "src/applications/no-such-file.ts"), "utf8")
     ).toThrow();

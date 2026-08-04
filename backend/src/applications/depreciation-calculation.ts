@@ -43,9 +43,10 @@
  *
  * 浮點中介聲明：本檔全程僅使用 `Prisma.Decimal`（decimal.js）的 `.times()`
  * ／`.pow()`／`.abs()`／`.toDecimalPlaces()`／`.isFinite()`／
- * `.greaterThanOrEqualTo()` 進行運算。`Decimal.toNumber()` 僅在兩處使用：
- * (1) 最終金額，且發生於 `ROUND_HALF_UP` 取整為整數**之後**；(2) 容量常數
- * 之整數上界（由欄位精度推導之 10 的冪，恆為精確整數）。全程無 `Number()`
+ * `.greaterThanOrEqualTo()` 進行運算。`Decimal.toNumber()` 全檔僅在**一處**
+ * 使用：最終金額，且發生於 `ROUND_HALF_UP` 取整為整數**之後**（int4 容量
+ * 常數之上下界由 `2 ** 31` 之整數冪直接得出，未經 `Decimal`，故不需降轉；
+ * T2 即審 AR-1 更正原註解之「兩處」筆誤）。全程無 `Number()`
  * ／`parseFloat`／`parseInt`／浮點算術參與金額或里程的計算過程（由測試
  * §7 之清單驅動掃描機械守護）。
  */

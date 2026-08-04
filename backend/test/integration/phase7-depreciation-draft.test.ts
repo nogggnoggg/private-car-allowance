@@ -625,7 +625,14 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
         [a1, a2].sort()
       );
       // 附件齊備後結構性 blocker 清空（§7.5 第一段全通過）。
-      expect(linked.completionBlockers).toEqual([]);
+      // PHASE-007-T7：第一段全通過後即進入第二段（本檔未播種折舊參數版本，
+      // 故第 3 碼 `PARAMETER_NOT_AVAILABLE` 出現）——**第 1、2 碼消失**這件事
+      // 本身即為「第一段全通過」之證據，鑑別力不減反增（原斷言只能證明清單
+      // 為空，改寫後同時證明「兩段式確實推進到第二段」）。
+      const linkedCodes = (linked.completionBlockers as { code: string }[]).map((b) => b.code);
+      expect(linkedCodes).toEqual(["PARAMETER_NOT_AVAILABLE"]);
+      expect(linkedCodes).not.toContain("DEPRECIATION_ATTACHMENT_REQUIRED");
+      expect(linkedCodes).not.toContain("YEAR_REQUIRED");
 
       const rows = await prisma.attachment.findMany({ where: { id: { in: [a1, a2] } } });
       for (const row of rows) {
@@ -718,9 +725,37 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
       expect(application.status).toBe("DRAFT");
       expect(application.completionBlockers).not.toBeNull();
       expect(application.snapshot).toBeNull();
-      // `computed` 之填充屬 T6（年度里程）／T7（參數與單價）——本 Task 明示
-      // 留白為 `null`，不提前實作半套（Packet FW-3 認知）。
-      expect(application.computed).toBeNull();
+      // PHASE-007-T7（大總管 W-1 裁定）：`computed` 之填充已落地，原本的
+      // 過渡期 `toBeNull()` 斷言依新行為改寫為 §7.2 之七鍵形狀。
+      // 本檔未播種折舊參數版本，故此處為「查無有效參數」之情境：
+      // `calculable=false` ＋ 第 3 碼，年度里程仍如實回報（本檔亦無差旅）。
+      const computed = application.computed as Record<string, unknown> | null;
+      expect(computed).not.toBeNull();
+      expect(Object.keys(computed ?? {}).sort()).toEqual(
+        [
+          "amount",
+          "blockingCodes",
+          "calculable",
+          "officialApplicationCount",
+          "officialKm",
+          "perKmUnitPrice",
+          "rawAmount",
+        ].sort()
+      );
+      expect(computed?.calculable).toBe(false);
+      expect(computed?.blockingCodes).toEqual(["PARAMETER_NOT_AVAILABLE"]);
+      expect(computed?.officialKm).toBe("0.00");
+      expect(computed?.officialApplicationCount).toBe(0);
+      expect(computed?.perKmUnitPrice).toBeNull();
+      // §16 D8(a)：推導三值與版本 id 一律不外露。
+      for (const forbidden of [
+        "vehiclePrice",
+        "usefulLifeYears",
+        "estimatedAnnualKm",
+        "depreciationParameterVersionId",
+      ]) {
+        expect(computed ?? {}).not.toHaveProperty(forbidden);
+      }
     });
 
     it("GET COMPLETED（快照欄已寫入）→ 200，snapshot 非 null、completionBlockers 為 null", async () => {
@@ -745,6 +780,9 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
       const application = resp.json<{ application: Record<string, unknown> }>().application;
       expect(application.status).toBe("COMPLETED");
       expect(application.completionBlockers).toBeNull();
+      // §7.2 逐字：`COMPLETED` 之 `computed` 為 `null`（已完成之數字一律取自
+      // 快照，讀取路徑零重算）。PHASE-007-T7 後此行不再是過渡期留白，而是
+      // 正式的契約斷言。
       expect(application.computed).toBeNull();
       expect(application.snapshot).toEqual({
         officialKm: "1000.00",
