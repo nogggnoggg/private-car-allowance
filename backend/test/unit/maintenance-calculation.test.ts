@@ -50,7 +50,10 @@ const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
  * 不會被下方 AC-28 同型結構性掃描覆蓋。清單中任何檔案不存在時，
  * `fs.readFileSync` 會直接拋錯使測試紅（fail-loud），不得靜默跳過。
  */
-const PHASE_006_SRC_FILES = ["src/applications/maintenance-calculation.ts"] as const;
+const PHASE_006_SRC_FILES = [
+  "src/applications/maintenance-calculation.ts",
+  "src/applications/maintenance-blockers.ts", // PHASE-006-T3
+] as const;
 
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_006_SRC_FILES[0]);
 
