@@ -11,6 +11,9 @@ State: ACTIVE
 > - Packet 必引（開工前提清單）：①PHASE-005 結案列補測遺項（B-12/15/17/19/24/25）②005a/006 快照與容量守門慣例（D4(a) 同型單次取整、Decimal 欄容量守門）③006 附件三端點 on-behalf 一致模式④AR-1（代修改停用者草稿）PHASE-011 候選⑤usage 復盤 `docs/retrospective/PHASE-006-usage.md` §3.1 預算帶＋§3.2 條款。
 > - 派工模式沿用：subagent 一律背景派工；寫入型依序；Review 節奏（High 即審重驗證級/期中/終審）照 §19。
 > - 基準線起點：後端 1801/0/0、前端 206/0/0、E2E 30/30。
+> - **DOC-SYNC-A：DONE**（`7121f29`，2 檔 +79/-9；usage ~127k/35 tool uses——超輕 Lite 帶上緣，含兩 Spec 原文核實＋程式現況實查）。十項全落地；agent 實查 sumOfficialMileage 交易內呼叫、lifecycle-service MAINTENANCE 分支與文件敘述一致。Handoff 揭露殘留債兩項→DOC-SYNC-B。
+> - **DOC-SYNC-B：DONE**（`d4950b4`，2 檔 +18/-7；usage ~80k/19 tool uses）。DATA_FLOW §1 補 FuelPriceVersion/UserFuelConsumptionVersion/差旅五快照欄（欄名依 schema 實查更正 Packet 誤植：snapshotFuelType 等五欄；fuelUnitPrice 為 004 既有欄語意變更非新增）；ARCHITECTURE 油耗授權移出 §4.5 新設 §4.11 逐字搬移。移交：DepreciationApplication 列待 PHASE-007 落地後回補（§2.2 同註記）。
+> - **SPEC-007：派工中**（spec-writer，預算帶 ~250-280k；Packet 含九項 Required Context：003a D3 4dp 套用、005 引擎複用與 D2(a) 不對稱、005a/006 快照容量守門慣例、006 on-behalf/附件/SF-4 一致模式、B-12 系補測遺項評估、一人一年一筆列 D 決策點、infra001 表數 14→15 連動、usage 預算帶）。
 
 > **PHASE-006：DONE（2026-08-04）**——PR #14 經人類批准以 Merge 合併（`9bfeb8e`），Spec 轉 COMPLETED。基準線終值：後端 **1801/0/0**、前端 **206/0/0**、E2E **30/30**。41/41 AC GREEN、終審＋十輪複審清零、Gate 通過（人類走查一筆保養）、SF-4 裁定 (a) 已落地（T9R2）。
 > - **下一站：PHASE-007（年度折舊補貼）**——等人類明示開工。開工 Packet 必引：PHASE-005 結案列補測遺項、005a/006 快照與容量守門慣例（D4(a) 同型）、006 附件三端點 on-behalf 一致模式、AR-1（代修改停用者草稿——差旅/保養同型）PHASE-011 候選。
