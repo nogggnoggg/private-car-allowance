@@ -2,6 +2,16 @@
 
 State: ACTIVE
 
+> **PHASE-007（年度折舊補貼）開工記錄（2026-08-04，使用者指令「開工」）**
+> - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、格式化、單行修改）一律派 implementer。巢狀派工封鎖條款（2026-08-04.1 治理常文）：每份 Packet 固定含「禁止 spawn 任何 subagent」。
+> - Effort 崗哨：本 session effort=medium，已警告使用者（低於 high 建議），使用者裁定開工。模型確認提醒已出。
+> - branch：`phase-007`（自 main @ `973d48f` 切出）。流程：DOC-SYNC（spec-writer，前置文件債）→ spec-writer 產 Phase Spec（DRAFT）→ 人類 Spec Gate（含 High Task 事前批准）→ implementer TDD → reviewer → Gate → Draft PR + CI → 合併。
+> - **DOC-SYNC-A（005a+006 文件債）**：範圍＝005a Spec §13 第 1~4 項＋006 Spec §13 第 1~6 項（ARCHITECTURE/DATA_FLOW 二檔）；兩清單各自第 5/7 項（PROJECT_STATE 跨 Phase 追蹤）由大總管白名單補記（見下）。
+> - **跨 Phase 追蹤補記（005a §13-5、006 §13-7 落地）**：①PHASE-008 報表須同時支援舊模型快照（新五欄 NULL）與新模型快照，判別依 `fuelPriceVersionId` 是否 null（005a Spec §8.4）②PHASE-008 報表須支援 `MNT` 編號與保養列印版（四值＋實際費用＋證明）③PHASE-009 保養作廢須同時排除於後續保養／折舊之公務里程統計。
+> - Packet 必引（開工前提清單）：①PHASE-005 結案列補測遺項（B-12/15/17/19/24/25）②005a/006 快照與容量守門慣例（D4(a) 同型單次取整、Decimal 欄容量守門）③006 附件三端點 on-behalf 一致模式④AR-1（代修改停用者草稿）PHASE-011 候選⑤usage 復盤 `docs/retrospective/PHASE-006-usage.md` §3.1 預算帶＋§3.2 條款。
+> - 派工模式沿用：subagent 一律背景派工；寫入型依序；Review 節奏（High 即審重驗證級/期中/終審）照 §19。
+> - 基準線起點：後端 1801/0/0、前端 206/0/0、E2E 30/30。
+
 > **PHASE-006：DONE（2026-08-04）**——PR #14 經人類批准以 Merge 合併（`9bfeb8e`），Spec 轉 COMPLETED。基準線終值：後端 **1801/0/0**、前端 **206/0/0**、E2E **30/30**。41/41 AC GREEN、終審＋十輪複審清零、Gate 通過（人類走查一筆保養）、SF-4 裁定 (a) 已落地（T9R2）。
 > - **下一站：PHASE-007（年度折舊補貼）**——等人類明示開工。開工 Packet 必引：PHASE-005 結案列補測遺項、005a/006 快照與容量守門慣例（D4(a) 同型）、006 附件三端點 on-behalf 一致模式、AR-1（代修改停用者草稿——差旅/保養同型）PHASE-011 候選。
 > - **PHASE-008 開工必引（006 移交）**：D9(a) keyword 不匹配保養列；snapshot.rawAmount 4dp 與最終金額 [x.49995,x.5) 窗口外觀矛盾——對帳說明必以三來源值重算（已向人類揭露於 PR 說明）。
