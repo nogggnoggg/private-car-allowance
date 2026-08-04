@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `DRAFT`（**未經人類 Spec Gate 批准前不得開工**；§16 D1~D14 裁定後由大總管以 §18 修訂紀錄固化並轉 `ACTIVE`） |
+| **Spec 狀態** | `ACTIVE`（**Spec Gate 通過**：人類 leonchih 2026-08-04 裁定「批准開工」——D1~D14 全數照推薦批准、T6/T9 採 T6b/T9b 拆分（總數 18 Task）、High Task 事前批准 12 項（T1~T4、T6、T6b、T7~T9、T9b、T10、T11）。固化紀錄見 §18） |
 | **Phase ID** | PHASE-007 |
 | **Task ID（本文件產出）** | PHASE-007-SPEC |
 | **Base Commit** | `d4950b4`；工作 branch `phase-007`（自 main `973d48f` 切出） |
@@ -1102,7 +1102,9 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 |---|---|---|
 | 2026-08-04 | `DRAFT` 建立：依 Task Context Packet `PHASE-007-SPEC` 產出完整 Phase Spec（§1~§19：46 條 AC 全溯源、正常流程、五態、35 項邊界、40 格授權矩陣、API contract、資料模型與 migration、Data Flow、NFR、測試策略、AC↔測試映射表 46 列、Rollback、16 Task 之 Task Graph（含 T6/T9 規模例外之處置建議）、決策點 D1~D14、Architecture/Data Flow 同步項 11 條、PRD 建議修正清單） | `userstory.md` FE-US-04/05/17/18/19/20/21/27、AD-US-06/07/08/13、BE-US-03/14/15/16/17/18/19/20/22/24/25/30、NFR-US-10/16；`docs/PRD.md` §PHASE-007（427–449 行）與 §4 US 索引表、§6 總覽；`docs/ARCHITECTURE.md` §3/§4.1/4.2/4.3/4.4/4.5/4.6/4.10/4.11；`docs/DATA_FLOW.md` §1.1/§1.2/§2.2/§2.3/§2.7/§2.8；PHASE-003 Spec（附件 D1/D2/D8）、PHASE-003a Spec（D2/D3/D7/§4.7/§14）、PHASE-004 Spec（狀態機／快照／代操作／D6 修訂）、PHASE-005 Spec §16 D2(a)/D5(a)/D8(a)/D9(a) 與 §5 補測清單、PHASE-005a Spec §16 D4(a)/D6(a)、PHASE-006 Spec 全文（D1/D2/D4/D6/D7/D10/D11 與 §9.3/§11.6/§17）；`PROJECT_STATE.md` PHASE-007 開工記錄與 PHASE-005/005a/006 結案移交；`docs/retrospective/PHASE-006-usage.md` §3.1 預算帶；程式現況實查（`schema.prisma`、`depreciation-engine.ts`、`parameter-service.ts`、`parameter-version-engine.ts`、`reference-guard.ts`、`mileage-engine.ts`、`maintenance-calculation.ts`、`applications/routes.ts`、`admin/routes.ts`、`application-query.ts`、`attachment/lifecycle-service.ts`、`travel-service.ts`、`travel-parameters.ts`、`completion-blockers.ts`、`platform/errors.ts`、`users/history.ts`、`infra001-isolation-self-check.test.ts`、`phase6-official-mileage.test.ts`、`frontend/src/App.tsx`） |
 
-> **Gate 後之固化義務**：人類於 §16 裁定後，由大總管以本表新增一列記錄「D1~D14 各採哪一選項、High Task 事前批准清單」，並將 Spec 狀態欄改為 `ACTIVE`。**未固化前不得開工。**
+| 2026-08-04 | **Spec Gate 通過，`DRAFT` → `ACTIVE`**（大總管固化）。裁定內容：①**D1~D14 全數採選項 (a)**（照推薦批准）——D1 子表、D2 `applicationYear Int?`＋`primaryDate`=該年 12-31、D3 年度 [1900,2999]＋單價快照 `Decimal(14,4)`、D4 `duplicateYearNotice{count,hasCompleted}`、D5 完成 409 `PARAMETER_NOT_AVAILABLE`＋草稿/預覽 blocker 同步暴露、D6 用 003a 之 4dp `perKmUnitPrice`（誤差上界 年度里程×0.00005 已向人類量化揭露）、D7 快照 8 欄、D8 全身分不回三推導值與版本 id、D9 僅本人可完成、D10 擴 `deriveContainerState`＋補 detach、D11 `AMOUNT_OUT_OF_RANGE` blocker、D12 擴 `"DEPRECIATION"`、D13 stateless preview＋generic complete 分派、D14 沿 006 金額只用 `totalKm`。②**T6/T9 規模例外採處置 (i)**：切出 T6b/T9b，總數 18 Task。③**High Task 事前批准 12 項**：T1、T2、T3、T4、T6、T6b、T7、T8、T9、T9b、T10、T11。④B-12 外觀矛盾（rawAmount `x.5000` vs 金額 `x`）之整合 Gate 揭露義務已告知。 | 人類 leonchih 2026-08-04「批准開工」（大總管 Gate 呈報全文含 D1~D14 推薦、T6b/T9b 拆分建議、12 項 High 清單；本次批准即對該呈報包全案照案） |
+
+> Gate 固化義務已履行（上列 2026-08-04 第二列）。
 
 ---
 
