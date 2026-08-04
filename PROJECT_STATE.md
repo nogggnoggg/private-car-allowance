@@ -39,7 +39,10 @@ State: ACTIVE
 > - **T9 即審＋T8R 確認：REQUEST_CHANGES（0 Must/4 Should）→ 處置完畢**。T8R 三項全 CLOSED；SF-1/SF-2/AR-1 → T9R-LITE（tx sentinel/summary 五欄/count===1，三 mutant 必紅）；SF-3（summary.applicationType 為 Spec 筆誤）→ 大總管更正兩處＋§18；**SF-4（停用者代建不對稱）→ 交人類裁定中（(a) 補檢查一致 vs (b) 接受記錄）**。§12 AC-30/31 GREEN。
 > - **T10（列表映射＋篩選，Medium）：DONE**（`73cdafc`；1765）＋**T11（前端表單＋預覽，Medium）：DONE**（`f23dc8a`；前端 198）＋**T12（證明上傳＋完成附件面，Medium）：DONE**（`230ed54`；前端 206）。usage：~161k/~247k/~173k。T10 順手修復 GET /applications 陣列 query 500（PHASE-004 追蹤項①）。
 > - **T10~T12 合併複審＋T9R 確認：REQUEST_CHANGES（1 Must/2 Should/8 AR）→ T10R-LITE：DONE**（1770/0/0 兩輪；usage ~131k）。T9R 三項 CLOSED；兩裁量獲接受（順手修復＋T11 預算 54% 屬估算誤差——保養頁 803 行實小於差旅頁 975）。**MF-1**（AC-33 primaryDate 恆真測試、mutant 全套存活）→ 三條經端點測試＋mutant 自證恰紅；**SF-2**（attachment/routes:125 陣列 ownerId 500 仍開）→ 一併修復（修復前 500 紅燈實證）——**PHASE-004 陣列 query 追蹤項兩處全數關閉**。SF-1（§12 前端測試名回填）列終審硬性前置。AR 記錄：AR-1 上傳/儲存競態（T14 E2E flaky 候選＋播種順序：上傳→儲存→完成）、AR-2 其餘 query 鍵巧合 400（PHASE-011）、AR-5 attachment-empty-note 無 CSS（T14）、AR-6 AttachmentUploader 死參數（既有）、AR-8 完成鈕僅兩碼停用（§17.1 #9 既有）。後端基準線 → **1770**。
-> - 下一步：T13（錯誤合約 AC-39/40/41）→ T14（E2E＋375px）→ SF-1 回填＋終審 → Mock/整合 Gate。**SF-4 待人類裁定（終審前需定案）。**
+> - **T13（錯誤合約）：DONE**（29 測試；1799）＋**T14（E2E＋375px）：DONE**（`90fad67`，E2E 23→**30** 大總管親跑、AR-5 CSS 補）＋§12 41/41 GREEN 回填（`a41f750`＋`43dead1`）。usage：T13 ~140k、T14 ~184k。
+> - **終審：REQUEST_CHANGES（0 Must/1 Should 純文件/4 AR）→ SF-1 關閉（`43dead1`）→ 依 reviewer 明示條件轉 APPROVE**。程式面零 finding：T10R/T13/T14 全 CLOSED、基準線獨立重現（1799×2/206×2/tsc/biome）、37 檔零孤兒、travel-calculation 與 mileage-engine 全 Phase 零改動、D4(a)/D7(a)/D10(a)/D11(a) 落實抽查全過、白名單 commit 合規、零 secrets/新依賴/.only。SF-1（§12 AC-19 列結構破損＋AC-39/40/41 測試名非實名——上一 commit 過度宣稱）→ 白名單修復。AR 記錄：AR-1 掃描清單漏 travel-service.ts＋fail-open（PHASE-011）；AR-2 「錯誤仍有日誌」近恆真（沿 005a 慣例）；AR-3 授權矩陣 3 格 PCR 無明文測試（同源 preHandler，低風險）；AR-4 E2E 資料累積（既有慣例）。**Review 清零（除 SF-4 開放項）。**
+> - 基準線終值：後端 **1799/0/0**、前端 **206/0/0**、E2E **30/30**（親跑）。41/41 AC GREEN。
+> - 下一步：Draft PR + CI → 晨間人類 Gate（**SF-4 裁定 (a)/(b)**、Mock/整合走查一筆保養、合併批准）。
 
 > **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
 > - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
