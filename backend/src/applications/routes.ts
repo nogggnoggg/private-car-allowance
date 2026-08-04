@@ -66,6 +66,7 @@ import type {
 } from "./maintenance-service.js";
 import {
   buildMaintenanceApplicationDto,
+  completeMaintenanceApplication,
   computeMaintenanceComputed,
   createMaintenanceDraft,
   getMaintenanceApplication,
@@ -798,6 +799,35 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
     { preHandler: authPreHandlers },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { id } = request.params as { id: string };
+
+      // PHASE-006-T7 (§16 D6(a) 附帶裁定)：既有 generic 完成路徑依
+      // `Application.type` 分派——本路由本即與型別無關，前端與 E2E 只需一套
+      // 完成流程。type 探測本身不構成授權判定（下方各分支各自判定），找不到
+      // 對應型別時（`typeProbe` 為 null 或非 MAINTENANCE）落入既有 TRAVEL
+      // 分支——`getTravelApplication` 對不存在或非 TRAVEL 型別的 id 一律回
+      // `null` → 404（既有行為，零改動）。
+      const typeProbe = await prisma.application.findUnique({
+        where: { id },
+        select: { type: true },
+      });
+
+      if (typeProbe?.type === "MAINTENANCE") {
+        const existing = await getMaintenanceApplication(prisma, id);
+        if (!existing) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+
+        // D7(a)（同 D17 之判定原則，Packet AC-27 明文）：完成僅能由申請擁有
+        // 人本人執行——不呼叫 `assertOwnershipOrAdmin`（會放行 ADMIN），改用
+        // 嚴格的 owner-only 判定；ADMIN 若非擁有人，同一般他人一樣得 403。
+        if (request.currentUser.id !== existing.ownerId) {
+          throw new AppError("FORBIDDEN", 403, "無權存取此資源");
+        }
+
+        const completed = await completeMaintenanceApplication(prisma, id);
+        const dto = await buildMaintenanceApplicationDto(prisma, completed);
+        return reply.status(200).send({ application: dto });
+      }
 
       const existing = await getTravelApplication(prisma, id);
       if (!existing) {

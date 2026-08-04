@@ -17,19 +17,29 @@
  * T5 範圍：期間公務里程接線（`computeMaintenanceComputed`，唯一呼叫
  * `sumOfficialMileage` 之處，AC-11~15）＋草稿 DTO／預覽端點之 `computed`
  * 填充（AC-16~20 之接線層）。
- * T6 範圍（本次擴充）：`PUT` 之 `attachmentIds[]` 對帳（`reconcileMaintenanceAttachments`，
+ * T6 範圍：`PUT` 之 `attachmentIds[]` 對帳（`reconcileMaintenanceAttachments`，
  * AC-21/22、B-25~B-28）、`MAINTENANCE_ATTACHMENT_LIMIT=5`（AC-21）、DTO
  * 之 `attachments`／`completionBlockers` 第 10 項改讀真實 `LINKED` 計數
  * （`buildMaintenanceApplicationDto` 一次查詢後傳入，T4 即審 FW-T6 節義務：
  * DTO builder 不得偷查 DB）。附件之完成鎖定（`deriveContainerState`）與草稿
  * 刪除 detach 補洞（B-29）落在 `attachment/lifecycle-service.ts` 與
  * `travel-service.ts`（僅 `deleteApplication` 之 detach 範圍），非本檔。
+ * T7 範圍（本次擴充，AC-25/26/27/18 整合層）：`completeMaintenanceApplication`
+ * ——單一 `SERIALIZABLE` 交易內依序完成狀態機守門 → 完成度驗證（兩段式，
+ * §9.3）→ 期間公務里程查詢（同交易呼叫 `sumOfficialMileage`，AC-14）→ 計算
+ * → 容量守門 → 快照寫入 → `Application` 狀態轉換；`toMaintenanceApplicationDto`
+ * 之 `snapshot` 欄位（COMPLETED 才非 `null`，§7.2 `MaintenanceSnapshotDto`）
+ * 亦由本次擴充填入。授權（D7(a)：僅本人，不使用 `assertOwnershipOrAdmin`）
+ * 由 `routes.ts` 之路由層判定，本函式本身不做任何授權檢查（與
+ * `completeTravelApplication` 同型分工）。
  * 仍**不含**：
- *   - 完成流程與快照寫入（T7）——`snapshot` 恆為 `null`（本 Task 從不轉換
- *     `status` 至 `COMPLETED`；AC-04 測試以直接 `prisma.application.update`
- *     建立 COMPLETED fixture，模擬「未來由 T7 完成」的既有列）。
  *   - 代操作稽核 hook（T9）——本檔不提供 `onCreated`/`onUpdated` 參數
  *     （與 `travel-service.ts` 不同）；T9 依 Files Allowed 清單將擴充本檔。
+ *   - 快照不可變之 spy 零重查證明與後端權威夾帶矩陣、併發恰一成功之正式
+ *     斷言（T8，`phase6-snapshot-immutability.test.ts`）——本 Task 只需
+ *     完成流程本身之交易切點回滾實證（見下方
+ *     `CompleteMaintenanceApplicationOptions.__testOnlyFailAfterSnapshotWrite`）
+ *     與 B-30 之單次併發正確性（不得 500、恰一方成功）。
  *
  * 日期精度紀律（B-32／T3 即審 FW-4）：`lastMaintenanceDate`／
  * `currentMaintenanceDate` 一律 UTC 日粒度（`@db.Date`），寫入前經
@@ -51,8 +61,9 @@ import {
   toDto as toAttachmentDto,
 } from "../attachment/lifecycle-service.js";
 import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.js";
+import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
-import { assertApplicationMutable } from "./application-state-machine.js";
+import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
 import type { Blocker } from "./maintenance-blockers.js";
 import {
   computeMaintenanceBlockers,
@@ -667,6 +678,23 @@ export async function computeMaintenanceComputed(
 // toMaintenanceApplicationDto (§7.2 MaintenanceApplicationDto)
 // ---------------------------------------------------------------------------
 
+/**
+ * §7.2 `MaintenanceSnapshotDto`（AC-26：BE-US-18 逐字五項 ＋ `rawAmount` ＋
+ * `calculatedAt`）。`actualCost` 為 D11(a) 之「不另存 `snapshotActualCost`」
+ * 落地——直接讀 `MaintenanceApplication.actualCost` 欄位本身（完成後由狀態機
+ * 凍結不可改，凍結保證＝快照保證，見 Spec D11(a)）。
+ */
+export interface MaintenanceSnapshotDto {
+  intervalKm: string; // 2 位小數
+  officialKm: string; // 2 位小數
+  ratio: string; // 6 位小數
+  ratioPercent: string; // 4 位小數（＝ ratio × 100，逐位元由 6dp snapshotRatio 推導，見 completeMaintenanceApplication 文件註解）
+  actualCost: string; // 2 位小數（＝完成當時之欄位值，D11(a)）
+  rawAmount: string; // 4 位小數，取整前
+  totalAmount: number; // 整數（＝ Application.totalAmount）
+  calculatedAt: string; // ISO8601
+}
+
 export interface MaintenanceApplicationDto {
   id: string;
   type: "MAINTENANCE";
@@ -688,7 +716,35 @@ export interface MaintenanceApplicationDto {
   attachments: AttachmentDto[];
   completionBlockers: Blocker[] | null;
   computed: MaintenanceComputedDto | null;
-  snapshot: null;
+  snapshot: MaintenanceSnapshotDto | null;
+}
+
+/**
+ * 建構 `MaintenanceSnapshotDto`（AC-26）。僅 `status="COMPLETED"` 時非
+ * `null`（§7.2 明文）。`ratioPercent` 由已持久化之 `snapshotRatio`（6dp）
+ * ×100 推導而非另讀一個獨立欄位——schema 未另存 `snapshotRatioPercent`
+ * （§8.2），且 6dp 值 ×100 為單純小數點位移，不產生第二次捨入（100 ＝
+ * 10^2，位移 2 位小數點恰對應 6dp→4dp，數學上與直接對未捨入比例
+ * 取 4dp 結果逐位元相同）。
+ */
+function buildSnapshotDto(
+  application: MaintenanceApplicationRecord
+): MaintenanceSnapshotDto | null {
+  const maintenance = application.maintenance;
+  if (application.status !== "COMPLETED" || !maintenance) {
+    return null;
+  }
+  const snapshotRatio = maintenance.snapshotRatio as Prisma.Decimal;
+  return {
+    intervalKm: (maintenance.snapshotIntervalKm as Prisma.Decimal).toFixed(2),
+    officialKm: (maintenance.snapshotOfficialKm as Prisma.Decimal).toFixed(2),
+    ratio: snapshotRatio.toFixed(6),
+    ratioPercent: snapshotRatio.times(100).toFixed(4),
+    actualCost: (maintenance.actualCost as Prisma.Decimal).toFixed(2),
+    rawAmount: (maintenance.snapshotRawAmount as Prisma.Decimal).toFixed(4),
+    totalAmount: application.totalAmount as number,
+    calculatedAt: (maintenance.calculatedAt as Date).toISOString(),
+  };
 }
 
 /**
@@ -698,10 +754,11 @@ export interface MaintenanceApplicationDto {
  * 一次查得真實 `LINKED` 附件列表後，經 `attachments` 參數傳入——本函式本身
  * **不**碰 DB（T4 即審 FW-T6 節義務：DTO builder 不得偷查 DB）；省略時預設
  * `[]`（與 T4/T5 之既有行為相容）。
- * `snapshot`：本 Task 恆為 `null`（T7 範圍——完成流程尚未接線；即使 fixture
- * 直接以 `prisma` 寫入 `status=COMPLETED`，本函式仍不讀取任何
- * `snapshot*` 欄位，因為 DTO 目前完全不宣告這些欄位對應的原始資料——
- * AC-04/AC-05 測試只驗證 403/404，不驗證 COMPLETED 的 `snapshot` 內容）。
+ * `snapshot`（PHASE-006-T7 起）：`status="COMPLETED"` 時由 `buildSnapshotDto`
+ * 讀取 `maintenance.snapshotIntervalKm`/`snapshotOfficialKm`/`snapshotRatio`/
+ * `snapshotRawAmount`/`calculatedAt`（`completeMaintenanceApplication` 寫入）
+ * ＋ `actualCost`（凍結欄位本身，D11(a)）＋ `Application.totalAmount` 組裝
+ * 為 `MaintenanceSnapshotDto`（AC-26）；`status="DRAFT"` 恆為 `null`。
  * `completionBlockers`：僅 DRAFT 才計算（COMPLETED 為 `null`，§7.2 明文）；
  * 第 10 項 `attachmentCount`（PHASE-006-T6 起）＝ `attachments.length`（本函式
  * 只查詢 `status="LINKED"` 之附件，故 `.length` 即為 AC-22 之真實計數）。
@@ -757,7 +814,7 @@ export function toMaintenanceApplicationDto(
     attachments,
     completionBlockers,
     computed: isDraft && computed?.hasAllFields ? computed.dto : null,
-    snapshot: null,
+    snapshot: buildSnapshotDto(application),
   };
 }
 
@@ -798,4 +855,263 @@ export async function buildMaintenanceApplicationDto(
   });
 
   return toMaintenanceApplicationDto(application, computed, attachments);
+}
+
+// ---------------------------------------------------------------------------
+// completeMaintenanceApplication — PHASE-006-T7 (AC-25/26/27, AC-18 整合層)
+//
+// §9.3「完成與快照寫入」逐字流程，單一 SERIALIZABLE 交易：
+//   ① assertTransition(status, "COMPLETED")            — 非 DRAFT → 403（狀態機單一事實來源）
+//   ② attachmentCount = tx 內現算（FW-1：不得沿用交易外 DTO 結果，B-30 write-skew 防禦）
+//      firstPassBlockers = computeMaintenanceBlockers({ ..., officialKm: null })
+//        （§7.4 第 1~8、10 項；officialKm=null 完全抑制第 9/11 項——兩段式
+//        第一段，尚未查詢期間公務里程）；非空 → 400，**不**執行 ③。
+//   ③ sumOfficialMileage(tx, {...})                     — 同一交易（AC-14，FW-3）
+//   ④ calculateMaintenance(...) → isMaintenanceCalculationOverCapacity(...)
+//        （FW-4：與草稿/預覽共用同一 predicate，勿另寫）
+//      secondPassBlockers = computeMaintenanceBlockers({ ..., officialKm: totalKm,
+//        amountOutOfRange: overCapacity })              — 兩段式第二段（FW-6：
+//        交易內重算，不沿用 DRAFT DTO 快照）；非空 → 400，**寫入前**拒絕
+//        （容量超出／比例超容量絕不寫快照）。
+//   ⑤a MaintenanceApplication 五個快照欄位（FW-5：snapshotRawAmount 顯式
+//       toFixed(4)、snapshotRatio 顯式 ratioString 6dp——防 Postgres 靜默第二次
+//       取整；snapshotIntervalKm/snapshotOfficialKm 直接寫 Decimal 全精度值，
+//       兩者天然只有 2dp（差旅/里程表來源皆 Decimal(_,2)），無第二次取整風險）
+//   ⑤b Application.status/totalAmount/completedAt
+//
+// 授權（D7(a)）不在本函式判定——`routes.ts` 於呼叫本函式「前」已完成嚴格
+// `actor.id === ownerId` 判定（與 `completeTravelApplication` 同型分工，見
+// 該函式文件註解「D17: this function has NO owner/admin distinction」）。
+// ---------------------------------------------------------------------------
+
+export interface CompleteMaintenanceApplicationOptions {
+  /**
+   * TEST-ONLY 失敗切點（AC-25 原子性鑑別力測試需要）：於快照寫入（⑤a）之後、
+   * 狀態轉換（⑤b）之前呼叫。預設 no-op；生產路徑（`routes.ts`）從不傳入此
+   * 選項——與 `completeTravelApplication` 之
+   * `__testOnlyFailAfterSnapshotWrite` 同型（見 travel-service.ts 文件註解）。
+   */
+  __testOnlyFailAfterSnapshotWrite?: () => void;
+}
+
+const COMPLETE_MAINTENANCE_MAX_RETRIES = 6;
+
+function throwMaintenanceBlockersError(blockers: Blocker[]): never {
+  // §7.4 完成端點拒絕形狀：400 VALIDATION_ERROR + fields[]（僅具欄位路徑者）
+  // + details.blockers[]（永遠是完整清單），沿 PHASE-004 D14(i) 既有形狀。
+  const fields: FieldError[] = [];
+  for (const b of blockers) {
+    if (typeof b.field === "string") {
+      fields.push({ field: b.field, reason: b.message });
+    }
+  }
+  throw new AppError(
+    "VALIDATION_ERROR",
+    400,
+    "尚未符合完成條件，請檢查標示項目後再試一次。",
+    fields,
+    { blockers }
+  );
+}
+
+/**
+ * Completes a MAINTENANCE draft: state-machine gate → completeness
+ * validation (two-phase, §9.3) → period official-mileage query (SAME
+ * transaction, AC-14) → calculation + capacity guard → snapshot write →
+ * status transition — all inside ONE SERIALIZABLE transaction (AC-25: any
+ * failure at any step rolls back everything, including the snapshot write in
+ * the SAME transaction attempt).
+ *
+ * Concurrency (B-30): SERIALIZABLE + retry-on-conflict, identical pattern to
+ * `updateMaintenanceDraft`/`completeTravelApplication`. A concurrent
+ * `DELETE /attachments/:id` racing this function's `attachmentCount` read
+ * forms the same write-skew shape already documented for
+ * `completeTravelApplication` vs `deleteAttachment` (see
+ * `lifecycle-service.ts`'s `deleteAttachment` doc comment) — Postgres SSI
+ * detects the cycle and aborts one side; the aborted side retries against a
+ * fresh snapshot. Two concurrent completions of the same draft: the loser's
+ * retry re-reads `status=COMPLETED` (written by the winner) and
+ * `assertTransition` throws 403 FORBIDDEN.
+ */
+export async function completeMaintenanceApplication(
+  prisma: PrismaClient,
+  id: string,
+  options: CompleteMaintenanceApplicationOptions = {}
+): Promise<MaintenanceApplicationRecord> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= COMPLETE_MAINTENANCE_MAX_RETRIES; attempt++) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          // Table name quoted for Postgres case-sensitivity — same pattern as
+          // updateMaintenanceDraft/completeTravelApplication's row lock.
+          await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
+
+          const existing = await tx.application.findUniqueOrThrow({
+            where: { id },
+            select: {
+              status: true,
+              ownerId: true,
+              maintenance: {
+                select: {
+                  lastMaintenanceDate: true,
+                  currentMaintenanceDate: true,
+                  lastOdometerKm: true,
+                  currentOdometerKm: true,
+                  actualCost: true,
+                },
+              },
+            },
+          });
+
+          // Step ①: state-machine gate (single source of truth). Non-DRAFT
+          // (already COMPLETED, or the theoretically-unreachable VOIDED) →
+          // 403 FORBIDDEN.
+          assertTransition(existing.status, "COMPLETED");
+
+          const maintenance = existing.maintenance;
+
+          // FW-1: 附件計數於完成交易內現算（FOR UPDATE 鎖後同 tx count）——
+          // 不得沿用交易外的 DTO 結果（write-skew 防禦，B-30）。
+          const attachmentCount = await tx.attachment.count({
+            where: { refType: "MAINTENANCE", refId: id, status: "LINKED" },
+          });
+
+          // Step ②（第一段，§9.3）：officialKm=null 完全抑制第 9/11 項——
+          // 尚未查詢期間公務里程即可判定之結構性條件（1~8、10）。非空即拒
+          // 絕，不執行下方的期間里程查詢。
+          const firstPassBlockers = computeMaintenanceBlockers({
+            lastMaintenanceDate: maintenance?.lastMaintenanceDate ?? null,
+            currentMaintenanceDate: maintenance?.currentMaintenanceDate ?? null,
+            lastOdometerKm: maintenance?.lastOdometerKm ?? null,
+            currentOdometerKm: maintenance?.currentOdometerKm ?? null,
+            actualCost: maintenance?.actualCost ?? null,
+            attachmentCount,
+            officialKm: null,
+          });
+
+          if (firstPassBlockers.length > 0) {
+            throwMaintenanceBlockersError(firstPassBlockers);
+          }
+
+          // firstPassBlockers.length===0 已保證五欄皆非 null 且順序合法
+          // （§7.4 第 1~8 項全通過）。
+          const lastMaintenanceDate = maintenance?.lastMaintenanceDate as Date;
+          const currentMaintenanceDate = maintenance?.currentMaintenanceDate as Date;
+          const lastOdometerKm = maintenance?.lastOdometerKm as Prisma.Decimal;
+          const currentOdometerKm = maintenance?.currentOdometerKm as Prisma.Decimal;
+          const actualCost = maintenance?.actualCost as Prisma.Decimal;
+
+          // Step ③: 期間公務里程查詢——AC-14 明文：唯一呼叫點，同一交易
+          // （FW-3），ownerId 恆為擁有人（絕不為操作者）。
+          const { totalKm } = await sumOfficialMileage(tx, {
+            ownerId: existing.ownerId,
+            dateFrom: lastMaintenanceDate,
+            dateTo: currentMaintenanceDate,
+          });
+
+          // Step ④: 計算引擎（T2，逐字複用）+ 容量守門（與草稿/預覽共用同一
+          // predicate，FW-4：勿另寫）。
+          const result = calculateMaintenance({
+            lastOdometerKm,
+            currentOdometerKm,
+            officialKm: totalKm,
+            actualCost,
+          });
+
+          if (!result.calculable) {
+            // Unreachable in practice: firstPassBlockers 已保證
+            // currentOdometerKm > lastOdometerKm（ODOMETER_ORDER_INVALID 已
+            // 擋下相反情形），故 intervalKm 恆為正且有限。Defensive only。
+            throw new AppError("INTERNAL_ERROR", 500, "計算結果異常，請聯絡管理員");
+          }
+
+          const overCapacity = isMaintenanceCalculationOverCapacity(result);
+
+          // Step ②（第二段，§9.3）：officialKm 已查詢，重算 blockers 以取得
+          // 第 9（OFFICIAL_KM_EXCEEDS_INTERVAL）/11（AMOUNT_OUT_OF_RANGE）
+          // 項——交易內重算（FW-6），不沿用 DRAFT DTO 之舊快照。任一超容量／
+          // 比例超出 → 400，寫入前拒絕（絕不寫入部分快照）。
+          const secondPassBlockers = computeMaintenanceBlockers({
+            lastMaintenanceDate,
+            currentMaintenanceDate,
+            lastOdometerKm,
+            currentOdometerKm,
+            actualCost,
+            attachmentCount,
+            officialKm: totalKm,
+            amountOutOfRange: overCapacity,
+          });
+
+          if (secondPassBlockers.length > 0) {
+            throwMaintenanceBlockersError(secondPassBlockers);
+          }
+
+          // Step ⑤a: 快照寫入（FW-5，顯式定精度）。
+          const calculatedAt = new Date();
+          const snapshotRawAmount = new Prisma.Decimal(
+            (result.rawAmount as Prisma.Decimal).toFixed(4)
+          );
+          const snapshotRatio = new Prisma.Decimal(result.ratioString as string);
+
+          await tx.maintenanceApplication.update({
+            where: { applicationId: id },
+            data: {
+              snapshotIntervalKm: result.intervalKm,
+              snapshotOfficialKm: result.officialKm,
+              snapshotRatio,
+              snapshotRawAmount,
+              calculatedAt,
+            },
+          });
+
+          // TEST-ONLY injection point — see
+          // `CompleteMaintenanceApplicationOptions` doc comment. Everything
+          // written above (the snapshot) must roll back together with the
+          // status flip below if this throws.
+          options.__testOnlyFailAfterSnapshotWrite?.();
+
+          // Step ⑤b: Application status transition — LAST write.
+          await tx.application.update({
+            where: { id },
+            data: {
+              status: "COMPLETED",
+              totalAmount: result.amount,
+              completedAt: calculatedAt,
+            },
+          });
+
+          return await tx.application.findUniqueOrThrow({
+            where: { id },
+            include: maintenanceApplicationInclude,
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      );
+    } catch (err) {
+      lastError = err;
+
+      // Business errors (403/400/etc.) and the test-only injected error
+      // propagate immediately — never retried.
+      if (err instanceof AppError) {
+        throw err;
+      }
+
+      if (!isRetryableTransactionConflict(err)) {
+        throw err;
+      }
+
+      if (attempt >= COMPLETE_MAINTENANCE_MAX_RETRIES) {
+        throw new AppError(
+          "SERVICE_UNAVAILABLE",
+          503,
+          "系統忙碌，請稍後再試（完成申請時發生資料庫並發衝突，已重試多次仍未成功）"
+        );
+      }
+      await sleep(retryBackoffMs(attempt));
+    }
+  }
+
+  // Unreachable (loop always returns or throws) — satisfies TypeScript control-flow analysis.
+  throw lastError;
 }
