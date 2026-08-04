@@ -65,9 +65,10 @@ import type {
   UpdateMaintenanceDraftPatch,
 } from "./maintenance-service.js";
 import {
+  buildMaintenanceApplicationDto,
+  computeMaintenanceComputed,
   createMaintenanceDraft,
   getMaintenanceApplication,
-  toMaintenanceApplicationDto,
   updateMaintenanceDraft,
 } from "./maintenance-service.js";
 import { resolveTravelParameters } from "./travel-parameters.js";
@@ -668,7 +669,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       };
 
       const application = await createMaintenanceDraft(prisma, createInput);
-      const dto = toMaintenanceApplicationDto(application);
+      const dto = await buildMaintenanceApplicationDto(prisma, application);
       return reply.status(201).send({ application: dto });
     }
   );
@@ -691,7 +692,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       // §6.2 資料隔離不變式 1: 授權一律以 DB 查得之 ownerId 為準。
       assertOwnershipOrAdmin(request.currentUser, application.ownerId);
 
-      const dto = toMaintenanceApplicationDto(application);
+      const dto = await buildMaintenanceApplicationDto(prisma, application);
       return reply.status(200).send({ application: dto });
     }
   );
@@ -725,8 +726,47 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       // createdById 等）一律忽略——本函式從未讀取這些 body 欄位。
       const patch: UpdateMaintenanceDraftPatch = fields;
       const updated = await updateMaintenanceDraft(prisma, id, patch);
-      const dto = toMaintenanceApplicationDto(updated);
+      const dto = await buildMaintenanceApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/maintenance/preview (PHASE-006-T5, AC-11~20, §16 D6(a))
+  // stateless；絕不寫入任何 Application/MaintenanceApplication 資料列（AC-36
+  // 同型鑑別）——`sumOfficialMileage` 為唯讀聚合，本路由亦從未呼叫任何
+  // `.create`/`.update`。
+  //
+  // 授權（T4 即審 FW-T5 節義務）：先 `resolveOwnerId`（一般使用者帶他人
+  // `ownerId` → 403 fail-closed，不靜默降級；管理員可指定任一 `ownerId`），
+  // 再做欄位格式驗證——判定順序沿 §6.1 明文「授權先於格式驗證」，複用既有
+  // `/applications/travel/preview`（PHASE-005a-T7）之相同順序與慣例。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/maintenance/preview",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      const rawOwnerId = typeof body.ownerId === "string" ? body.ownerId : undefined;
+      const ownerId = resolveOwnerId(request.currentUser, rawOwnerId);
+
+      const { errors: fieldErrors, fields } = parseMaintenanceFieldsInput(body);
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      const computed = await computeMaintenanceComputed(prisma, {
+        ownerId,
+        lastMaintenanceDate: fields.lastMaintenanceDate ?? null,
+        currentMaintenanceDate: fields.currentMaintenanceDate ?? null,
+        lastOdometerKm: fields.lastOdometerKm ?? null,
+        currentOdometerKm: fields.currentOdometerKm ?? null,
+        actualCost: fields.actualCost ?? null,
+      });
+
+      return reply.status(200).send({ preview: computed.dto });
     }
   );
 
