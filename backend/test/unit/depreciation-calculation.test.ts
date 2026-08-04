@@ -87,7 +87,11 @@ const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
  * 陣列**，否則新檔案不會被掃描覆蓋。清單中任何檔案不存在時，
  * `fs.readFileSync` 會直接拋錯使測試紅（fail-loud），不得靜默跳過。
  */
-const PHASE_007_SRC_FILES = ["src/applications/depreciation-calculation.ts"] as const;
+const PHASE_007_SRC_FILES = [
+  "src/applications/depreciation-calculation.ts",
+  // T3 新增（PHASE-007-T3；T2 即審 FW-7 之機械義務）。
+  "src/applications/depreciation-blockers.ts",
+] as const;
 
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_007_SRC_FILES[0]);
 
@@ -381,6 +385,23 @@ describe("calculateDepreciation — AC-20 rounding happens exactly once (final a
     const blanked = blankCommentsAndStrings(rawSource);
     const occurrences = blanked.match(/\.toDecimalPlaces\(/g) ?? [];
     expect(occurrences.length).toBe(1);
+  });
+
+  it("AC-19 source-level scan (T2 即審 AR-2 補強，PHASE-007-T3): exactly one .toNumber() call exists and it sits immediately after the ROUND_HALF_UP rounding — kills a 'real double intermediary' mutant such as officialKm.toNumber() * perKmUnitPrice.toNumber()", () => {
+    const rawSource = fs.readFileSync(ENGINE_SRC_PATH, "utf8");
+    const blanked = blankCommentsAndStrings(rawSource);
+    // 「零浮點中介」掃描原本只攔 Number()/parseFloat/parseInt，`.toNumber()`
+    // 為同等威力的降轉入口（AR-2 登記之盲區）。本檔唯一合法用途為最終金額，
+    // 且必須發生在取整**之後**（AC-19/20）。
+    const occurrences = blanked.match(/\.toNumber\(/g) ?? [];
+    expect(occurrences.length).toBe(1);
+    expect(blanked).toMatch(/\.toDecimalPlaces\([^)]*\)\.toNumber\(\)/);
+    // 掃描器鑑別力自證：合成的 double 中介片段必被計為 2 次且不匹配取整鏈。
+    const doubleIntermediary = blankCommentsAndStrings(
+      "const raw = officialKm.toNumber() * perKmUnitPrice.toNumber();"
+    );
+    expect((doubleIntermediary.match(/\.toNumber\(/g) ?? []).length).toBe(2);
+    expect(doubleIntermediary).not.toMatch(/\.toDecimalPlaces\([^)]*\)\.toNumber\(\)/);
   });
 
   it("AC-20 source-level scan: no toFixed()/round()/trunc()/ceil()/floor() rounding on the amount path", () => {
