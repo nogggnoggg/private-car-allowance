@@ -81,6 +81,13 @@ export interface MaintenanceDraftFields {
   lastOdometerKm?: string | null;
   currentOdometerKm?: string | null;
   actualCost?: string | null;
+  /**
+   * PHASE-006-T12：宣告式全集（比照 travel `SegmentInput.attachmentIds`）——
+   * 呼叫方須送出「這筆申請目前應關聯的完整附件 id 清單」，後端據此對帳
+   * link/unlink（`reconcileMaintenanceAttachments`，T6）。呼叫方須先去重
+   * （AR-3：重複 id 會撞上後端「附件已關聯」409，屬前端可預防之誤導訊息）。
+   */
+  attachmentIds?: string[];
 }
 
 export async function apiCreateMaintenanceDraft(

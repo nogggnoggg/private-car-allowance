@@ -15,6 +15,7 @@ import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
+import type { AttachmentDto } from "../src/api/attachments.js";
 import type { MaintenanceApplicationDto, MaintenanceComputedDto } from "../src/api/maintenance.js";
 import MaintenanceApplicationPage from "../src/pages/MaintenanceApplicationPage.js";
 
@@ -68,6 +69,26 @@ function draftFixture(
   };
 }
 
+function attachmentFixture(overrides: Partial<AttachmentDto> = {}): AttachmentDto {
+  return {
+    id: "att-1",
+    status: "LINKED",
+    mimeType: "image/jpeg",
+    byteSize: 12345,
+    originalFilename: "receipt.jpg",
+    refType: "MAINTENANCE",
+    refId: "app-1",
+    previewUrl: "/attachments/att-1/thumbnail",
+    downloadUrl: "/attachments/att-1/download",
+    ...overrides,
+  };
+}
+
+// PHASE-006-T12：預設已含 1 張證明、completionBlockers 全清（不含
+// MAINTENANCE_ATTACHMENT_REQUIRED）——既有「完成申請」流程測試（dirty 提示、
+// 成功完成）之前提是「除欄位外別無阻擋」，T12 將附件缺失納入完成鈕停用條件
+// 後，若不補上這張證明會使那些既有測試因新阻擋條件而改變行為，故隨附件
+// 語意調整此 fixture（測試意圖不變，僅補齊前提）。
 function filledDraftFixture(
   overrides: Partial<MaintenanceApplicationDto> = {}
 ): MaintenanceApplicationDto {
@@ -77,9 +98,8 @@ function filledDraftFixture(
     lastOdometerKm: "1000.00",
     currentOdometerKm: "1100.00",
     actualCost: "2000.00",
-    completionBlockers: [
-      { code: "MAINTENANCE_ATTACHMENT_REQUIRED", message: "請至少上傳 1 張保養證明" },
-    ],
+    attachments: [attachmentFixture()],
+    completionBlockers: [],
     ...overrides,
   });
 }
@@ -165,6 +185,14 @@ const isCreate = (p: string) => p === "/api/applications/maintenance";
 const isPreview = (p: string) => p === "/api/applications/maintenance/preview";
 const isComplete = (p: string) => p === "/api/applications/app-1/complete";
 const isDelete = (p: string) => p === "/api/applications/app-1";
+const isAttachmentsPost = (p: string) => p === "/api/attachments";
+
+// Helper: create a synthetic File with given size and type (比照
+// AttachmentUploader.test.tsx 既有 makeFile 慣例)
+function makeFile(name: string, size: number, type: string): File {
+  const buf = new Uint8Array(size);
+  return new File([buf], name, { type });
+}
 
 describe("MaintenanceApplicationPage", () => {
   beforeEach(() => {
@@ -270,6 +298,9 @@ describe("MaintenanceApplicationPage", () => {
     expect(router.countCalls("POST", isPreview)).toBe(0);
     expect(router.countCalls("POST", isComplete)).toBe(0);
     expect(router.countCalls("DELETE", isDelete)).toBe(0);
+    // AC-36/37：Permission denied 亦不得掛載 AttachmentUploader、零附件寫入呼叫
+    expect(router.countCalls("POST", (p) => p === "/api/attachments")).toBe(0);
+    expect(router.countCalls("DELETE", (p) => p.startsWith("/api/attachments/"))).toBe(0);
   });
 
   // ===========================================================================
@@ -322,6 +353,7 @@ describe("MaintenanceApplicationPage", () => {
       lastOdometerKm: null,
       currentOdometerKm: null,
       actualCost: "500",
+      attachmentIds: [],
     });
   });
 
@@ -641,5 +673,222 @@ describe("MaintenanceApplicationPage", () => {
       expect(screen.getByText("首頁占位")).toBeInTheDocument();
     });
     expect(router.countCalls("DELETE", isDelete)).toBe(1);
+  });
+
+  // ===========================================================================
+  // PHASE-006-T12 — AC-36（保養證明前端行為）／AC-37（證明區塊五態）
+  // ===========================================================================
+
+  describe("保養證明（AC-36/AC-37）", () => {
+    it("Empty：尚無證明", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("尚無證明")).toBeInTheDocument();
+      });
+    });
+
+    it("上傳支援格式圖片 → 顯示縮圖預覽", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("POST", isAttachmentsPost, () =>
+        jsonRes(
+          { attachment: attachmentFixture({ id: "att-new", originalFilename: "photo.jpg" }) },
+          201
+        )
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("尚無證明")).toBeInTheDocument();
+      });
+
+      const { fireEvent } = await import("@testing-library/react");
+      const input = screen.getByLabelText(/選擇圖片/) as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(input, { target: { files: [makeFile("photo.jpg", 1024, "image/jpeg")] } });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("img", { name: "photo.jpg" })).toBeInTheDocument();
+      });
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(1);
+    });
+
+    it("已有 5 張再上傳 → 前端拒絕並顯示上限訊息、零上傳呼叫", async () => {
+      const router = installFetchRouter();
+      const fiveAttachments = Array.from({ length: 5 }, (_, i) =>
+        attachmentFixture({ id: `att-${i + 1}`, originalFilename: `photo-${i + 1}.jpg` })
+      );
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({ attachments: fiveAttachments, completionBlockers: [] }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(
+          screen.getByText("已達上限（5 張），如需新增請先刪除現有附件。")
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText(/選擇圖片/)).not.toBeInTheDocument();
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(0);
+    });
+
+    it("單張 > 10 MB → 前端即拒絕，零上傳呼叫（沿用既有 413 前置檢查）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByLabelText(/選擇圖片/)).toBeInTheDocument();
+      });
+
+      const { fireEvent } = await import("@testing-library/react");
+      const input = screen.getByLabelText(/選擇圖片/) as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(input, {
+          target: { files: [makeFile("big.jpg", 11 * 1024 * 1024, "image/jpeg")] },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("alert")).toHaveTextContent(/大小超過上限/);
+      });
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(0);
+    });
+
+    it("無證明仍可儲存草稿，但完成鈕停用並顯示 MAINTENANCE_ATTACHMENT_REQUIRED 訊息", async () => {
+      const router = installFetchRouter();
+      const noAttachmentBlocker = [
+        { code: "MAINTENANCE_ATTACHMENT_REQUIRED", message: "請至少上傳 1 張保養證明" },
+      ];
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({
+            attachments: [],
+            completionBlockers: noAttachmentBlocker,
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("PUT", isPutDraft, () =>
+        jsonRes({
+          application: filledDraftFixture({
+            attachments: [],
+            completionBlockers: noAttachmentBlocker,
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText("請至少上傳 1 張保養證明")).toBeInTheDocument();
+      });
+      // mutant 鑑別力：即使欄位齊備、比例正常，缺證明本身須單獨足以停用完成鈕
+      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+
+      const { fireEvent } = await import("@testing-library/react");
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => {
+        expect(screen.getByText("草稿已儲存。")).toBeInTheDocument();
+      });
+      expect(router.countCalls("PUT", isPutDraft)).toBe(1);
+      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+    });
+
+    it("已完成之保養申請不存在任何上傳／刪除入口（負向斷言）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            status: "COMPLETED",
+            completionBlockers: null,
+            computed: null,
+            attachments: [attachmentFixture()],
+            snapshot: {
+              intervalKm: "100.00",
+              officialKm: "50.00",
+              ratio: "0.500000",
+              ratioPercent: "50.0000",
+              actualCost: "2000.00",
+              rawAmount: "1000.0000",
+              totalAmount: 1000,
+              calculatedAt: "2026-02-01T00:00:00.000Z",
+            },
+          }),
+        })
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "保養費用申請（已完成）" })).toBeInTheDocument();
+      });
+      expect(screen.getByText("receipt.jpg")).toBeInTheDocument();
+      expect(screen.queryByLabelText(/選擇圖片/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /刪除/ })).not.toBeInTheDocument();
+      expect(router.countCalls("POST", isAttachmentsPost)).toBe(0);
+    });
+
+    it("AR-3：attachmentIds 送出前去重（重複 id 不重複送出）", async () => {
+      const router = installFetchRouter();
+      const dupA = attachmentFixture({ id: "att-dup" });
+      const dupB = attachmentFixture({ id: "att-dup" });
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [dupA, dupB] }) })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("PUT", isPutDraft, () =>
+        jsonRes({ application: filledDraftFixture({ attachments: [dupA] }) })
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByLabelText("本次實際保養費用")).toHaveValue(2000);
+      });
+
+      const { fireEvent } = await import("@testing-library/react");
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => {
+        expect(screen.getByText("草稿已儲存。")).toBeInTheDocument();
+      });
+
+      const body = router.lastBody("PUT", isPutDraft);
+      expect(body?.attachmentIds).toEqual(["att-dup"]);
+    });
+
+    it("PUT 409 TOO_MANY_ATTACHMENTS（後端仍為權威，AC-21）：儲存失敗訊息原樣呈現", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("PUT", isPutDraft, () =>
+        jsonRes({ error: { code: "TOO_MANY_ATTACHMENTS", message: "附件數量已達上限" } }, 409)
+      );
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByLabelText("本次實際保養費用")).toHaveValue(2000);
+      });
+
+      const { fireEvent } = await import("@testing-library/react");
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("附件數量已達上限")).toBeInTheDocument();
+      });
+    });
   });
 });

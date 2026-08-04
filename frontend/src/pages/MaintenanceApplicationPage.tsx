@@ -1,13 +1,22 @@
 /**
- * MaintenanceApplicationPage — PHASE-006-T11
+ * MaintenanceApplicationPage — PHASE-006-T11／T12
  *
  * Routes: `/applications/maintenance/new`（建立草稿後導向 `:id`）、
  * `/applications/maintenance/:id`（草稿編輯 / 已完成檢視）。
  *
- * 涵蓋 AC-34（五欄表單）、AC-35（預覽四值）、AC-37（表單/預覽兩處五態）之
- * 部分。**不含**保養證明附件上傳/刪除 UI（T12 範圍，見 Packet Files
- * Forbidden 說明）——完成鈕之停用邏輯已可運作（依 `completionBlockers`／
- * `computed.blockingCodes` 判斷），僅上傳區塊留待 T12。
+ * 涵蓋 AC-34（五欄表單）、AC-35（預覽四值）、AC-36（保養證明上傳/刪除、
+ * 完成前缺證明停用完成鈕、COMPLETED 無上傳/刪除入口）、AC-37（表單/預覽/
+ * 證明三處五態）。
+ *
+ * T12 新增（保養證明，沿用既有 `AttachmentUploader`，PHASE-003）：
+ *   - 上傳/刪除為即時 API 呼叫；關聯至本申請透過下一次「儲存草稿」PUT 之
+ *     `attachmentIds[]` 宣告式全集對帳（`reconcileMaintenanceAttachments`，
+ *     T6），AR-3：送出前以 `Set` 去重。
+ *   - `completionBlockers` 含 `MAINTENANCE_ATTACHMENT_REQUIRED` 時停用
+ *     「完成申請」鈕（AC-36 明文；調整自 T11 僅看 `officialKmExceeded`
+ *     之設計，見 Packet New Risks 移交）。
+ *   - COMPLETED 檢視僅呈現唯讀縮圖清單，不掛載 `AttachmentUploader`（負向
+ *     斷言：無任何上傳/刪除入口）。
  *
  * 硬性約束落地重點（比照 TravelApplicationPage.tsx 既有模式）：
  *   - §11.3 不自算鑑別：本頁從不自行計算 `intervalKm`／`officialKm`／
@@ -30,6 +39,7 @@ import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiDeleteApplication } from "../api/applications.js";
+import { type AttachmentDto, toFrontendUrl } from "../api/attachments.js";
 import {
   type MaintenanceApplicationDto,
   type MaintenanceComputedDto,
@@ -40,9 +50,13 @@ import {
   apiPreviewMaintenance,
   apiUpdateMaintenanceDraft,
 } from "../api/maintenance.js";
+import AttachmentUploader from "../components/AttachmentUploader.js";
 import type { ApiError } from "../types/api.js";
 
 const PREVIEW_DEBOUNCE_MS = 300; // D8
+
+/** AC-21：保養證明上限 5 張（後端為權威來源，本常數僅供前端提示文案/UI）。 */
+const MAINTENANCE_ATTACHMENT_LIMIT = 5;
 
 /**
  * §7.4 十一碼中，預覽端點（`computeMaintenanceComputed`）只可能回傳第
@@ -109,7 +123,7 @@ function toFormFields(app: MaintenanceApplicationDto): FormFields {
   };
 }
 
-function buildRequestBody(form: FormFields): MaintenanceDraftFields {
+function buildPreviewRequestBody(form: FormFields): MaintenanceDraftFields {
   return {
     lastMaintenanceDate: form.lastMaintenanceDate.trim() === "" ? null : form.lastMaintenanceDate,
     currentMaintenanceDate:
@@ -117,6 +131,21 @@ function buildRequestBody(form: FormFields): MaintenanceDraftFields {
     lastOdometerKm: form.lastOdometerKm.trim() === "" ? null : form.lastOdometerKm,
     currentOdometerKm: form.currentOdometerKm.trim() === "" ? null : form.currentOdometerKm,
     actualCost: form.actualCost.trim() === "" ? null : form.actualCost,
+  };
+}
+
+/**
+ * PUT 儲存用 body——五欄同 `buildPreviewRequestBody` ＋ `attachmentIds`
+ * 宣告式全集。AR-3：`attachmentIds` 送出前以 `Set` 去重，避免觸發後端
+ * 「附件已關聯」409（該訊息對使用者具誤導性，前端去重使其不可達）。
+ */
+function buildSaveRequestBody(
+  form: FormFields,
+  attachments: AttachmentDto[]
+): MaintenanceDraftFields {
+  return {
+    ...buildPreviewRequestBody(form),
+    attachmentIds: Array.from(new Set(attachments.map((a) => a.id))),
   };
 }
 
@@ -157,6 +186,8 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
 
   const [previewState, setPreviewState] = useState<PreviewState>({ kind: "idle" });
 
+  const [attachments, setAttachments] = useState<AttachmentDto[]>([]);
+
   const createdRef = useRef(false);
 
   const loadApplication = useCallback(async (targetId: string) => {
@@ -165,6 +196,7 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
       const { application: app } = await apiGetMaintenanceDraft(targetId);
       setApplication(app);
       setForm(toFormFields(app));
+      setAttachments(app.attachments);
       setDirty(false);
       setSaveSuccess(null);
       setPageState({ kind: "ready" });
@@ -217,7 +249,7 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
     if (pageState.kind !== "ready" || !application || application.status !== "DRAFT") return;
     setPreviewState({ kind: "loading" });
     const handle = setTimeout(() => {
-      apiPreviewMaintenance(buildRequestBody(form))
+      apiPreviewMaintenance(buildPreviewRequestBody(form))
         .then(({ preview }) => setPreviewState({ kind: "ready", data: preview }))
         .catch((err: ApiError) => {
           setPreviewState({ kind: "error", message: err.message ?? "預覽失敗，請稍後再試。" });
@@ -231,6 +263,14 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
     setDirty(true);
   }
 
+  // AC-36：附件上傳/刪除為即時 API 呼叫（同 SegmentAttachmentPanel/AttachmentUploader
+  // 既有慣例），但關聯至本申請仍待下一次「儲存草稿」之 PUT attachmentIds 對帳；
+  // 故本地清單變動視為未儲存變更（dirty=true），與其他表單欄位一致。
+  function updateAttachments(next: AttachmentDto[]) {
+    setAttachments(next);
+    setDirty(true);
+  }
+
   // ---- Save（整份 PUT，AC-02 三態語意：五欄逐一送出）----
   async function handleSave() {
     if (!application || saving) return;
@@ -241,10 +281,11 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
     try {
       const { application: updated } = await apiUpdateMaintenanceDraft(
         application.id,
-        buildRequestBody(form)
+        buildSaveRequestBody(form, attachments)
       );
       setApplication(updated);
       setForm(toFormFields(updated));
+      setAttachments(updated.attachments);
       setDirty(false);
       setSaveSuccess("草稿已儲存。");
     } catch (err) {
@@ -254,6 +295,8 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
         for (const f of apiErr.fields) fe[f.field] = f.reason;
         setSaveFieldErrors(fe);
         setSaveError(apiErr.message ?? "輸入資料有誤，請檢查標示欄位。");
+      } else if (apiErr.code === "TOO_MANY_ATTACHMENTS") {
+        setSaveError(apiErr.message ?? `保養證明最多 ${MAINTENANCE_ATTACHMENT_LIMIT} 張。`);
       } else if (apiErr.code === "FORBIDDEN") {
         setSaveError("已完成的申請不可修改，請建立修正版。");
       } else {
@@ -432,6 +475,31 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
               </dl>
             </section>
           )}
+
+          {/* AC-36 負向斷言：已完成之保養申請不得出現任何上傳／刪除入口——
+              僅呈現唯讀縮圖清單（比照 TravelApplicationPage COMPLETED 分支
+              既有慣例），不掛載 AttachmentUploader。 */}
+          <section aria-labelledby="maintenance-attachments-heading">
+            <h2 id="maintenance-attachments-heading">保養證明</h2>
+            {application.attachments.length > 0 ? (
+              <ul className="attachment-list" aria-label="保養證明清單">
+                {application.attachments.map((att) => (
+                  <li key={att.id} className="attachment-item">
+                    <img
+                      src={toFrontendUrl(att.previewUrl)}
+                      alt={att.originalFilename}
+                      className="attachment-thumb"
+                      width={64}
+                      height={64}
+                    />
+                    <span className="attachment-filename">{att.originalFilename}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>尚無證明</p>
+            )}
+          </section>
         </main>
       </div>
     );
@@ -444,6 +512,9 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
   const officialKmExceeded =
     previewBlockingCodes.includes("OFFICIAL_KM_EXCEEDS_INTERVAL") ||
     savedBlockingCodes.includes("OFFICIAL_KM_EXCEEDS_INTERVAL");
+  // AC-36：完成前缺證明 → 完成鈕停用（依已儲存之 completionBlockers 判定；
+  // 預覽端點不查附件計數，故不看 previewBlockingCodes——同檔頭文件註解）。
+  const attachmentRequired = savedBlockingCodes.includes("MAINTENANCE_ATTACHMENT_REQUIRED");
   const formBlank = isFormEntirelyBlank(form);
 
   return (
@@ -621,6 +692,23 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
           </div>
         </section>
 
+        <section aria-labelledby="maintenance-attachments-heading">
+          <h2 id="maintenance-attachments-heading">保養證明</h2>
+          {/* AC-36：上傳/刪除即時呼叫既有 AttachmentUploader（PHASE-003）；
+              key 隨 application.updatedAt 變動以便儲存成功後以後端回應之
+              attachments 重新初始化子元件內部狀態（AttachmentUploader 為
+              initialAttachments-驅動的非受控元件，比照既有慣例）。 */}
+          <AttachmentUploader
+            key={`att-${application.updatedAt}`}
+            refType="MAINTENANCE"
+            refId={application.id}
+            limit={MAINTENANCE_ATTACHMENT_LIMIT}
+            initialAttachments={attachments}
+            onListChange={updateAttachments}
+            emptyMessage="尚無證明"
+          />
+        </section>
+
         <div className="btn-row">
           <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? "儲存中…" : "儲存草稿"}
@@ -629,7 +717,7 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
             type="button"
             className="btn btn-secondary"
             onClick={() => setShowCompleteConfirm(true)}
-            disabled={saving || completing || officialKmExceeded}
+            disabled={saving || completing || officialKmExceeded || attachmentRequired}
           >
             完成申請
           </button>
