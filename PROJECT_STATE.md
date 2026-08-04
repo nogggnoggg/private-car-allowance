@@ -34,7 +34,9 @@ State: ACTIVE
 > - **T8（快照不可變＋夾帶矩陣，High）：DONE**（`062c3b7`，1 檔 +888 純測試；34 測試；usage ~233k）。真實完成流程 fixture、drift 鑑別、spy 界定、12 輪併發、13 欄×5 值型矩陣。大總管驗收：兩輪 1724/0/0（1690+34）。
 > - **T8 即審＋T7R 關閉確認：REQUEST_CHANGES（1 Must/2 Should/4 AR；usage ~141k）→ T8R-LITE：DONE**（`cf5fdaf`，2 檔 +197/-52；usage ~135k）。T7R 四項全 CLOSED（S-1 500→200 還原紅、M2/M6 必紅）。**MF-1 重大缺口**：完成端點夾帶全為巢狀物件、恆真斷言——reviewer 持久化 mutant M-E2（complete 採信 body.totalAmount 寫 DB）**全套 1724 全綠存活** → it.each 純量 kill 值＋DB 層斷言（修復後 M-E2 五列全紅）；SF-1 query 維度三端點補；AR-3 B-30 改 12 輪迴圈（範圍偏離裁定：T8 處置正確、B-30 本體移交本輪關閉）。implementer 附帶發現 it.each 第二參數為 TestContext 非 index 之陷阱（記錄供後續）。大總管驗收：兩輪 **1732/0/0**（1724+8）、tsc 0、biome 乾淨。基準線 → **1732**。§12 AC-19（檔案歸屬更正）/20/28/29 GREEN——**進度 32/41，後端 AC 全數 GREEN**。
 > - **T8 即審 AR 記錄**：AR-1 雙重快照斷言偏弱（calculatedAt 等值一行可補，非阻擋）；AR-2 503 重試耗盡全 Phase 無測試（需故障注入，記 PHASE-011）；AR-4 §12 AC-22 措辭「36 輪」屬 T7 人工觀察非常駐（已依實回填）。**T9 FW**：代操作夾帶須頂層純量 ownerId/createdById（勿重蹈 MF-1 巢狀形狀）；admin 代操作端點不得完成他人保養（D7(a) 負向斷言）；稽核 hook 同 tx。
-> - **T8R 關閉確認併 T9 即審**。下一步：T9（代操作＋稽核，High——後端最後 Task）。
+> - **T9（代操作＋稽核，High）：DONE**（`7b8b218`，4 檔 +1044/-24；20 整合測試；usage 主 agent ~497k（三段）＋巢狀 agent ~260k）。稽核 hook 同 tx（重試重放）、ownerId/createdById 分離、D7(a) 負向、頂層純量夾帶（T8 教訓落實）、真回滾證據。大總管獨立驗收：兩輪 **1752/0/0**（1732+20）、tsc 0、biome 乾淨。基準線 → **1752**。
+> - **INC 記錄（T9 巢狀派工違規，已處置）**：T9 implementer agent **私自 spawn 巢狀 implementer** 並自居派工者停等（兩度「waiting for background agent」）——兩 agent 併行操作同一工作樹，造成其自述「工作區被外部重置/stash 出沒」異象（實為互相覆蓋）。大總管兩次 SendMessage 續推後由（其中一方）完成；最終工作樹經大總管逐檔核對＋兩輪全套獨立驗證後才 commit，成品健全。**預防**：後續 implementer Packet 加註「禁止 spawn 任何 subagent，一切親自執行」；usage 復盤新型態⑧：角色錯亂＋巢狀派工，合計 ~757k 為全專案單 Task 最高，第二次偵測到停等即應棄用原 agent 改開新 agent。
+> - **T9 即審（進行中）＋T8R 關閉確認**。下一步：即審清零後進前端 T10~T12。
 
 > **PHASE-005a：DONE（2026-08-04）**——PR #13 經人類批准以 Merge 合併（`9af414a`），Spec 轉 COMPLETED。基準線終值：後端 **1468/0/0**、前端 **180/0/0**、E2E **23/23**。37/37 AC、終審＋四輪複審清零、Mock/整合 Gate 通過（含 T14 未儲存變更提示之 Gate 現場反饋修復）。
 > - **下一站：PHASE-006（保養費用分攤）**——開工 Packet 必引：PHASE-005 結案列（D2(a) null 快照 count/sum 不對稱、補測清單 B-12/15/17/19/24/25）＋差旅單價雙鏈解析（005a T7）現況。
