@@ -821,58 +821,83 @@ describeWithDb("PHASE-006-T7 — 完成流程 + 快照寫入 + 原子性 + 僅�
   // ===========================================================================
 
   describe("B-30 併發（完成 vs 刪除附件）", () => {
-    it("同一保養草稿：完成 vs 刪除其唯一附件同時發生 → 恰一方成功語意上一致，不得 500", async () => {
-      await seedCompletedTravel({
-        tripDate: "2057-01-15",
-        segments: [{ totalKm: "10.00", highwayKm: "0.00" }],
-      });
-      const id = await createDraft(ownerCookie);
-      const putResp = await putFields(ownerCookie, id, {
-        lastMaintenanceDate: "2057-01-01",
-        currentMaintenanceDate: "2057-02-01",
-        lastOdometerKm: "0.00",
-        currentOdometerKm: "100.00",
-        actualCost: "200.00",
-      });
-      expect(putResp.statusCode).toBe(200);
-      const attachmentId = await uploadTemp(ownerCookie, "b30.jpg");
-      const linkResp = await putFields(ownerCookie, id, { attachmentIds: [attachmentId] });
-      expect(linkResp.statusCode).toBe(200);
+    // T8R 複審 AR-3 移交待辦：原本單輪 if/else 條件式斷言可能靜默只覆蓋兩種
+    // 終局（完成方勝出／刪除方勝出）之一，無法確認兩側皆曾真正被覆蓋到。改為
+    // N 輪迴圈（N≥10，比照 `phase6-snapshot-immutability.test.ts` 之
+    // 「AC-29 併發完成（N 輪迴圈，AR-3 精神）」同一原則）：每輪各自建立獨立
+    // 草稿＋附件＋期間差旅，逐輪重跑「完成 vs 刪除附件」並各自斷言終局合法；
+    // 另加輪間 jitter（隨機微延遲、交替讓哪一方先發起）提高兩側交錯情境皆
+    // 出現的機率。既有斷言意圖（絕不 500、恰一方效果生效、不得雙重完成／
+    // 雙重快照）維持不變。
+    const CONCURRENCY_ROUNDS = 12;
 
-      const [completeSettled, deleteSettled] = await Promise.allSettled([
-        completeMaintenanceApplication(prisma, id),
-        app.inject({
-          method: "DELETE",
-          url: `/attachments/${attachmentId}`,
-          headers: { cookie: ownerCookie },
-        }),
-      ]);
+    function jitter(): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 5)));
+    }
 
-      // 絕不 500：complete 若失敗只能是業務 AppError（400/403），刪除回應
-      // 只能是 200/403/409，皆非 500。
-      if (completeSettled.status === "rejected") {
-        const err = completeSettled.reason as { httpStatus?: number };
-        expect(err.httpStatus).not.toBe(500);
-        expect([400, 403, 409]).toContain(err.httpStatus);
-      }
-      if (deleteSettled.status === "fulfilled") {
-        expect(deleteSettled.value.statusCode).not.toBe(500);
-      }
+    it(`${CONCURRENCY_ROUNDS} 輪：同一保養草稿完成 vs 刪除其唯一附件同時發生 → 每輪皆恰一方成功語意上一致，不得 500`, async () => {
+      for (let round = 0; round < CONCURRENCY_ROUNDS; round++) {
+        const month = String((round % 9) + 1).padStart(2, "0");
+        await seedCompletedTravel({
+          tripDate: `2057-${month}-15`,
+          segments: [{ totalKm: "10.00", highwayKm: "0.00" }],
+        });
+        const id = await createDraft(ownerCookie);
+        const putResp = await putFields(ownerCookie, id, {
+          lastMaintenanceDate: `2057-${month}-01`,
+          currentMaintenanceDate: `2057-${month}-28`,
+          lastOdometerKm: "0.00",
+          currentOdometerKm: "100.00",
+          actualCost: `${200 + round}.00`,
+        });
+        expect(putResp.statusCode).toBe(200);
+        const attachmentId = await uploadTemp(ownerCookie, `b30-${round}.jpg`);
+        const linkResp = await putFields(ownerCookie, id, { attachmentIds: [attachmentId] });
+        expect(linkResp.statusCode).toBe(200);
 
-      // 終局狀態必為下列兩者之一（恰一方之效果生效，不得雙重完成 / 雙重快照）：
-      const dbApp = await prisma.application.findUniqueOrThrow({ where: { id } });
-      const dbAttachment = await prisma.attachment.findUniqueOrThrow({
-        where: { id: attachmentId },
-      });
+        // 輪間交替：偶數輪讓「完成」先發起、奇數輪讓「刪除」先發起（各自
+        // jitter 一個隨機微延遲），提高交錯率而非固定同一種發起順序。
+        const [completeSettled, deleteSettled] = await Promise.allSettled([
+          (async () => {
+            if (round % 2 === 1) await jitter();
+            return completeMaintenanceApplication(prisma, id);
+          })(),
+          (async () => {
+            if (round % 2 === 0) await jitter();
+            return app.inject({
+              method: "DELETE",
+              url: `/attachments/${attachmentId}`,
+              headers: { cookie: ownerCookie },
+            });
+          })(),
+        ]);
 
-      if (dbApp.status === "COMPLETED") {
-        // 完成方勝出：附件仍是 LINKED（完成鎖定，AC-23 既有行為，刪除方應已被擋 403）。
-        expect(dbAttachment.status).toBe("LINKED");
-        expect(dbApp.totalAmount).not.toBeNull();
-      } else {
-        // 刪除方勝出：附件已 detach 回 TEMP，完成因零附件被 400 擋下，status 仍 DRAFT。
-        expect(dbApp.status).toBe("DRAFT");
-        expect(dbApp.totalAmount).toBeNull();
+        // 絕不 500：complete 若失敗只能是業務 AppError（400/403），刪除回應
+        // 只能是 200/403/409，皆非 500。
+        if (completeSettled.status === "rejected") {
+          const err = completeSettled.reason as { httpStatus?: number };
+          expect(err.httpStatus).not.toBe(500);
+          expect([400, 403, 409]).toContain(err.httpStatus);
+        }
+        if (deleteSettled.status === "fulfilled") {
+          expect(deleteSettled.value.statusCode).not.toBe(500);
+        }
+
+        // 終局狀態必為下列兩者之一（恰一方之效果生效，不得雙重完成 / 雙重快照）：
+        const dbApp = await prisma.application.findUniqueOrThrow({ where: { id } });
+        const dbAttachment = await prisma.attachment.findUniqueOrThrow({
+          where: { id: attachmentId },
+        });
+
+        if (dbApp.status === "COMPLETED") {
+          // 完成方勝出：附件仍是 LINKED（完成鎖定，AC-23 既有行為，刪除方應已被擋 403）。
+          expect(dbAttachment.status).toBe("LINKED");
+          expect(dbApp.totalAmount).not.toBeNull();
+        } else {
+          // 刪除方勝出：附件已 detach 回 TEMP，完成因零附件被 400 擋下，status 仍 DRAFT。
+          expect(dbApp.status).toBe("DRAFT");
+          expect(dbApp.totalAmount).toBeNull();
+        }
       }
     });
   });

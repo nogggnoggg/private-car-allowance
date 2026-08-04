@@ -769,7 +769,55 @@ describeWithDb("PHASE-006-T8 — 快照不可變 + 後端權威 + 容量守門�
       }
     );
 
-    it("POST /applications/:id/complete（完成）— 夾帶全部禁忌欄位（畸形值）之 body → 200，快照為後端真實算出之值，非夾帶值", async () => {
+    // T8R 複審 MF-1：原本唯一一列夾帶值恆為巢狀物件（`{ totalAmount: 999999999,
+    // amount: 999999999 }`），"not.toBe(999999999)" 對巢狀物件恆真、碰不到
+    // 「後端讀 body.totalAmount 直接寫入 DB」這種最自然的持久化 mutant（M-E2：
+    // complete 路由把 injected 值原樣存回 Application.totalAmount）。改為
+    // it.each(INJECTION_VALUE_VARIANTS)——其中 1234.56／"999999" 為頂層純量，
+    // 若 mutant 把夾帶值直接持久化，DB 與回應皆會等於該純量而非後端真實算出
+    // 值 250，測試必紅。並新增 DB 層斷言（`prisma.application.findUniqueOrThrow`
+    // 讀 `totalAmount`），防止「DTO 正確但 DB 列已被污染」之形狀被漏檢。
+    // it.each 之回呼第二參數為 vitest TestContext（非數字 index）——逐列年份
+    // 改用本地遞增計數器（見下方 `injectionRowCounter`），避免誤把 TestContext
+    // 併入樣板字串（曾導致 `NaN-05-15` 之無效日期、400 迴歸）。
+    let injectionRowCounter = 0;
+    it.each(INJECTION_VALUE_VARIANTS)(
+      "POST /applications/:id/complete（完成）— $label 夾帶全部禁忌欄位之 body → 200，快照與 DB 皆為後端真實算出之值，非夾帶值",
+      async ({ value }) => {
+        // 每一列使用互不重疊的年份區間（2071 起遞增），避免前一列
+        // seedCompletedTravel 建立之差旅落入本列的期間公務里程加總
+        // （officialKm 為「同一 owner 於期間內」之累加，逐列共用日期會
+        // 造成跨列污染、金額逐列遞增，並非測試意圖）。
+        const year = 2071 + injectionRowCounter++;
+        await seedCompletedTravel({
+          tripDate: `${year}-05-15`,
+          segments: [{ totalKm: "25.00", highwayKm: "0.00" }],
+        });
+        const id = await buildCompletableDraft({
+          lastMaintenanceDate: `${year}-05-01`,
+          currentMaintenanceDate: `${year}-06-01`,
+          lastOdometerKm: "0.00",
+          currentOdometerKm: "100.00", // intervalKm=100, officialKm=25 → ratio=0.25
+          actualCost: "1000.00", // amount = 1000*25/100 = 250
+        });
+
+        const resp = await app.inject({
+          method: "POST",
+          url: `/applications/${id}/complete`,
+          headers: { cookie: ownerCookie, "content-type": "application/json" },
+          payload: JSON.stringify(buildInjectedForbiddenFields(value)),
+        });
+        expect(resp.statusCode).toBe(200);
+        const application = resp.json<{ application: MaintenanceApplicationJson }>().application;
+        expect(application.snapshot?.totalAmount).toBe(250);
+
+        const dbApp = await prisma.application.findUniqueOrThrow({ where: { id } });
+        expect(Number(dbApp.totalAmount)).toBe(250);
+      }
+    );
+
+    // 原巢狀物件夾帶值列（T8 既有）保留為額外一列，不刪除既有覆蓋範圍。
+    it("POST /applications/:id/complete（完成）— 夾帶全部禁忌欄位（巢狀物件）之 body → 200，快照為後端真實算出之值，非夾帶值", async () => {
       await seedCompletedTravel({
         tripDate: "2064-05-15",
         segments: [{ totalKm: "25.00", highwayKm: "0.00" }],
@@ -794,6 +842,78 @@ describeWithDb("PHASE-006-T8 — 快照不可變 + 後端權威 + 容量守門�
       const application = resp.json<{ application: MaintenanceApplicationJson }>().application;
       expect(application.snapshot?.totalAmount).toBe(250);
       expect(application.snapshot?.totalAmount).not.toBe(999999999);
+    });
+
+    // -------------------------------------------------------------------
+    // T8R 複審 SF-1：query 維度（AC-20 明文「body／query 夾帶」，選項 (a)）
+    // GET/PUT/preview 三端點皆從未讀取 request.query（見 routes.ts 對應
+    // handler，僅讀 request.body/request.params）——故 query 夾帶天然被忽略；
+    // 以下補上該維度之顯式回歸覆蓋，含 query ownerId（fail-closed：query 層
+    // 完全不生效，非「靜默視為自己」——此三端點根本未解析 query.ownerId）。
+    // -------------------------------------------------------------------
+    it("GET /applications/maintenance/:id — query 夾帶禁忌欄位與他人 ownerId → 200，值仍為後端已存資料，query ownerId 不生效", async () => {
+      const id = await createDraft();
+      const putResp = await putFields(id, {
+        lastMaintenanceDate: "2064-09-01",
+        currentMaintenanceDate: "2064-10-01",
+        lastOdometerKm: "0.00",
+        currentOdometerKm: "10.00",
+        actualCost: "100.00",
+      });
+      expect(putResp.statusCode).toBe(200);
+
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/maintenance/${id}?totalAmount=999999&amount=999999&ownerId=someone-else-id`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(resp.statusCode).toBe(200);
+      const application = resp.json<{ application: MaintenanceApplicationJson }>().application;
+      expect(application.id).toBe(id);
+      expect(application.computed?.officialKm).toBe("0.00");
+      expect(application.computed?.ratio).toBe("0.000000");
+      expect(application.computed?.amount).toBe(0);
+    });
+
+    it("PUT /applications/maintenance/:id — query 夾帶禁忌欄位與他人 ownerId → 200，computed 為後端真實算出之值，query 完全不生效", async () => {
+      const id = await createDraft();
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/maintenance/${id}?totalAmount=999999&amount=999999&ownerId=someone-else-id`,
+        headers: { cookie: ownerCookie },
+        payload: {
+          lastMaintenanceDate: "2064-09-01",
+          currentMaintenanceDate: "2064-10-01",
+          lastOdometerKm: "0.00",
+          currentOdometerKm: "100.00", // intervalKm=100（期間內無差旅 → officialKm=0）
+          actualCost: "500.00",
+        },
+      });
+      expect(resp.statusCode).toBe(200);
+      const application = resp.json<{ application: MaintenanceApplicationJson }>().application;
+      expect(application.computed?.officialKm).toBe("0.00");
+      expect(application.computed?.ratio).toBe("0.000000");
+      expect(application.computed?.amount).toBe(0);
+    });
+
+    it("POST /applications/maintenance/preview — query 夾帶禁忌欄位與他人 ownerId → 200，preview 為後端真實算出之值（自己資料），query ownerId 不生效", async () => {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/applications/maintenance/preview?totalAmount=999999&amount=999999&ownerId=someone-else-id",
+        headers: { cookie: ownerCookie },
+        payload: {
+          lastMaintenanceDate: "2064-11-01",
+          currentMaintenanceDate: "2064-12-01",
+          lastOdometerKm: "0.00",
+          currentOdometerKm: "50.00",
+          actualCost: "200.00",
+        },
+      });
+      expect(resp.statusCode).toBe(200);
+      const preview = resp.json<{ preview: MaintenanceComputedJson }>().preview;
+      expect(preview.officialKm).toBe("0.00");
+      expect(preview.ratio).toBe("0.000000");
+      expect(preview.amount).toBe(0);
     });
 
     // -------------------------------------------------------------------
