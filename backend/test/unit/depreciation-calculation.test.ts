@@ -1,64 +1,77 @@
 /**
- * PHASE-007-T2 — `calculateDepreciation` ＋ `isDepreciationCalculationOverCapacity`
- * （AC-19／AC-20／AC-21／AC-22(判定層)）
- *
- * Spec `docs/specs/PHASE-007.md`：
- *   AC-19（§2 F）逐字：「`rawAmount = 年度公務里程 × perKmUnitPrice`；
- *     `amount = ROUND_HALF_UP(rawAmount, 0)`（新臺幣整數）。**全程
- *     `Prisma.Decimal`，禁止任何浮點中介**；`perKmUnitPrice` 以
- *     `new Prisma.Decimal(字串)` 還原（`deriveDepreciation` 回傳固定 4 位小數
- *     字串），**不得**經 `Number()`／`parseFloat`。」
- *   AC-20 逐字：「本 Phase 之取整**恰一處**（最終金額）。單價之 4 位小數取整
- *     發生在 **PHASE-003a 引擎內**，本 Phase **不得**再對單價取整、**不得**先
- *     取整年度里程、**不得**先取整 `rawAmount` 至 2 位小數再取整。」
- *   AC-21 逐字：「取整方向為**一般四捨五入（`ROUND_HALF_UP`，0.5 進位、
- *     away from zero），非銀行家取整**：kill pair `rawAmount=0.5 → 1` 與
- *     `rawAmount=1.5 → 2`（`ROUND_HALF_EVEN` mutant 於後者必紅）…」
- *     ※ Spec 括號內「於後者必紅」與同句 kill pair 之實際鑑別方向相反——
- *       `ROUND_HALF_EVEN` 對 `1.5` 亦得 `2`（不鑑別），對 `0.5` 得 `0`（鑑別）。
- *       本檔兩列皆在場，鑑別實際發生於**前者**（`0.5 → 1`）。差異已於 Handoff
- *       Warnings 回報（006 §2 AC-17(d) 之同型敘述亦同）。
- *   AC-22(a) 逐字：「純函式層之容量 predicate 回 `true`，**閾值由 schema 精度
- *     推導之具名常數**（**不得寫魔術數**，006 T1 AR-6 教訓）」；
- *   AC-22(d) 逐字：「邊界正例在場防誤殺（恰 `1e10 − ε` 通過／恰 `1e10` 拒絕；
- *     `2147483647` 通過／`2147483648` 拒絕）」。
- *   §7.4 ③④⑤ 計算三步；§8.3 容量推導表；§11.1 單元測試重點列。
+ * PHASE-007-R2 — `calculateDepreciation` ＋ `isDepreciationCalculationOverCapacity`
+ * （修訂段：AC-21／AC-22(判定層)／AC-50／AC-51）
  *
  * ---------------------------------------------------------------------------
- * 鑑別力設計（Done When 硬性項）
+ * 規範出處（Spec `docs/specs/PHASE-007.md`，修訂段 §20 於衝突處覆蓋 §1~§17）
  * ---------------------------------------------------------------------------
- * 1. 取整 kill pair（AC-21）：`raw=0.5 → 1`（`ROUND_HALF_EVEN` mutant 得 `0`，
- *    必紅）與 `raw=1.5 → 2`（`ROUND_HALF_EVEN` 亦得 `2`，成對出現以證明兩列
- *    合起來才鑑別「away from zero」而非「一律進位」）。
- * 2. 取整層級 kill case（AC-20，本 Task 窮舉搜尋產生 —— Spec §17.1／AC-20 已
- *    自註原例 `officialKm=1234.56, perKmUnitPrice="0.5001"` **不具鑑別力**）：
- *      **主 kill case（單一數對同時殺兩種 mutant）**
- *        officialKm = 850.27（`Decimal(12,2)` 合法值）
- *        perKmUnitPrice = "6.6667"（＝ `deriveDepreciation({vehiclePrice:300000,
- *          usefulLifeYears:3, estimatedAnnualKm:15000}).perKmUnitPrice`，真實可達）
- *        rawAmount = 5668.495009  → 正確 amount = 5668
- *        mutant A（先取整 rawAmount 至 2 位 → 5668.50）→ 5669  ✗
- *        mutant B（先取整 officialKm 至整數 → 850）        → 5667  ✗
- *      **輔助 kill case（終止小數，raw 精確可讀）**
- *        officialKm = 1137.50、perKmUnitPrice = "5.5556"
- *          （＝ 300000 / 3 / 18000 之引擎輸出）
- *        rawAmount = 6319.495（精確）→ 正確 6319；mutant A → 6320；mutant B → 6322
- *      Spec 原例仍以獨立一列保留，用於證明其**只**殺 mutant B（617 vs 618）
- *      而對 mutant A 不鑑別（617 vs 617）——即 Spec §17.1 自註之複核。
- * 3. `ROUND_HALF_EVEN` mutant：見第 1 點。
- * 4. `NaN`／`Infinity` 三重守門（005a T2 SF-1／006 T2R MF-1 同型）：
- *    `officialKm`／`perKmUnitPrice`／相乘後之 `rawAmount` 三處各有負向測試。
+ * §20.4.1 公式（逐字）：
+ *   ③ annualDepreciation = new Prisma.Decimal(derived.annualDepreciation)  // 2 位小數字串
+ *   ④ ratio       = officialKm.div(annualTotalKm)                 // 全精度，**僅供顯示與快照**
+ *     ratioString        = ratio.toFixed(6, ROUND_HALF_UP)        // 6 位小數
+ *     ratioPercentString = ratio.times(100).toFixed(4, ROUND_HALF_UP)   // 4 位小數
+ *   ⑤ rawAmount = annualDepreciation.times(officialKm).div(annualTotalKm)   // **先乘後除**，未取整
+ *   ⑥ amount    = rawAmount.toDecimalPlaces(0, ROUND_HALF_UP).toNumber()    // 全案唯一取整處
+ * §20.4.1 禁止段逐字：「以 `annualDepreciation.times(ratio)` 求 `rawAmount`（引入第二次
+ *   捨入）、先取整 `ratio`、先取整 `officialKm`、先取整 `rawAmount` 至 2 位、對
+ *   `annualDepreciation` 二次取整、以浮點運算任一步。」
+ * §20.4.1 除零守門逐字：「`annualTotalKm ≤ 0` 或任一輸入非有限值 → `calculable=false`，
+ *   其餘欄位 `null`（AC-50(d)）。」
+ * §20.4.2：本 Phase 之取整**恰一處**（最終金額）；每年折舊費用之 2dp 取整發生在引擎內。
+ * §20.4.3：PRIMARY／SECONDARY kill case、`ROUND_HALF_UP` kill pair、邊界正例。
+ * AC-50(a)~(d)、AC-51(a)~(d)、AC-21（`ROUND_HALF_UP` 紀律不變）、AC-22(a)(d)。
+ * §20.7.2：容量 predicate 之判定集合更新為 `snapshotOfficialKm`／`snapshotAnnualTotalKm`／
+ *   `snapshotAnnualDepreciation`／`snapshotRatio`／`snapshotRawAmount`／`totalAmount`；
+ *   `snapshotPerKmUnitPrice`「**退出容量 predicate 之判定集合**（新模型不寫入）」。
+ *
+ * ---------------------------------------------------------------------------
+ * 鑑別力設計（§20.12 R2 列 Done When 硬性項）
+ * ---------------------------------------------------------------------------
+ * 1. §20.4.3 PRIMARY kill case（單一數對同時鑑別四種取整層級 mutant）——
+ *      A=100000.00 ／ O=1001.66 ／ I=12345.6 → raw=8113.4979263867288751 → 8113
+ *      mutant A（ratio 先取整 6dp）→ 8114 ✗   mutant B（ratio 先取整 4dp）→ 8110 ✗
+ *      mutant C（raw 先取整 2dp）  → 8114 ✗   mutant D（officialKm 先取整）→ 8116 ✗
+ * 2. §20.4.3 SECONDARY kill case（比例先取整之獨立鑑別）——
+ *      A=100000.00 ／ O=4000.09 ／ I=20000.0 → raw=20000.45 → 20000；mutant A → 20001 ✗
+ * 3. §20.4.3 `ROUND_HALF_UP` kill pair——
+ *      row 1（鑑別）：O=4000.10 → raw=20000.5 → 20001；`ROUND_HALF_EVEN` mutant → 20000 ✗
+ *      row 2（配對，證 away-from-zero）：O=4000.30 → raw=20001.5 → 20002（half-even 亦得
+ *      20002，不鑑別；兩列合起來才證明「away from zero」而非「一律進位」）
+ * 4. **`.times(ratio)` mutant 之 kill 數對（AC-50(c)；§20.4.3「R2 之回填義務」）**——
+ *      本 Task 以窮舉搜尋產生（搜尋構造與範圍見下方 §2 之註解）：
+ *        A=10004.17 ／ O=99995.00 ／ I=100041.7 → raw **恰為** 9999.5 → **10000**
+ *        mutant `annualDepreciation.times(ratio)` → 9999.4999999999999999 → **9999** ✗
+ *      成立原理：`Prisma.Decimal`（decimal.js）之 `precision = 20` 有效位數；先取
+ *      `ratio = O/I` 為無盡小數時已在第 20 位發生捨入，再乘回 `A` 即失去「恰為 .5」
+ *      之邊界，於最終 `ROUND_HALF_UP` 差 1 元。
+ * 5. 三重守門：`isFinite`（三輸入）／`annualTotalKm ≤ 0` 除零／結果非有限值。
+ * 6. 容量常數 ↔ **實際套用之 migration DDL** 對照（T1 即審 FW-1）——新 4 欄之 DDL
+ *    來自 **M2（ALTER 型）**，既有 2 欄來自 M1（CREATE 型），讀取器須橫跨兩檔並在
+ *    命中數 ≠ 1 時 fail-loud。
  *
  * ---------------------------------------------------------------------------
  * Mutant 自證（實際執行紀錄見 Handoff）
  * ---------------------------------------------------------------------------
- *   M1 `ROUND_HALF_UP` → `ROUND_HALF_EVEN`（金額取整處）
- *   M2 `rawAmount` 改為 `officialKm.times(price).toDecimalPlaces(2, ROUND_HALF_UP)`
- *   M3 `rawAmount` 改為 `officialKm.toDecimalPlaces(0, ROUND_HALF_UP).times(price)`
- *   M4 三重 isFinite 守門整段刪除
- *   M5 容量常數 `DEPRECIATION_COLUMN_CAPACITY.snapshotRawAmount` 之
- *      `precision` 14 → 16（且 bound 同步改為 10^12；模擬常數與
- *      實際 DB 欄位精度脫鉤 —— T1 即審 FW-1 之直接對象）
+ *   M1 `ROUND_HALF_UP` → `ROUND_HALF_EVEN`（最終金額取整處）
+ *   M2 `rawAmount` 先取整至 2 位小數
+ *   M3 `officialKm` 先取整為整數再進入公式
+ *   M4 `rawAmount` 改以 `annualDepreciation.times(ratio)` 求值（AC-50(c) 直接對象）
+ *   M5 `ratio` 先取整至 6dp（顯示值回流計算）
+ *   M6 三重守門整段刪除
+ *
+ * ---------------------------------------------------------------------------
+ * 測試遷移核銷（§20.11.2「`backend/test/unit/depreciation-calculation.test.ts` —
+ * AC-19/20 退場、AC-21/22 改組、AC-50/51 新增」；§12R.1 AC-19／AC-20 列）
+ * ---------------------------------------------------------------------------
+ *   §12R.1 AC-19 列逐字：「`depreciation-calculation.test.ts` 之 AC-19 describe 依新公式
+ *     改寫（浮點鑑別、純度、輸入不變性三條**語意保留**，僅換輸入組）」——三條均在場
+ *     （§1）。
+ *   §12R.1 AC-20 列逐字：「舊 kill case 測試刪除並以新 kill case 取代；『取整恰一處』之
+ *     原始碼掃描斷言**語意保留**」——舊數對（`850.27 × 6.6667`、`1137.50 × 5.5556`、
+ *     `1234.56 × 0.5001`）於新公式下不可達，依授權刪除並由 §20.4.3 新數對取代（§3）；
+ *     「恰一處 `toDecimalPlaces(0, …)`」掃描保留並強化（§3）。
+ *   AC-21（§12R.2）：kill pair 之輸入組依新公式重建（§4）。
+ *   AC-22（§12R.2）：判定集合重整（§5、§6）。
  */
 
 import fs from "node:fs";
@@ -82,10 +95,10 @@ const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
  * `PHASE_006_SRC_FILES` 慣例建立之獨立清單（本 Phase 專用）。
  *
  * **白名單語意（逐字）**：本陣列列出「本 Phase 於 `backend/src` 新增之全部
- * 檔案」，供下方零浮點中介掃描逐檔驅動。**T3/T4/T5/T7/T8/T11 等後續 Task 於
- * 本 Phase 新增 `src` 檔案時，必須將其相對路徑（相對於 `backend/`）加入本
- * 陣列**，否則新檔案不會被掃描覆蓋。清單中任何檔案不存在時，
- * `fs.readFileSync` 會直接拋錯使測試紅（fail-loud），不得靜默跳過。
+ * 檔案」，供下方零浮點中介掃描逐檔驅動。**後續 Task 於本 Phase 新增 `src`
+ * 檔案時，必須將其相對路徑（相對於 `backend/`）加入本陣列**，否則新檔案不會
+ * 被掃描覆蓋。清單中任何檔案不存在時，`fs.readFileSync` 會直接拋錯使測試紅
+ * （fail-loud），不得靜默跳過。
  */
 const PHASE_007_SRC_FILES = [
   "src/applications/depreciation-calculation.ts",
@@ -94,7 +107,7 @@ const PHASE_007_SRC_FILES = [
   // T4 新增（PHASE-007-T4；同一機械義務——本檔為草稿 CRUD service，雖不含
   // 金額算術，仍納入掃描以固定「本 Phase 新增 src 檔一律零浮點中介」）。
   "src/applications/depreciation-service.ts",
-  // T7 新增（PHASE-007-T7；折舊參數選版與單價還原——`new Prisma.Decimal(字串)`
+  // T7 新增（PHASE-007-T7；折舊參數選版與每年折舊費用還原——`new Prisma.Decimal(字串)`
   // 之還原點，正是零浮點中介最須守住的一處）。
   "src/applications/depreciation-parameters.ts",
 ] as const;
@@ -112,10 +125,17 @@ const TO_NUMBER_ALLOWANCE: Record<string, number> = {
 
 const ENGINE_SRC_PATH = path.resolve(BACKEND_ROOT, PHASE_007_SRC_FILES[0]);
 
-/** T1 之 migration DDL —— 容量常數對照測試（FW-1）之權威來源。 */
-const PHASE7_MIGRATION_SQL_PATH = path.resolve(
+/** M1（開發段建表 migration）—— `snapshotOfficialKm`／`snapshotRawAmount`／
+ *  `snapshotPerKmUnitPrice` 之 DDL 權威來源。 */
+const M1_MIGRATION_SQL_PATH = path.resolve(
   BACKEND_ROOT,
   "prisma/migrations/20260804120000_phase7_depreciation_model/migration.sql"
+);
+
+/** M2（修訂段 ALTER 型 migration，R1 落地）—— 新 4 欄之 DDL 權威來源。 */
+const M2_MIGRATION_SQL_PATH = path.resolve(
+  BACKEND_ROOT,
+  "prisma/migrations/20260805090000_phase7_depreciation_revision/migration.sql"
 );
 
 /** `Application.totalAmount`（int4）之 DDL 來源（PHASE-004 建表 migration）。 */
@@ -130,159 +150,489 @@ function d(value: string): Prisma.Decimal {
   return new Prisma.Decimal(value);
 }
 
+/** §20.4.3 之輸入三元組簡寫（A ＝ 每年折舊費用、O ＝ 年度公務里程、I ＝ 年度總里程）。 */
+function calc(A: string, O: string, I: string): CalculateDepreciationResult {
+  return calculateDepreciation({
+    annualDepreciation: d(A),
+    officialKm: d(O),
+    annualTotalKm: d(I),
+  });
+}
+
+const HALF_UP = Prisma.Decimal.ROUND_HALF_UP;
+
 // ---------------------------------------------------------------------------
-// §1 AC-19 公式：rawAmount = officialKm × perKmUnitPrice（未取整），
-//                amount = ROUND_HALF_UP(rawAmount, 0)
+// §1 AC-51(a)／§20.4.1 ⑤⑥ 公式：
+//     rawAmount = annualDepreciation × officialKm ÷ annualTotalKm（先乘後除，未取整）
+//     amount    = ROUND_HALF_UP(rawAmount, 0)
+//
+// （§12R.1 AC-19 列授權之改寫：浮點鑑別、純度、輸入不變性三條語意保留，僅換輸入組）
 // ---------------------------------------------------------------------------
 
-describe("calculateDepreciation — AC-19 rawAmount = officialKm × perKmUnitPrice, amount = ROUND_HALF_UP(raw, 0) (exact Decimal table)", () => {
+describe("calculateDepreciation — AC-51(a) rawAmount = annualDepreciation × officialKm ÷ annualTotalKm (multiply-then-divide, unrounded), amount = ROUND_HALF_UP(raw, 0)", () => {
   const rows: Array<{
+    annualDepreciation: string;
     officialKm: string;
-    perKmUnitPrice: string;
+    annualTotalKm: string;
     rawAmount: string;
     amount: number;
     note: string;
   }> = [
     {
+      annualDepreciation: "100000.00",
       officialKm: "0.00",
-      perKmUnitPrice: "6.6667",
+      annualTotalKm: "12345.6",
       rawAmount: "0",
       amount: 0,
-      note: "B-09：年度里程 0 為合法結果，補貼 0 元（Spec §1.2 明確不阻擋）",
+      note: "§20.4.3 邊界正例：年度公務里程 0 → 補貼 0 元（B-09 不變，允許完成）",
     },
     {
-      officialKm: "12000.00",
-      perKmUnitPrice: "6.6667",
-      rawAmount: "80000.4",
-      amount: 80000,
-      note: "一般案例：小數部分 < 0.5 → 捨",
+      annualDepreciation: "100000.00",
+      officialKm: "12345.6",
+      annualTotalKm: "12345.6",
+      rawAmount: "100000",
+      amount: 100000,
+      note: "§20.4.3 邊界正例：比例恰 100%（Q4）→ 金額等於每年折舊費用全額",
     },
     {
-      officialKm: "12345.67",
-      perKmUnitPrice: "1.0000",
-      rawAmount: "12345.67",
-      amount: 12346,
-      note: "單價 1.0000：金額即里程之四捨五入",
+      annualDepreciation: "100000.00",
+      officialKm: "6000.00",
+      annualTotalKm: "12000.0",
+      rawAmount: "50000",
+      amount: 50000,
+      note: "一般案例：比例恰 50%",
     },
     {
-      officialKm: "0.01",
-      perKmUnitPrice: "0.0001",
-      rawAmount: "0.000001",
+      annualDepreciation: "150000.00",
+      officialKm: "3000.00",
+      annualTotalKm: "20000.0",
+      rawAmount: "22500",
+      amount: 22500,
+      note: "一般案例：終止小數，raw 精確可讀",
+    },
+    {
+      annualDepreciation: "100000.00",
+      officialKm: "1.00",
+      annualTotalKm: "30000.0",
+      rawAmount: "3.3333333333333333333",
+      amount: 3,
+      note: "無盡小數：先乘後除之全精度保留至 decimal.js 之 20 有效位數，小數部分 < 0.5 → 捨",
+    },
+    {
+      annualDepreciation: "0.01",
+      officialKm: "1.00",
+      annualTotalKm: "1.0",
+      rawAmount: "0.01",
       amount: 0,
-      note: "邊界：兩欄位各自之最小正值，全精度保留於 rawAmount",
-    },
-    {
-      officialKm: "20000.00",
-      perKmUnitPrice: "0.0001",
-      rawAmount: "2",
-      amount: 2,
-      note: "§17.1 #7 誤差上界之量級（2 萬公里 × 0.0001 = 2 元）",
+      note: "邊界：每年折舊費用之最小正值（2dp），全精度保留於 rawAmount",
     },
   ];
 
   it.each(rows)(
-    "officialKm=$officialKm × perKmUnitPrice=$perKmUnitPrice → rawAmount=$rawAmount, amount=$amount ($note)",
-    ({ officialKm, perKmUnitPrice, rawAmount, amount }) => {
-      const result = calculateDepreciation({
-        officialKm: d(officialKm),
-        perKmUnitPrice: d(perKmUnitPrice),
-      });
+    "A=$annualDepreciation × O=$officialKm ÷ I=$annualTotalKm → rawAmount=$rawAmount, amount=$amount ($note)",
+    ({ annualDepreciation, officialKm, annualTotalKm, rawAmount, amount }) => {
+      const result = calc(annualDepreciation, officialKm, annualTotalKm);
       expect(result.calculable).toBe(true);
       expect(result.rawAmount?.toString()).toBe(rawAmount);
       expect(result.amount).toBe(amount);
-      // 輸入原樣回傳（供快照與容量 predicate 使用，未取整）
-      expect(result.officialKm.toString()).toBe(new Prisma.Decimal(officialKm).toString());
-      expect(result.perKmUnitPrice.toString()).toBe(new Prisma.Decimal(perKmUnitPrice).toString());
+      // 三個輸入原樣回傳（供快照與容量 predicate 使用，未取整）
+      expect(result.annualDepreciation.toString()).toBe(d(annualDepreciation).toString());
+      expect(result.officialKm.toString()).toBe(d(officialKm).toString());
+      expect(result.annualTotalKm.toString()).toBe(d(annualTotalKm).toString());
     }
   );
 
-  it("AC-19 the function is pure: identical input yields identical output and never mutates the input Decimals", () => {
-    const officialKm = d("850.27");
-    const perKmUnitPrice = d("6.6667");
-    const first = calculateDepreciation({ officialKm, perKmUnitPrice });
-    const second = calculateDepreciation({ officialKm, perKmUnitPrice });
+  it("AC-51(a) the function is pure: identical input yields identical output and never mutates the input Decimals", () => {
+    const annualDepreciation = d("100000.00");
+    const officialKm = d("1001.66");
+    const annualTotalKm = d("12345.6");
+    const first = calculateDepreciation({ annualDepreciation, officialKm, annualTotalKm });
+    const second = calculateDepreciation({ annualDepreciation, officialKm, annualTotalKm });
     expect(first.rawAmount?.toString()).toBe(second.rawAmount?.toString());
+    expect(first.ratio?.toString()).toBe(second.ratio?.toString());
     expect(first.amount).toBe(second.amount);
-    expect(officialKm.toString()).toBe("850.27");
-    expect(perKmUnitPrice.toString()).toBe("6.6667");
+    expect(annualDepreciation.toString()).toBe("100000");
+    expect(officialKm.toString()).toBe("1001.66");
+    expect(annualTotalKm.toString()).toBe("12345.6");
   });
 
-  it("AC-19 floating-point discriminator: officialKm=0.07 × perKmUnitPrice=100.0000 is exactly 7 (an IEEE754 double intermediary produces 7.000000000000001)", () => {
-    const result = calculateDepreciation({
-      officialKm: d("0.07"),
-      perKmUnitPrice: d("100.0000"),
-    });
+  it("AC-51(a) floating-point discriminator: A=100.0000 × O=0.07 ÷ I=1.0 is exactly 7 (an IEEE754 double intermediary produces 7.000000000000001)", () => {
+    const result = calc("100.0000", "0.07", "1.0");
     expect(result.rawAmount?.toString()).toBe("7");
     // 對照：浮點路徑的實際產物（證明本斷言具鑑別力，而非「夠接近」）
-    expect((0.07 * 100).toString()).toBe("7.000000000000001");
-    expect(result.rawAmount?.toString()).not.toBe((0.07 * 100).toString());
+    expect((100 * 0.07).toString()).toBe("7.000000000000001");
+    expect(result.rawAmount?.toString()).not.toBe((100 * 0.07).toString());
     expect(result.amount).toBe(7);
   });
 
-  it("AC-19 perKmUnitPrice is restored from the engine's fixed 4-decimal string with no Number()/parseFloat mediation (10/3/3 wiring check)", () => {
-    // Spec §16 D6(a) 之 10/3/3 kill case：未取整分子得 "1.1111"；
-    // 若引擎改以已取整之每年費用 3.33 為分子則得 "1.1100"。
+  it("AC-51(a) annualDepreciation is restored from the engine's fixed 2-decimal string with no Number()/parseFloat mediation (engine reachability of the PRIMARY kill case)", () => {
+    // §20.4.3 引擎可達性檢查逐字：「`annualDepreciation="100000.00"` ＝
+    // `deriveAnnualDepreciation({ vehiclePrice: "300000.00", usefulLifeYears: 3 })`
+    // 之實際輸出（已驗）」。`deriveAnnualDepreciation` 屬 R4a；其每年費用語意與
+    // 既有 `deriveDepreciation.annualDepreciation` **完全一致**（AC-49(a) 逐字），
+    // 故本 Task 以既有引擎之同一欄位證明可達性。
     const derived = deriveDepreciation({
-      vehiclePrice: new Prisma.Decimal("10"),
+      vehiclePrice: new Prisma.Decimal("300000.00"),
       usefulLifeYears: 3,
-      estimatedAnnualKm: 3,
+      estimatedAnnualKm: 15000,
     });
     expect(derived.ok).toBe(true);
     if (!derived.ok) return;
-    expect(derived.perKmUnitPrice).toBe("1.1111");
-    expect(derived.perKmUnitPrice).not.toBe("1.1100");
+    expect(derived.annualDepreciation).toBe("100000.00");
 
-    // §7.4 ③：以 `new Prisma.Decimal(字串)` 還原，逐位元保留 4 位小數。
-    const perKmUnitPrice = new Prisma.Decimal(derived.perKmUnitPrice);
-    const result = calculateDepreciation({ officialKm: d("10000.00"), perKmUnitPrice });
-    expect(result.rawAmount?.toString()).toBe("11111");
-    expect(result.amount).toBe(11111);
+    // §20.4.1 ③：以 `new Prisma.Decimal(字串)` 還原，逐位元保留 2 位小數語意。
+    const annualDepreciation = new Prisma.Decimal(derived.annualDepreciation);
+    const result = calculateDepreciation({
+      annualDepreciation,
+      officialKm: d("1001.66"),
+      annualTotalKm: d("12345.6"),
+    });
+    expect(result.rawAmount?.toString()).toBe("8113.4979263867288751");
+    expect(result.amount).toBe(8113);
+  });
+
+  it("AC-51(b) annualDepreciation is never re-rounded: a 2-decimal source value passes through byte-for-byte into the result", () => {
+    const result = calc("0.01", "1.00", "1.0");
+    // 若對每年折舊費用再取整（例如至整數）→ 0 → rawAmount 0；本列以完整字串鑑別。
+    expect(result.annualDepreciation.toString()).toBe("0.01");
+    expect(result.rawAmount?.toString()).toBe("0.01");
   });
 });
 
 // ---------------------------------------------------------------------------
-// §2 AC-21 取整方向：ROUND_HALF_UP（0.5 進位、away from zero），非銀行家
+// §2 AC-50 公務比例（顯示值，不參與金額）
+// ---------------------------------------------------------------------------
+
+describe("calculateDepreciation — AC-50(a)(b) ratio = officialKm ÷ annualTotalKm at full precision; ratioString(6dp)/ratioPercentString(4dp) are display-only", () => {
+  const rows: Array<{
+    annualDepreciation: string;
+    officialKm: string;
+    annualTotalKm: string;
+    ratio: string;
+    ratioString: string;
+    ratioPercentString: string;
+    note: string;
+  }> = [
+    {
+      annualDepreciation: "100000.00",
+      officialKm: "1001.66",
+      annualTotalKm: "12345.6",
+      ratio: "0.081134979263867288751",
+      ratioString: "0.081135",
+      ratioPercentString: "8.1135",
+      note: "§20.4.3 PRIMARY：全精度 ratio 與 6dp／4dp 顯示字串逐字",
+    },
+    {
+      annualDepreciation: "100000.00",
+      officialKm: "12345.6",
+      annualTotalKm: "12345.6",
+      ratio: "1",
+      ratioString: "1.000000",
+      ratioPercentString: "100.0000",
+      note: "§20.4.3 邊界正例：比例恰 100%（顯示字串補足位數）",
+    },
+    {
+      annualDepreciation: "100000.00",
+      officialKm: "0.00",
+      annualTotalKm: "12345.6",
+      ratio: "0",
+      ratioString: "0.000000",
+      ratioPercentString: "0.0000",
+      note: "§20.4.3 邊界正例：公務里程 0",
+    },
+    {
+      annualDepreciation: "100000.00",
+      officialKm: "4000.09",
+      annualTotalKm: "20000.0",
+      ratio: "0.2000045",
+      ratioString: "0.200005",
+      ratioPercentString: "20.0005",
+      note: "§20.4.3 SECONDARY：6dp 顯示發生 ROUND_HALF_UP 進位（0.2000045 → 0.200005）",
+    },
+  ];
+
+  it.each(rows)(
+    "O=$officialKm ÷ I=$annualTotalKm → ratio=$ratio, ratioString=$ratioString, ratioPercentString=$ratioPercentString ($note)",
+    ({ annualDepreciation, officialKm, annualTotalKm, ratio, ratioString, ratioPercentString }) => {
+      const result = calc(annualDepreciation, officialKm, annualTotalKm);
+      expect(result.calculable).toBe(true);
+      expect(result.ratio?.toString()).toBe(ratio);
+      expect(result.ratioString).toBe(ratioString);
+      expect(result.ratioPercentString).toBe(ratioPercentString);
+    }
+  );
+
+  it("AC-50(a) ratio is NOT pre-rounded: the full-precision ratio keeps far more digits than the 6dp display string", () => {
+    const result = calc("100000.00", "1001.66", "12345.6");
+    expect(result.ratio?.toString()).toBe("0.081134979263867288751");
+    expect(result.ratio?.toString()).not.toBe(result.ratioString);
+    expect((result.ratioString as string).length).toBeLessThan(
+      (result.ratio as Prisma.Decimal).toString().length
+    );
+  });
+
+  it("AC-50(b) ratioPercentString is exactly ratio × 100 at 4dp (比照 MaintenanceApplication 之既有精度組)", () => {
+    const result = calc("100000.00", "1001.66", "12345.6");
+    const expected = (result.ratio as Prisma.Decimal)
+      .times(new Prisma.Decimal("100"))
+      .toFixed(4, HALF_UP);
+    expect(result.ratioPercentString).toBe(expected);
+    expect(result.ratioPercentString).toBe("8.1135");
+  });
+});
+
+describe("calculateDepreciation — AC-50(c) the ratio NEVER feeds the amount (kill case for the `.times(ratio)` mutant)", () => {
+  /**
+   * §20.4.3「R2 之回填義務」之交付：`.times(ratio)` mutant 之鑑別數對。
+   *
+   * **窮舉搜尋之構造與範圍（Handoff 同步記載）**：
+   *   令 `A = a/100`（2dp）、`O = 5k`（k 為奇數，整數里程，2dp 合法）、
+   *   `I = a/10`（1dp），則 `raw = A·O/I = k/2` **恆為 .5 結尾之精確值**，
+   *   且 `ratio = O/I = 50k/a` 於 `a` 含 2、5 以外之質因數時為無盡小數。
+   *   於 `k = 19999`（使 raw 之尾數趨近 9999.5，最大化 20 有效位數之 ulp 效應）、
+   *   `a ∈ [10·O, 10·O + 400000)`（即 `I ∈ [99995.0, 139995.0)`，滿足
+   *   `O ≤ I`（AC-52 比例 ≤ 100%）、`I < 1e8`（Decimal(9,1)）、
+   *   `A < 1e10`（Decimal(12,2)））之範圍內掃描 4165 組，**命中 5 組**，
+   *   取字典序第一組為本測試之 kill case。
+   *
+   * 結論：`.times(ratio)` mutant **在合法值域內可達且可鑑別**，故本節以實際
+   * 數對（而非結構性斷言）落地 AC-50(c)。§3 另有原始碼層之結構性掃描作為
+   * 第二道防線。
+   */
+  const A = "10004.17";
+  const O = "99995.00";
+  const I = "100041.7";
+
+  it("KILL CASE — A=10004.17 × O=99995.00 ÷ I=100041.7 → raw is EXACTLY 9999.5 → amount=10000, while `annualDepreciation.times(ratio)` yields 9999.4999999999999999 → 9999 (must go red)", () => {
+    const result = calc(A, O, I);
+    expect(result.calculable).toBe(true);
+    expect(result.rawAmount?.toString()).toBe("9999.5");
+    expect(result.amount).toBe(10000);
+
+    // mutant：以 `annualDepreciation.times(ratio)` 求 rawAmount（§20.4.1 禁止段第一項）
+    const mutant = d(A).times(result.ratio as Prisma.Decimal);
+    expect(mutant.toString()).toBe("9999.4999999999999999");
+    expect(mutant.toDecimalPlaces(0, HALF_UP).toNumber()).toBe(9999);
+    expect(mutant.toDecimalPlaces(0, HALF_UP).toNumber()).not.toBe(result.amount);
+  });
+
+  it("KILL CASE 自證：the mutant's divergence comes from decimal.js's 20-significant-digit precision on the intermediate ratio, not from a test artefact", () => {
+    expect(Prisma.Decimal.precision).toBe(20);
+    const ratio = d(O).div(d(I));
+    // ratio 為無盡小數，已在第 20 有效位數捨入 → 乘回 A 時失去「恰為 .5」之邊界。
+    expect(ratio.toString()).toBe("0.99953319465782768585");
+    expect(d(A).times(d(O)).div(d(I)).toString()).toBe("9999.5");
+    expect(d(A).times(ratio).toString()).toBe("9999.4999999999999999");
+  });
+
+  it("KILL CASE 可達性：A=10004.17 is a genuine engine output (vehiclePrice 30012.51 ÷ usefulLifeYears 3 at 2dp)", () => {
+    const derived = deriveDepreciation({
+      vehiclePrice: new Prisma.Decimal("30012.51"),
+      usefulLifeYears: 3,
+      estimatedAnnualKm: 15000,
+    });
+    expect(derived.ok).toBe(true);
+    if (!derived.ok) return;
+    expect(derived.annualDepreciation).toBe("10004.17");
+  });
+
+  it("AC-50(c) 結構性斷言（第二道防線）：the implementation never multiplies by the ratio nor by its display strings", () => {
+    const blanked = blankCommentsAndStrings(fs.readFileSync(ENGINE_SRC_PATH, "utf8"));
+    expect(blanked).not.toMatch(/\.times\(\s*ratio\s*\)/);
+    expect(blanked).not.toMatch(/\.times\(\s*ratioString\s*\)/);
+    expect(blanked).not.toMatch(/\.times\(\s*ratioPercentString\s*\)/);
+    // 正向：rawAmount 必須以「先乘後除」求值（AC-51(a) 逐字）。
+    expect(blanked).toMatch(
+      /annualDepreciation\s*\.times\(\s*officialKm\s*\)\s*\.div\(\s*annualTotalKm\s*\)/
+    );
+    // 掃描器鑑別力自證：合成的 mutant 片段必被上述樣式命中。
+    const mutantSnippet = blankCommentsAndStrings(
+      "const rawAmount = annualDepreciation.times(ratio);"
+    );
+    expect(mutantSnippet).toMatch(/\.times\(\s*ratio\s*\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §3 AC-51(b)(c)(d) 取整層級：全 Phase 恰一處取整（最終金額）
+//     §20.4.3 PRIMARY／SECONDARY kill case
+// ---------------------------------------------------------------------------
+
+/** §20.4.3 之四種取整層級 mutant，逐一以獨立算式重現（不改動實作即可比對）。 */
+function mutantAmounts(A: string, O: string, I: string) {
+  const a = d(A);
+  const o = d(O);
+  const i = d(I);
+  const ratio = o.div(i);
+  const raw = a.times(o).div(i);
+  return {
+    /** mutant A：先取整比例至 6dp 再相乘。 */
+    ratio6: a
+      .times(d(ratio.toFixed(6, HALF_UP)))
+      .toDecimalPlaces(0, HALF_UP)
+      .toNumber(),
+    /** mutant B：先取整比例至 4dp 再相乘。 */
+    ratio4: a
+      .times(d(ratio.toFixed(4, HALF_UP)))
+      .toDecimalPlaces(0, HALF_UP)
+      .toNumber(),
+    /** mutant C：先取整 rawAmount 至 2dp。 */
+    raw2: raw.toDecimalPlaces(2, HALF_UP).toDecimalPlaces(0, HALF_UP).toNumber(),
+    /** mutant D：先取整 officialKm 至整數。 */
+    okmInt: a.times(o.toDecimalPlaces(0, HALF_UP)).div(i).toDecimalPlaces(0, HALF_UP).toNumber(),
+  };
+}
+
+describe("calculateDepreciation — AC-51(c) §20.4.3 PRIMARY kill case discriminates ALL FOUR rounding-layer mutants", () => {
+  const A = "100000.00";
+  const O = "1001.66";
+  const I = "12345.6";
+
+  it("PRIMARY — A=100000.00 × O=1001.66 ÷ I=12345.6 → raw=8113.4979263867288751 → amount=8113", () => {
+    const result = calc(A, O, I);
+    expect(result.rawAmount?.toString()).toBe("8113.4979263867288751");
+    expect(result.amount).toBe(8113);
+    expect(result.ratioString).toBe("0.081135");
+    expect(result.ratioPercentString).toBe("8.1135");
+  });
+
+  it("PRIMARY mutant A — pre-rounding the ratio to 6dp yields 8114 (≠ 8113, must go red)", () => {
+    const result = calc(A, O, I);
+    expect(mutantAmounts(A, O, I).ratio6).toBe(8114);
+    expect(mutantAmounts(A, O, I).ratio6).not.toBe(result.amount);
+  });
+
+  it("PRIMARY mutant B — pre-rounding the ratio to 4dp yields 8110 (≠ 8113, must go red)", () => {
+    const result = calc(A, O, I);
+    expect(mutantAmounts(A, O, I).ratio4).toBe(8110);
+    expect(mutantAmounts(A, O, I).ratio4).not.toBe(result.amount);
+  });
+
+  it("PRIMARY mutant C — pre-rounding rawAmount to 2dp yields 8114 (≠ 8113, must go red)", () => {
+    const result = calc(A, O, I);
+    expect(mutantAmounts(A, O, I).raw2).toBe(8114);
+    expect(mutantAmounts(A, O, I).raw2).not.toBe(result.amount);
+  });
+
+  it("PRIMARY mutant D — pre-rounding officialKm to an integer yields 8116 (≠ 8113, must go red)", () => {
+    const result = calc(A, O, I);
+    expect(mutantAmounts(A, O, I).okmInt).toBe(8116);
+    expect(mutantAmounts(A, O, I).okmInt).not.toBe(result.amount);
+  });
+});
+
+describe("calculateDepreciation — AC-51(c) §20.4.3 SECONDARY kill case (independent discrimination of a pre-rounded ratio)", () => {
+  const A = "100000.00";
+  const O = "4000.09";
+  const I = "20000.0";
+
+  it("SECONDARY — A=100000.00 × O=4000.09 ÷ I=20000.0 → raw=20000.45 → amount=20000", () => {
+    const result = calc(A, O, I);
+    expect(result.rawAmount?.toString()).toBe("20000.45");
+    expect(result.amount).toBe(20000);
+  });
+
+  it("SECONDARY mutant A — pre-rounding the ratio to 6dp yields 20001 (≠ 20000, must go red); mutant C is deliberately blind here (raw is exactly 2dp)", () => {
+    const result = calc(A, O, I);
+    const mutants = mutantAmounts(A, O, I);
+    expect(mutants.ratio6).toBe(20001);
+    expect(mutants.ratio6).not.toBe(result.amount);
+    // §20.4.3 明文：「`rawAmount` 恰為 2dp，故 mutant C 於此列不鑑別」——明文
+    // 記錄，避免誤以為單列足以覆蓋四種 mutant。
+    expect(mutants.raw2).toBe(20000);
+    expect(mutants.raw2).toBe(result.amount);
+  });
+});
+
+describe("calculateDepreciation — AC-51(b)(d) rounding happens exactly once (source-level scan)", () => {
+  it("AC-51(d) source-level scan: exactly one toDecimalPlaces() call exists in the implementation (the final amount)", () => {
+    const blanked = blankCommentsAndStrings(fs.readFileSync(ENGINE_SRC_PATH, "utf8"));
+    const occurrences = blanked.match(/\.toDecimalPlaces\(/g) ?? [];
+    expect(occurrences.length).toBe(1);
+    // 且該處必為 `toDecimalPlaces(0, …)`（取整為整數），不得是 2dp／6dp 之預先取整。
+    expect(blanked).toMatch(/\.toDecimalPlaces\(\s*0\s*,/);
+  });
+
+  it("AC-51(a) source-level scan (T2 即審 AR-2 補強): exactly one .toNumber() call exists and it sits immediately after the ROUND_HALF_UP rounding — kills a 'real double intermediary' mutant", () => {
+    const blanked = blankCommentsAndStrings(fs.readFileSync(ENGINE_SRC_PATH, "utf8"));
+    const occurrences = blanked.match(/\.toNumber\(/g) ?? [];
+    expect(occurrences.length).toBe(1);
+    expect(blanked).toMatch(/\.toDecimalPlaces\([^)]*\)\.toNumber\(\)/);
+    // 掃描器鑑別力自證：合成的 double 中介片段必被計為 3 次且不匹配取整鏈。
+    const doubleIntermediary = blankCommentsAndStrings(
+      "const raw = annualDepreciation.toNumber() * officialKm.toNumber() / annualTotalKm.toNumber();"
+    );
+    expect((doubleIntermediary.match(/\.toNumber\(/g) ?? []).length).toBe(3);
+    expect(doubleIntermediary).not.toMatch(/\.toDecimalPlaces\([^)]*\)\.toNumber\(\)/);
+  });
+
+  it("AC-51(d) source-level scan: the only toFixed() calls are the two DISPLAY strings (6dp ratio, 4dp percent) — never on the amount path", () => {
+    const blanked = blankCommentsAndStrings(fs.readFileSync(ENGINE_SRC_PATH, "utf8"));
+    expect((blanked.match(/\.toFixed\(/g) ?? []).length).toBe(2);
+    // 方法鏈可能被 formatter 折行，故先把「點號周邊的空白」收斂回單一鏈式字串，
+    // 再逐一比對受詞——兩處皆以 `ratio` 為受詞（顯示值），且皆不參與
+    // `rawAmount`／`amount`。
+    const chained = blanked.replace(/\s*\.\s*/g, ".");
+    const toFixedCalls = chained.match(/[\w$.()[\]]+\.toFixed\([^)]*\)/g) ?? [];
+    expect(toFixedCalls.length).toBe(2);
+    for (const call of toFixedCalls) {
+      expect(call).toMatch(/^ratio(\.times\(PERCENT_MULTIPLIER\))?\.toFixed\(/);
+    }
+    expect(chained).not.toMatch(/rawAmount\.toFixed\(/);
+    expect(chained).not.toMatch(/amount\s*=\s*[^;]*\.toFixed\(/);
+    // 掃描器鑑別力自證：合成的「對金額 toFixed」片段必被上述受詞斷言拒絕。
+    const mutantChained = blankCommentsAndStrings(
+      "const amount = rawAmount.toFixed(0, Prisma.Decimal.ROUND_HALF_UP);"
+    ).replace(/\s*\.\s*/g, ".");
+    expect(mutantChained).toMatch(/rawAmount\.toFixed\(/);
+  });
+
+  it("AC-51(d) source-level scan: no round()/trunc()/ceil()/floor()/Math.* rounding anywhere", () => {
+    const blanked = blankCommentsAndStrings(fs.readFileSync(ENGINE_SRC_PATH, "utf8"));
+    expect(blanked.match(/\.(round|trunc|ceil|floor)\(/g)).toBeNull();
+    expect(blanked.match(/Math\./g)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §4 AC-21 取整方向：ROUND_HALF_UP（0.5 進位、away from zero），非銀行家
+//     §20.4.3「`ROUND_HALF_UP` kill pair（取代 AC-21 之舊數對）」
 // ---------------------------------------------------------------------------
 
 describe("calculateDepreciation — AC-21 rounding is ROUND_HALF_UP (away from zero), never ROUND_HALF_EVEN", () => {
-  // kill pair：兩列成對出現才具鑑別力。
-  //   `raw=0.5 → 1`：ROUND_HALF_EVEN 得 0（**此列鑑別 half-even mutant**）
-  //   `raw=1.5 → 2`：ROUND_HALF_EVEN 亦得 2（此列**不**鑑別 half-even，但鑑別
-  //                   「一律捨去」與「至偶數」以外的其他錯誤取整方向）
-  it("kill pair row 1 — officialKm=1.00 × 0.5000 → raw=0.5 → amount=1 (ROUND_HALF_EVEN mutant yields 0, must go red)", () => {
-    const result = calculateDepreciation({ officialKm: d("1.00"), perKmUnitPrice: d("0.5000") });
-    expect(result.rawAmount?.toString()).toBe("0.5");
-    expect(result.amount).toBe(1);
-    // 反例自證：half-even 於本列確實得 0（證明本列具鑑別力）
-    expect(d("0.5").toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_EVEN).toNumber()).toBe(0);
+  it("kill pair row 1 (鑑別) — A=100000.00 × O=4000.10 ÷ I=20000.0 → raw=20000.5 → amount=20001 (ROUND_HALF_EVEN mutant yields 20000, must go red)", () => {
+    const result = calc("100000.00", "4000.10", "20000.0");
+    expect(result.rawAmount?.toString()).toBe("20000.5");
+    expect(result.amount).toBe(20001);
+    // 反例自證：half-even 於本列確實得 20000（證明本列具鑑別力）
+    const halfEven = d("20000.5").toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_EVEN).toNumber();
+    expect(halfEven).toBe(20000);
+    expect(halfEven).not.toBe(result.amount);
   });
 
-  it("kill pair row 2 — officialKm=3.00 × 0.5000 → raw=1.5 → amount=2 (pairs with row 1: proves 'away from zero', not 'always down')", () => {
-    const result = calculateDepreciation({ officialKm: d("3.00"), perKmUnitPrice: d("0.5000") });
-    expect(result.rawAmount?.toString()).toBe("1.5");
-    expect(result.amount).toBe(2);
-    // 本列對 half-even 不鑑別（half-even 亦得 2）——明文記錄，避免誤以為單列足夠。
-    expect(d("1.5").toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_EVEN).toNumber()).toBe(2);
+  it("kill pair row 2 (配對，證 away-from-zero) — A=100000.00 × O=4000.30 ÷ I=20000.0 → raw=20001.5 → amount=20002 (half-even also yields 20002: pairs with row 1 to prove 'away from zero', not 'always down')", () => {
+    const result = calc("100000.00", "4000.30", "20000.0");
+    expect(result.rawAmount?.toString()).toBe("20001.5");
+    expect(result.amount).toBe(20002);
+    // 本列對 half-even 不鑑別（half-even 亦得 20002）——明文記錄。
+    expect(d("20001.5").toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_EVEN).toNumber()).toBe(20002);
   });
 
-  it("minimal discriminating pair — raw=0.4999 → 0 and raw=0.5 → 1", () => {
-    const below = calculateDepreciation({ officialKm: d("1.00"), perKmUnitPrice: d("0.4999") });
-    expect(below.rawAmount?.toString()).toBe("0.4999");
-    expect(below.amount).toBe(0);
+  it("minimal discriminating pair — raw just below .5 rounds down, raw exactly .5 rounds up", () => {
+    const below = calc("100000.00", "4000.09", "20000.0");
+    expect(below.rawAmount?.toString()).toBe("20000.45");
+    expect(below.amount).toBe(20000);
 
-    const at = calculateDepreciation({ officialKm: d("1.00"), perKmUnitPrice: d("0.5000") });
-    expect(at.rawAmount?.toString()).toBe("0.5");
-    expect(at.amount).toBe(1);
+    const at = calc("100000.00", "4000.10", "20000.0");
+    expect(at.rawAmount?.toString()).toBe("20000.5");
+    expect(at.amount).toBe(20001);
   });
 
   it("half-up applies away from zero for negative raw amounts too (defensive: never silently 0, never NaN)", () => {
-    // 負里程於本 Phase 不可達（`sumOfficialMileage` 之 SUM ≥ 0，單價 > 0），
-    // 但若真的發生，函式必須忠實回報負值——**不得**靜默回 0（005a T2 SF-1
-    // 「絕不靜默回 0」之直接對象），亦不得回 NaN。
-    const result = calculateDepreciation({
-      officialKm: d("-1.00"),
-      perKmUnitPrice: d("0.5000"),
-    });
+    // 負公務里程於本 Phase 不可達（`sumOfficialMileage` 之 SUM ≥ 0），但若真的
+    // 發生，函式必須忠實回報負值——**不得**靜默回 0（005a T2 SF-1「絕不靜默回
+    // 0」之直接對象），亦不得回 NaN。
+    const result = calc("100000.00", "-0.10", "20000.0");
     expect(result.calculable).toBe(true);
     expect(result.rawAmount?.toString()).toBe("-0.5");
     expect(result.amount).toBe(-1); // away from zero
@@ -292,149 +642,24 @@ describe("calculateDepreciation — AC-21 rounding is ROUND_HALF_UP (away from z
 });
 
 // ---------------------------------------------------------------------------
-// §3 AC-20 取整層級：全 Phase 恰一處取整（最終金額）
+// §5 AC-50(d)／§20.4.1 除零守門 —— 三重守門
+//     （005a T2 SF-1／006 T2R MF-1 同型；「絕不除以零、絕不回 NaN／Infinity、
+//       絕不靜默回 0」逐字）
 // ---------------------------------------------------------------------------
 
-describe("calculateDepreciation — AC-20 rounding happens exactly once (final amount only)", () => {
-  it("PRIMARY kill case — officialKm=1234.56 pattern replaced: 850.27 × 6.6667 → raw=5668.495009 → 5668 (mutant A 'pre-round raw to 2dp' → 5669; mutant B 'pre-round officialKm' → 5667)", () => {
-    const officialKm = d("850.27");
-    const perKmUnitPrice = d("6.6667");
-    const result = calculateDepreciation({ officialKm, perKmUnitPrice });
+/** `calculable=false` 之回傳形狀：其餘欄位一律 `null`（§20.4.1 逐字）。 */
+function expectNotCalculable(result: CalculateDepreciationResult): void {
+  expect(result.calculable).toBe(false);
+  expect(result.ratio).toBeNull();
+  expect(result.ratioString).toBeNull();
+  expect(result.ratioPercentString).toBeNull();
+  expect(result.rawAmount).toBeNull();
+  expect(result.amount).toBeNull();
+  // 絕不靜默回 0（005a T2 SF-1 逐字）
+  expect(result.amount).not.toBe(0);
+}
 
-    expect(result.rawAmount?.toString()).toBe("5668.495009");
-    expect(result.amount).toBe(5668);
-
-    // mutant A — 先將 rawAmount 取整至 2 位（5668.50）再取整 → 5669
-    const mutantA = officialKm
-      .times(perKmUnitPrice)
-      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .toNumber();
-    expect(mutantA).toBe(5669);
-    expect(mutantA).not.toBe(result.amount);
-
-    // mutant B — 先將 officialKm 取整至整數（850）再相乘 → 5667
-    const mutantB = officialKm
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .times(perKmUnitPrice)
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .toNumber();
-    expect(mutantB).toBe(5667);
-    expect(mutantB).not.toBe(result.amount);
-  });
-
-  it("PRIMARY kill case price is genuinely reachable: deriveDepreciation(300000, 3, 15000).perKmUnitPrice === '6.6667'", () => {
-    const derived = deriveDepreciation({
-      vehiclePrice: new Prisma.Decimal("300000"),
-      usefulLifeYears: 3,
-      estimatedAnnualKm: 15000,
-    });
-    expect(derived.ok).toBe(true);
-    if (!derived.ok) return;
-    expect(derived.perKmUnitPrice).toBe("6.6667");
-  });
-
-  it("SECONDARY kill case (terminating decimal) — 1137.50 × 5.5556 → raw=6319.495 exactly → 6319 (mutant A → 6320; mutant B → 6322)", () => {
-    const officialKm = d("1137.50");
-    const perKmUnitPrice = d("5.5556");
-    const result = calculateDepreciation({ officialKm, perKmUnitPrice });
-
-    expect(result.rawAmount?.toString()).toBe("6319.495");
-    expect(result.amount).toBe(6319);
-
-    const mutantA = officialKm
-      .times(perKmUnitPrice)
-      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .toNumber();
-    expect(mutantA).toBe(6320);
-    expect(mutantA).not.toBe(result.amount);
-
-    const mutantB = officialKm
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .times(perKmUnitPrice)
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .toNumber();
-    expect(mutantB).toBe(6322);
-    expect(mutantB).not.toBe(result.amount);
-  });
-
-  it("Spec §2 AC-20 / §17.1 self-note re-verified: 1234.56 × 0.5001 kills ONLY mutant B (617 vs 618) and is blind to mutant A (617 vs 617) — hence it is NOT the primary kill case", () => {
-    const officialKm = d("1234.56");
-    const perKmUnitPrice = d("0.5001");
-    const result = calculateDepreciation({ officialKm, perKmUnitPrice });
-
-    // ⚠ Spec 原文寫 `rawAmount = 617.404656`；實際為 `617.403456`（Spec 算術
-    //   筆誤，已於 Handoff Warnings 回報）。結論值 `amount = 617` 不受影響。
-    expect(result.rawAmount?.toString()).toBe("617.403456");
-    expect(result.amount).toBe(617);
-
-    const mutantA = officialKm
-      .times(perKmUnitPrice)
-      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .toNumber();
-    expect(mutantA).toBe(617); // 不鑑別 — Spec 自註屬實
-    expect(mutantA).toBe(result.amount);
-
-    const mutantB = officialKm
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .times(perKmUnitPrice)
-      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-      .toNumber();
-    expect(mutantB).toBe(618); // 鑑別 mutant B
-    expect(mutantB).not.toBe(result.amount);
-  });
-
-  it("perKmUnitPrice is never re-rounded: a 4-decimal price passes through byte-for-byte into rawAmount", () => {
-    const result = calculateDepreciation({
-      officialKm: d("1.00"),
-      perKmUnitPrice: d("0.0001"),
-    });
-    // 若對單價再取整（例如至 2 位）→ 0.00 → rawAmount 0，amount 0（無法與正確
-    // 值區分，因兩者 amount 皆 0），故此列以 rawAmount 的完整字串鑑別。
-    expect(result.rawAmount?.toString()).toBe("0.0001");
-    expect(result.perKmUnitPrice.toString()).toBe("0.0001");
-  });
-
-  it("AC-20 source-level scan: exactly one toDecimalPlaces() call exists in the implementation (the final amount)", () => {
-    const rawSource = fs.readFileSync(ENGINE_SRC_PATH, "utf8");
-    const blanked = blankCommentsAndStrings(rawSource);
-    const occurrences = blanked.match(/\.toDecimalPlaces\(/g) ?? [];
-    expect(occurrences.length).toBe(1);
-  });
-
-  it("AC-19 source-level scan (T2 即審 AR-2 補強，PHASE-007-T3): exactly one .toNumber() call exists and it sits immediately after the ROUND_HALF_UP rounding — kills a 'real double intermediary' mutant such as officialKm.toNumber() * perKmUnitPrice.toNumber()", () => {
-    const rawSource = fs.readFileSync(ENGINE_SRC_PATH, "utf8");
-    const blanked = blankCommentsAndStrings(rawSource);
-    // 「零浮點中介」掃描原本只攔 Number()/parseFloat/parseInt，`.toNumber()`
-    // 為同等威力的降轉入口（AR-2 登記之盲區）。本檔唯一合法用途為最終金額，
-    // 且必須發生在取整**之後**（AC-19/20）。
-    const occurrences = blanked.match(/\.toNumber\(/g) ?? [];
-    expect(occurrences.length).toBe(1);
-    expect(blanked).toMatch(/\.toDecimalPlaces\([^)]*\)\.toNumber\(\)/);
-    // 掃描器鑑別力自證：合成的 double 中介片段必被計為 2 次且不匹配取整鏈。
-    const doubleIntermediary = blankCommentsAndStrings(
-      "const raw = officialKm.toNumber() * perKmUnitPrice.toNumber();"
-    );
-    expect((doubleIntermediary.match(/\.toNumber\(/g) ?? []).length).toBe(2);
-    expect(doubleIntermediary).not.toMatch(/\.toDecimalPlaces\([^)]*\)\.toNumber\(\)/);
-  });
-
-  it("AC-20 source-level scan: no toFixed()/round()/trunc()/ceil()/floor() rounding on the amount path", () => {
-    const rawSource = fs.readFileSync(ENGINE_SRC_PATH, "utf8");
-    const blanked = blankCommentsAndStrings(rawSource);
-    expect(blanked.match(/\.toFixed\(/g)).toBeNull();
-    expect(blanked.match(/\.(round|trunc|ceil|floor)\(/g)).toBeNull();
-    expect(blanked.match(/Math\./g)).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// §4 NaN／Infinity 三重守門（005a T2 SF-1／006 T2R MF-1 同型）
-// ---------------------------------------------------------------------------
-
-describe("calculateDepreciation — NaN/Infinity triple guard (never returns NaN/Infinity, never silently returns 0, never throws)", () => {
+describe("calculateDepreciation — AC-50(d) triple guard: non-finite inputs and annualTotalKm ≤ 0 (never divides by zero, never returns NaN/Infinity, never silently returns 0, never throws)", () => {
   const nonFinite: Array<{ label: string; value: Prisma.Decimal }> = [
     { label: "NaN", value: d("NaN") },
     { label: "+Infinity", value: d("Infinity") },
@@ -442,103 +667,203 @@ describe("calculateDepreciation — NaN/Infinity triple guard (never returns NaN
   ];
 
   it.each(nonFinite)(
-    "guard 1 — officialKm = $label → calculable=false, rawAmount/amount null",
+    "guard 1a — annualDepreciation = $label → calculable=false, all derived fields null",
     ({ value }) => {
-      const result = calculateDepreciation({ officialKm: value, perKmUnitPrice: d("6.6667") });
-      expect(result.calculable).toBe(false);
-      expect(result.rawAmount).toBeNull();
-      expect(result.amount).toBeNull();
-      // 絕不靜默回 0（005a T2 SF-1 逐字）
-      expect(result.amount).not.toBe(0);
+      expectNotCalculable(
+        calculateDepreciation({
+          annualDepreciation: value,
+          officialKm: d("1001.66"),
+          annualTotalKm: d("12345.6"),
+        })
+      );
     }
   );
 
   it.each(nonFinite)(
-    "guard 2 — perKmUnitPrice = $label → calculable=false, rawAmount/amount null",
+    "guard 1b — officialKm = $label → calculable=false, all derived fields null",
     ({ value }) => {
-      const result = calculateDepreciation({ officialKm: d("850.27"), perKmUnitPrice: value });
-      expect(result.calculable).toBe(false);
-      expect(result.rawAmount).toBeNull();
-      expect(result.amount).toBeNull();
-      expect(result.amount).not.toBe(0);
+      expectNotCalculable(
+        calculateDepreciation({
+          annualDepreciation: d("100000.00"),
+          officialKm: value,
+          annualTotalKm: d("12345.6"),
+        })
+      );
     }
   );
 
-  it("guard 3 — product itself non-finite (0 × Infinity = NaN) is caught by the third guard, not leaked", () => {
-    // 本組合會被 guard 2 先攔下；此列直接驗證「相乘後非有限」之語意確實存在，
-    // 且與 guard 1/2 一致回報（而非讓 NaN 穿透至 amount）。
-    expect(d("0").times(d("Infinity")).isFinite()).toBe(false);
-    const result = calculateDepreciation({ officialKm: d("0.00"), perKmUnitPrice: d("Infinity") });
-    expect(result.calculable).toBe(false);
-    expect(result.amount).toBeNull();
-  });
+  it.each(nonFinite)(
+    "guard 1c — annualTotalKm = $label → calculable=false, all derived fields null",
+    ({ value }) => {
+      expectNotCalculable(
+        calculateDepreciation({
+          annualDepreciation: d("100000.00"),
+          officialKm: d("1001.66"),
+          annualTotalKm: value,
+        })
+      );
+    }
+  );
 
-  it("NaN never leaks into a truthy-looking comparison: a NaN input must not produce amount 0 or a finite rawAmount", () => {
-    // 005a T2 SF-1 之根因：`Decimal` 與 NaN 的比較恆為 false，故「以比較式當
-    // 守門」會靜默穿透。本列鎖定回傳形狀而非比較結果。
-    const result = calculateDepreciation({ officialKm: d("NaN"), perKmUnitPrice: d("NaN") });
-    expect(result.calculable).toBe(false);
+  const nonPositiveTotals = ["0", "0.0", "-0.1", "-20000.0"];
+
+  it.each(nonPositiveTotals)(
+    "guard 2 (除零) — annualTotalKm = %s (≤ 0) → calculable=false, all derived fields null (never Infinity, never NaN)",
+    (total) => {
+      const result = calc("100000.00", "1001.66", total);
+      expectNotCalculable(result);
+    }
+  );
+
+  it("guard 2 自證：a naked division by zero would have produced Infinity — the guard is what prevents it from reaching `amount`", () => {
+    // decimal.js 對 x/0 拋 DivisionByZero？否——`Prisma.Decimal` 之 div(0) 回
+    // `Infinity`（非有限值）。本列固定「若無守門會發生什麼」，證明守門有意義。
+    expect(d("1001.66").div(d("0")).isFinite()).toBe(false);
+    expect(d("1001.66").div(d("0")).toString()).toBe("Infinity");
+    // 而函式回傳形狀完全不含該非有限值。
+    const result = calc("100000.00", "1001.66", "0");
     expect(result.rawAmount).toBeNull();
     expect(result.amount).toBeNull();
-    expect(result.officialKm.isNaN()).toBe(true);
   });
 
-  it("never throws for any non-finite / extreme input combination", () => {
+  it("NaN never leaks into a truthy-looking comparison: the guard is `.isFinite()`, not a comparison (005a T2 SF-1 根因)", () => {
+    // `Decimal` 與 NaN 的比較恆為 false，故「以比較式當守門」會靜默穿透。
+    expect(d("NaN").greaterThan(0)).toBe(false);
+    expect(d("NaN").lessThanOrEqualTo(0)).toBe(false);
+    const result = calculateDepreciation({
+      annualDepreciation: d("NaN"),
+      officialKm: d("NaN"),
+      annualTotalKm: d("NaN"),
+    });
+    expectNotCalculable(result);
+    expect(result.annualTotalKm.isNaN()).toBe(true);
+  });
+
+  it("guard 3 — the computed ratio/rawAmount are themselves checked for finiteness before the final rounding", () => {
+    // 極端但有限之輸入：分母極小、分子極大 → 乘除結果仍為有限值，函式忠實回報。
+    const result = calc("9999999999.99", "9999999999.99", "0.1");
+    expect(result.calculable).toBe(true);
+    expect(result.rawAmount?.isFinite()).toBe(true);
+    expect(Number.isFinite(result.amount as number)).toBe(true);
+  });
+
+  it("never throws for any non-finite / extreme input combination (3^6 sweep)", () => {
     const extremes = [d("NaN"), d("Infinity"), d("-Infinity"), d("0"), d("1e30"), d("-1e30")];
     for (const a of extremes) {
-      for (const b of extremes) {
-        expect(() => calculateDepreciation({ officialKm: a, perKmUnitPrice: b })).not.toThrow();
+      for (const o of extremes) {
+        for (const i of extremes) {
+          expect(() =>
+            calculateDepreciation({ annualDepreciation: a, officialKm: o, annualTotalKm: i })
+          ).not.toThrow();
+        }
       }
     }
+  });
+
+  it("invariant sweep — whenever calculable=false, EVERY derived field is null (no partial results leak)", () => {
+    const values = [d("NaN"), d("Infinity"), d("-Infinity"), d("0"), d("-1"), d("100000.00")];
+    let sawNotCalculable = false;
+    for (const a of values) {
+      for (const o of values) {
+        for (const i of values) {
+          const result = calculateDepreciation({
+            annualDepreciation: a,
+            officialKm: o,
+            annualTotalKm: i,
+          });
+          if (!result.calculable) {
+            sawNotCalculable = true;
+            expect(result.ratio).toBeNull();
+            expect(result.ratioString).toBeNull();
+            expect(result.ratioPercentString).toBeNull();
+            expect(result.rawAmount).toBeNull();
+            expect(result.amount).toBeNull();
+          } else {
+            expect(result.ratio).not.toBeNull();
+            expect(result.ratioString).not.toBeNull();
+            expect(result.ratioPercentString).not.toBeNull();
+            expect(result.rawAmount).not.toBeNull();
+            expect(result.amount).not.toBeNull();
+          }
+        }
+      }
+    }
+    expect(sawNotCalculable).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// §5 AC-22(a)(d) 容量 predicate（判定層）
+// §6 AC-22(a)(d) 容量 predicate（判定層）—— §20.7.2 之新判定集合
 // ---------------------------------------------------------------------------
 
 function syntheticResult(
   overrides: Partial<CalculateDepreciationResult>
 ): CalculateDepreciationResult {
   return {
+    annualDepreciation: d("1"),
     officialKm: d("1"),
-    perKmUnitPrice: d("1"),
+    annualTotalKm: d("1"),
     calculable: true,
+    ratio: d("1"),
+    ratioString: "1.000000",
+    ratioPercentString: "100.0000",
     rawAmount: d("1"),
     amount: 1,
     ...overrides,
   };
 }
 
-describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard with boundary positives (no false kills, no silent truncation)", () => {
+describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) §20.7.2 判定集合重整（六項），boundary positives included (no false kills, no silent truncation)", () => {
   it("a normal result is within capacity", () => {
-    expect(
-      isDepreciationCalculationOverCapacity(
-        calculateDepreciation({ officialKm: d("850.27"), perKmUnitPrice: d("6.6667") })
-      )
-    ).toBe(false);
+    expect(isDepreciationCalculationOverCapacity(calc("100000.00", "1001.66", "12345.6"))).toBe(
+      false
+    );
   });
 
+  /** §20.7.2 之判定集合：五個 Decimal 欄位 ＋ `totalAmount`（int4）。 */
   const decimalBoundaries: Array<{
-    field: "officialKm" | "perKmUnitPrice" | "rawAmount";
+    field: "annualDepreciation" | "officialKm" | "annualTotalKm" | "ratio" | "rawAmount";
+    constantKey:
+      | "snapshotAnnualDepreciation"
+      | "snapshotOfficialKm"
+      | "snapshotAnnualTotalKm"
+      | "snapshotRatio"
+      | "snapshotRawAmount";
     justUnder: string;
     atBound: string;
     column: string;
   }> = [
     {
+      field: "annualDepreciation",
+      constantKey: "snapshotAnnualDepreciation",
+      justUnder: "9999999999.99",
+      atBound: "10000000000",
+      column: "snapshotAnnualDepreciation Decimal(12,2)",
+    },
+    {
       field: "officialKm",
+      constantKey: "snapshotOfficialKm",
       justUnder: "9999999999.99",
       atBound: "10000000000",
       column: "snapshotOfficialKm Decimal(12,2)",
     },
     {
-      field: "perKmUnitPrice",
-      justUnder: "9999999999.9999",
-      atBound: "10000000000",
-      column: "snapshotPerKmUnitPrice Decimal(14,4)",
+      field: "annualTotalKm",
+      constantKey: "snapshotAnnualTotalKm",
+      justUnder: "99999999.9",
+      atBound: "100000000",
+      column: "snapshotAnnualTotalKm Decimal(9,1)",
+    },
+    {
+      field: "ratio",
+      constantKey: "snapshotRatio",
+      justUnder: "999.999999",
+      atBound: "1000",
+      column: "snapshotRatio Decimal(9,6)",
     },
     {
       field: "rawAmount",
+      constantKey: "snapshotRawAmount",
       justUnder: "9999999999.9999",
       atBound: "10000000000",
       column: "snapshotRawAmount Decimal(14,4)",
@@ -546,7 +871,7 @@ describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard w
   ];
 
   it.each(decimalBoundaries)(
-    "$field just under 1e10 ($justUnder) is within capacity ($column boundary positive)",
+    "$field just under its bound ($justUnder) is within capacity ($column boundary positive)",
     ({ field, justUnder }) => {
       const result = syntheticResult({
         [field]: d(justUnder),
@@ -556,7 +881,7 @@ describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard w
   );
 
   it.each(decimalBoundaries)(
-    "$field at exactly 1e10 ($atBound) is over capacity ($column)",
+    "$field at exactly its bound ($atBound) is over capacity ($column)",
     ({ field, atBound }) => {
       const result = syntheticResult({
         [field]: d(atBound),
@@ -566,14 +891,23 @@ describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard w
   );
 
   it.each(decimalBoundaries)(
-    "$field at exactly −1e10 is over capacity (abs() is used)",
-    ({ field }) => {
+    "$field at exactly −(its bound) is over capacity (abs() is used)",
+    ({ field, atBound }) => {
       const result = syntheticResult({
-        [field]: d("-10000000000"),
+        [field]: d(`-${atBound}`),
       } as Partial<CalculateDepreciationResult>);
       expect(isDepreciationCalculationOverCapacity(result)).toBe(true);
     }
   );
+
+  it("each bound equals 10^(precision − scale) of its target column (零魔術數，AC-22(a))", () => {
+    for (const { constantKey } of decimalBoundaries) {
+      const constant = DEPRECIATION_COLUMN_CAPACITY[constantKey];
+      expect(constant.bound.toString()).toBe(
+        new Prisma.Decimal("10").pow(constant.precision - constant.scale).toString()
+      );
+    }
+  });
 
   it("amount = 2147483647 (int4 max) is within capacity", () => {
     expect(isDepreciationCalculationOverCapacity(syntheticResult({ amount: 2147483647 }))).toBe(
@@ -596,13 +930,26 @@ describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard w
     );
   });
 
+  it("§20.7.2 — `amount` 超 int4 於新模型仍可達（車價 ≥ 2.15e9 且比例接近 1），故 AMOUNT_OUT_OF_RANGE 之守門一律保留", () => {
+    // 每年折舊費用 3,000,000,000.00（車價 9e9 ÷ 3 年）、比例 ~100%。
+    const result = calc("3000000000.00", "20000.00", "20000.0");
+    expect(result.calculable).toBe(true);
+    expect(result.amount).toBe(3000000000);
+    expect(isDepreciationCalculationOverCapacity(result)).toBe(true);
+  });
+
+  it("§20.7.2 — `snapshotPerKmUnitPrice` 已退出判定集合：a legacy-only column no longer participates in the verdict (its DDL constant is retained for the frozen legacy rows)", () => {
+    // 常數保留（凍結唯讀欄仍為 Decimal(14,4)），但 predicate 不再引用它。
+    expect(DEPRECIATION_COLUMN_CAPACITY.snapshotPerKmUnitPrice.precision).toBe(14);
+    expect(DEPRECIATION_COLUMN_CAPACITY.snapshotPerKmUnitPrice.scale).toBe(4);
+    const blanked = blankCommentsAndStrings(fs.readFileSync(ENGINE_SRC_PATH, "utf8"));
+    const predicateStart = blanked.indexOf("export function isDepreciationCalculationOverCapacity");
+    expect(predicateStart).toBeGreaterThan(-1);
+    expect(blanked.slice(predicateStart)).not.toMatch(/snapshotPerKmUnitPrice/);
+  });
+
   it("FW-2 — an over-capacity input is REJECTED by the predicate, never thrown (Postgres 22003 numeric overflow would otherwise surface as a 500)", () => {
-    // `Decimal(14,4)` 溢位於 DB 層為 SQLSTATE 22003；判定層必須以布林拒絕，
-    // 使呼叫端能轉為 4xx `AMOUNT_OUT_OF_RANGE`（AC-22(b)），而非拋錯。
-    const overflowing = calculateDepreciation({
-      officialKm: d("9999999999.99"),
-      perKmUnitPrice: d("9999999999.9999"),
-    });
+    const overflowing = calc("9999999999.99", "9999999999.99", "0.1");
     expect(overflowing.calculable).toBe(true); // 忠實計算，不靜默截斷
     expect(overflowing.rawAmount?.greaterThan(d("10000000000"))).toBe(true);
     let threw = false;
@@ -617,26 +964,25 @@ describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard w
   });
 
   it("AC-22(b) the predicate never truncates: calculateDepreciation's returned values are unchanged by the capacity verdict", () => {
-    const result = calculateDepreciation({
-      officialKm: d("9999999999.99"),
-      perKmUnitPrice: d("9999999999.9999"),
-    });
+    const result = calc("9999999999.99", "9999999999.99", "0.1");
     const rawBefore = result.rawAmount?.toString();
     const amountBefore = result.amount;
+    const ratioBefore = result.ratio?.toString();
     isDepreciationCalculationOverCapacity(result);
     expect(result.rawAmount?.toString()).toBe(rawBefore);
     expect(result.amount).toBe(amountBefore);
+    expect(result.ratio?.toString()).toBe(ratioBefore);
   });
 
-  it("a non-calculable result (non-finite input) is reported as over capacity — no finite column can hold it, so the caller raises AMOUNT_OUT_OF_RANGE (keeps T3's invariant `calculable=false ⇒ ≥1 blocker` satisfiable)", () => {
-    const result = calculateDepreciation({ officialKm: d("NaN"), perKmUnitPrice: d("6.6667") });
+  it("a non-calculable result is reported as over capacity — no finite column can hold it, so the caller raises AMOUNT_OUT_OF_RANGE", () => {
+    const result = calc("100000.00", "1001.66", "0");
     expect(result.calculable).toBe(false);
     expect(isDepreciationCalculationOverCapacity(result)).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// §6 T1 即審 FW-1 —— 容量常數 ↔ 實際 DB 欄位精度之對照
+// §7 T1 即審 FW-1 —— 容量常數 ↔ **實際套用之 DDL** 之對照
 //
 // 背景（PROJECT_STATE「T1 即審 FW」）：reviewer 已證「只改 schema.prisma 而不
 // 動 migration，全套測試仍全綠」——故容量常數若僅綁 schema.prisma 之心智模型
@@ -644,24 +990,12 @@ describe("isDepreciationCalculationOverCapacity — AC-22(a)(d) capacity guard w
 // 來源，並同時要求 schema.prisma 與該 DDL 一致：
 //   ① 常數 ≠ migration DDL 精度 → 紅（常數脫鉤）
 //   ② schema.prisma ≠ migration DDL → 紅（schema-only 改動不再靜默通過）
+// 修訂段增補：新 4 欄之 DDL 位於 **M2（ALTER 型）**，既有欄位位於 M1（CREATE
+// 型），故讀取器須橫跨兩檔且在命中數 ≠ 1 時 fail-loud。
 // 本層刻意不連 DB（單元層零 IO，§11.1「不需 DB」）；`information_schema` 之
-// 實查已由 T1 之 `phase7-migration-safety.test.ts`（整合層，AC-01(a) 精度往返）
-// 覆蓋，兩層合起來構成完整鏈：常數 ↔ migration DDL ↔ 實際 DB 欄位。
+// 實查已由 R1 之 `phase7-migration-safety.test.ts`（整合層）覆蓋，兩層合起來
+// 構成完整鏈：常數 ↔ migration DDL ↔ 實際 DB 欄位。
 // ---------------------------------------------------------------------------
-
-function readDdlDecimalPrecision(
-  sql: string,
-  table: string,
-  column: string
-): { precision: number; scale: number } {
-  const tableBody = extractCreateTableBody(sql, table);
-  const pattern = new RegExp(`"${column}"\\s+DECIMAL\\((\\d+),\\s*(\\d+)\\)`, "i");
-  const match = tableBody.match(pattern);
-  if (!match) {
-    throw new Error(`DDL for ${table}.${column} not found or not DECIMAL(p,s)`);
-  }
-  return { precision: Number.parseInt(match[1], 10), scale: Number.parseInt(match[2], 10) };
-}
 
 function extractCreateTableBody(sql: string, table: string): string {
   const start = sql.indexOf(`CREATE TABLE "${table}" (`);
@@ -669,6 +1003,38 @@ function extractCreateTableBody(sql: string, table: string): string {
   const end = sql.indexOf("\n);", start);
   if (end < 0) throw new Error(`end of CREATE TABLE "${table}" not found`);
   return sql.slice(start, end);
+}
+
+function extractAlterTableBody(sql: string, table: string): string {
+  const start = sql.indexOf(`ALTER TABLE "${table}"`);
+  if (start < 0) return "";
+  const end = sql.indexOf(";", start);
+  if (end < 0) throw new Error(`end of ALTER TABLE "${table}" not found`);
+  return sql.slice(start, end);
+}
+
+/**
+ * 由**實際套用之 migration DDL**（M1 建表 ＋ M2 ALTER）讀出某欄之
+ * `DECIMAL(p,s)`。命中數必須恰為 1——0 次（欄位不存在／拼錯）與 2 次
+ * （同欄被兩份 migration 宣告，代表 migration 序列有誤）皆 fail-loud。
+ */
+function readAppliedDecimalPrecision(
+  sources: Array<{ label: string; body: string }>,
+  column: string
+): { precision: number; scale: number } {
+  const pattern = new RegExp(`"${column}"\\s+DECIMAL\\((\\d+),\\s*(\\d+)\\)`, "i");
+  const hits = sources
+    .map(({ label, body }) => ({ label, match: body.match(pattern) }))
+    .filter((hit) => hit.match !== null);
+  if (hits.length !== 1) {
+    throw new Error(
+      `expected exactly one applied DDL for column "${column}", found ${hits.length} (${hits
+        .map((h) => h.label)
+        .join(", ")})`
+    );
+  }
+  const match = hits[0].match as RegExpMatchArray;
+  return { precision: Number.parseInt(match[1], 10), scale: Number.parseInt(match[2], 10) };
 }
 
 function readSchemaPrismaDecimalPrecision(
@@ -686,24 +1052,39 @@ function readSchemaPrismaDecimalPrecision(
   return { precision: Number.parseInt(match[1], 10), scale: Number.parseInt(match[2], 10) };
 }
 
-describe("T1 FW-1 — capacity constants are pinned to the ACTUAL applied DDL, not to a schema.prisma mental model", () => {
-  const migrationSql = fs.readFileSync(PHASE7_MIGRATION_SQL_PATH, "utf8");
+describe("T1 FW-1 — capacity constants are pinned to the ACTUAL applied DDL (M1 CREATE ＋ M2 ALTER), not to a schema.prisma mental model", () => {
+  const m1Sql = fs.readFileSync(M1_MIGRATION_SQL_PATH, "utf8");
+  const m2Sql = fs.readFileSync(M2_MIGRATION_SQL_PATH, "utf8");
   const schemaPrisma = fs.readFileSync(SCHEMA_PRISMA_PATH, "utf8");
 
+  const appliedSources = [
+    { label: "M1 CREATE TABLE", body: extractCreateTableBody(m1Sql, "DepreciationApplication") },
+    { label: "M2 ALTER TABLE", body: extractAlterTableBody(m2Sql, "DepreciationApplication") },
+  ];
+
+  /**
+   * 全部受常數表管轄之 Decimal 欄位（含已退出 predicate 判定集合但**仍須**維持
+   * DDL 形狀斷言之 `snapshotPerKmUnitPrice`——R1 即審 FW-⑦ 明令勿誤刪）。
+   */
   const decimalColumns = [
+    { constantKey: "snapshotAnnualDepreciation", column: "snapshotAnnualDepreciation" },
     { constantKey: "snapshotOfficialKm", column: "snapshotOfficialKm" },
-    { constantKey: "snapshotPerKmUnitPrice", column: "snapshotPerKmUnitPrice" },
+    { constantKey: "snapshotAnnualTotalKm", column: "snapshotAnnualTotalKm" },
+    { constantKey: "snapshotRatio", column: "snapshotRatio" },
     { constantKey: "snapshotRawAmount", column: "snapshotRawAmount" },
+    { constantKey: "snapshotPerKmUnitPrice", column: "snapshotPerKmUnitPrice" },
   ] as const;
 
-  it("sanity: the migration DDL being read is the real one (contains the CREATE TABLE statement)", () => {
-    expect(migrationSql).toContain('CREATE TABLE "DepreciationApplication"');
+  it("sanity: both migration DDLs being read are the real ones", () => {
+    expect(m1Sql).toContain('CREATE TABLE "DepreciationApplication"');
+    expect(m2Sql).toContain('ALTER TABLE "DepreciationApplication"');
+    expect(appliedSources[1].body).toContain('ADD COLUMN     "snapshotRatio" DECIMAL(9,6)');
   });
 
   it.each(decimalColumns)(
     "$column — named constant precision/scale equals the DECIMAL(p,s) in the applied migration DDL",
     ({ constantKey, column }) => {
-      const ddl = readDdlDecimalPrecision(migrationSql, "DepreciationApplication", column);
+      const ddl = readAppliedDecimalPrecision(appliedSources, column);
       const constant = DEPRECIATION_COLUMN_CAPACITY[constantKey];
       expect({ precision: constant.precision, scale: constant.scale }).toEqual(ddl);
     }
@@ -712,7 +1093,7 @@ describe("T1 FW-1 — capacity constants are pinned to the ACTUAL applied DDL, n
   it.each(decimalColumns)(
     "$column — schema.prisma @db.Decimal(p,s) equals the applied migration DDL (a schema-only edit can no longer pass silently)",
     ({ column }) => {
-      const ddl = readDdlDecimalPrecision(migrationSql, "DepreciationApplication", column);
+      const ddl = readAppliedDecimalPrecision(appliedSources, column);
       const fromSchema = readSchemaPrismaDecimalPrecision(
         schemaPrisma,
         "DepreciationApplication",
@@ -731,6 +1112,26 @@ describe("T1 FW-1 — capacity constants are pinned to the ACTUAL applied DDL, n
     }
   );
 
+  it("§20.7.2 逐字對照：the four revision columns carry exactly the precisions the Spec mandates ((9,1)/(12,2)/(9,6))", () => {
+    expect(readAppliedDecimalPrecision(appliedSources, "snapshotAnnualTotalKm")).toEqual({
+      precision: 9,
+      scale: 1,
+    });
+    expect(readAppliedDecimalPrecision(appliedSources, "snapshotAnnualDepreciation")).toEqual({
+      precision: 12,
+      scale: 2,
+    });
+    expect(readAppliedDecimalPrecision(appliedSources, "snapshotRatio")).toEqual({
+      precision: 9,
+      scale: 6,
+    });
+    // `annualTotalKm`（業務欄，非快照欄）之 DDL 亦為 Decimal(9,1)。
+    expect(readAppliedDecimalPrecision(appliedSources, "annualTotalKm")).toEqual({
+      precision: 9,
+      scale: 1,
+    });
+  });
+
   it("Application.totalAmount is INTEGER (int4) in the applied DDL, and the int4 bounds are derived from its 32-bit width", () => {
     const phase4Sql = fs.readFileSync(PHASE4_MIGRATION_SQL_PATH, "utf8");
     const applicationBody = extractCreateTableBody(phase4Sql, "Application");
@@ -740,25 +1141,57 @@ describe("T1 FW-1 — capacity constants are pinned to the ACTUAL applied DDL, n
     expect(DEPRECIATION_COLUMN_CAPACITY.totalAmount.min).toBe(-2147483648);
   });
 
-  it("FW-1 self-proof: the DDL reader has discriminating power — a poisoned DDL string yields a different precision, and a missing column throws instead of silently passing", () => {
-    const poisoned = migrationSql.replace(
+  it("FW-1 self-proof: the DDL reader has discriminating power across BOTH migrations — a poisoned M1 CREATE and a poisoned M2 ALTER each yield a different precision", () => {
+    const poisonedM1 = m1Sql.replace(
       '"snapshotRawAmount" DECIMAL(14,4)',
       '"snapshotRawAmount" DECIMAL(16,4)'
     );
-    expect(poisoned).not.toBe(migrationSql); // 確認替換確實發生
+    expect(poisonedM1).not.toBe(m1Sql);
     expect(
-      readDdlDecimalPrecision(poisoned, "DepreciationApplication", "snapshotRawAmount")
+      readAppliedDecimalPrecision(
+        [
+          {
+            label: "M1(poisoned)",
+            body: extractCreateTableBody(poisonedM1, "DepreciationApplication"),
+          },
+          appliedSources[1],
+        ],
+        "snapshotRawAmount"
+      )
     ).toEqual({ precision: 16, scale: 4 });
-    expect(() =>
-      readDdlDecimalPrecision(migrationSql, "DepreciationApplication", "noSuchColumn")
-    ).toThrow();
+
+    const poisonedM2 = m2Sql.replace(
+      '"snapshotRatio" DECIMAL(9,6)',
+      '"snapshotRatio" DECIMAL(9,4)'
+    );
+    expect(poisonedM2).not.toBe(m2Sql);
+    expect(
+      readAppliedDecimalPrecision(
+        [
+          appliedSources[0],
+          {
+            label: "M2(poisoned)",
+            body: extractAlterTableBody(poisonedM2, "DepreciationApplication"),
+          },
+        ],
+        "snapshotRatio"
+      )
+    ).toEqual({ precision: 9, scale: 4 });
+  });
+
+  it("FW-1 self-proof: a missing column throws instead of silently passing, and a duplicated declaration also throws (fail-loud on hit count ≠ 1)", () => {
+    expect(() => readAppliedDecimalPrecision(appliedSources, "noSuchColumn")).toThrow(/found 0/);
+    const duplicated = [
+      appliedSources[0],
+      { label: "duplicate", body: '"snapshotRawAmount" DECIMAL(14,4)' },
+    ];
+    expect(() => readAppliedDecimalPrecision(duplicated, "snapshotRawAmount")).toThrow(/found 2/);
   });
 
   it("FW-1 self-proof: the schema.prisma reader has discriminating power (poisoned schema yields a different precision)", () => {
     // 注意：`snapshotRawAmount Decimal(14,4)` 在 schema.prisma 中不只一處
     // （`TravelApplication`／`MaintenanceApplication` 亦有同名同精度欄位），
-    // 故投毒必須限定在 `DepreciationApplication` 模型區塊內，否則會誤改他表
-    // 而讓本自證失去意義。
+    // 故投毒必須限定在 `DepreciationApplication` 模型區塊內。
     const modelStart = schemaPrisma.indexOf("model DepreciationApplication {");
     const modelEnd = schemaPrisma.indexOf("\n}", modelStart);
     const poisonedBody = schemaPrisma
@@ -777,7 +1210,7 @@ describe("T1 FW-1 — capacity constants are pinned to the ACTUAL applied DDL, n
 });
 
 // ---------------------------------------------------------------------------
-// §7 零浮點中介掃描（清單驅動：PHASE_007_SRC_FILES）
+// §8 零浮點中介掃描（清單驅動：PHASE_007_SRC_FILES）
 // ---------------------------------------------------------------------------
 
 /**
@@ -852,7 +1285,7 @@ function findDecimalConstructorArgs(blankedCode: string): string[] {
   return [...blankedCode.matchAll(DECIMAL_CONSTRUCTOR_PATTERN)].map((m) => m[1].trim());
 }
 
-describe("AC-19 零浮點中介 — PHASE-007 source files contain no Number()/parseFloat/parseInt on the amount path", () => {
+describe("AC-51(a) 零浮點中介 — PHASE-007 source files contain no Number()/parseFloat/parseInt on the amount path", () => {
   describe.each(PHASE_007_SRC_FILES)("scanned file: %s", (relativePath) => {
     const rawSource = fs.readFileSync(path.resolve(BACKEND_ROOT, relativePath), "utf8");
     const blanked = blankCommentsAndStrings(rawSource);
@@ -887,31 +1320,34 @@ describe("AC-19 零浮點中介 — PHASE-007 source files contain no Number()/p
   });
 
   it("every Prisma.Decimal construction in this file takes a string literal (D4 bright-line: no bare-number construction)", () => {
-    // 以「挖空註解／字串後」的原始碼定位真正的程式碼建構處：doc-comment 中
-    // 作為說明文字出現的 `new Prisma.Decimal(...)` 不得被計入（否則掃描會被
-    // 散文汙染而失去鑑別力）。挖空後字串字面內容成為等長空白，故引數呈現為
-    // 空字串——正是「引數是字串字面」的證據（變數或裸數字會原樣存活）。
+    // 以「挖空註解／字串後」的原始碼定位真正的程式碼建構處。挖空後字串字面
+    // 內容成為等長空白，故引數呈現為空字串——正是「引數是字串字面」的證據
+    // （變數或裸數字會原樣存活）。本檔恰有兩處：十進位基數 "10"（推導容量
+    // 上界 10^(precision − scale)）與百分比乘數 "100"（ratioPercentString）。
     const codeArgs = findDecimalConstructorArgs(blanked);
-    expect(codeArgs).toEqual([""]);
+    expect(codeArgs).toEqual(["", ""]);
 
-    // 於同一 byte offset 回讀原始碼，確認該引數確實是 `"10"`（十進位基數，
-    // 用於由欄位精度推導容量上界 10^(precision − scale)——零魔術數，AC-22(a)）。
-    const offset = blanked.search(DECIMAL_CONSTRUCTOR_PATTERN);
-    expect(offset).toBeGreaterThan(-1);
-    expect(rawSource.slice(offset)).toMatch(/^new Prisma\.Decimal\("10"\)/);
+    // 於同一 byte offset 回讀原始碼，確認兩處引數確實是 `"10"` 與 `"100"`。
+    const offsets = [...blanked.matchAll(DECIMAL_CONSTRUCTOR_PATTERN)].map((m) => m.index ?? -1);
+    expect(offsets.length).toBe(2);
+    const originals = offsets.map(
+      (offset) =>
+        (rawSource.slice(offset).match(/^new Prisma\.Decimal\("(\d+)"\)/) as RegExpMatchArray)[1]
+    );
+    expect(originals.sort()).toEqual(["10", "100"]);
   });
 
   it("scanner self-proof (discriminating power): a synthetic legacy snippet using Number() as an intermediary must be caught; Number( inside comments/strings must not false-positive", () => {
     const oldImplementation = blankCommentsAndStrings(
       [
-        "function calcDepreciation(km, price) {",
-        "  const kmNum = Number(km);",
-        "  const priceNum = parseFloat(price);",
-        "  return Math.round(kmNum * priceNum);",
+        "function calcDepreciation(annual, km, total) {",
+        "  const annualNum = Number(annual);",
+        "  const kmNum = parseFloat(km);",
+        "  return Math.round(annualNum * kmNum / total);",
         "}",
       ].join("\n")
     );
-    expect(findCoercionCalls(oldImplementation)).toEqual(["Number(km)", "parseFloat(price)"]);
+    expect(findCoercionCalls(oldImplementation)).toEqual(["Number(annual)", "parseFloat(km)"]);
 
     const commentOnly = blankCommentsAndStrings(
       [
