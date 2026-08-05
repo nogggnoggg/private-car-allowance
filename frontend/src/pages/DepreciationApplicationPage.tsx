@@ -608,10 +608,13 @@ export default function DepreciationApplicationPage(): React.ReactElement {
                         <dt>年度補貼金額</dt>
                         <dd>{preview.amount}</dd>
                       </dl>
-                      {/* SF-3／Spec §4 Empty 列：calculable=true 但 amount=0 時非
-                          錯誤、非空白頁，須額外說明「為何是 0」＋「仍可完成」，
+                      {/* SF-3／終審 SF-3／Spec §4 Empty 列：文案須由「里程事實」
+                          （officialKm=0.00）驅動，不得以「金額結果」（amount=0）
+                          推斷成因——B-10 合法情境（里程>0 但單價 0.0000 →
+                          補貼 0 元）下 officialKm 非 0，此句不應出現，否則與
+                          畫面同時顯示之非零里程自相矛盾。非錯誤、非空白頁，
                           金額本身不改帶「元」（全站既有慣例，§18 記勘誤）。 */}
-                      {preview.amount === 0 && (
+                      {preview.officialKm === "0.00" && (
                         <p>該年度尚無已完成之差旅公務里程，補貼金額為 0；申請仍可完成。</p>
                       )}
                     </>

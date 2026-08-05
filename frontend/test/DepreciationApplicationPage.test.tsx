@@ -509,6 +509,36 @@ describe("DepreciationApplicationPage", () => {
       expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
     });
 
+    it("B-10（終審 SF-3）：年度里程 > 0 但單價 0.0000（極大年里程參數）→ 補貼 0 元非錯誤，且不得誤顯示「尚無差旅」說明", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            officialKm: "5000.00",
+            officialApplicationCount: 3,
+            perKmUnitPrice: "0.0000",
+            rawAmount: "0.0000",
+            amount: 0,
+          }),
+        })
+      );
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("5000.00 公里")).toBeInTheDocument();
+      });
+      expect(screen.getByText("0")).toBeInTheDocument();
+      expect(screen.queryByText("年度補貼金額：無法計算")).not.toBeInTheDocument();
+      // 根因鑑別：文案須由里程事實（officialKm）驅動，非由金額結果（amount=0）
+      // 推斷——此情境 officialKm > 0，畫面不得出現「尚無差旅」之自相矛盾陳述。
+      expect(
+        screen.queryByText("該年度尚無已完成之差旅公務里程，補貼金額為 0；申請仍可完成。")
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
+    });
+
     it("Error：讀取草稿 500 時顯示錯誤訊息與重試按鈕，點擊重試重新呼叫 GET", async () => {
       const router = installFetchRouter();
       let getCalls = 0;
