@@ -219,7 +219,99 @@ describe("ApplicationListSection", () => {
 
     // AC-68: N/A fields for the MAINTENANCE row render literal "—".
     const dashCells = table.getAllByText("—");
-    expect(dashCells.length).toBeGreaterThanOrEqual(3); // title, totalKm, totalAmount, segmentCount, operation link
+    expect(dashCells.length).toBeGreaterThanOrEqual(3); // title, totalKm, totalAmount, segmentCount
+  });
+
+  // ---- AC-62 (Gate 走查裁定 G1): 操作欄「檢視」連結三型一致 ----
+  function makeAc62Item(
+    type: "TRAVEL" | "MAINTENANCE" | "DEPRECIATION",
+    status: "DRAFT" | "COMPLETED",
+    id: string
+  ) {
+    return {
+      id,
+      type,
+      status,
+      primaryDate: "2026-03-01",
+      tripDate: null,
+      title: null,
+      totalKm: null,
+      totalAmount: null,
+      segmentCount: null,
+      ownerId: "self",
+      ownerDisplayName: "使用者一",
+      onBehalf: false,
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    };
+  }
+
+  const ac62Items = [
+    makeAc62Item("TRAVEL", "DRAFT", "app-travel-draft"),
+    makeAc62Item("TRAVEL", "COMPLETED", "app-travel-completed"),
+    makeAc62Item("MAINTENANCE", "DRAFT", "app-maintenance-draft"),
+    makeAc62Item("MAINTENANCE", "COMPLETED", "app-maintenance-completed"),
+    makeAc62Item("DEPRECIATION", "DRAFT", "app-depreciation-draft"),
+    makeAc62Item("DEPRECIATION", "COMPLETED", "app-depreciation-completed"),
+  ];
+
+  it("AC-62：操作欄之「檢視」連結三型一致——TRAVEL／MAINTENANCE／DEPRECIATION 各自導向既有詳情頁（草稿與已完成兩態皆適用）", async () => {
+    mockListResponse({
+      items: ac62Items,
+      page: 1,
+      pageSize: 20,
+      total: ac62Items.length,
+      appliedFilters: emptyFilters,
+    });
+    renderSection();
+
+    await waitFor(() => {
+      expect(screen.getByRole("table", { name: "申請紀錄清單" })).toBeInTheDocument();
+    });
+
+    const table = within(screen.getByRole("table", { name: "申請紀錄清單" }));
+    const rows = table.getAllByRole("row").slice(1); // skip header row
+    expect(rows).toHaveLength(6);
+
+    const expectedHrefs = [
+      "/applications/travel/app-travel-draft",
+      "/applications/travel/app-travel-completed",
+      "/applications/maintenance/app-maintenance-draft",
+      "/applications/maintenance/app-maintenance-completed",
+      "/applications/depreciation/app-depreciation-draft",
+      "/applications/depreciation/app-depreciation-completed",
+    ];
+
+    for (const [i, row] of rows.entries()) {
+      const link = within(row).getByRole("link", { name: "檢視" });
+      expect(link).toHaveAttribute("href", expectedHrefs[i]);
+    }
+  });
+
+  it("AC-62：操作欄不再對任一型別渲染字面「—」（負向斷言）", async () => {
+    mockListResponse({
+      items: ac62Items,
+      page: 1,
+      pageSize: 20,
+      total: ac62Items.length,
+      appliedFilters: emptyFilters,
+    });
+    renderSection();
+
+    await waitFor(() => {
+      expect(screen.getByRole("table", { name: "申請紀錄清單" })).toBeInTheDocument();
+    });
+
+    const table = within(screen.getByRole("table", { name: "申請紀錄清單" }));
+    const rows = table.getAllByRole("row").slice(1); // skip header row
+    expect(rows).toHaveLength(6);
+
+    for (const row of rows) {
+      const cells = within(row).getAllByRole("cell");
+      const operationCell = cells.at(-1); // 操作 is the last column
+      expect(operationCell).toBeDefined();
+      expect(within(operationCell as HTMLElement).queryByText("—")).not.toBeInTheDocument();
+    }
   });
 
   it("Success：篩選表單送出正確的 query（日期/類型/狀態/關鍵字）", async () => {

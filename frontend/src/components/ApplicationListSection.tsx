@@ -32,6 +32,14 @@ const TYPE_LABELS: Record<ApplicationTypeDto, string> = {
   DEPRECIATION: "折舊補貼",
 };
 
+// AC-62(b): type → detail-route path, exhaustive so a future new type is a
+// compile-time error here (mirrors TYPE_LABELS above).
+const TYPE_DETAIL_PATHS: Record<ApplicationTypeDto, string> = {
+  TRAVEL: "/applications/travel",
+  MAINTENANCE: "/applications/maintenance",
+  DEPRECIATION: "/applications/depreciation",
+};
+
 const STATUS_LABELS: Record<ApplicationStatusDto, string> = {
   DRAFT: "草稿",
   COMPLETED: "已完成",
@@ -328,16 +336,12 @@ export default function ApplicationListSection({
                     <td>{item.totalAmount !== null ? item.totalAmount : "—"}</td>
                     <td>{item.segmentCount !== null ? item.segmentCount : "—"}</td>
                     <td>
-                      {item.type === "TRAVEL" ? (
-                        <Link
-                          to={`/applications/travel/${item.id}`}
-                          className="btn btn-outline btn-sm"
-                        >
-                          檢視
-                        </Link>
-                      ) : (
-                        "—"
-                      )}
+                      <Link
+                        to={`${TYPE_DETAIL_PATHS[item.type]}/${item.id}`}
+                        className="btn btn-outline btn-sm"
+                      >
+                        檢視
+                      </Link>
                     </td>
                   </tr>
                 ))}
