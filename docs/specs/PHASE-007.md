@@ -2,7 +2,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| **Spec 狀態** | `ACTIVE`（**Spec Gate 通過**：人類 leonchih 2026-08-04 裁定「批准開工」——D1~D14 全數照推薦批准、T6/T9 採 T6b/T9b 拆分（總數 18 Task）、High Task 事前批准 12 項（T1~T4、T6、T6b、T7~T9、T9b、T10、T11）。固化紀錄見 §18） |
+| **Spec 狀態** | `ACTIVE`（**Spec Gate 通過**：人類 leonchih 2026-08-04 裁定「批准開工」——D1~D14 全數照推薦批准、T6/T9 採 T6b/T9b 拆分（總數 18 Task）、High Task 事前批准 12 項（T1~T4、T6、T6b、T7~T9、T9b、T10、T11）。固化紀錄見 §18）<br>**＋ 折舊模型修訂段進行中**（人類 leonchih 2026-08-05「照提案全部確認」）——**修訂內容一律見 §20，§20 於衝突處覆蓋 §1~§17** |
 | **Phase ID** | PHASE-007 |
 | **Task ID（本文件產出）** | PHASE-007-SPEC |
 | **Base Commit** | `d4950b4`；工作 branch `phase-007`（自 main `973d48f` 切出） |
@@ -13,6 +13,16 @@
 | **對應 US（次要／延伸驗收）** | FE-US-04／FE-US-05（列表與篩選之類型擴充）、FE-US-21（草稿附件管理之折舊情境）、FE-US-27（響應式）、AD-US-06／07／08 與 BE-US-03（代操作延伸至折舊）、AD-US-13（折舊參數之引用與歷史不變）、BE-US-19（參數版本引用保護之真實回歸）、BE-US-20（草稿）、BE-US-30（公務總里程引擎之複用）、BE-US-22（作廢排除之既有預留，本 Phase **不實作作廢**） |
 | **Human Gate** | **Spec 事前批准（本文件，High；含全部 High Task 之事前批准）** ＋ Mock Gate（折舊表單／預覽／證明）＋ 整合 Gate |
 | **產出者** | spec-writer（Task Context Packet `PHASE-007-SPEC`） |
+
+> ## ⚠ 閱讀優先序（折舊模型修訂段，2026-08-05 起）
+>
+> 本 Phase 之折舊模型已於**開發段完成後**經人類裁定修訂（補貼公式由「年度公務里程 × 每公里單價」改為「每年折舊費用 × 公務比例」；折舊證明由必要改選填）。修訂內容**集中於 §20**。
+>
+> - **§1~§17 為開發段（2026-08-04 Gate）之定稿內容，保留為歷史記錄，不改寫**；凡受修訂影響之節，其標題／段落已加註 **【已修訂 → §20.x】**。
+> - **衝突處一律以 §20 為準。** 未加註之節即為未受影響、仍然有效。
+> - **§12 AC↔測試映射表**保留開發段之 `GREEN` 實名記錄（歷史證據），修訂段之狀態以緊隨其後之 **§12R 修訂段狀態覆寫表**為準。
+> - **§15 Task Graph（T1~T16／T6b／T9b）為開發段已完成之工作記錄**；修訂段之派工依 **§20.12 修訂段 Task Graph（R1~R13）**。
+> - **§16 D1~D14 為開發段已裁定之決策點**，其中 **D6／D7／D8（部分）／D10（部分）** 已被修訂取代，取代關係見 §20.13。
 
 > **本 Spec 的規範基礎**：CLAUDE.md 事實來源優先序 1→5。本文件**不改變任何 User Story 原意、不縮減任何已定稿 AC、不擴大 Scope**。凡標「推薦」者一律**未定案**，須人類於 §16 裁定後方可實作。
 >
@@ -106,7 +116,7 @@
 - **AC-13** **D2(a) `count`／`SUM` 不對稱之折舊處置**（ARCHITECTURE §4.10 末條）：某已完成差旅之 `snapshotTotalKm` 為 `null` 時，`applicationCount` **計入**該列而 `totalKm` **忽略**該列（外觀「筆數 ≥1 但里程 `0.00`」）——**既有引擎行為，本 Phase 不改**。折舊之**任何金額計算一律只使用 `totalKm`**；`applicationCount` 純供顯示，**不得**參與分子、分母或任何推導；DTO 如實回兩值，前端不得據此自行推導或補值。
 - **AC-14** `ownerId` **恆為擁有人**（`Application.ownerId`，**絕不**為操作者）：管理員代操作之草稿其年度里程仍以擁有人計算（對照組：管理員本人有差旅、擁有人無差旅 → 里程為 `0.00`）。預覽端點以 `resolveOwnerId` 判定——一般使用者帶他人 `ownerId` → **403 fail-closed，不靜默降級為自己**；管理員可指定任一 `ownerId`。**授權判定先於欄位格式驗證**（沿 PHASE-005 B-26／006 §6.1）。
 
-### E. 折舊參數套用與每公里單價
+### E. 折舊參數套用與每公里單價　**【AC-17／AC-18 已修訂 → §20.2、§20.3】**
 
 > 來源：BE-US-16 全四條；BE-US-14；AD-US-13 第 5 條；ARCHITECTURE §4.1 折舊段與 §4.2；PHASE-003a D2/D3/D7。
 
@@ -118,7 +128,7 @@
 - **AC-17** 單價來源（**不重寫推導**）：一律呼叫既有 `deriveDepreciation({ vehiclePrice, usefulLifeYears, estimatedAnnualKm })`（`backend/src/parameters/depreciation-engine.ts`）並取其 **4 位小數字串** `perKmUnitPrice`；以 import 接線斷言 ＋ 活體突變自證（刪 import 改私有複製必紅）證明；`depreciation-engine.ts` **全 Phase 零 diff**。**kill case**：`vehiclePrice=10, usefulLifeYears=3, estimatedAnnualKm=3` → `perKmUnitPrice="1.1111"`（若改以「已取整之每年費用 3.33」為分子得 `1.1100`，必紅）。
 - **AC-18** `deriveDepreciation` 回 `{ ok: false }`（任一參數 ≤0；理論不可達，因 `POST /parameters/depreciation` 已於建立時擋下）之處置：視同**缺參數**同型拒絕——**絕不 500、絕不以單價 0 完成、絕不寫入任何快照**；`details.missing` 追加 `"DEPRECIATION_DERIVATION_FAILED"`（**非新增 `ErrorCode`**，比照 005a `FUEL_DATA_CORRUPTED` 之既有作法），訊息與 AC-16(a) **逐字不同**（避免管理員誤查方向）。
 
-### F. 補貼計算（金額核心）
+### F. 補貼計算（金額核心）　**【AC-19／AC-20 已退場、AC-21／AC-22 已修訂 → §20.2、§20.4】**
 
 > 來源：BE-US-17 第 1/2/4 條；共通規則 §4；ARCHITECTURE §4.1 折舊段與 PHASE-003a D3；PHASE-006 D4(a) 同型紀律。
 
@@ -131,7 +141,7 @@
   - **(c)** 草稿與預覽 DTO **同步暴露**該 blocker 與 `computed.calculable=false`；
   - **(d)** 邊界正例在場防誤殺（恰 `1e10 − ε` 通過／恰 `1e10` 拒絕；`2147483647` 通過／`2147483648` 拒絕）。
 
-### G. 折舊證明附件
+### G. 折舊證明附件　**【AC-24 已退場（證明改選填）→ §20.2、AC-54】**
 
 > 來源：FE-US-19 全三條；BE-US-24（上限 5）；BE-US-25（完成鎖定）；NFR-US-10；ARCHITECTURE §4.5；PHASE-006 D2(a) 同型。
 
@@ -140,7 +150,7 @@
 - **AC-25** **完成鎖定（現況缺口修補）**：`deriveContainerState` 之 `refType='DEPRECIATION'` 分支現況**恆回 `'draft'`**（`lifecycle-service.ts:256` 佔位註記「子表尚不存在，PHASE-007，防禦性」）——建表後即成**真實安全缺口**（已完成折舊之證明仍可被刪除／替換，違反 BE-US-25 第 4 條與 NFR-US-10）。本 Phase 擴充為經 `Application.status` 推導（`refId` ＝ `Application.id` ＝ `DepreciationApplication.applicationId`，一次 `findUnique`）：`COMPLETED → 'completed'`；否則（`DRAFT`／不存在孤兒，記 log）→ `'draft'`，**絕不 500**。**須有修復前紅燈實證**（現況「完成後刪除附件回 200」→ 修復後 403）。
 - **AC-26** 授權與孤兒：他人之折舊證明 `GET /attachments/:id/content|thumbnail` → **403**（管理員 200）；跨使用者掛入、管理員代掛、`LINKED` 偷渡一律封閉；`deleteApplication` 於刪除折舊草稿時**同一交易內** detach `refType='DEPRECIATION'` 附件（B-25 補洞，**修復前紅燈實證**）。
 
-### H. 完成流程與快照
+### H. 完成流程與快照　**【AC-27 已修訂、AC-28 已退場（快照欄集合變更）→ §20.2、AC-55】**
 
 > 來源：FE-US-20 第 1 條；BE-US-18 第 3 條；BE-US-25；PHASE-006 §9.3 同型；§16 D7/D9。
 
@@ -333,7 +343,7 @@
 
 > 完成沿用**同一 generic 路徑**依型別分派（既有 `routes.ts` 已對 `MAINTENANCE` 如此處理）——**推薦**；替代方案為另開 `/applications/depreciation/:id/complete`（會使前端與 E2E 出現第三套完成路徑，不建議）。列入 §16 **D13**。
 
-### 7.2 DTO 形狀（推薦）
+### 7.2 DTO 形狀（推薦）　**【已修訂 → §20.6】**
 
 ```
 DepreciationApplicationDto {
@@ -391,7 +401,7 @@ sumOfficialMileage(tx, {
 - `totalKm` 為**唯一**進入金額計算之值；`applicationCount` 僅映射至 `computed.officialApplicationCount` 供顯示（AC-13）。
 - 日期建構沿用既有 `utcDateOnly` UTC 慣例（006 T1 AR-6③／T3 AR-3），**不得**使用本地時區建構。
 
-### 7.4 折舊補貼計算（不得重寫推導）
+### 7.4 折舊補貼計算（不得重寫推導）　**【已由 §20.4 全面取代——本節公式為舊模型，僅供歷史快照對帳追溯】**
 
 ```
 ① version = findEffectiveVersion(allDepreciationVersions, Date(YYYY-01-01))
@@ -408,7 +418,7 @@ sumOfficialMileage(tx, {
 ```
 > **禁止**：先取整 `officialKm`、先取整 `rawAmount` 至 2 位、對 `perKmUnitPrice` 二次取整、以浮點運算任一步（AC-19/20）。
 
-### 7.5 完成阻擋碼（blocker codes）與固定順序
+### 7.5 完成阻擋碼（blocker codes）與固定順序　**【已由 §20.5 全面取代】**
 
 | 順序 | code | 觸發條件 | zh-TW 訊息（推薦） |
 |---|---|---|---|
@@ -434,7 +444,7 @@ sumOfficialMileage(tx, {
 
 `ApplicationType.DEPRECIATION`（`schema.prisma:256`）與 `AttachmentRefType.DEPRECIATION`（`schema.prisma:165`）**早已宣告**；`ApplicationStatus`／`AuditAction`／`FuelType`／`Role`／`AttachmentStatus` 之既有值皆已足夠（AC-01(e)）。
 
-### 8.2 新增資料表（推薦形狀，精度依 §16 D3 裁定）
+### 8.2 新增資料表（推薦形狀，精度依 §16 D3 裁定）　**【已修訂：新增四欄、二欄轉凍結唯讀 → §20.7】**
 
 ```prisma
 model DepreciationApplication {
@@ -462,7 +472,7 @@ model DepreciationApplication {
 
 `Application` 模型新增一條 relation：`depreciation DepreciationApplication?`（與既有 `travel`／`maintenance` 對稱；不改任何既有欄位與索引）。
 
-### 8.3 欄位容量與精度之推導依據（§16 D3 之技術背景）
+### 8.3 欄位容量與精度之推導依據（§16 D3 之技術背景）　**【已修訂 → §20.7】**
 
 | 欄位 | 推薦型別 | 容量上界 | 依據 |
 |---|---|---|---|
@@ -477,7 +487,7 @@ model DepreciationApplication {
 > **容量缺口 #1（spec-writer 實查發現）**：`DepreciationParameterVersion.vehiclePrice` 為 `Decimal(12,2)`（<1e10），而 `usefulLifeYears`／`estimatedAnnualKm` 之下界為 **1**（`>0` 之整數）——故 `perKmUnitPrice` 理論上界約 `1e10`，**遠超差旅單價欄位 `Decimal(10,4)`（<1e6）之容量**。推薦 `Decimal(14,4)` 使快照欄能容納引擎全部合法輸出，將守門集中於 `rawAmount` 與 `totalAmount` 兩處。**替代方案**（收緊參數表 `vehiclePrice` 精度）會 `ALTER` 既有表並改變 PHASE-003a 已批准之欄位契約，**不建議**——見 §16 D3。
 > **容量缺口 #2（必須守門）**：`rawAmount = officialKm(<1e10) × perKmUnitPrice(<1e10)` 之理論上界約 `1e20`，遠超 `Decimal(14,4)`；`amount` 亦可超 `int4`。故 AC-22 之容量守門為**必要**，非防禦性冗餘（與 PHASE-006 AC-19 同型）。
 
-### 8.4 migration 順序與可逆性
+### 8.4 migration 順序與可逆性　**【已增補：修訂段新增 ALTER 型 M2 migration → §20.7】**
 
 - **M1**：`CREATE TABLE "DepreciationApplication"`（含 FK 至 `Application`、兩個 `@@index`）。
 - **零 `ALTER`**：既有表**完全不動**（`Application` 之新 relation 為 Prisma schema 層反向關聯，不產生 DDL）。
@@ -523,7 +533,7 @@ POST /applications/depreciation/preview
 ```
 **零寫入不變式**：預覽路徑**絕不**寫入任何資料列（比照 PHASE-004 AC-36／006 §9.2），須有測試證明（spy 或 DB 前後快照）。
 
-### 9.3 完成與快照寫入
+### 9.3 完成與快照寫入　**【已修訂：步驟②之附件守門退場、新增比例守門、快照欄集合變更 → §20.8】**
 
 ```
 POST /applications/:id/complete
@@ -688,6 +698,78 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 
 ---
 
+## 12R. 修訂段狀態覆寫表（折舊模型修訂，2026-08-05；**修訂段以本表為準**）
+
+> **為何另立表而不改寫 §12**：§12 之 `GREEN` 列載有開發段 18 個 Task 之**實名逐字測試證據**，屬歷史記錄性內容（Packet 明令不得改寫）。本表以「覆寫」方式表達修訂段狀態：**同一 AC 若在本表出現，即以本表狀態為準**；未出現者，§12 之狀態繼續有效。
+> **狀態值**：`PENDING`（受修訂影響，須重新以 TDD 落地並回填實名）／`RETIRED`（AC 已退場，其測試依 Spec 授權之測試遷移移除或改寫，**不視為弱化測試**）／`GREEN（不受影響）`（明示判定，供終審核對用）。
+> **Phase 完成前之覆蓋檢查與終審核對**：以 §12 ＋ 本表之**合併結果**為準。
+> **回填義務**：`PENDING` 列於對應 R Task 完成後，由大總管以 `vitest --reporter=verbose` 之實際輸出**逐字回填**測試名（沿 §12 既有紀律）。
+
+### 12R.1 退場列（`RETIRED`；不刪列，保留追溯）
+
+| AC | 退場理由 | 取代者 | 既有測試之處置 | Task |
+|---|---|---|---|---|
+| AC-17 | 每公里單價退出申請計算（裁定①）；`deriveDepreciation` 於申請路徑零呼叫 | **AC-49**（每年折舊費用來源＋引擎凍結） | `phase7-depreciation-parameters.test.ts` 之 AC-17 describe 改寫為 AC-49；`10/3/3 → 1.1111` kill case **移轉至 `depreciation-engine.test.ts` 保留**（003a 引擎凍結證明，不得刪） | R4a ＋ R6 |
+| AC-19 | 公式改造：`里程 × 單價` → `每年費用 × 比例`（裁定①） | **AC-51** | `depreciation-calculation.test.ts` 之 AC-19 describe 依新公式改寫（浮點鑑別、純度、輸入不變性三條**語意保留**，僅換輸入組） | R2 |
+| AC-20 | 舊 kill case 數對（`850.27 × 6.6667`）依附舊公式，新公式下不可達 | **AC-51**（新 kill case 見 §20.4.3） | 舊 kill case 測試刪除並以新 kill case 取代；「取整恰一處」之原始碼掃描斷言**語意保留** | R2 |
+| AC-24 | 證明由必要改選填（裁定②）：`DEPRECIATION_ATTACHMENT_REQUIRED` 退場 | **AC-54**（語意反轉：零附件可完成） | `depreciation-blockers.test.ts` §2 與 `phase7-depreciation-complete.test.ts`／`phase7-depreciation-attachment.test.ts` 之「完成須 ≥1」全部反轉；**上限 5（AC-23）不動** | R3 ＋ R7 |
+| AC-28 | 快照欄位集合變更（8 欄 → 9 欄，二欄轉凍結唯讀） | **AC-55** | `phase7-depreciation-complete.test.ts` 之 AC-28 describe 依新欄集合改寫；「顯式定精度」「不由 rawAmount 反推 amount」兩條紀律**語意保留** | R7 |
+| AC-39 | 前端顯示每公里單價之條文退場（連帶 C 揭露面改為五值） | **AC-59** | `DepreciationApplicationPage.test.tsx` 之 AC-39 三條改寫；「零自算鑑別」與「不顯示車價」兩條**語意保留並擴張**（新增年限負向，Q6） | R9 |
+
+### 12R.2 受影響列（轉 `PENDING`）
+
+| AC | 受影響原因 | Task | 狀態 |
+|---|---|---|---|
+| AC-01 | §8.2 欄位集合變更（新增 4 欄）＋ `DepreciationParameterVersion.estimatedAnnualKm` 轉 nullable ⇒ **ALTER 型 M2 migration**；安全網 fixture 須依 **T1 FW-8** 改 raw SQL 寫法；業務表總數**不變（15）** | R1 | `PENDING` |
+| AC-02 | 建立端點新增 `annualTotalKm`（**應予採用**，S-3）；「全部快照欄為 `null`」之逐欄斷言須含新增 4 欄 | R5 | `PENDING` |
+| AC-05 | `DepreciationApplicationDto`／`ComputedDto`／`SnapshotDto` 三形狀全部變更（§20.6） | R5 ＋ R6 | `PENDING` |
+| AC-18 | 推導失敗之來源函式改為 `deriveAnnualDepreciation`（兩參數）；`estimatedAnnualKm` 不再是失敗來源 | R4a ＋ R6 | `PENDING` |
+| AC-21 | `ROUND_HALF_UP` 紀律不變，但 kill pair 之輸入組須依新公式重建（§20.4.3 已給定數對） | R2 | `PENDING` |
+| AC-22 | 容量欄位集合變更：`snapshotPerKmUnitPrice` 退出判定、新增 `snapshotAnnualDepreciation`／`snapshotAnnualTotalKm`／`snapshotRatio`；常數表重整（零魔術數紀律不變） | R2 ＋ R7 | `PENDING` |
+| AC-27 | §9.3 步驟②之附件計數守門退場、新增比例守門；②③④順序紀律不變（§20.8） | R7 | `PENDING` |
+| AC-30 | 原子性語意不變，但「快照全 `null`」之逐欄回滾斷言須含新增 4 欄 | R7 | `PENDING` |
+| AC-31 | 「8 欄逐位元不變」→「**9 欄**逐位元不變」；spy 零重算之被監視函式改為 `deriveAnnualDepreciation` | R8 | `PENDING` |
+| AC-32 | 夾帶矩陣變更：新增 `ratio`／`ratioPercent`／`annualDepreciation` 為**不採用**；`annualTotalKm` 為**採用之例外**，須與 AC-48 同場對照（同一請求一採一不採） | R8 | `PENDING` |
+| AC-35 | 代修改稽核 `summary` 之前後值須含 `annualTotalKm`（欄位摘要完整性） | R8 | `PENDING` |
+| AC-38 | 表單由「僅年度一欄」改為「年度 ＋ 年度總里程兩欄」；年度公務里程無輸入欄之負向斷言**保留** | R9 | `PENDING` |
+| AC-40 | 五態語意變更：`Empty`（公務里程 0 但總里程有值 ⇒ 金額 0 合法）與「未輸入總里程 ⇒ 不可計算、不顯 0 元」為**兩種不同狀態**，須各自有測試 | R10 | `PENDING` |
+| AC-41 | 缺參數語意不變，但「條件齊備 ⇒ 完成鈕可用」之前置條件須補填 `annualTotalKm` | R10 | `PENDING` |
+| AC-42 | 「完成前無證明時完成鈕停用」條款退場（證明選填）；重複提醒、上限 5、已完成無入口三條**保留** | R10 | `PENDING` |
+| AC-45 | E2E 流程新增「輸入年度總里程」步驟、證明改選填、預覽與完成詳情改驗五值 | R12 | `PENDING` |
+| AC-46 | 響應式四畫面之版型因新增欄位與五值列而改變 | R12 | `PENDING` |
+
+### 12R.3 新增列（修訂段新 AC；條文見 §20.3）
+
+| AC | 層級 | 測試檔（預定路徑） | 測試名（預定名稱） | Task | 狀態 |
+|---|---|---|---|---|---|
+| AC-47 | integration | `backend/test/integration/phase7-depreciation-draft.test.ts` | `AC-47: annualTotalKm validation gate table — type/decimal-places(≤1)/≤0/capacity, with fields[].field asserted`（建立與更新兩端點各一組） | R5 | `PENDING` |
+| AC-48 | integration | `phase7-depreciation-draft.test.ts`；`phase7-snapshot-immutability.test.ts` | `AC-48: annualTotalKm is 申請資料 and IS adopted from the request body, while officialKm/ratio/amount are never adopted (same-request contrast matrix)` | R5 ＋ R8 | `PENDING` |
+| AC-49 | unit ＋ integration | `backend/test/unit/depreciation-engine.test.ts`；`phase7-depreciation-parameters.test.ts` | `AC-49: deriveAnnualDepreciation returns 車價÷年限 at 2dp and rejects ≤0 inputs`；`AC-49: the application path calls deriveAnnualDepreciation and never deriveDepreciation (import wiring + live mutation self-proof + negative spy)`；`AC-49 凍結證明: deriveDepreciation 之既有測試零改動全綠` | R4a ＋ R6 | `PENDING` |
+| AC-50 | unit | `backend/test/unit/depreciation-calculation.test.ts` | `AC-50: ratio = officialKm ÷ annualTotalKm at full precision; ratioString(6dp)/ratioPercentString(4dp) are display-only and never feed the amount (mutant: amount computed via .times(ratio) must go red)` | R2 | `PENDING` |
+| AC-51 | unit ＋ integration | `depreciation-calculation.test.ts`；`phase7-depreciation-parameters.test.ts` | `AC-51 PRIMARY kill case — A=100000.00 × O=1001.66 ÷ I=12345.6 → raw=8113.4979263867288751 → 8113 (mutant ratio6→8114, ratio4→8110, raw2→8114, okmInt→8116 each must go red)`；`AC-51 source-level scan: exactly one toDecimalPlaces(0) call exists in the implementation` | R2 ＋ R6 | `PENDING` |
+| AC-52 | unit ＋ integration | `backend/test/unit/depreciation-blockers.test.ts`；`phase7-depreciation-parameters.test.ts`；`phase7-depreciation-complete.test.ts` | `AC-52: officialKm > annualTotalKm produces OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM with field=annualTotalKm`；`AC-52 邊界: ratio 恰 100% (O == I) is allowed to complete`；`AC-52: the blocker is exposed identically in draft DTO, preview and completion` | R3 ＋ R6 | `PENDING` |
+| AC-53 | unit ＋ integration ＋ frontend | `depreciation-blockers.test.ts`；`phase7-depreciation-parameters.test.ts`；`DepreciationApplicationPage.test.tsx` | `AC-53: a null annualTotalKm saves as a draft, yields ANNUAL_TOTAL_KM_REQUIRED + calculable=false, and blocks completion with 400`；`AC-53: 未輸入年度總里程時畫面顯示「無法計算」，不得出現金額 0` | R3 ＋ R6 ＋ R10 | `PENDING` |
+| AC-54 | integration | `phase7-depreciation-complete.test.ts`；`phase7-contract.test.ts` | `AC-54: a draft with zero attachments completes successfully (200) and writes the full snapshot`；`AC-54: DEPRECIATION_ATTACHMENT_REQUIRED no longer appears in any response nor anywhere in src (structural scan)`；`AC-54: the 5-attachment limit still applies` | R7 | `PENDING` |
+| AC-55 | integration | `phase7-depreciation-complete.test.ts` | `AC-55 快照欄位與精度（9 欄）— snapshotVehiclePrice/UsefulLifeYears/AnnualDepreciation/OfficialKm/AnnualTotalKm/Ratio/RawAmount/calculatedAt/depreciationParameterVersionId, with 三來源逐位元重算`；`AC-55: the two frozen legacy columns (snapshotEstimatedAnnualKm, snapshotPerKmUnitPrice) are always NULL for new-model rows` | R7 | `PENDING` |
+| AC-56 | integration | `phase7-depreciation-complete.test.ts`；`phase7-migration-safety.test.ts` | `AC-56 新舊模型判別: snapshotAnnualTotalKm != null ⇒ new model; snapshotPerKmUnitPrice != null && snapshotAnnualTotalKm == null ⇒ legacy model (raw-SQL seeded legacy row is rendered read-only and never recomputed)` | R1 ＋ R7 | `PENDING` |
+| AC-57 | integration | `backend/test/integration/phase3a-parameter-depreciation.test.ts` | `AC-57 折舊參數縮欄（凍結式）: POST no longer accepts estimatedAnnualKm (夾帶不採用，欄位寫 NULL) and no longer returns perKmUnitPrice`；`AC-57: GET still returns the original estimatedAnnualKm/perKmUnitPrice for legacy versions (read-only) and null for new versions` | R4b ＋ R4c | `PENDING` |
+| AC-58 | frontend | `frontend/test/DepreciationApplicationPage.test.tsx` | `AC-58：表單提供「該車年度總里程」可輸入欄位，並與唯讀之「年度公務里程」明確區分（標籤逐字＋公務里程仍無 textbox 之負向斷言）` | R9 | `PENDING` |
+| AC-59 | frontend | `DepreciationApplicationPage.test.tsx` | `AC-59：預覽與完成後詳情顯示五值（每年折舊費用／年度公務里程／年度總里程／公務比例／補貼金額），逐字取自後端回應`；`AC-59：車價、折舊年限、每公里單價三者於草稿頁與已完成頁皆不出現（負向斷言）` | R9 | `PENDING` |
+| AC-60 | frontend | `DepreciationApplicationPage.test.tsx` | `AC-60：公務比例 >100% 時顯示錯誤與「請檢查年度總里程」提示並停用「完成申請」，但「儲存草稿」仍可用` | R10 | `PENDING` |
+| AC-61 | frontend | `frontend/test/ParametersPage.test.tsx` | `AC-61：折舊參數建立表單僅有車價、折舊年限、生效日期（預估年度行駛公里數欄位不存在之負向斷言）`；`AC-61：折舊預覽顯示每年折舊費用、不顯示每公里補助單價（負向斷言）`；`AC-61：版本列表對含預估年里程之歷史版本以唯讀顯示原值` | R11 | `PENDING` |
+
+> **裁定 F（既有舊公式測試申請清空）無 AC 列**——該項為**環境資料操作**（dev／Gate DB 之合成資料刪除），非產品行為，不具可測試之 AC 語意；其驗證落於 **R13 之 Done When**（見 §20.12）。此為刻意判定，非漏列。
+
+### 12R.4 明示不受影響列（`GREEN（不受影響）`；供終審核對，免逐條重查）
+
+**AC-03、AC-04、AC-06、AC-07、AC-08、AC-09、AC-10、AC-11、AC-12、AC-13、AC-14、AC-15、AC-16、AC-23、AC-25、AC-26、AC-29、AC-33、AC-34、AC-36、AC-37、AC-43、AC-44**（共 23 列）。
+
+判定依據（逐項）：AC-03 只約束 `applicationYear`（新欄之驗證屬 AC-47，兩者不重疊）；AC-04 之狀態守門與附件對帳語意零變更；AC-06/07/08 年度語意與重複申請零變更；AC-09~AC-14 里程引擎複用與 `ownerId` 解析零變更（**AC-13「金額只用 `totalKm`」於新公式下仍成立——`totalKm` 為比例之分子**）；AC-15/16 選版與缺參數處置零變更（碼與 409 形狀不變）；AC-23 上限 5 為裁定②明示照舊；AC-25/26 附件鎖定與授權不因證明改選填而變（US §2 已明示 BE-US-25／NFR-US-10 不變）；AC-29 僅本人可完成零變更；AC-33 併發與引用保護零變更；AC-34 代建立之 owner/creator 分離零變更；AC-36/37 列表與篩選零變更；AC-43 **`ErrorCode` 聯集仍全等**（新增之三個 blocker code 為 `Blocker.code` 字串，**不是** `ErrorCode` 成員，見 §20.5.2）；AC-44 日誌安全零變更。
+
+> **測試檔連帶更新 ≠ 狀態變更**：上列 AC 之測試檔可能因**播種資料需補 `annualTotalKm`** 而有機械性改動（例如 `phase7-annual-mileage.test.ts` 之完成流程 fixture）。此類改動屬 §20.11 之測試遷移義務，**不使該 AC 轉 `PENDING`**——判準為「斷言語意是否改變」，不是「檔案是否被觸碰」。
+
+---
+
 ## 13. Architecture / Data Flow 需同步項清單（本 Phase 不修改該二檔）
 
 > 由大總管於 Gate 後決定是否另行派工（DOC-SYNC）。
@@ -717,7 +799,7 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 
 ---
 
-## 15. Task Graph
+## 15. Task Graph　**【開發段已完成之工作記錄；修訂段派工見 §20.12】**
 
 > 每 Task 一律 TDD、一個 atomic commit（含 Task ID）。**規模上限（Packet）：單 Task ≤ 5 AC、≤ 6 檔、不得同時橫跨 FE＋BE＋DB 三層。**
 > **Expected Diff Budget** 依 `docs/retrospective/PHASE-006-usage.md` §3.1 之型態帶：**純函式 ~700–750 行**、**接線整合 ~1100–1250 行**、**FE ~450–700 行**。逾預算 50% 須即時回報（Stop Condition）。**接線型 Task 之 usage 拆分線 ~320k。**
@@ -1117,6 +1199,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 
 | 2026-08-05 | **終審處置（大總管白名單）**：①MF-1——§12 AC-43~46 轉 GREEN（實名逐字回填）＋AC-05 依 T7 落地事實轉 GREEN；②SF-1——AC-32 列三處括號全形化（逐字可 grep）；③**AR-a 勘誤**：§2 AC-43 條文漏列 `requestId`——系統自 PHASE-001 起錯誤體恆含 requestId（errors.ts 檔頭引 Spec 5.2 權威形狀），歷代 contract test 皆斷言之；T15 沿系統基準正確，條文以本列勘誤不改程式；④AR-c 措辭修正：T9b「4dp 窄窗 22003 結構性不可達」宜讀為「實務不可達（未證明數學上不可能）」。 | PHASE-007 終審報告 MF-1/SF-1/AR-a/AR-c |
 
+| 2026-08-05 | **折舊模型修訂（PHASE-007-SPEC-REV）**：依人類 leonchih 2026-08-05「照提案全部確認」之 US Gate 批准，將本 Spec 全面修訂為新折舊模型。①新增 **§20 修訂段**（全部修訂內容集中於此，衝突處覆蓋 §1~§17）：修訂後目標、AC 異動總表、**新增 AC-47~AC-61 全文**、新公式與**經實際驗算之 kill case 數對**、blocker 表與錯誤碼異動、DTO 與端點異動、**ALTER 型 M2 migration 與新舊模型判別**、Data Flow、五態與邊界增補（B-36~B-45）、揭露面修訂、測試策略與**既有測試遷移逐檔清單**、**修訂段 Task Graph R1~R13**、決策記錄 D15~D22、已知限制與 Rollback 增補。②新增 **§12R 修訂段狀態覆寫表**（退場 6 列、轉 `PENDING` 17 列、新增 15 列、明示不受影響 23 列；§12 開發段 `GREEN` 實名記錄一律保留不改寫）。③§1~§17 受影響節加註 **【已修訂 → §20.x】** 標記，歷史記錄性內容（§15 Task Graph、§16 D1~D14、§18 Gate 固化列）零改寫。**Spec 狀態維持 `ACTIVE`。** 本次修訂**不改變任何已批准之 US 原意、不縮減任何已批准 AC、不新增任何人類未批准之使用者可見行為**；Spec 層裁量 3 項（§20.13 D20~D22）已於 Handoff 逐項揭露。 | 人類 leonchih 2026-08-05「照提案全部確認」（`docs/specs/PHASE-007-US-REV-PROPOSAL.md` Status: APPROVED——§1 八條修訂全文、§6.2 E-1~E-8／S-1~S-4 十二項擴張與建議、§4 Q1~Q12 全數照推薦）；`userstory.md` HEAD 版八條（US-LAND `8b122b7`）；`docs/PRD.md`（REV-PRD-SYNC `237f4b2`）；`PROJECT_STATE.md` L5-L13 Gate 反饋列（裁定①②、連帶 A/B/C、細節 D/E/F）；REV-PRD-SYNC 移交三項（錯誤碼聯集變更、參數端點縮欄凍結式處置 Q9、新舊模型判別 Q7）；PHASE-005a Spec §8.4／§16 D1(a)（凍結式先例）、PHASE-006 Spec AC-16/17 與 T2R SF-1（比例分攤同型與 `.times(ratio)` 反例）、T1 即審 FW-1/FW-2/FW-3/FW-8；`docs/retrospective/PHASE-007-usage.md` §3 預算帶 |
+
 > Gate 固化義務已履行（上列 2026-08-04 第二列）。
 
 ---
@@ -1133,3 +1217,735 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 | 4 | `docs/PRD.md:429`（§PHASE-007「目標」） | `…同年度重複申請提醒但允許、完成保存快照、歷史不隨參數變動。` | 維持不變；**僅建議於「Out of Scope」列追加**：`稽核檢視頁（PHASE-010）；「一人一年一筆」之唯一性約束（US 明文允許重複）；年度里程為 0 時之阻擋（US 未要求）。` | 消除實作者對「是否該加唯一約束／0 里程阻擋」之歧義——本 Spec §1.2 已明列，PRD 同步後可避免下游 Phase 重複討論。 |
 
 > 上列修正**皆不改變任何 User Story 原意、不縮減任何 AC、不擴大 Scope**，僅消除 PRD 內部不一致與 Spec 細化後之對齊。
+
+---
+
+## 20. 折舊模型修訂段（2026-08-05 人類批准；**衝突處覆蓋 §1~§17**）
+
+### 20.0 修訂依據、適用範圍與優先序
+
+**批准來源（全部已取得人類批准，本節不含任何未裁定項）**
+
+| # | 來源 | 內容 |
+|---|---|---|
+| 1 | 人類 leonchih 2026-08-05「照提案全部確認」 | `docs/specs/PHASE-007-US-REV-PROPOSAL.md`（Status: **APPROVED**）§1 八條 US 修訂全文、§6.2 **E-1~E-8／S-1~S-4** 十二項【擴張】與【建議】、§4 **Q1~Q12** 全數照推薦 |
+| 2 | `PROJECT_STATE.md` L5–L13 Gate 反饋列 | 裁定①（公式改造）、裁定②（證明選填）、連帶 (A)(B)(C)、細節 (D)(E)(F) |
+| 3 | `userstory.md` HEAD 版（US-LAND `8b122b7`） | FE-US-17／18／19／20、AD-US-13、BE-US-14／17／18 修訂後逐字條文＝**規範原文** |
+| 4 | `docs/PRD.md`（REV-PRD-SYNC `237f4b2`） | §1 產品描述、§4.3 BE-US-14 更名、§5 PHASE-003a 凍結註記與 PHASE-007 段全改寫 |
+
+**優先序規則（機械可判）**
+
+1. 本節（§20）與 §1~§17 衝突時，**一律以 §20 為準**；§1~§17 受影響處已加註 **【已修訂 → §20.x】**。
+2. §20 與 `userstory.md` HEAD 版衝突時，**一律以 `userstory.md` 為準**（事實來源第 2 層）——若發現此類衝突，屬 Spec 缺陷，須回報大總管而非自行取捨。
+3. §12（開發段 `GREEN` 實名記錄）與 §12R（修訂段狀態）併存：**同一 AC 出現於 §12R 時以 §12R 為準**。
+4. §15（T1~T16／T6b／T9b）為**已完成之歷史工作記錄**，修訂段派工一律依 §20.12 之 **R1~R13**。
+
+**修訂之一句話摘要**
+
+> 補貼 ＝ **每年折舊費用（車價 ÷ 折舊年限）× 公務比例（年度公務里程 ÷ 使用者申報之年度總里程）**，整筆一次四捨五入為新臺幣整數；「預估年度行駛公里數」與「每公里補助單價」退出申請計算；申請表單新增「年度總里程」必填輸入欄；折舊證明改為**選填**（上限 5 照舊）。
+
+---
+
+### 20.1 修訂後目標與非目標
+
+**§1.1 目標之取代條目**（其餘條目不變）
+
+| 原條目 | 修訂後 |
+|---|---|
+| 5.「每公里補助單價」 | **5R.「每年折舊費用」（BE-US-14 修訂後）：一律呼叫 `deriveAnnualDepreciation({ vehiclePrice, usefulLifeYears })`，取其 2 位小數字串；每公里單價推導（`deriveDepreciation`）於申請路徑**零呼叫**、行為凍結（§20.7.5、AC-49）** |
+| 6.「年度補貼金額 ＝ ROUND(年度公務里程 × 單價)」 | **6R.「年度補貼金額」（BE-US-17 修訂後）：`rawAmount = 每年折舊費用 × 年度公務里程 ÷ 年度總里程`，`amount = ROUND_HALF_UP(rawAmount, 0)`，**整筆一次**四捨五入；公務比例僅為顯示值，**不參與**金額計算（§20.4）** |
+| 8.「完成與快照（6 值 ＋ 3）」 | **8R.「完成與快照」：快照為 **9 欄**（車價／年限／每年折舊費用／年度公務里程／年度總里程／公務比例／取整前金額／計算時間／參數版本 id），最終金額落 `Application.totalAmount`；舊二欄（預估年里程、每公里單價）**恆為 `null`**（§20.7.1、AC-55）** |
+| 2.「折舊證明（完成須 ≥1）」 | **2R.「折舊證明（選填）」：上限 5 照舊、草稿可缺、**完成不再要求 ≥1**、完成後鎖定、授權存取（AC-54；裁定②）** |
+| 11.「Phase 結束之人類可操作路徑」 | **11R.**：建草稿 → 選年度 → **輸入年度總里程** → 看到年度公務里程（唯讀）／**每年折舊費用**／**公務比例**／補貼金額 → **（可選）**上傳證明 → 完成並保存快照 → 管理員改參數後歷史不變 |
+
+**新增目標**
+
+- **12R. 比例守門（連帶 A）**：公務比例 > 100% 一律**擋完成**並提示檢查年度總里程；恰等於 100% **允許完成**（Q4）。
+- **13R. 折舊參數縮欄之凍結式處置（連帶 B／Q9）**：新版本只需車價 ＋ 年限；預估年里程與推導單價自建立介面與回應退場，歷史版本唯讀保留原值。
+- **14R. 對帳揭露面（連帶 C）**：畫面顯示**每年折舊費用／年度公務里程／年度總里程／公務比例／補貼金額**五值；**車價與折舊年限一律不顯示**（Q6）。
+
+**§1.2 非目標之增補**
+
+| 項目 | 落點 | 說明 |
+|---|---|---|
+| 同年度多筆折舊申請之「年度總里程一致性檢查」 | **明確不做** | Q11 已裁定；等同「自動判斷重複報帳」，屬 `userstory.md` §七 Out of Scope |
+| 年度總里程之車輛主檔化 | **明確不做** | Q10 已裁定：年度總里程為**每筆申請自帶之申報資料**，不落於任何車輛主檔或使用者屬性 |
+| 舊模型已完成折舊申請之資料遷移／重算 | **明確不做** | Q7 已裁定：不遷移、不重算；dev／Gate 之合成資料由**裁定 F** 直接清空（R13） |
+| 舊模型列之前端專屬版型 | **PHASE-008** | 裁定 F 清空後 dev／Gate 無此資料；報表層之舊模型呈現屬 PHASE-008（§20.14 #1） |
+| 年度**公務**里程為 0 時之阻擋 | **明確不做**（不變） | 年度**總**里程未填或 ≤0 之阻擋則屬 **In Scope**（AC-53）——兩者為不同欄位，PRD §PHASE-007 Out of Scope 已同步消歧 |
+
+---
+
+### 20.2 AC 異動總表
+
+> 逐列判定與受影響原因見 **§12R**（退場 6 列、轉 `PENDING` 17 列、新增 15 列、明示不受影響 23 列）。本表為總量對照。
+
+| 類別 | 數量 | AC 編號 |
+|---|---|---|
+| **退場**（`RETIRED`，不刪列） | 6 | AC-17、AC-19、AC-20、AC-24、AC-28、AC-39 |
+| **修訂**（轉 `PENDING`） | 17 | AC-01、02、05、18、21、22、27、30、31、32、35、38、40、41、42、45、46 |
+| **新增** | 15 | **AC-47 ~ AC-61** |
+| **不受影響**（明示判定） | 23 | AC-03、04、06~16、23、25、26、29、33、34、36、37、43、44 |
+| 修訂後 AC 總數 | **55**（46 − 6 退場 ＋ 15 新增） | — |
+
+---
+
+### 20.3 新增 AC 全文（AC-47 ~ AC-61）
+
+> **溯源規則同 §2**：每條標註來源 US 條文。**金額語意類 AC（AC-50、AC-51、AC-55）之測試一律以精確等值斷言，禁止近似比較。**
+
+#### A′. 年度總里程（使用者申報之申請資料）
+
+- **AC-47 年度總里程之欄位驗證**（來源：FE-US-17 第 1／4／6 條、BE-US-17 第 4 條、裁定 D、裁定 E、Q1）——`POST`／`PUT /applications/depreciation`（**兩端點各一組**）：
+  - **(a)** 型別：接受 JSON number、數值字串或 `null`／缺省（沿既有 `parseDecimalField` 之里程欄慣例）；布林／物件／陣列／非數值字串 → **400 `VALIDATION_ERROR`**。
+  - **(b)** 精度（**裁定 D**）：小數位 > **1** → 400（例：`12345.67` 拒絕、`12345.6` 通過、`12345` 通過）。**不得靜默取整**。
+  - **(c)** 值域（**裁定 E**）：`0`、負數、`NaN`／`Infinity` 字面 → **當場 400**（不延後到完成階段）；`null`／缺省 → **允許**（草稿寬容，AC-53）。
+  - **(d)** 容量：`|v| ≥ 1e8` → 400（沿既有 `KM_MAGNITUDE_LIMIT` 與文案「整數部分最多 8 位」）；`99999999.9` 通過／`100000000` 拒絕（邊界四點各一測試）。
+  - **(e)** `fields[]` 之 `field` 路徑須有**明文斷言**（`"annualTotalKm"`，006 T3 AR-2／FW-5 教訓）。
+  - **(f)** **授權先於格式驗證**（403 先於 400）之既有順序不變。
+
+- **AC-48 年度總里程為「申請資料」應予採用**（來源：BE-US-17 修訂後**第 8 條**逐字＝提案 S-3【建議】，人類已批准）——
+  - **(a)** `POST`／`PUT` body 之 `annualTotalKm` **應予採用**：寫入 DB 之值與請求值**逐位元相同**，DTO 回傳為固定 1 位小數字串。
+  - **(b)** **同一請求之對照矩陣**（與 AC-32 併存之鑑別測試）：同一次請求同時夾帶 `annualTotalKm`（**採用**）與 `officialKm`／`ratio`／`ratioPercent`／`annualDepreciation`／`rawAmount`／`amount`／`totalAmount`（**一律不採用**）→ 前者入庫、後者與未夾帶之對照組**逐位元相同**。夾帶值須為**頂層純量且與正確值可鑑別**（006 T8 MF-1 教訓）。
+  - **(c)** 完成時該值**原樣**寫入 `snapshotAnnualTotalKm`（不重新查詢、不重算——它沒有系統來源）。
+  - > **消歧義註記**：本 AC 與 CLAUDE.md「後端不得採用前端提交的金額」**不衝突**——後者約束「計算結果」，本 AC 約束「申請輸入資料」，與保養之 `actualCost` 同型。此區分由人類於 US Gate 明文批准（提案 §5、S-3）。
+
+#### B′. 每年折舊費用與計算
+
+- **AC-49 每年折舊費用之來源、引擎凍結與推導失敗**（來源：BE-US-14 修訂後全三條、連帶 B、Q9、Q12）——
+  - **(a)** 新增純函式 `deriveAnnualDepreciation({ vehiclePrice, usefulLifeYears })` → `{ ok: true, annualDepreciation: string /* 2dp */ } | { ok: false }`；公式**逐字**為 `ROUND_HALF_UP(vehiclePrice ÷ usefulLifeYears, 2)`（與既有 `deriveDepreciation` 之 `annualDepreciation` 語意**完全一致**）。
+  - **(b)** **單一實作**：`deriveAnnualDepreciation` 與 `deriveDepreciation` 之每年費用計算**共用同一內部推導**（單一事實來源；禁止第二份 `vehiclePrice ÷ usefulLifeYears` 實作——006 T5R SF-1 雙份漂移教訓）。以原始碼結構性斷言守門。
+  - **(c)** **申請路徑零呼叫 `deriveDepreciation`**：以 import 接線斷言 ＋ **活體突變自證**（刪 import 改私有複製必紅）＋ **負向 spy**（完成與預覽全程 `deriveDepreciation` 呼叫次數 ＝ **0**）三重證明。
+  - **(d)** **`deriveDepreciation` 行為凍結**：`backend/test/unit/depreciation-engine.test.ts` 之既有 `deriveDepreciation` 測試（含 `10/3/3 → perKmUnitPrice="1.1111"` kill case）**零改動、零 skip、全綠**——此即行為未變之機械證明。
+  - **(e)** 推導失敗（車價或年限 ≤0；理論不可達，建立端點已擋）之處置**沿 AC-18**：視同缺參數，`details.missing` 追加 `"DEPRECIATION_DERIVATION_FAILED"`，**絕不 500、絕不以每年費用 0 完成、絕不寫入任何快照**，訊息與缺版本情形**逐字互異**。
+
+- **AC-50 公務比例（顯示值，不參與金額）**（來源：BE-US-17 修訂後第 1 條、FE-US-18 第 2 條、連帶 C、Q3）——
+  - **(a)** `ratio = officialKm ÷ annualTotalKm`，**全精度 `Prisma.Decimal`，不取整**。
+  - **(b)** 對外顯示字串：`ratio`（**6 位小數**）與 `ratioPercent`（**4 位小數**＝ `ratio × 100`）——**逐字比照 `MaintenanceApplication` 之既有精度組**（`snapshotRatio Decimal(9,6)`、`ratioPercentString` 4dp）。
+  - **(c)** **比例絕不參與金額計算**：`rawAmount` 一律以 `annualDepreciation × officialKm ÷ annualTotalKm` 之**先乘後除**求值，**不得**寫成 `annualDepreciation.times(ratio)`。**kill case**：`.times(ratio)` mutant 必紅（006 T2R SF-1 已證此路徑可差 1 元；若 R2 之窮舉搜尋在合法值域內證明差異不可達，則以**原始碼層結構性斷言**「實作不得出現 `.times(ratio)`／`.times(ratioString)`」替代，並於 Handoff 說明窮舉範圍與結論）。
+  - **(d)** `annualTotalKm ≤ 0` 或非有限值 → `calculable=false`，**絕不除以零、絕不回 `NaN`／`Infinity`、絕不靜默回 0**（005a T2 SF-1／006 T2R MF-1 同型陷阱）。
+
+- **AC-51 修訂後補貼公式與取整層級**（來源：BE-US-17 修訂後第 2、5 條逐字；取代 AC-19／AC-20）——
+  - **(a)** 公式（§20.4.1 逐字）：`rawAmount = annualDepreciation × officialKm ÷ annualTotalKm`；`amount = ROUND_HALF_UP(rawAmount, 0)`。**全程 `Prisma.Decimal`，禁止任何浮點中介**；`annualDepreciation` 以 `new Prisma.Decimal(字串)` 還原，**不得**經 `Number()`／`parseFloat`。
+  - **(b)** **取整層級**：本 Phase 之取整**恰一處**（最終金額）。每年折舊費用之 2dp 取整發生在**引擎內**（`deriveAnnualDepreciation`，BE-US-14 之契約），不屬本 Phase；**不得**先取整比例、**不得**先取整 `officialKm`、**不得**先取整 `rawAmount` 至 2 位。
+  - **(c)** **kill case（已由 spec-writer 實際驗算，見 §20.4.3）**：`annualDepreciation="100000.00"`、`officialKm="1001.66"`、`annualTotalKm="12345.6"` → `rawAmount = 8113.4979263867288751` → `amount = 8113`。四種 mutant 各須至少一條測試**必紅**：先取整比例至 6dp → `8114`；先取整比例至 4dp → `8110`；先取整 `rawAmount` 至 2dp → `8114`；先取整 `officialKm` 至整數 → `8116`。
+  - **(d)** 原始碼層掃描：實作中 `toDecimalPlaces(0, …)` **恰一次**（最終金額）。
+
+- **AC-52 公務比例 > 100% 擋完成**（來源：FE-US-18 第 4 條、FE-US-20 第 2 條、BE-US-17 第 3 條、連帶 A、Q4）——
+  - **(a)** `officialKm > annualTotalKm` → blocker **`OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`**（**400 `VALIDATION_ERROR`** ＋ `fields[{ field: "annualTotalKm" }]` ＋ `details.blockers[]`），訊息提示檢查年度總里程。
+  - **(b)** **邊界**：`officialKm == annualTotalKm`（比例恰 100%）→ **允許完成**（Q4）；`officialKm` 恰大 `0.01` → 擋（**雙側 mutant 殺**：`>` 改 `>=` 必紅、改 `>` 為恆 `false` 必紅）。
+  - **(c)** 比較一律以 `Decimal` **直接比較兩里程值**，**不得**以取整後之 `ratio` 或 `ratioPercent` 比較（沿 006 `isOfficialKmExceedsInterval` 之既有紀律；判定式為**單一事實來源**，service 層不得就地重寫）。
+  - **(d)** **三處一致**：草稿 DTO、預覽端點、完成端點對同一 fixture **同步暴露**該 blocker 且 `computed.calculable=false`——禁止「預覽說可以、完成才擋」之反模式（005a SF-2／006 D10(a) 同型）。
+
+- **AC-53 未輸入年度總里程之處置**（來源：FE-US-17 第 6 條、FE-US-18 第 6 條＝S-1【建議】、FE-US-20 第 3 條、BE-US-17 第 4 條、裁定 E）——
+  - **(a)** **草稿寬容**：`annualTotalKm` 為 `null`／缺省時，草稿建立與更新皆成功（**201／200**）。
+  - **(b)** **預覽提示**：`computed.calculable=false` ＋ `blockingCodes` 含 **`ANNUAL_TOTAL_KM_REQUIRED`**；`amount`／`rawAmount`／`ratio` 皆為 `null`。
+  - **(c)** **完成擋下**：完成端點 → **400 `VALIDATION_ERROR`** ＋ `fields[{ field: "annualTotalKm" }]` ＋ `details.blockers[]`；**零寫入**（`status` 仍 `DRAFT`、全部快照欄仍 `null`）。
+  - **(d)** **前端不得顯示金額 0 元**：畫面顯示「無法計算」類 zh-TW 說明，**不得**渲染 `0`（以「畫面文字不含金額 0」之負向斷言固定）。
+  - **(e)** **防禦層**：純函式層另有 **`ANNUAL_TOTAL_KM_INVALID`**（`≤0` 或非有限值）之 blocker——經 API 路徑因 AC-47(c) 之當場 400 而**結構性不可達**，僅以單元測試覆蓋（保守失敗紀律，不得因不可達而移除）。
+
+#### C′. 證明選填、快照與模型判別
+
+- **AC-54 折舊證明改為選填（語意反轉）**（來源：FE-US-19 修訂後第 3 條逐字、裁定②）——
+  - **(a)** 零 `LINKED` 附件之草稿 → **完成成功（200）**，快照完整寫入、狀態轉 `COMPLETED`。
+  - **(b)** **`DEPRECIATION_ATTACHMENT_REQUIRED` 完全退場**：任何回應之 `blockingCodes`／`details.blockers[]` 皆不含該碼；**後端 `src` 全庫結構性掃描該字面值命中數 ＝ 0**（含 blocker 純函式、service、route、前端文案表）。
+  - **(c)** **上限 5 仍生效**（AC-23 不變）：第 6 張 → 409 `TOO_MANY_ATTACHMENTS`。
+  - **(d)** **完成後鎖定仍生效**（AC-25 不變）：已完成折舊之證明不可刪除（403）。
+  - **(e)** 完成流程之**附件計數查詢**（`FOR UPDATE` 後 tx 內 `count`）不再作為 blocker 來源；若實作因此移除該查詢，須以 AC-25／AC-26 之既有測試證明附件鎖定與授權**零回歸**。
+
+- **AC-55 修訂後快照欄位（9 欄）**（來源：BE-US-18 修訂後第 3 條逐字、Q5＝S-4【建議】、E-8【擴張】；取代 AC-28）——
+  - **(a)** 完成時寫入 **9 欄**：`snapshotVehiclePrice`／`snapshotUsefulLifeYears`／**`snapshotAnnualDepreciation`**／`snapshotOfficialKm`／**`snapshotAnnualTotalKm`**／**`snapshotRatio`**／`snapshotRawAmount`／`calculatedAt`／`depreciationParameterVersionId`；最終金額落既有 `Application.totalAmount`（`Int`），**不重複持久化**。
+  - **(b)** **舊二欄恆 `null`**：`snapshotEstimatedAnnualKm`／`snapshotPerKmUnitPrice` 於新模型列**絕不寫入**（明文 DB 層斷言；mutant「順手寫入」必紅）。
+  - **(c)** 快照寫入**顯式定精度**（`toFixed(scale)` 後以字串建構 `Decimal`，防裁尾零與二次取整；T1 FW-3：Postgres 對超 scale 小數**靜默四捨五入不報錯**，故服務層定精度為承重需求）。
+  - **(d)** **`amount` 不得由 `rawAmount` 反推**；快照之三來源值（`snapshotAnnualDepreciation`／`snapshotOfficialKm`／`snapshotAnnualTotalKm`）行內重算須**逐位元**還原 `snapshotRawAmount` 與 `totalAmount`。
+  - **(e)** `snapshotRatio` 為**顯示與對帳用**，**不得**成為 `totalAmount` 之重算來源（(d) 之重算路徑不得經過它）。
+
+- **AC-56 新舊模型之判別（不可省略）**（來源：Q7、BE-US-14 修訂後第 3 條＝E-5【擴張】；比照 PHASE-005a Spec §8.4 判別先例）——
+  - **(a)** **新模型列**：`snapshotAnnualTotalKm != null`。**舊模型列**：`snapshotPerKmUnitPrice != null` 且 `snapshotAnnualTotalKm == null`。**草稿列**：兩者皆 `null`。
+  - **(b)** 完成流程**只寫新模型欄**（AC-55(b)）。
+  - **(c)** DTO 以 `snapshot.model ∈ {"CURRENT","LEGACY"}` 如實揭露判別結果（§20.6）；**舊模型列一律以快照原值呈現，不得以新模型重算**（BE-US-14 第 3 條逐字）。
+  - **(d)** 測試以 **raw SQL 播種**一列舊模型快照（Prisma client 型別已含新欄，不得用於製造 migration 前之列形狀——T1 **FW-8** 同型義務），斷言其 DTO 之 `model="LEGACY"`、`perKmUnitPrice` 為原值、`annualDepreciation`／`ratio`／`annualTotalKm` 為 `null`，且**不發生任何重算**（spy 零呼叫）。
+
+#### D′. 折舊參數縮欄（凍結式）
+
+- **AC-57 折舊參數端點之縮欄與歷史唯讀**（來源：AD-US-13 修訂後第 1／3／5 條、連帶 B、Q9；比照 PHASE-005a §16 D1(a) 凍結式）——
+  - **(a)** `POST /parameters/depreciation` **請求欄位集合縮為** `{ vehiclePrice, usefulLifeYears, effectiveFrom }`：`estimatedAnnualKm` **不再被解析、不再被驗證、不再被持久化**；**夾帶時一律不採用**（新列該欄寫 `NULL`），**不回 400**（§20.13 **D20**，沿全案「夾帶不採用」慣例）。
+  - **(b)** 建立成功之回應**不含** `estimatedAnnualKm` 與 `perKmUnitPrice`；**含** `annualDepreciation`（2dp，AD-US-13 第 3 條）。
+  - **(c)** `GET /parameters/depreciation` 對**歷史版本**（`estimatedAnnualKm != null`）仍回傳**原值**與其 `perKmUnitPrice`（唯讀，AD-US-13 第 5 條）；對**新版本**該二欄為 `null`。
+  - **(d)** 版本不重疊、未來生效、引用保護（BE-US-19）等既有語意**零變更**（`userstory.md` §2 已明示 BE-US-19 不變）。
+  - **(e)** **既有 `≤0` 驗證仍適用於車價與年限兩值**（AD-US-13 第 2 條）；`estimatedAnnualKm` 之 `≤0` 驗證隨欄位退場而移除——此為**依 Spec 更新斷言，非弱化測試**（005a D1(a) 原文同型授權）。
+
+#### E′. 前端
+
+- **AC-58 折舊表單之欄位**（來源：FE-US-17 修訂後第 1、4 條＝含 E-1【擴張】）——表單提供**申請年度**、**該車年度總里程**（可輸入）與**證明圖片（選填）**三類輸入；**年度公務里程仍為唯讀顯示，畫面上不存在任何可輸入／覆寫該值之欄位**（負向斷言保留）；年度總里程與年度公務里程之標籤**逐字互異且同時可見**，使兩者來源可被使用者區分。
+
+- **AC-59 揭露面（五值）與負向遮蔽**（來源：FE-US-18 修訂後第 1、2、3、5 條、FE-US-20 第 5 條、連帶 C、Q6；取代 AC-39）——
+  - **(a)** 預覽與**完成後詳情**皆顯示五值：**每年折舊費用／年度公務里程／年度總里程／公務比例／補貼金額**，逐字取自後端回應。
+  - **(b)** **前端零自算**：mock 回傳刻意互不自洽之值（`amount ≠ annualDepreciation × officialKm ÷ annualTotalKm`），畫面須照顯示（鑑別「前端自行計算」之實作必紅）。
+  - **(c)** **負向斷言**：**車價**、**折舊年限**（Q6）、**每公里補助單價**三者於草稿頁與已完成頁**皆不出現**；後端 DTO 亦不回傳（§20.10）。
+
+- **AC-60 比例 >100% 與未輸入總里程之前端行為**（來源：FE-US-18 第 4、6 條、FE-US-20 第 2、3 條）——比例 >100% 時顯示錯誤與「請檢查年度總里程」類提示並**停用完成按鈕**，但**草稿仍可儲存**；未輸入年度總里程時顯示「無法計算」而**非 0 元**（AC-53(d)）；顯示邏輯一律以 **`blockingCodes`** 驅動，不得以 `calculable` 單一旗標決定文案內容（006 T5 FW／T11 教訓）。
+
+- **AC-61 參數維護頁之縮欄與歷史唯讀**（來源：AD-US-13 修訂後第 1、3、5 條、連帶 B）——折舊參數建立表單僅有**車價／折舊年限／生效日期**（「預估年度行駛公里數」輸入欄**不存在**之負向斷言）；預覽顯示**每年折舊費用**、**不顯示每公里補助單價**（負向斷言）；版本列表對**含預估年里程之歷史版本**以**唯讀**顯示其原值與每公里單價，對新版本該二欄顯示「—」。
+
+---
+
+### 20.4 修訂後計算語意（取代 §7.4）
+
+#### 20.4.1 公式（逐字）
+
+```
+① version = findEffectiveVersion(allDepreciationVersions, Date(YYYY-01-01))   ← 不變（AC-15）
+     null → missing = ["DEPRECIATION"]                                        （AC-16）
+② derived = deriveAnnualDepreciation({
+       vehiclePrice:    version.vehiclePrice,
+       usefulLifeYears: version.usefulLifeYears,
+   })                                        ← BE-US-14 修訂後之引擎（AC-49）
+     ok:false → missing += "DEPRECIATION_DERIVATION_FAILED"                   （AC-49(e)）
+③ annualDepreciation = new Prisma.Decimal(derived.annualDepreciation)   // 2 位小數字串
+④ ratio       = officialKm.div(annualTotalKm)                 // 全精度，**僅供顯示與快照**
+   ratioString        = ratio.toFixed(6, ROUND_HALF_UP)       // 6 位小數
+   ratioPercentString = ratio.times(100).toFixed(4, ROUND_HALF_UP)   // 4 位小數
+⑤ rawAmount = annualDepreciation.times(officialKm).div(annualTotalKm)   // **先乘後除**，未取整
+⑥ amount    = rawAmount.toDecimalPlaces(0, ROUND_HALF_UP).toNumber()    // 全案唯一取整處
+```
+
+> **禁止**（AC-50(c)、AC-51(b)）：以 `annualDepreciation.times(ratio)` 求 `rawAmount`（引入第二次捨入）、先取整 `ratio`、先取整 `officialKm`、先取整 `rawAmount` 至 2 位、對 `annualDepreciation` 二次取整、以浮點運算任一步。
+> **除零守門**：`annualTotalKm ≤ 0` 或任一輸入非有限值 → `calculable=false`，其餘欄位 `null`（AC-50(d)）。
+
+#### 20.4.2 取整層級之責任分界
+
+| 層級 | 取整 | 責任 | 依據 |
+|---|---|---|---|
+| 參數推導 | `每年折舊費用` → **2 位小數** | `deriveAnnualDepreciation`（引擎） | BE-US-14 第 1 條；沿 PHASE-003a D3 之既有 `annualDepreciation` 精度（**零變更**） |
+| 申請計算 | `amount` → **整數** | `calculateDepreciation`（本 Phase，**唯一一處**） | BE-US-17 第 5 條 |
+| 顯示 | `ratio` 6dp／`ratioPercent` 4dp | 顯示字串，**不回流計算** | Q3；比照 006 既有精度組 |
+
+> **對帳友善之刻意成本（取代舊 §16 D6 之單價誤差條款）**：使用者以畫面顯示之**每年折舊費用（2dp）**自行核算，與系統結果之誤差上界 ＝ `0.005 × 比例 ≤ 0.005` 元——**遠小於**舊模型之 `年度里程 × 0.00005`（2 萬公里約 1 元）。對帳可行性因本次修訂**改善**。
+
+#### 20.4.3 kill case 數對（**spec-writer 已以 `Prisma.Decimal` 實際驗算**）
+
+> 引擎可達性檢查：`annualDepreciation="100000.00"` ＝ `deriveAnnualDepreciation({ vehiclePrice: "300000.00", usefulLifeYears: 3 })` 之實際輸出（已驗）。
+
+**PRIMARY kill case（單一數對同時鑑別四種取整層級 mutant）**
+
+| 項目 | 值 |
+|---|---|
+| `annualDepreciation` | `100000.00`（車價 `300000.00` ÷ 年限 `3`） |
+| `officialKm` | `1001.66` |
+| `annualTotalKm` | `12345.6` |
+| `ratio`（6dp 顯示） | `0.081135` ／ `ratioPercent` `8.1135` |
+| `rawAmount`（全精度） | `8113.4979263867288751` |
+| **`amount`（正確）** | **`8113`** |
+| mutant A：先取整比例至 **6dp** 再相乘 | `8114` ✗ |
+| mutant B：先取整比例至 **4dp** 再相乘 | `8110` ✗ |
+| mutant C：先取整 `rawAmount` 至 **2dp** | `8114` ✗ |
+| mutant D：先取整 `officialKm` 至**整數** | `8116` ✗ |
+
+**SECONDARY kill case（比例先取整之獨立鑑別；`rawAmount` 恰為 2dp，故 mutant C 於此列不鑑別）**
+
+| 項目 | 值 |
+|---|---|
+| `annualDepreciation` ／ `officialKm` ／ `annualTotalKm` | `100000.00` ／ `4000.09` ／ `20000.0` |
+| `rawAmount` ／ **`amount`** | `20000.45` ／ **`20000`** |
+| mutant A（比例 6dp） | `20001` ✗ |
+
+**`ROUND_HALF_UP` kill pair（取代 AC-21 之舊數對）**
+
+| 列 | 輸入（`annualDepreciation` ／ `officialKm` ／ `annualTotalKm`） | `rawAmount` | 正確 `amount` | `ROUND_HALF_EVEN` mutant |
+|---|---|---|---|---|
+| **row 1（鑑別）** | `100000.00` ／ `4000.10` ／ `20000.0` | `20000.5` | **`20001`** | `20000` ✗ **必紅** |
+| **row 2（配對，證 away-from-zero）** | `100000.00` ／ `4000.30` ／ `20000.0` | `20001.5` | **`20002`** | `20002`（不鑑別，作為配對列） |
+
+**邊界正例（防誤殺）**
+
+| 情境 | 輸入 | 結果 |
+|---|---|---|
+| 比例恰 100%（Q4，允許完成） | `100000.00` ／ `12345.6` ／ `12345.6` | `ratio="1.000000"`、`ratioPercent="100.0000"`、`rawAmount="100000"`、`amount=100000`、**無 `OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`** |
+| 年度公務里程為 0（B-09 不變，允許完成） | `100000.00` ／ `0.00` ／ `12345.6` | `ratio="0.000000"`、`rawAmount="0"`、`amount=0` |
+
+> **R2 之回填義務**：`.times(ratio)` mutant（AC-50(c)）之鑑別數對由 R2 以窮舉搜尋產生並回填本節；若在合法值域內證明不可達，改以原始碼結構性斷言替代並於 Handoff 說明搜尋範圍與結論。**其餘四種 mutant 之數對已由本 Spec 給定，R2 不需再搜尋，但須實跑驗證後於 Handoff 附輸出。**
+
+---
+
+### 20.5 修訂後完成阻擋碼與錯誤合約（取代 §7.5、增補 §7.6）
+
+#### 20.5.1 blocker 表與固定順序
+
+| 順序 | 段 | code | 觸發條件 | `fields[].field` | zh-TW 訊息（推薦） |
+|---|---|---|---|---|---|
+| 1 | 結構性 | `YEAR_REQUIRED` | `applicationYear` 為 `null` | `applicationYear` | 請選擇申請年度 |
+| 2 | 結構性 | **`ANNUAL_TOTAL_KM_REQUIRED`** | `annualTotalKm` 為 `null` | `annualTotalKm` | 請輸入該車年度總里程 |
+| 3 | 結構性 | **`ANNUAL_TOTAL_KM_INVALID`** | `annualTotalKm ≤ 0` 或非有限值（**API 路徑結構性不可達**，AC-47(c) 已於欄位層 400；純函式層防禦） | `annualTotalKm` | 年度總里程必須大於 0 |
+| 4 | 計算性 | `PARAMETER_NOT_AVAILABLE` | 該年 1/1 無有效折舊參數，或 `deriveAnnualDepreciation` 回 `ok:false` | —（409 路徑） | 該年度尚無有效折舊參數，請聯絡管理員設定 |
+| 5 | 計算性 | **`OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`** | `officialKm > annualTotalKm`（比例 > 100%） | `annualTotalKm` | 年度公務里程大於年度總里程，請檢查年度總里程 |
+| 6 | 計算性 | `AMOUNT_OUT_OF_RANGE` | 計算結果超出欄位容量 | — | 計算結果超出可儲存之金額範圍，請聯絡管理員檢查折舊參數 |
+
+**退場**：`DEPRECIATION_ATTACHMENT_REQUIRED`（裁定②；AC-54(b) 之結構性掃描守門）。
+
+> **兩段式紀律（不變）**：結構性（1~3）先算；非空即拒絕、**不查詢**年度里程與參數。全通過才執行里程與參數查詢，再算 4~6 並二次判定。純函式以 `officialKm?: Decimal | null`、`annualDepreciation?: Decimal | null` 表達「尚未查詢」而**不**產生第 4~6 項。
+> **互斥關係（更新 §7.5 之「完整清單之定義」）**：第 2 與第 3 項互斥（`null` vs `≤0`）；第 4 項與第 5／6 項互斥（無每年費用即無從計算金額與比例）；**第 5 與第 6 項可同時出現**（比例超限之申請其金額仍可能超容量）。故任一回應之 `blockers[]` **至多含兩碼**：`{1, 2|3}` 或 `{4}` 或 `{5, 6}` 之子集。呼叫端**不得**因此自行補算被抑制之項目。
+> **不變式（不變）**：`calculable=false ⇒ blockingCodes 至少一項`，以 sweep 測試守護。
+> **完成端點之拒絕形狀**：`YEAR_REQUIRED`／`ANNUAL_TOTAL_KM_REQUIRED`／`ANNUAL_TOTAL_KM_INVALID`／`OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`／`AMOUNT_OUT_OF_RANGE` → **400 `VALIDATION_ERROR`** ＋ `fields[]`（僅具欄位路徑者）＋ `details.blockers[]`；`PARAMETER_NOT_AVAILABLE` → **409**（§16 D5 不變）＋ `details.missing` ＋ `details.applicationYear`。
+
+#### 20.5.2 錯誤碼聯集之異動（**公開契約，REV-PRD-SYNC 移交項 #1**）
+
+| 層 | 異動 | 說明 |
+|---|---|---|
+| **`ErrorCode` 聯集（`platform/errors.ts`）** | **零異動** | 本修訂**不新增、不移除**任何 `ErrorCode`；**AC-43 之聯集全等斷言與 BOGUS mutant 續存且仍為 `GREEN`**。三個新增 blocker code 為 `Blocker.code`（自由字串），**不是** `ErrorCode` 成員——與既有 `YEAR_REQUIRED`／`AMOUNT_OUT_OF_RANGE`／`MAINTENANCE_ATTACHMENT_REQUIRED` 同層。 |
+| **blocker code 聯集（折舊）** | **退場 1**：`DEPRECIATION_ATTACHMENT_REQUIRED`<br>**新增 3**：`ANNUAL_TOTAL_KM_REQUIRED`、`ANNUAL_TOTAL_KM_INVALID`、`OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM` | 屬**公開契約**（前端據以顯示文案）。`phase7-contract.test.ts` 之折舊錯誤合約 describe 須同步更新（**依 Spec 更新斷言，非弱化測試**）。 |
+| **`details.missing` 之值域** | 零異動 | `["DEPRECIATION"]` 與追加碼 `"DEPRECIATION_DERIVATION_FAILED"` 沿用（AC-49(e)）。 |
+
+---
+
+### 20.6 修訂後 API contract（取代 §7.1 折舊列與 §7.2）
+
+**端點總表之異動**：路徑集合**零變更**（七個端點不增不減）。唯一異動為 `POST /applications/depreciation/preview` 之請求 body 新增 `annualTotalKm`。
+
+```
+POST /applications/depreciation/preview
+  body: { applicationYear: number | null, annualTotalKm: number | string | null, ownerId?: string }
+```
+
+```
+DepreciationApplicationDto {
+  id, type: "DEPRECIATION", status, ownerId, ownerDisplayName, createdById,
+  onBehalf, primaryDate, createdAt, updatedAt                    // ← 全部不變
+
+  applicationYear: number | null            // 不變
+  annualTotalKm:   string | null            // ★ 新增：1 位小數字串（使用者申報之申請資料）
+
+  duplicateYearNotice: { count, hasCompleted } | null             // 不變
+  attachments: AttachmentDto[]                                    // 不變
+  completionBlockers: Blocker[] | null                            // 不變（碼集見 §20.5.1）
+  computed:  DepreciationComputedDto | null
+  snapshot:  DepreciationSnapshotDto | null
+}
+
+DepreciationComputedDto {
+  calculable: boolean
+  annualDepreciation: string | null   // ★ 新增：2 位小數（deriveAnnualDepreciation 逐字）
+  officialKm:   string | null         // 不變：2 位小數
+  officialApplicationCount: number | null   // 不變（僅供顯示，AC-13）
+  annualTotalKm: string | null        // ★ 新增：1 位小數（申請資料原樣回傳）
+  ratio:        string | null         // ★ 新增：6 位小數（顯示用）
+  ratioPercent: string | null         // ★ 新增：4 位小數（顯示用）
+  rawAmount:    string | null         // 不變：4 位小數，取整前
+  amount:       number | null         // 不變：新臺幣整數
+  blockingCodes: string[]             // 不變
+  // ✗ 移除：perKmUnitPrice
+}
+
+DepreciationSnapshotDto {
+  model: "CURRENT" | "LEGACY"         // ★ 新增：AC-56 判別結果（由 snapshotAnnualTotalKm 推導）
+  // ── 新模型欄（LEGACY 列為 null）──
+  annualDepreciation: string | null   // 2 位小數
+  annualTotalKm:      string | null   // 1 位小數
+  ratio:              string | null   // 6 位小數
+  ratioPercent:       string | null   // 4 位小數
+  // ── 舊模型欄（CURRENT 列為 null；BE-US-14 第 3 條：原值呈現、不得重算）──
+  perKmUnitPrice:     string | null   // 4 位小數
+  // ── 兩模型共有 ──
+  officialKm:  string                 // 2 位小數
+  rawAmount:   string                 // 4 位小數
+  totalAmount: number                 // 整數（＝ Application.totalAmount）
+  calculatedAt: string                // ISO8601
+}
+```
+
+> **揭露面不變式（更新 §7.2 之註）**：三型 DTO **皆不含** `vehiclePrice`／`usefulLifeYears`／`estimatedAnnualKm`／`depreciationParameterVersionId`（Q6 將 `usefulLifeYears` 之遮蔽固化為契約——**每年折舊費用 × 年限 ＝ 車價**，僅遮蔽車價無法達成裁定 (C) 之意圖）。以 **DTO 鍵集封閉斷言**守門。
+> **傳輸紀律不變**：金額與里程一律以**字串**傳輸，下游以 `Decimal(字串)` 還原無損；`amount`／`totalAmount` 為已取整整數，維持 JSON number。
+
+---
+
+### 20.7 資料模型與 M2 migration（取代 §8.2／§8.3；增補 §8.4）
+
+#### 20.7.1 修訂後 schema
+
+```prisma
+model DepreciationApplication {
+  applicationId String      @id
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  // ── 業務欄位（草稿可為 null；完成後不可變）──
+  applicationYear Int?                                  // 不變
+  annualTotalKm   Decimal?  @db.Decimal(9, 1)           // ★ 新增：使用者申報之年度總里程（裁定①＋裁定 D）
+
+  // ── 完成快照（BE-US-18 修訂後；9 欄）；一經寫入不可變 ──
+  snapshotVehiclePrice       Decimal?  @db.Decimal(12, 2)   // 不變
+  snapshotUsefulLifeYears    Int?                            // 不變
+  snapshotAnnualDepreciation Decimal?  @db.Decimal(12, 2)   // ★ 新增：每年折舊費用（2dp 來源值）
+  snapshotOfficialKm         Decimal?  @db.Decimal(12, 2)   // 不變
+  snapshotAnnualTotalKm      Decimal?  @db.Decimal(9, 1)    // ★ 新增：**新舊模型判別欄**（Q7）
+  snapshotRatio              Decimal?  @db.Decimal(9, 6)    // ★ 新增：公務比例（比照保養）
+  snapshotRawAmount          Decimal?  @db.Decimal(14, 4)   // 不變
+  calculatedAt               DateTime?                       // 不變
+  depreciationParameterVersionId String?                     // 不變（引用保護，D12）
+
+  // ── 凍結唯讀（舊模型；新申請**恆為 null**，AC-55(b)）──
+  snapshotEstimatedAnnualKm  Int?                            // 保留，不再寫入
+  snapshotPerKmUnitPrice     Decimal?  @db.Decimal(14, 4)    // 保留，不再寫入
+
+  @@index([applicationYear])
+  @@index([depreciationParameterVersionId])
+}
+
+model DepreciationParameterVersion {
+  id                String   @id @default(cuid())
+  vehiclePrice      Decimal  @db.Decimal(12, 2)
+  usefulLifeYears   Int
+  estimatedAnnualKm Int?     // ★ 變更：NOT NULL → NULLABLE（凍結欄；新版本恆 null，歷史列原值保留）
+  effectiveFrom     DateTime @db.Date
+  createdById       String
+  createdAt         DateTime @default(now())
+
+  @@unique([effectiveFrom])
+  @@index([effectiveFrom])
+}
+```
+
+#### 20.7.2 容量與精度之推導依據（增補 §8.3 表）
+
+| 欄位 | 型別 | 容量上界 | 依據 |
+|---|---|---|---|
+| `annualTotalKm`／`snapshotAnnualTotalKm` | **`Decimal(9,1)`** | 絕對值 < `1e8` | 裁定 D（小數 1 位）＋ Q1（比照既有里程欄慣例）；整數位 8 位**恰與既有 `KM_MAGNITUDE_LIMIT`（1e8）及 `parseDecimalField` 之容量文案「整數部分最多 8 位」逐字一致**——複用既有驗證管線，不新增第二套容量心智模型 |
+| `snapshotAnnualDepreciation` | **`Decimal(12,2)`** | 絕對值 < `1e10` | 與來源 `DepreciationParameterVersion.vehiclePrice` **逐字一致**；年限 ≥1 ⇒ 每年費用 ≤ 車價，故不產生新容量缺口 |
+| `snapshotRatio` | **`Decimal(9,6)`** | 絕對值 < `1e3` | 與 `MaintenanceApplication.snapshotRatio` **逐字一致**（同型比例分攤） |
+| `snapshotOfficialKm`／`snapshotRawAmount`／`Application.totalAmount` | 不變 | 不變 | §8.3 既有列 |
+| `snapshotPerKmUnitPrice` | 保留 `Decimal(14,4)` | — | **退出容量 predicate 之判定集合**（新模型不寫入） |
+
+> **容量守門仍為必要（更新 §8.3 容量缺口 #2）**：新公式下 `rawAmount = annualDepreciation × ratio`，比例 >100% 已由 AC-52 擋下，故 `rawAmount < 1e10` 恆成立、`snapshotRawAmount` 之溢位**不再可達**；但 **`amount` 仍可超 `int4`**（車價 ≥ 2.15e9 且比例接近 1 時），故 `AMOUNT_OUT_OF_RANGE` 之守門與測試**一律保留**（AC-22 續存）。容量 predicate 之判定集合更新為：`snapshotOfficialKm`、`snapshotAnnualTotalKm`、`snapshotAnnualDepreciation`、`snapshotRatio`、`snapshotRawAmount`、`totalAmount`；閾值一律**由 schema 精度推導之具名常數**（零魔術數，T1 AR-6／FW-1 紀律不變，含常數↔實際 DDL 之對照測試）。
+
+#### 20.7.3 M2 migration（**ALTER 型**）
+
+```sql
+-- M2（修訂段）
+ALTER TABLE "DepreciationApplication"
+  ADD COLUMN "annualTotalKm"              DECIMAL(9,1),
+  ADD COLUMN "snapshotAnnualDepreciation" DECIMAL(12,2),
+  ADD COLUMN "snapshotAnnualTotalKm"      DECIMAL(9,1),
+  ADD COLUMN "snapshotRatio"              DECIMAL(9,6);
+
+ALTER TABLE "DepreciationParameterVersion"
+  ALTER COLUMN "estimatedAnnualKm" DROP NOT NULL;
+```
+
+- **零 `DROP COLUMN`、零回填、零 enum 異動、零索引異動**；**業務表總數不變（15）**——`infra001-isolation-self-check.test.ts`／`phase6-migration-safety.test.ts` 之表數斷言（T1 即審實查之 **4 個斷言點**）**零改動**。
+- **可逆性（部分不可逆，須明文揭露）**：`DROP COLUMN` ×4 會**永久遺失**新模型申請之業務欄與快照；`SET NOT NULL` 之還原**前提為 `estimatedAnnualKm` 無 `NULL` 列**，若已建立新版本則須先回填或刪除該批版本。詳見 §20.15。
+- **安全網測試（T1 FW-8 硬性義務）**：`phase7-migration-safety.test.ts` 之既有 fixture 手法「僅在純 `CREATE` 前提下安全」；M2 為 **ALTER 型**，其「既有列逐欄零改寫」之 fixture **必須改以 raw SQL 寫入**（不得經 Prisma client——client 型別已含新欄，無法製造 migration 前之列形狀）。此 fixture 同時作為 **AC-56(d)** 之舊模型列來源。
+- **安全網斷言**：八表逐欄零改寫（新增之 4 欄於既有列一律 `NULL`）、鍵集全等（**多餘 `ADD COLUMN` mutant 必紅**）、enum 聯集全等、精度往返（`Decimal(9,1)`／`Decimal(9,6)`／`Decimal(12,2)` 各寫入邊界值後讀回**逐位元相等**）、`migrate deploy` 於乾淨／既有 DB 各一輪且冪等。
+
+#### 20.7.4 新舊模型判別（Q7；比照 PHASE-005a §8.4）
+
+- **新模型列**：`snapshotAnnualTotalKm != null`。
+- **舊模型列**：`snapshotPerKmUnitPrice != null` 且 `snapshotAnnualTotalKm == null`。
+- **草稿列**：兩者皆 `null`。
+- 完成流程**只寫新模型欄**（AC-55(b)）；`reference-guard.ts` 之 `parameterHasReferences("DEPRECIATION")` 依 `depreciationParameterVersionId` 判定，**兩模型皆適用，零變更**（AC-33 續 `GREEN`）。
+- **與裁定 F 之關係（不衝突）**：Q7 之「不刪除」約束的是**程式對舊模型列之處置**（不遷移、不重算、唯讀相容）；Q7 原文同時附款「dev／Gate 環境之測試資料由人類視需要重建」——**裁定 F 即為人類行使該附款**（清空 dev 之合成舊資料，R13）。故程式面保留判別與唯讀相容（AC-56），環境面清空（R13），兩者並存。
+
+#### 20.7.5 折舊參數版本之縮欄（Q9；REV-PRD-SYNC 移交項 #2）
+
+| 面向 | 處置 | 依據 |
+|---|---|---|
+| DB 欄位 | `estimatedAnnualKm` **保留**、轉 **nullable**；新版本寫 `NULL`，歷史列原值不動 | 連帶 B「歷史版本唯讀保留」；§20.13 **D21** |
+| 建立端點 | 不解析、不驗證、不持久化該欄；**夾帶不採用**（不回 400） | Q9「不再接受」＋全案「夾帶不採用」慣例；§20.13 **D20** |
+| 建立回應 | 不含 `estimatedAnnualKm`／`perKmUnitPrice`；含 `annualDepreciation` | AD-US-13 第 3 條 |
+| 查詢端點 | 歷史版本回原值與 `perKmUnitPrice`（唯讀）；新版本該二欄 `null` | AD-US-13 第 5 條 |
+| `parameter-service.createDepreciationVersion` | 簽章之 `estimatedAnnualKm` **保留為 optional**（`number \| null`，預設 `null`） | **005a T3b 硬性約束同型**——使約 30 處直呼 service／直寫 `prisma.depreciationParameterVersion` 之既有測試**零改動**；§20.13 **D22** |
+| `deriveDepreciation`（每公里單價引擎） | **行為凍結**：函式保留、既有測試零改動、**申請路徑零呼叫**；僅供舊模型快照之歷史顯示與 003a 既有測試 | 連帶 B「推導單價自介面退場」；AC-49(c)(d) |
+
+---
+
+### 20.8 Data Flow 修訂（取代 §9.2／§9.3）
+
+#### 20.8.1 補貼預覽（唯讀路徑）
+
+```
+POST /applications/depreciation/preview
+  → resolveOwnerId(actor, body.ownerId)                    [不變：一般使用者帶他人 → 403]
+  → 欄位驗證（applicationYear ＋ **annualTotalKm**）→ 400   [AC-47]
+  → applicationYear == null → calculable=false + [YEAR_REQUIRED]，**不查 DB**
+  → annualTotalKm == null  → calculable=false + [ANNUAL_TOTAL_KM_REQUIRED]，**不查 DB**   ★新增
+  → sumOfficialMileage(prisma, { ownerId, YYYY-01-01, YYYY-12-31 })   [不變，唯讀]
+  → findMany(DepreciationParameterVersion) → findEffectiveVersion(YYYY-01-01)   [不變]
+  → deriveAnnualDepreciation({ vehiclePrice, usefulLifeYears })       ★改：不再呼叫 deriveDepreciation
+  → calculateDepreciation({ annualDepreciation, officialKm, annualTotalKm })   ★改
+  → 比例守門（officialKm > annualTotalKm → blocker）＋ 容量判定 → DepreciationComputedDto
+```
+**零寫入不變式（不變）**：預覽路徑絕不寫入任何資料列，須有測試證明。
+
+#### 20.8.2 完成與快照寫入
+
+```
+POST /applications/:id/complete   （DEPRECIATION 分派）
+  → 嚴格 actor.id === ownerId                                [不變，D9]
+  → SERIALIZABLE tx（重試）：
+       ① SELECT ... FOR UPDATE；assertTransition → 非 DRAFT → 403        [不變]
+       ② blockers = computeDepreciationBlockers({ applicationYear, annualTotalKm })
+          ★改：**附件計數不再進入 blocker 判定**（裁定②；AC-54(e)）
+          非空 → 400 VALIDATION_ERROR + fields[] + details.blockers[]
+       ③ { totalKm, applicationCount } = sumOfficialMileage(tx, {...})   [不變]
+       ④ version = findEffectiveVersion(findMany(tx), YYYY-01-01)        [不變]
+          null → 409 PARAMETER_NOT_AVAILABLE
+          derived = deriveAnnualDepreciation(version) ; ok:false → 409（訊息互異）   ★改
+       ⑤ result = calculateDepreciation({ annualDepreciation, officialKm: totalKm, annualTotalKm })
+          比例守門（AC-52）＋ 容量守門（AC-22）→ blocker → 400，**寫入前**拒絕   ★改
+       ⑥a DepreciationApplication.update(**9 個快照欄**，顯式定精度；舊二欄不寫)   ★改
+       ⑥b Application.update(status=COMPLETED, totalAmount, completedAt)   [不變]
+  → 回應 DTO（含 snapshot.model="CURRENT"）
+```
+> **②與③④之順序仍不可對調**（結構性條件未過時不查詢里程與參數）。
+> **草稿與預覽即暴露不可計算狀態**（blocker ＋ `calculable=false`）之反模式禁令**不變**，並擴及新增之三碼（AC-52(d)、AC-53(b)）。
+
+#### 20.8.3 草稿儲存（§9.1 之增補）
+
+`PUT /applications/depreciation/:id` 之更新欄位集合由 `{ applicationYear }` 擴為 `{ applicationYear, annualTotalKm }`；`primaryDate` 推導**僅依 `applicationYear`**（不受年度總里程影響）；附件對帳、稽核 hook、交易紀律**零變更**。
+
+#### 20.8.4 附件容器狀態推導（§9.4）
+
+**零變更**——`deriveContainerState` 之 `DEPRECIATION` 分支與 `deleteApplication` 之 detach 範圍不因證明改選填而變（AC-25／AC-26 續 `GREEN`）。
+
+---
+
+### 20.9 五態與邊界增補
+
+**§4 五態之修訂列**
+
+| 狀態 | 修訂內容 |
+|---|---|
+| **Empty** | 拆為**兩種不同狀態**：①**年度無任何有效差旅**（`officialKm="0.00"`、`annualTotalKm` 已填）→ 顯示 `0.00 公里`、比例 `0.0000%`、**補貼金額 0**＋說明文字，**非錯誤、完成仍可執行**（§1.2 不變）；②**尚未輸入年度總里程** → 顯示「無法計算」＋提示，**不得顯示金額 0**（AC-53(d)）。兩者測試須各自存在（AC-40）。 |
+| **Error** | 新增觸發：年度總里程格式／值域錯（400，就地標示欄位）、比例 >100%（blocker，提示檢查年度總里程） |
+| **Success** | 完成後顯示**五值**（AC-59(a)） |
+
+**§5 邊界條件之增補與修訂**
+
+| # | 情境 | 預期行為 | 對應 AC |
+|---|---|---|---|
+| B-36 | `annualTotalKm` 為 `null`（草稿） | 允許保存；`calculable=false` ＋ `ANNUAL_TOTAL_KM_REQUIRED`；完成 400 | AC-53 |
+| B-37 | `annualTotalKm` 為 `0`／負數 | **當場 400**（裁定 E），不入庫 | AC-47(c) |
+| B-38 | `annualTotalKm` 為 `12345.67`（2 位小數） | **400**（裁定 D，最多 1 位）；`12345.6`／`12345` 通過 | AC-47(b) |
+| B-39 | `annualTotalKm` 恰 `99999999.9` ／ `100000000` | 前者通過、後者 400（容量四點邊界） | AC-47(d) |
+| B-40 | `officialKm == annualTotalKm`（比例恰 100%） | **允許完成**（Q4）；`ratio="1.000000"` | AC-52(b) |
+| B-41 | `officialKm` 大於 `annualTotalKm` `0.01` | 擋完成（`OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`），草稿仍可存 | AC-52 |
+| B-42 | 零附件之草稿完成 | **200 完成成功**（裁定②反轉；原 B 段「完成須 ≥1」退場） | AC-54(a) |
+| B-43 | 附件恰 5 張再加第 6 張 | 409 `TOO_MANY_ATTACHMENTS`（**不變**） | AC-23 |
+| B-44 | 舊模型已完成列（raw SQL 播種） | DTO `model="LEGACY"`、`perKmUnitPrice` 原值、新模型四欄 `null`、**零重算** | AC-56 |
+| B-45 | 車價 `9999999999.99`／年限 1／比例接近 1 | `annualDepreciation ≈ 1e10` → `amount` 超 `int4` → `AMOUNT_OUT_OF_RANGE`（非 500、非截斷） | AC-22 |
+| B-19（修訂） | 原「車價 1e10／年限 1／年里程 1 → 單價超 `Decimal(14,4)`」 | **不再可達**（每公里單價退出計算）；由 **B-45** 取代 | AC-22 |
+| B-10（修訂） | 原「單價為 `0.0000`」 | 改述為「年度公務里程 > 0 但每年折舊費用極小 → 補貼可為 0 元，**非錯誤**」 | AC-51 |
+| B-09／B-13～B-18／B-20～B-35 | **不變** | — | — |
+
+---
+
+### 20.10 權限與揭露面修訂（取代 §6.3 之揭露段）
+
+**§6.1 授權矩陣（40 格）零變更**——端點集合、五身分判定、`resolveOwnerId` 紀律、判定順序（403 先於 400）全部不變。
+
+**§6.3「推導三值不外露」之修訂（D8 之取代）**
+
+| 值 | 修訂前 | **修訂後** | 依據 |
+|---|---|---|---|
+| 每年折舊費用 | 不外露 | **可見**（DTO 回傳＋畫面顯示） | 連帶 (C)；FE-US-18 第 1、5 條 |
+| 每公里補助單價 | 可見 | **退場**（新模型不存在；舊模型列之快照原值仍回傳，BE-US-14 第 3 條） | 裁定①；連帶 (B) |
+| **車價** | 不外露 | **不外露（不變）** | 連帶 (C)「車價本身仍不顯示」 |
+| **折舊年限** | 不外露 | **不外露（固化為契約）** | **Q6**：每年費用 × 年限 ＝ 車價，僅遮蔽車價無法達成裁定意圖 |
+| 預估年度行駛公里數 | 不外露 | **不外露（且新模型不再持久化於快照）** | 裁定①、連帶 B |
+| 參數版本 id | 不外露 | 不外露（不變） | D8 |
+
+> **真實隔離而非 UI 遮蔽（不變）**：`GET /parameters/depreciation` 維持**管理員限定**（既有行為，零改動），故一般使用者無法由任何 API 取得車價與年限。以 **DTO 鍵集封閉斷言**守門（AC-59(c) 為其前端對應）。
+> **年度總里程之揭露面**：為使用者**自己申報**之資料，回傳給本人與管理員不構成任何授權擴張；預覽端點之 `ownerId` 判定沿 `resolveOwnerId`（AC-14 不變）。
+
+---
+
+### 20.11 測試策略與既有測試遷移清單
+
+#### 20.11.1 紀律（§11.0 全數續用）
+
+TDD（先紅後綠、Handoff 附修復前紅燈實際輸出）、禁止刪除／弱化／`skip` 既有測試換綠燈、金額類精確等值、每個關鍵規則須有 mutant 自證、INFRA-001 併跑限制、新增 src 檔須同步入結構性掃描清單、**禁止 spawn 任何 subagent**。
+
+> **「測試遷移」之定義與界線（本修訂段之關鍵紀律）**：依已批准之 US 修訂而更新既有測試之**斷言內容**（例如「完成須 ≥1」反轉為「零附件可完成」），屬 **Spec 授權之測試遷移，不是弱化測試**（005a D1(a) 原文同型授權）。但——
+> - **每個 R Task 之 Packet 須逐檔列出**其被授權遷移的測試檔與 describe；
+> - implementer **不得自行擴大**至清單外之檔案；發現清單外檔案受影響 → **BLOCKED 回報**，不得私改（005a **REV2 漏檔事件**教訓：搜尋結果截斷曾使「封閉清單」失真）；
+> - Handoff 須附**測試增／刪／改計數**與「無任何測試被刪除／`skip`／弱化」之聲明。
+
+#### 20.11.2 既有測試之受影響逐檔清單（**依 `grep` 實查產出；R Task 執行時須逐檔複驗**）
+
+> 實查指令（可重跑）：`grep -rl "estimatedAnnualKm" --include="*.ts" --include="*.tsx" backend/src backend/prisma backend/test frontend/src frontend/test e2e`（31 檔命中）＋逐檔交叉核對 `parameters/depreciation` HTTP 命中數。
+
+| 檔案 | 受影響原因 | 授權遷移之 Task |
+|---|---|---|
+| `backend/prisma/schema.prisma` | 新增 4 欄 ＋ `estimatedAnnualKm` 轉 nullable | **R1** |
+| `backend/prisma/migrations/*`（新增 1 目錄） | M2 | **R1** |
+| `backend/test/integration/phase7-migration-safety.test.ts` | 欄位集合、精度往返、**FW-8 raw SQL fixture** | **R1** |
+| `backend/src/applications/depreciation-calculation.ts` | 公式改造、ratio、容量常數集合 | **R2** |
+| `backend/test/unit/depreciation-calculation.test.ts` | AC-19/20 退場、AC-21/22 改組、AC-50/51 新增 | **R2** |
+| `backend/src/applications/depreciation-blockers.ts` | 退場 1 碼、新增 3 碼、兩段式重排 | **R3** |
+| `backend/test/unit/depreciation-blockers.test.ts` | 同上 | **R3** |
+| `backend/src/parameters/depreciation-engine.ts` | 新增 `deriveAnnualDepreciation`（共用內部推導）；`deriveDepreciation` **行為零變更** | **R4a** |
+| `backend/test/unit/depreciation-engine.test.ts` | **既有 `deriveDepreciation` describe 零改動（凍結證明）**；新增 `deriveAnnualDepreciation` describe | **R4a** |
+| `backend/src/parameters/parameter-validation.ts` | 折舊驗證縮為兩值 | **R4b** |
+| `backend/src/parameters/parameter-service.ts` | `estimatedAnnualKm` 轉 optional（**簽章保留**，D22）；折舊預覽改用 `deriveAnnualDepreciation` | **R4b** |
+| `backend/src/parameters/routes.ts` | 請求解析與回應組裝縮欄 | **R4b** |
+| `backend/test/unit/parameter-validation.test.ts` | 折舊驗證案例縮欄 | **R4b** |
+| `backend/test/integration/phase3a-parameter-depreciation.test.ts`（41 處 HTTP） | AC-57 之主戰場 | **R4b** |
+| `backend/test/integration/chore002-d4-decimal-number.test.ts`（1 處 HTTP） | 折舊 POST 之數值型別案例 | **R4c** |
+| `backend/test/integration/chore003-parameter-field-capacity.test.ts`（2 處 HTTP） | `estimatedAnnualKm` 之容量案例退場 | **R4c** |
+| `backend/test/integration/phase3a-parameter-audit.test.ts`（5 處 HTTP） | 稽核 `summary` 欄位集合縮欄 | **R4c** |
+| `backend/src/applications/depreciation-service.ts` | `annualTotalKm` 欄位、DTO 三形狀、computed 組裝、完成流程與快照 | **R5／R6／R7**（依 Packet 逐段授權） |
+| `backend/src/applications/routes.ts` | 欄位解析（`annualTotalKm`）、預覽 body、稽核前後值 | **R5／R6／R8** |
+| `backend/src/applications/trip-validation.ts` | 新增 `parseAnnualTotalKmField`（複用 `parseDecimalField`，**不新增第二套驗證實作**） | **R5** |
+| `backend/test/unit/trip-validation.test.ts` | 新解析器之單元案例 | **R5** |
+| `backend/test/integration/phase7-depreciation-draft.test.ts` | AC-02/05/47/48 | **R5** |
+| `backend/src/applications/depreciation-parameters.ts` | 改呼叫 `deriveAnnualDepreciation` | **R6** |
+| `backend/test/integration/phase7-depreciation-parameters.test.ts` | AC-17 退場→AC-49；AC-51/52 整合層 | **R6** |
+| `backend/test/integration/phase7-annual-mileage.test.ts` | **僅播種與 computed 形狀之機械連動**（AC-09~14 語意不變） | **R6** |
+| `backend/test/integration/phase7-depreciation-complete.test.ts` | AC-27/30/54/55/56 | **R7** |
+| `backend/test/integration/phase7-depreciation-attachment.test.ts` | 「完成須 ≥1」相關斷言反轉；**AC-23/25/26 零改動** | **R7** |
+| `backend/test/integration/phase7-contract.test.ts` | blocker code 聯集異動；**AC-43 `ErrorCode` 聯集斷言零改動** | **R7** |
+| `backend/test/integration/phase7-snapshot-immutability.test.ts` | AC-31/32/48 | **R8** |
+| `backend/test/integration/phase7-on-behalf.test.ts` | AC-35 之前後值摘要 | **R8** |
+| `frontend/src/pages/DepreciationApplicationPage.tsx`、`frontend/src/api/depreciation.ts`、`frontend/src/types/api.ts` | 新欄、五值、blocker 文案 | **R9／R10** |
+| `frontend/test/DepreciationApplicationPage.test.tsx` | AC-38/39/40/41/42/53/58/59/60 | **R9／R10** |
+| `frontend/src/pages/ParametersPage.tsx`、`frontend/src/api/parameters.ts` | 折舊區塊縮欄 | **R11** |
+| `frontend/test/ParametersPage.test.tsx` | AC-61 | **R11** |
+| `e2e/depreciation-allowance.spec.ts` | AC-45/46 之流程與播種 | **R12** |
+
+**明示不受影響（實查判定，供終審核對）**：`chore001-d4-decimal-placeholder.test.ts`、`chore003-string-fidelity.test.ts`、`phase3a-parameter-model.test.ts`、`parameter-version-engine.test.ts`（四檔皆**直呼 service 或直寫 prisma、零 HTTP**，受 **D22 簽章保留**保護）；`phase7-application-list.test.ts`（AC-36/37 語意不變）；`mileage-engine.ts`／`mileage-range.ts`／`maintenance-*`／`travel-*`／`completion-blockers.ts`（**零 diff**，Stop Condition 續存）。
+
+#### 20.11.3 測試層級之增補
+
+| 層 | 增補 |
+|---|---|
+| 單元 | `calculateDepreciation`：新公式四 mutant kill、`.times(ratio)` 鑑別、除零與非有限值三重守門、容量 predicate 新集合邊界；`computeDepreciationBlockers`：六碼順序穩定、三段互斥語意、不變式 sweep；`deriveAnnualDepreciation`：2dp 與 `≤0` 拒絕；`parseAnnualTotalKmField`：1dp／`≤0`／容量 |
+| 整合 | M2 安全網（raw SQL fixture）、`annualTotalKm` gate table 雙端點、採用 vs 不採用對照矩陣、比例守門三處一致、零附件完成、9 欄快照三來源重算、舊模型列唯讀、參數縮欄與歷史唯讀 |
+| 前端 | 兩輸入欄與唯讀里程之區分、五值逐字、三負向（車價／年限／每公里單價）、>100% 與未輸入之兩種不可計算態、`blockingCodes` 驅動 |
+| E2E | 完整走一筆新模型折舊（含輸入年度總里程、**不上傳證明亦可完成**）、管理員改參數後歷史不變、375px 無溢位 |
+| 安全 | 授權矩陣 40 格**零變更**之回歸；日誌敏感鍵掃描（AC-44）不變 |
+
+---
+
+### 20.12 修訂段 Task Graph（R1 ~ R13）
+
+> 每 Task 一律 TDD、一個 atomic commit（含 Task ID `PHASE-007-R{n}`）。**規模上限（Packet）：單 Task ≤ 5 AC、≤ 6 檔、不得同時橫跨 FE＋BE＋DB 三層。**
+> **Diff 預算與 usage 預算帶依 `docs/retrospective/PHASE-007-usage.md` §3 校準後之型態帶**；逾 diff 預算 50% 須即時回報（Stop Condition）；接線型 usage 拆分線 **~320k** 維持。
+
+| Task | 內容 | 層 | AC（≤5） | 檔案（≤6） | Risk | 依賴 | Diff 預算 | usage 帶 | Done When |
+|---|---|---|---|---|---|---|---|---|---|
+| **R1** | schema 新 4 欄 ＋ `estimatedAnnualKm` 轉 nullable ＋ **M2（ALTER 型）** ＋ 安全網（**FW-8 raw SQL fixture**） | DB | AC-01 | `backend/prisma/schema.prisma`、`backend/prisma/migrations/*`（≤2）、`backend/test/integration/phase7-migration-safety.test.ts` | **High**（部分不可逆 migration） | — | ~600 | ~110-135k | 乾淨／既有 DB 皆 migrate 成功且冪等；八表逐欄零改寫（新欄於既有列一律 `NULL`）；鍵集全等（多餘 `ADD COLUMN` mutant 必紅）；enum 聯集全等；**表數 15 不變**（4 個既有斷言點零改動之機械證明）；`Decimal(9,1)`／`(9,6)`／`(12,2)` 精度往返逐位元；**FW-8 raw SQL fixture 落地並同時可作 AC-56(d) 之舊模型列來源** |
+| **R2** | `calculateDepreciation` 新公式 ＋ `ratio` ＋ 容量 predicate 集合重整 | BE（純函式，零接線） | AC-21, 22(判定層), 50, 51 | `backend/src/applications/depreciation-calculation.ts`、`backend/test/unit/depreciation-calculation.test.ts` | **High**（金額核心） | R1 | ~700 | ~130-155k | §20.4.1 ⑤⑥ 逐字；**§20.4.3 四 mutant 各必紅（實跑輸出附 Handoff）**；`ROUND_HALF_EVEN` mutant 於 row 1 必紅；`.times(ratio)` 鑑別（或結構性斷言＋窮舉結論）；除零／`NaN`／`Infinity` 三重守門；容量常數由 schema 精度推導（零魔術數）＋**常數↔實際 DDL 對照測試（FW-1）**；掃描清單含自證 |
+| **R3** | `computeDepreciationBlockers`：退場 1 碼、新增 3 碼、三段互斥重排 | BE（純函式，零接線） | AC-52(判定層), 53(判定層), 54(判定層), 18(判定層) | `backend/src/applications/depreciation-blockers.ts`、`backend/test/unit/depreciation-blockers.test.ts` | **High**（金額守門） | R2 | ~600 | ~130-155k | 六碼順序穩定；三段互斥（`{1,2|3}`／`{4}`／`{5,6}`）；`DEPRECIATION_ATTACHMENT_REQUIRED` 於本檔零殘留；不變式 sweep「`calculable=false ⇒ 至少一 blocker`」；`≤0`／非有限值保守失敗；**附件計數參數移除後，既有呼叫端零殘留引用** |
+| **R4a** | `deriveAnnualDepreciation` ＋ 共用內部推導（`deriveDepreciation` 行為凍結） | BE（純函式，零接線） | AC-49(單元層) | `backend/src/parameters/depreciation-engine.ts`、`backend/test/unit/depreciation-engine.test.ts` | **High**（金額上游） | R1 | ~400 | ~100-130k | 2dp 逐字；`≤0` → `ok:false`；**單一內部推導（結構性斷言：`vehiclePrice ÷ usefulLifeYears` 恰一份實作）**；**既有 `deriveDepreciation` describe 零改動全綠（凍結證明，含 `10/3/3 → 1.1111`）** |
+| **R4b** | 折舊參數端點縮欄（凍結式）＋ 預覽改用每年費用 | BE | AC-57 | `backend/src/parameters/parameter-validation.ts`、`backend/src/parameters/parameter-service.ts`、`backend/src/parameters/routes.ts`、`backend/test/unit/parameter-validation.test.ts`、`backend/test/integration/phase3a-parameter-depreciation.test.ts` | **High**（**公開 API contract 變更**——事前批准已由連帶 B／Q9 之人類裁定構成） | R4a | ~700 | ~160-200k | 夾帶 `estimatedAnnualKm` **不採用且新列該欄為 `NULL`**（非 400）；回應不含該欄與 `perKmUnitPrice`、含 `annualDepreciation`；`GET` 對歷史版本回原值（唯讀）之正負例；**硬性約束：`createDepreciationVersion` 簽章保留 optional 參數**（D22）——`phase3a-parameter-model`／`chore003-string-fidelity`／`chore001`／`parameter-version-engine` 四檔**零改動且仍綠**之機械證明 |
+| **R4c** | 參數縮欄之連動測試遷移（純測試檔） | BE（測試） | AC-57（連動） | `backend/test/integration/chore002-d4-decimal-number.test.ts`、`backend/test/integration/chore003-parameter-field-capacity.test.ts`、`backend/test/integration/phase3a-parameter-audit.test.ts` | Medium | R4b | ~400 | ~105-140k | 三檔全綠；**零刪除**（欄位容量／字串保真／稽核之既有覆蓋面不得因縮欄而淨減——如有覆蓋面流失須於 Handoff 明列並提補償測試）；Handoff 附增／刪／改計數 |
+| **R5** | 草稿 CRUD：`annualTotalKm` 解析器、欄位驗證、採用、DTO 三形狀 | BE | AC-02, 05, 47, 48(建立/更新面) | `backend/src/applications/trip-validation.ts`、`backend/src/applications/routes.ts`、`backend/src/applications/depreciation-service.ts`、`backend/test/unit/trip-validation.test.ts`、`backend/test/integration/phase7-depreciation-draft.test.ts` | **High**（授權＋欄位驗證） | R1, R3 | ~900 | ~200-240k | gate table 雙端點全綠；`fields[].field="annualTotalKm"` 明文斷言；**403 先於 400 之既有順序零回歸**；小數 1 位與 `≤0` 當場 400 之四點邊界；**複用 `parseDecimalField`（不新增第二套驗證實作）之結構性證明**；DTO 鍵集封閉（車價／年限／版本 id 不外露） |
+| **R6** | 計算接線：`computed` 組裝、預覽端點、比例守門三處一致 | BE | AC-49(整合層), 51(整合層), 52(整合層), 53(整合層), 18(整合層) | `backend/src/applications/depreciation-parameters.ts`、`backend/src/applications/depreciation-service.ts`、`backend/src/applications/routes.ts`、`backend/test/integration/phase7-depreciation-parameters.test.ts`、`backend/test/integration/phase7-annual-mileage.test.ts` | **High**（金額上游接線） | R2, R4a, R5 | ~1000 | ~210-310k（拆分線 320k） | `deriveAnnualDepreciation` import 突變自證必紅 ＋ **`deriveDepreciation` 負向 spy（呼叫數 0）**；PRIMARY kill case 於整合層綠；比例守門於草稿 DTO／預覽／完成**同 fixture 三處一致**；預覽零寫入實證；缺參數三處一致（不變） |
+| **R7** | 完成流程 ＋ 9 欄快照 ＋ 證明選填反轉 ＋ 舊模型唯讀 | BE ＋ DB（寫入） | AC-27, 30, 54, 55, 56 | `backend/src/applications/depreciation-service.ts`、`backend/test/integration/phase7-depreciation-complete.test.ts`、`backend/test/integration/phase7-depreciation-attachment.test.ts`、`backend/test/integration/phase7-contract.test.ts` | **High**（不可逆完成／快照） | R6 | ~1100 | ~210-310k | 零附件完成 200 ＋ 快照完整；`DEPRECIATION_ATTACHMENT_REQUIRED` **全 src 掃描命中 0**；9 欄逐位元＋三來源行內重算；**舊二欄恆 `null`（mutant「順手寫入」必紅）**；顯式定精度（FW-3）；交易切點回滾實證（回滾斷言含新增 4 欄）；`P2025` 不得 500；**AC-23/25/26 既有附件測試零弱化** |
+| **R8** | 快照不可變 ＋ 後端權威（採用／不採用對照）＋ 代操作稽核前後值 | BE | AC-31, 32, 35, 48(權威面) | `backend/src/applications/routes.ts`（僅 `onUpdated` 稽核摘要）、`backend/test/integration/phase7-snapshot-immutability.test.ts`、`backend/test/integration/phase7-on-behalf.test.ts` | **High**（金額權威） | R7 | ~700 | ~150-205k | fixture 經真實完成流程；**同一請求之採用／不採用對照矩陣**（頂層純量 ＋ DB 層指紋）；9 欄逐位元不變 ＋ spy 零重算（被監視函式為 `deriveAnnualDepreciation`／`sumOfficialMileage`）；稽核 `summary` 含 `annualTotalKm` 前後值且不含敏感鍵 |
+| **R9** | 前端：折舊表單新欄 ＋ 五值預覽 ＋ 三負向遮蔽 | FE | AC-38, 58, 59 | `frontend/src/types/api.ts`、`frontend/src/api/depreciation.ts`、`frontend/src/pages/DepreciationApplicationPage.tsx`、`frontend/test/DepreciationApplicationPage.test.tsx` | Medium | R6 | ~900 | ~155-195k | 兩輸入欄＋唯讀里程之標籤逐字互異；**年度公務里程無 textbox 之負向斷言保留**；五值逐字取自後端；零自算鑑別（互不自洽 mock）；車價／年限／每公里單價三負向於草稿頁與已完成頁皆綠 |
+| **R10** | 前端：五態、>100%、未輸入不顯 0 元、證明選填 UI | FE | AC-40, 41, 42, 53(前端面), 60 | `frontend/src/pages/DepreciationApplicationPage.tsx`、`frontend/src/index.css`、`frontend/test/DepreciationApplicationPage.test.tsx` | Medium | R7, R9 | ~800 | ~155-195k | **兩種不可計算態各有測試**（Empty 0 元合法 vs 未輸入不顯 0）；`blockingCodes` 驅動文案；>100% 停用完成鈕但草稿可存；**無證明時完成鈕可用**（反轉）；已完成無上傳／刪除入口之負向斷言保留 |
+| **R11** | 前端：參數維護頁折舊區塊縮欄 ＋ 歷史唯讀 | FE | AC-61 | `frontend/src/types/api.ts`、`frontend/src/api/parameters.ts`、`frontend/src/pages/ParametersPage.tsx`、`frontend/test/ParametersPage.test.tsx` | Medium | R4b | ~450 | ~120-160k | 預估年里程輸入欄不存在之負向斷言；每公里單價不顯示之負向斷言；歷史版本唯讀顯示原值、新版本顯示「—」；**油資／ETC 區塊零回歸** |
+| **R12** | E2E ＋ 響應式 | FE ＋ E2E | AC-45, 46 | `e2e/depreciation-allowance.spec.ts`、`frontend/src/index.css` | Medium | R8, R10, R11, R13 | ~600 | ~185-265k | 全情境綠（大總管親跑於 dev 拓撲）；**流程含輸入年度總里程且不上傳證明即完成**；管理員改參數後金額與五值不變；播種冪等；四畫面 375px 無溢位 |
+| **R13** | **裁定 F：清空既有舊公式折舊測試申請**（dev／Gate 環境合成資料） | 資料操作（**零檔案變更**） | —（無 AC，見 §12R 註記） | 無（指令與證據記錄於 Handoff；大總管以 `PROJECT_STATE` 白名單記錄） | **High**（資料刪除不可逆） | R7 | 0 | ~30-50k | 刪除前後**逐列 id 與計數證據**；範圍**限縮**於 `Application.type='DEPRECIATION'` 之列與其 `DepreciationApplication` 子列；其附件一律 **detach 回 `TEMP`**（不留孤兒 `LINKED`）；**`AuditLog` 不刪**（歷史不可逆資產，§14）；**不得**觸及差旅／保養／參數版本任何列；執行後 `SELECT count(*) FROM "DepreciationApplication"` 之結果附 Handoff |
+
+#### 依賴圖
+
+```
+R1 ─┬─▶ R2 ──▶ R3 ──┬──────────────▶ R5 ──▶ R6 ──▶ R7 ──┬──▶ R8 ───────┐
+    │               │                      ▲             ├──▶ R13 ──────┤
+    ├─▶ R4a ────────┴──────────────────────┘             │              │
+    │     └──▶ R4b ──┬──▶ R4c                            │              │
+    │                └──▶ R11 ───────────────────────────┼──────────────┤
+    └────────────────────────────────────────────────────┘              │
+                                    R9 ◀── R6                           │
+                                     └──▶ R10 ───────────────────────────┴──▶ R12
+```
+
+#### 規模上限自查
+
+| Task | AC 數 | 檔數 | 跨層 | 合規 |
+|---|---|---|---|---|
+| R1 | 1 | 3 | DB only | ✅ |
+| R2 | 4 | 2 | BE only（純函式） | ✅ |
+| R3 | 4 | 2 | BE only（純函式） | ✅ |
+| R4a | 1 | 2 | BE only（純函式） | ✅ |
+| R4b | 1 | 5 | BE only | ✅ |
+| R4c | 1（連動） | 3 | BE only（純測試） | ✅ |
+| R5 | 4 | 5 | BE only | ✅ |
+| R6 | 5 | 5 | BE only | ✅ |
+| R7 | 5 | 4 | BE ＋ DB（寫入既有表，**無 schema 變更**） | ✅ |
+| R8 | 4 | 3 | BE only | ✅ |
+| R9 | 3 | 4 | FE only | ✅ |
+| R10 | 5 | 3 | FE only | ✅ |
+| R11 | 1 | 4 | FE only | ✅ |
+| R12 | 2 | 2 | FE ＋ E2E | ✅ |
+| R13 | 0 | 0 | 資料操作 | ✅ |
+
+> **無任何 Task 同時橫跨 FE＋BE＋DB 三層；R1 為唯一含 schema/migration 之 Task。**
+> **High 風險 Task 清單（須於修訂段 Gate 一併取得事前批准）**：**R1、R2、R3、R4a、R4b、R5、R6、R7、R8、R13** 共 **10 項**。判準沿 CLAUDE.md「認證、授權…一律 High」＋本 Phase 既有升級先例（不可逆 migration、金額核心與上游、授權與欄位驗證、不可逆完成／快照、公開 API contract、不可逆資料刪除）。**此清單為保守方向，不縮減任何既有 High 判定。**
+> **TDD 順序**：R1（安全網先建）→ R2/R3（金額與守門純函式）→ R4a（引擎）→ R4b/R4c（參數縮欄）→ R5（草稿欄位）→ R6（計算接線）→ R7（不可逆完成）→ R8（權威）→ R9/R10/R11（前端）→ R13（資料清空）→ R12（E2E）。
+> **R13 排序**：必須在 **R7 之後**（新模型完成流程可用）且在 **R12 之前**（E2E 播種不得撞上舊模型殘列）。
+
+---
+
+### 20.13 修訂段決策記錄（D15 ~ D22）
+
+> **D15~D19 為已批准裁定之直接落地**（非待裁定項）；**D20~D22 為 Spec 層技術裁量**（屬「可修改但必須記錄」層級，已於 Handoff 逐項揭露供大總管複核）。
+
+| # | 決策 | 內容 | 依據／理由 |
+|---|---|---|---|
+| **D15** | 每年折舊費用之來源與引擎處置 | 新增 `deriveAnnualDepreciation`（2dp，共用內部推導）；`deriveDepreciation` **行為凍結**、申請路徑零呼叫、既有測試零改動 | BE-US-14 修訂後第 1、3 條；連帶 B；Q9／Q12（更名不改編號）；005a D1(a) 凍結式先例 |
+| **D16** | 公式之乘除順序與比例之角色 | `rawAmount = A × O ÷ I`（**先乘後除**）；`ratio` 僅供顯示與快照，**絕不**回流計算 | BE-US-17 修訂後第 5 條（不得對比例或任何中間值先行取整）；**006 T2R SF-1 反例**（`.times(ratio)` 可差 1 元）；Q3 |
+| **D17** | 年度總里程之型別、精度與值域 | `Decimal(9,1)`、絕對值 < `1e8`；小數 > 1 位 → 400；`≤0` → **當場 400**；`null` → 草稿允許、完成擋 | 裁定 D、裁定 E、Q1、Q2；複用既有 `parseDecimalField`／`KM_MAGNITUDE_LIMIT`（零新增容量心智模型） |
+| **D18** | 快照欄位集合 | **9 欄**（含車價與年限之保留、`rawAmount`、`calculatedAt`、版本 id）；舊二欄凍結唯讀、新列恆 `null` | BE-US-18 修訂後第 3 條逐字；Q5（＝S-4）；E-8（取整前金額）；§16 D7 之 `calculatedAt`／版本 id 設計續用 |
+| **D19** | 新舊模型判別 | `snapshotAnnualTotalKm != null` ⇒ 新模型；DTO 以 `model` 欄如實揭露；舊列唯讀不重算 | **Q7**；PHASE-005a Spec §8.4 判別先例；BE-US-14 第 3 條（＝E-5） |
+| **D20** | **【Spec 層裁量】** 參數端點對 `estimatedAnnualKm` 夾帶之處置 | **不採用**（新列寫 `NULL`），**不回 400** | Q9 僅裁定「不再接受／不再回傳」，未指定夾帶時之狀態碼。採「不採用」係沿**全案既有慣例**（AC-02／AC-32「夾帶一律不採用」）；採 400 會對既有公開 contract **新增拒絕面**，屬未經批准之可見行為擴張，故不採。**若大總管認為須人類明示，本項可獨立提請裁定而不阻塞其餘 Task（僅影響 R4b 之一組斷言）。** |
+| **D21** | **【Spec 層裁量】** `DepreciationParameterVersion.estimatedAnnualKm` 之欄位處置 | 轉 **nullable**（`ALTER COLUMN DROP NOT NULL`），不新增表、不寫哨兵值、不 `DROP COLUMN` | 連帶 B 要求「新版本只需車價＋年限」＋「歷史版本唯讀保留」，**nullable 是唯一能同時滿足兩者且不造假資料的表示法**；哨兵值會使歷史原值與新版本無法區分（破壞 AC-57(c)）；`DROP COLUMN` 直接違反「歷史唯讀保留」。**代價**：M2 成為 ALTER 型 migration，回滾之 `SET NOT NULL` 需前提條件（§20.15） |
+| **D22** | **【Spec 層裁量】** `createDepreciationVersion` 之簽章處置 | `estimatedAnnualKm` 參數**保留為 optional**（`number \| null`，預設 `null`），僅 route 層停止傳入 | **005a T3b 硬性約束同型**（「只移除 route 註冊，service 函式一律保留」）——約 30 處直呼 service／直寫 prisma 之既有測試因此**零改動**，將測試遷移面自 8 檔壓縮至 5 檔，顯著降低誤傷風險（005a REV2 漏檔事件教訓） |
+
+**被取代之開發段決策點（§16）**
+
+| 開發段 | 狀態 | 取代者 |
+|---|---|---|
+| **D6**（每公里單價之精度來源） | **已取代** | §20.4.2（每年折舊費用 2dp；誤差上界由 `年度里程×0.00005` 降為 `≤0.005` 元） |
+| **D7**（快照 8 欄） | **已修訂** | **D18**（9 欄；`calculatedAt`／版本 id 之設計理由續用） |
+| **D8**（推導三值不外露） | **部分取代** | §20.10（每年折舊費用改為**可見**；車價與**年限**仍不外露，Q6 固化） |
+| **D10**（附件容器語意與完成鎖定） | **部分取代** | 完成鎖定與 detach **全部續存**；僅「完成須 ≥1」之守門退場（AC-54） |
+| **D14**（`count`／`SUM` 不對稱） | **不變** | 金額只用 `totalKm`（新公式下 `totalKm` 為比例之分子，語意續存） |
+| D1／D2／D3（年度值域部分）／D4／D5／D9／D11／D12／D13 | **不變** | — |
+
+---
+
+### 20.14 已知限制增補（§17.1 之續編）
+
+12. **舊模型列於前端無專屬版型**：裁定 F 清空 dev／Gate 之合成舊資料後，前端不存在可達之 `model="LEGACY"` 狀態，故本修訂段**不新增**舊模型版型（避免未經批准之可見行為）。後端 DTO 依 AC-56 已可判別並回傳原值；**PHASE-008 報表之舊模型呈現**屬該 Phase（§20.16 #6）。前端仍須滿足既有 `Error` 態紀律：任何非預期 DTO 形狀不得 500 或渲染 `NaN`。
+13. **`ANNUAL_TOTAL_KM_INVALID` 於 API 路徑結構性不可達**：AC-47(c) 之當場 400 使 `≤0` 無法入庫，該 blocker 僅於純函式層可達。**刻意保留**（保守失敗紀律；若未來欄位層放寬即自動生效）。
+14. **M2 之回滾具前提條件**：`estimatedAnnualKm` 之 `SET NOT NULL` 還原需該欄無 `NULL` 列；一旦以新介面建立過參數版本即需回填或刪除該批版本。詳見 §20.15。
+15. **`rawAmount` 4 位小數與 `totalAmount` 之窗口矛盾（B-12）續存**：`[x.49995, x.5)` 區間之外觀矛盾在新公式下同樣可能發生（PRIMARY kill case 之 `8113.4979…` 即為鄰近例）。**Gate 報告須向人類揭露**；PHASE-008 對帳說明必以**三來源值**（每年折舊費用／年度公務里程／年度總里程）重算，勿直接以 4dp `snapshotRawAmount` 呈現。
+16. **每年折舊費用之 2dp 為刻意接受之對帳成本**（取代 §17.1 #7 之單價誤差條款）：誤差上界 `≤0.005` 元，較舊模型改善逾兩個數量級。
+17. **同年度多筆申請各自輸入不同年度總里程**：Q11 已裁定不做一致性檢查；同一批差旅可被多筆折舊申請各自計入（§17.1 #10 之語意延續）。
+
+---
+
+### 20.15 Rollback 修訂（增補 §14）
+
+- **修訂段新增內容**：1 個 ALTER 型 migration（4 新欄 ＋ 1 欄轉 nullable）、1 個新純函式（`deriveAnnualDepreciation`）、1 個新解析器（`parseAnnualTotalKmField`）、既有 4 個折舊模組與 3 個參數模組之改造、前端 2 頁改造、測試遷移。
+- **開發階段回滾**：branch `phase-007` 還原至修訂段起點；DB 執行 `ALTER TABLE "DepreciationApplication" DROP COLUMN …` ×4 ＋ `ALTER TABLE "DepreciationParameterVersion" ALTER COLUMN "estimatedAnnualKm" SET NOT NULL`。
+- **⚠ 部分不可逆（必須向人類揭露）**：
+  1. `DROP COLUMN` 會**永久遺失**新模型申請之 `annualTotalKm` 與四個新快照欄；已完成之新模型折舊申請將無法呈現（`Application` 列雖在，快照不可重建）。**回滾前須先匯出該表。**
+  2. `SET NOT NULL` 之前提為 `estimatedAnnualKm` 無 `NULL` 列；**若已以新介面建立過參數版本**，須先回填該欄或刪除該批版本——**刪除受 `parameterHasReferences` 引用保護約束**（已被完成申請引用者不可刪）。
+  3. **R13 之資料清空為不可逆**：舊模型折舊申請一經刪除即無法還原（合成資料，風險可控；`AuditLog` 之歷史紀錄不刪）。
+- **公開 contract 影響**：`ErrorCode` 聯集零變更；**blocker code 聯集**（退場 1、新增 3）與**折舊參數端點欄位集合**（縮欄）為公開契約變更，回滾即回到修訂前形狀；DTO 三形狀之變更同理。
+- **既有資料補償**：M2 對既有列**零改寫**（AC-01(b) 機械證明）；新欄於既有列一律 `NULL`。
+
+---
+
+### 20.16 Architecture / Data Flow 同步項增補（§13 之續編；本 Phase 不修改該二檔，結案 DOC-SYNC 批次處理）
+
+12. **ARCHITECTURE §4.1 折舊段**：公式改寫為「`ROUND_HALF_UP(每年折舊費用 × 年度公務里程 ÷ 年度總里程, 0)`，**取整恰一處**（每年費用之 2dp 取整屬 PHASE-003a 引擎契約）；禁止先取整比例、里程或 `rawAmount`」；刪除「以 4dp `perKmUnitPrice` 為準」之舊條款並註記其適用範圍限縮為**舊模型歷史快照**。
+13. **ARCHITECTURE §4.1／§4.2 折舊參數段**：補記「新版本只需車價 ＋ 年限；`estimatedAnnualKm` 轉 nullable 之凍結欄；`deriveDepreciation` 行為凍結、申請路徑零呼叫」。
+14. **ARCHITECTURE §4.4 快照清單**：折舊項改為 **9 欄**，補記「舊二欄凍結唯讀」與**新舊模型判別欄**（`snapshotAnnualTotalKm`）。
+15. **ARCHITECTURE §4.5**：補記「折舊證明為**選填**；完成鎖定與 detach 語意不變」。
+16. **ARCHITECTURE §4.11（或 §4.1 揭露面段）**：更新為「每年折舊費用對一般使用者**可見**；車價與**折舊年限**一律不外露（Q6）」。
+17. **DATA_FLOW §1.1**：`DepreciationApplication` 欄位列更新為修訂後 schema（含 4 新欄與 2 凍結欄）；`DepreciationParameterVersion.estimatedAnnualKm` 標為 nullable 凍結欄。
+18. **DATA_FLOW §2.2**：折舊差異段改述為新公式與比例守門；補記**新舊模型判別**（比照 §2.2 既有之 `fuelPriceVersionId` 判別條目）。
+19. **PROJECT_STATE 跨 Phase 追蹤（大總管白名單）**：①**PHASE-008 折舊報表改採五值揭露面**（每年折舊費用／年度公務里程／年度總里程／公務比例／金額；**不呈現車價與折舊年限**）——**Q8 已裁定，同時收斂既有追蹤條「三推導值是否呈現於報表須另行人類裁定」**；②PHASE-008 報表須同時支援**舊模型快照**（判別依 `snapshotAnnualTotalKm` 是否為 `null`）——與 005a `fuelPriceVersionId` 判別為同型義務；③PHASE-008 對帳說明以三來源值重算（§20.14 #15）；④PHASE-009 折舊修正版須複製 `applicationYear` **與 `annualTotalKm`** 後重算。
