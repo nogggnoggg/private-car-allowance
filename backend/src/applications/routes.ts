@@ -1150,8 +1150,16 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const preview = await computeDepreciationComputed(prisma, {
         ownerId,
-        // key 缺席與顯式 `null` 同義：尚未選擇年度（§9.2 → YEAR_REQUIRED，不查 DB）。
+        // key 缺席與顯式 `null` 同義：尚未選擇年度（§20.8.1 → YEAR_REQUIRED，
+        // 不查 DB）。
         applicationYear: fields.applicationYear ?? null,
+        // PHASE-007-R6（§20.6：預覽 body 之唯一異動；§20.8.1 逐字）：
+        // `annualTotalKm` 之解析與 POST／PUT **共用同一條驗證路徑**
+        // （`parseDepreciationFieldsInput`），故預覽對格式／精度／值域之判準與
+        // 草稿端點逐字相同——不會出現「預覽收得下、草稿存不進去」之分歧。
+        // key 缺席與顯式 `null` 同義：尚未輸入年度總里程 →
+        // `ANNUAL_TOTAL_KM_REQUIRED`，同樣不查 DB（AC-53(b)）。
+        annualTotalKm: fields.annualTotalKm ?? null,
       });
 
       return reply.status(200).send({ preview });

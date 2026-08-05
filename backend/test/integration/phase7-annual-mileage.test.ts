@@ -136,20 +136,40 @@ const YEAR_AC14_MISC = 2015;
  * 播種只讓金額面**從恆 `null` 變成可比較的真實值**。
  */
 const PARAM_EFFECTIVE_FROM = "2000-01-01";
-const PARAM_PER_KM_UNIT_PRICE = "6.0000"; // 600000 ÷ 5 ÷ 20000
+const PARAM_ANNUAL_DEPRECIATION = "120000.00"; // 600000 ÷ 5（§20.3 AC-49(a)）
 /** FW-3 正向鑑別專用年度（與上方各年度相隔 ≥3）。 */
 const YEAR_AMOUNT_A = 2012;
 const YEAR_AMOUNT_B = 2009;
 
+/**
+ * PHASE-007-R6（§20.11.2 之 R6 列逐字：「**僅播種與 computed 形狀之機械連動**
+ * （AC-09~14 語意不變）」）：`DepreciationComputedDto` 依 §20.6 由七鍵改為十鍵
+ * ——移除 `perKmUnitPrice`，新增 `annualDepreciation`／`annualTotalKm`／
+ * `ratio`／`ratioPercent`。本檔之年度區間、歸屬、資格、`ownerId` 解析等語意
+ * **零變更**。
+ */
 type PreviewDto = {
   calculable: boolean;
+  annualDepreciation: string | null;
   officialKm: string | null;
   officialApplicationCount: number | null;
-  perKmUnitPrice: string | null;
+  annualTotalKm: string | null;
+  ratio: string | null;
+  ratioPercent: string | null;
   rawAmount: string | null;
   amount: number | null;
   blockingCodes: string[];
 };
+
+/**
+ * 本檔全部預覽之年度總里程（§20.6：預覽 body 新增 `annualTotalKm`）。
+ *
+ * 取 `20000.0` 使 `每年折舊費用 ÷ 年度總里程 ＝ 120000.00 ÷ 20000.0 ＝ 6`
+ * 元/公里——修訂前後之金額基準逐值相同，故本檔既有金額斷言（600／1500 …）
+ * **零改動**即成立，機械連動的範圍被壓到最小。本檔各年度之 `officialKm` 皆
+ * 遠小於此值，比例守門（AC-52）不會被觸發。
+ */
+const ANNUAL_TOTAL_KM = "20000.0";
 
 describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ 預覽授權", () => {
   let app: FastifyInstance;
@@ -319,12 +339,17 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
     return application.id;
   }
 
+  /**
+   * §20.6：預覽 body 新增 `annualTotalKm`。除非呼叫端顯式覆寫，一律帶入
+   * `ANNUAL_TOTAL_KM`——「不帶」是 AC-53(b) 之專屬情境，屬
+   * `phase7-depreciation-parameters.test.ts`（R6 之 AC-53 段）之覆蓋範圍。
+   */
   async function previewRequest(cookie: string, payload: Record<string, unknown>) {
     return app.inject({
       method: "POST",
       url: "/applications/depreciation/preview",
       headers: { cookie },
-      payload,
+      payload: { annualTotalKm: ANNUAL_TOTAL_KM, ...payload },
     });
   }
 
@@ -809,7 +834,8 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       expect(b.officialApplicationCount).toBe(3);
 
       // 金額面逐欄全等（`officialApplicationCount` 為唯一允許相異之欄位）。
-      expect(b.perKmUnitPrice).toEqual(a.perKmUnitPrice);
+      expect(b.annualDepreciation).toEqual(a.annualDepreciation);
+      expect(b.ratio).toEqual(a.ratio);
       expect(b.rawAmount).toEqual(a.rawAmount);
       expect(b.amount).toEqual(a.amount);
       expect(b.calculable).toEqual(a.calculable);
@@ -817,7 +843,7 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       expect({ ...b, officialApplicationCount: a.officialApplicationCount }).toEqual(a);
 
       // 鑑別力自證（T7 播種後）：比較的確實是真實金額，而非 null 對 null。
-      expect(a.perKmUnitPrice).toBe(PARAM_PER_KM_UNIT_PRICE);
+      expect(a.annualDepreciation).toBe(PARAM_ANNUAL_DEPRECIATION);
       expect(a.rawAmount).toBe("600.0000");
       expect(a.amount).toBe(600);
       expect(a.calculable).toBe(true);
@@ -921,6 +947,7 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
 
       // 服務函式面：以草稿之擁有人計算 → 擁有人的 88.00。
       const byOwner = await computeDepreciationComputed(prisma, {
+        annualTotalKm: new Prisma.Decimal(ANNUAL_TOTAL_KM),
         ownerId: draftRow.ownerId,
         applicationYear: y,
       });
@@ -931,6 +958,7 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
 
       // 鑑別力自證：操作者於同年度確實有一筆顯著相異的里程（非「查無資料」假綠）。
       const byOperator = await computeDepreciationComputed(prisma, {
+        annualTotalKm: new Prisma.Decimal(ANNUAL_TOTAL_KM),
         ownerId: draftRow.createdById,
         applicationYear: y,
       });
@@ -1032,6 +1060,7 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       const callsBefore = spy.mock.calls.length;
 
       const computed = await computeDepreciationComputed(prisma, {
+        annualTotalKm: new Prisma.Decimal(ANNUAL_TOTAL_KM),
         ownerId,
         applicationYear: Number.NaN,
       });
@@ -1048,6 +1077,7 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       const callsBefore = spy.mock.calls.length;
 
       const computed = await computeDepreciationComputed(prisma, {
+        annualTotalKm: new Prisma.Decimal(ANNUAL_TOTAL_KM),
         ownerId,
         applicationYear: Number.POSITIVE_INFINITY,
       });
@@ -1062,6 +1092,7 @@ describeWithDb("PHASE-007-T6 — 年度公務里程接線（引擎複用）＋ �
       const callsBefore = spy.mock.calls.length;
 
       const computed = await computeDepreciationComputed(prisma, {
+        annualTotalKm: new Prisma.Decimal(ANNUAL_TOTAL_KM),
         ownerId,
         applicationYear: 2025.7,
       });

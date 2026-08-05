@@ -57,17 +57,18 @@ import {
   toDto as toAttachmentDto,
 } from "../attachment/lifecycle-service.js";
 import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.js";
-import { deriveAnnualDepreciation } from "../parameters/depreciation-engine.js";
 import { AppError, type FieldError } from "../platform/errors.js";
 import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
 import type { Blocker } from "./depreciation-blockers.js";
-import { computeDepreciationBlockers } from "./depreciation-blockers.js";
+import {
+  computeDepreciationBlockers,
+  isOfficialKmExceedsAnnualTotalKm,
+} from "./depreciation-blockers.js";
 import {
   calculateDepreciation,
   isDepreciationCalculationOverCapacity,
 } from "./depreciation-calculation.js";
 import {
-  type DepreciationVersionRow,
   type ResolvedDepreciationParameters,
   resolveDepreciationParameters,
 } from "./depreciation-parameters.js";
@@ -564,32 +565,22 @@ export interface ComputeDepreciationComputedInput {
 }
 
 /**
- * 由已選版之參數版本推導「每年折舊費用」（PHASE-007-R6a；AC-49(a)）。
+ * 「每年折舊費用」之取得（PHASE-007-R6；AC-49(a)(b)(c)）。
  *
- * **零推導實作**：除法一律由 R4a 之 `deriveAnnualDepreciation` 承擔，本檔只把
- * 它回傳的 2 位小數定寬字串以 `new Prisma.Decimal(字串)` 還原——與
- * `depreciation-parameters.ts` 對 `perKmUnitPrice` 之既有處置同型（零浮點中
- * 介、**不再取整**；AC-51(b)「本模組不得對其再次取整」之上游保證）。
+ * **本檔零推導、零第二個呼叫點**：除法由 R4a 之 `deriveAnnualDepreciation`
+ * 承擔，而**呼叫它的唯一位置**是 `depreciation-parameters.ts` 之
+ * `resolveDepreciationParameters`（選版與推導同一次完成）。本檔一律取用其
+ * 回傳之 `annualDepreciation` 欄位——如此「判定所依據的每年費用」與
+ * 「`derivationFailed`／`missing` 所描述的失敗原因」不可能分歧。
  *
- * `null` 之三個來源皆折為同一語意「該年度無可用之每年折舊費用」→
+ * `null` 之兩個來源皆折為同一語意「該年度無可用之每年折舊費用」→
  * `computeDepreciationBlockers` 之第 4 碼 `PARAMETER_NOT_AVAILABLE`：
  *   ① 查無該年 1/1 之有效版本（`version === null`）；
  *   ② `deriveAnnualDepreciation` 回 `ok:false`（車價 ≤0／年限 ≤0／非有限值
- *      ——AC-18 逐字「視同缺參數」，絕不 500、絕不以 0 繼續計算）。
- * 兩者之區辨資訊仍由 `resolveDepreciationParameters` 之 `missing`／
- * `derivationFailed` 持有（完成端點 409 `details.missing` 之來源），本函式
- * 不消滅該區辨、也不重寫它。
+ *      ——AC-49(e) 逐字「視同缺參數」，絕不 500、絕不以 0 繼續計算）。
+ * 兩者之區辨資訊由 `resolveDepreciationParameters` 之 `missing`／
+ * `derivationFailed` 持有（完成端點 409 `details.missing` 之來源）。
  */
-function resolveAnnualDepreciation(version: DepreciationVersionRow | null): Prisma.Decimal | null {
-  if (version === null) {
-    return null;
-  }
-  const derived = deriveAnnualDepreciation({
-    vehiclePrice: version.vehiclePrice,
-    usefulLifeYears: version.usefulLifeYears,
-  });
-  return derived.ok ? new Prisma.Decimal(derived.annualDepreciation) : null;
-}
 
 /**
  * `computeDepreciationComputed` 之內部完整結果：DTO ＋ 供 DTO 之
@@ -733,11 +724,10 @@ async function computeDepreciationComputedResult(
   });
 
   // ③ AC-15/18/49：選版（`depreciation-parameters.ts`，不重寫選版）＋每年折舊
-  //    費用（`deriveAnnualDepreciation`，不重寫推導）。
-  // 修訂後之申請路徑不再消費 `perKmUnitPrice`（每公里單價已退出申請計算，
-  // 裁定①；`resolveDepreciationParameters` 仍回傳該值供舊模型快照面使用）。
-  const { version } = await resolveDepreciationParameters(db, applicationYear);
-  const annualDepreciation = resolveAnnualDepreciation(version);
+  //    費用（同一函式內經 `deriveAnnualDepreciation` 推導，不重寫推導）。
+  // 修訂後之申請路徑**完全不觸碰** `deriveDepreciation`／每公里單價（裁定①、
+  // AC-49(c) 之負向 spy 即釘住此性質）。
+  const { annualDepreciation } = await resolveDepreciationParameters(db, applicationYear);
 
   // 第二段：`officialKm`／`annualDepreciation` 同給（§20.5）。
   const blockingCodes = computeDepreciationBlockers({
@@ -774,8 +764,20 @@ async function computeDepreciationComputedResult(
   // ④ 金額與容量：全案唯一之計算與判定（R2）。
   const result = calculateDepreciation({ annualDepreciation, officialKm: totalKm, annualTotalKm });
   const overCapacity = isDepreciationCalculationOverCapacity(result);
-  // T3 即審 FW-3：合成而非反推。
-  const calculable = result.calculable && !overCapacity;
+  // AC-52(c)(d)：比例守門之判定式為**單一事實來源**——一律呼叫
+  // `depreciation-blockers.ts` 匯出之 `isOfficialKmExceedsAnnualTotalKm`，
+  // **不得**在本檔就地重寫任何 `greaterThan` 比較（006 T5R SF-1 雙份漂移教訓；
+  // 本檔全域無任何 `greaterThan`／`lessThan`，由整合測試以原始碼掃描守門）。
+  //
+  // 為什麼 `calculable` 必須把它算進去：`calculateDepreciation` 對比例 >100%
+  // 仍**忠實計算**（設計如此，見該檔檔頭），容量亦可能通過——若只以
+  // `result.calculable && !overCapacity` 合成，草稿／預覽會出現
+  // 「`blockingCodes` 有 `OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM` 但
+  // `calculable=true` 還附帶金額」的自相矛盾狀態，正是 AC-52(d) 明文禁止的
+  // 「預覽說可以、完成才擋」反模式。
+  const officialKmExceeds = isOfficialKmExceedsAnnualTotalKm(totalKm, annualTotalKm);
+  // T3 即審 FW-3：合成而非反推（**不得**由 `blockingCodes.length === 0` 反推）。
+  const calculable = result.calculable && !overCapacity && !officialKmExceeds;
 
   return {
     dto: {
@@ -1176,9 +1178,9 @@ function throwDepreciationBlockersError(blockers: Blocker[]): never {
  * 兩來源之**訊息逐字互異**（AC-16(a)／AC-18；T3 即審 FW-6）：
  *   - 該年 1/1 查無有效版本  → `missing = ["DEPRECIATION"]`
  *     → 管理員該做的事是「**建立**折舊參數」
- *   - 版本存在但 `deriveDepreciation` 回 `ok:false`
+ *   - 版本存在但 `deriveAnnualDepreciation` 回 `ok:false`
  *     → `missing = ["DEPRECIATION_DERIVATION_FAILED"]`
- *     → 管理員該做的事是「**檢查既有版本的三個設定值**」
+ *     → 管理員該做的事是「**檢查既有版本的車價與折舊年限**」
  * 兩者於草稿／預覽面被 §7.5 折為同一 blocker code（`PARAMETER_NOT_AVAILABLE`），
  * 但本層必須保留區辨——區辨依據為 `resolved.derivationFailed`（**不是**在本檔
  * 重新判斷版本是否存在）。
@@ -1193,7 +1195,7 @@ function throwDepreciationParameterNotAvailable(
 ): never {
   const missing = resolved.derivationFailed ? ["DEPRECIATION_DERIVATION_FAILED"] : ["DEPRECIATION"];
   const message = resolved.derivationFailed
-    ? "該年度之折舊參數設定值無法推導每公里單價，請聯絡管理員檢查折舊參數設定。"
+    ? "該年度之折舊參數設定值無法推導每年折舊費用，請聯絡管理員檢查折舊參數設定。"
     : "該年度尚無有效折舊參數，請聯絡管理員設定。";
   throw new AppError("PARAMETER_NOT_AVAILABLE", 409, message, undefined, {
     missing,
@@ -1287,9 +1289,10 @@ export async function completeDepreciationApplication(
           });
 
           // ④：選版——交易內重新解析（T7 即審 FW-2）＋每年折舊費用（AC-49；
-          //     推導唯一實作為 `deriveAnnualDepreciation`，本檔零算式）。
+          //     推導唯一實作為 `deriveAnnualDepreciation`，本檔零算式、零呼叫
+          //     `deriveDepreciation`——AC-49(c) 之負向 spy 涵蓋完成路徑）。
           const resolved = await resolveDepreciationParameters(tx, applicationYear);
-          const annualDepreciation = resolveAnnualDepreciation(resolved.version);
+          const { annualDepreciation } = resolved;
 
           // ⑤（第二段，§20.5）：`officialKm`／`annualDepreciation` 同給。容量
           //     判定於此函式內部發生**恰一次**（見檔頭「單一決策點」說明）。
@@ -1309,14 +1312,9 @@ export async function completeDepreciationApplication(
             throwDepreciationBlockersError(secondPassBlockers);
           }
 
-          const { perKmUnitPrice, version } = resolved;
+          const { version } = resolved;
           if (version === null || annualDepreciation === null) {
             // 不可達：第二段為空 ⇒ 第 4 碼未產生 ⇒ 版本與每年折舊費用必非 null。
-            //
-            // `perKmUnitPrice` **刻意不在此守門**：縮欄後之新版本
-            // （`estimatedAnnualKm` 為 `NULL`）其單價恆為 `null` 而每年折舊費用
-            // 仍可推導——若沿用舊守門，該情形會由既有之 409（缺參數）劣化為
-            // 500。單價僅供舊模型快照欄使用，見下方 ⑥a。
             throw new AppError("INTERNAL_ERROR", 500, "計算結果異常，請聯絡管理員");
           }
 
@@ -1350,11 +1348,12 @@ export async function completeDepreciationApplication(
               snapshotVehiclePrice: new Prisma.Decimal(version.vehiclePrice.toFixed(2)),
               snapshotUsefulLifeYears: version.usefulLifeYears,
               snapshotEstimatedAnnualKm: version.estimatedAnnualKm,
-              // 舊模型欄（§20.7.1「保留，不再寫入」之正式反轉屬 R7）：本 Task
-              // 僅隨呼叫端收斂做 `null` 寬容——單價不可得時如實寫 `null`，
-              // **絕不**以 0 或任何佔位值填充。
-              snapshotPerKmUnitPrice:
-                perKmUnitPrice === null ? null : new Prisma.Decimal(perKmUnitPrice.toFixed(4)),
+              // 舊模型欄：修訂後之申請路徑**零呼叫** `deriveDepreciation`
+              // （AC-49(c)），故每公里單價於本流程結構性不可得——一律寫 `null`，
+              // **絕不**以 0 或任何佔位值填充。此即 AC-55(b)「舊二欄恆 null」
+              // 之第一半；`snapshotEstimatedAnnualKm` 之反轉與 9 欄快照之完整
+              // 落地屬 **R7**（本 Task 不擴大範圍）。
+              snapshotPerKmUnitPrice: null,
               snapshotOfficialKm: new Prisma.Decimal(result.officialKm.toFixed(2)),
               snapshotRawAmount: new Prisma.Decimal(formatRawAmount(result.rawAmount)),
               calculatedAt,
