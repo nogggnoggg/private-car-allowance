@@ -10,6 +10,7 @@ State: ACTIVE
 > - **處理容器（大總管裁定）**：於 PHASE-007 branch 內以 Spec 修訂＋修訂 Task 批次處理（branch 未合併 main，避免發佈中間態模型；比照 Gate 反饋流程——US 修訂提案→人類逐字確認→Spec 修訂→TDD→複審）。**PR/合併凍結至修訂完成。**
 > - **細節三裁定（使用者 2026-08-05 追加）**：(D) 年度總里程小數點後最多 1 位（超位/格式錯 → 驗證錯誤）；(E) 0 或空白＝無效——大總管消歧解讀（已向使用者複述）：空白可存草稿（沿年度欄慣例）、預覽提示、完成擋；0/負數當場驗證錯誤；(F) 既有舊公式測試申請**清空**（合成資料直接刪除，不轉換）。
 > - US-PROPOSAL 派工中（spec-writer，不動 userstory.md）；提案 Q 清單與 (D)(E)(F) 重疊者以本裁定為準。
+> - **Session 邊界計畫（使用者 2026-08-05 指示）**：US-PROPOSAL 經人類確認後 → 產 usage 復盤檔（workflow loop agent 用，`docs/retrospective/PHASE-007-usage.md`，常設規則提前執行）→ commit → **本 session 結束、新 session 接手**（接手起點：US 落地派工 → Spec 修訂 → 修訂 Task Graph）。新 session 開工必讀：本 Gate 反饋列全部裁定＋PR/合併凍結狀態＋usage 復盤預算帶。
 
 > **PHASE-007（年度折舊補貼）開工記錄（2026-08-04，使用者指令「開工」）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／CLAUDE.md 治理節）；所有程式（含 lint、格式化、單行修改）一律派 implementer。巢狀派工封鎖條款（2026-08-04.1 治理常文）：每份 Packet 固定含「禁止 spawn 任何 subagent」。
