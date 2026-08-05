@@ -1,7 +1,7 @@
 # PHASE-008 — 報表列印與正式 PDF
 
-- Governance-Version: 2026-08-05.1
-- 狀態：**DRAFT**（待人類 Spec Gate 事前批准後轉 `ACTIVE`）
+- Governance-Version: 2026-08-04.1（初版誤植 2026-08-05.1，大總管勘誤——治理現行版即 2026-08-04.1）
+- 狀態：**`ACTIVE`**（**Spec Gate 通過**：人類 leonchih 2026-08-06 經 AskUserQuestion 三問全數照推薦——D1~D16 全數照推薦批准、D4 三項附帶批准（CJK 字型必裝／`--no-sandbox` 安全取捨明示接受／playwright runtime 依賴）、High Task 10 項（T1/T2/T4/T5/T7/T7b/T8a/T8/T9/T10）一併事前批准。固化紀錄見 §18）
 - 建立日期：2026-08-06
 - Task ID：`PHASE-008-SPEC`
 - Base Commit：`1e9c23e`（branch `phase-008`，自 main `e597810` 切出）
@@ -1253,6 +1253,7 @@ T8a ─────────────────────────�
 | 日期 | Task ID | 內容 | 批准依據 |
 |---|---|---|---|
 | 2026-08-06 | `PHASE-008-SPEC` | 初版 DRAFT：§0~§19 全文；38 條 AC（含 1 條條件 AC）、19 個 Task（含 1 個條件 Task）、16 個決策點、34 條邊界條件、20 格授權矩陣、AC↔測試映射表 **43 列**（38 條 AC，其中 AC-01／AC-09／AC-13 各拆為子項列；42 列 `PENDING`、1 列 `BLOCKED`） | 待 Spec Gate |
+| 2026-08-06 | —（大總管白名單） | **Spec Gate 通過（固化）**：人類 leonchih 2026-08-06 經 AskUserQuestion 三問**全數照推薦**——①**D1~D16 全數照推薦批准**（含 D13 AC-38 納入→該列 `BLOCKED` 解除轉 `PENDING`、D14 三條 US 照 PRD 延後 009、D15 不新增稽核、D16 sharp 降尺寸嵌入）；②**D4 三項附帶批准**：CJK 字型必裝、**Chromium `--no-sandbox` 之安全取捨明示接受**（依據＝渲染內容 100% 自產零腳本零外部資源＋AC-16(a) 結構性守門；防禦層減一已明示）、playwright 列 runtime 依賴（映像 +350~450MB 成本已明示）；③**High Task 10 項一併事前批准**（T1/T2/T4/T5/T7/T7b/T8a/T8/T9/T10）。狀態欄轉 **`ACTIVE`**。**併記勘誤**：文件頭 Governance-Version 初版誤植 `2026-08-05.1`，更正為現行 `2026-08-04.1`。兩項資訊缺口（Zeabur 上限／CI 硬體）人類未補充——依 Spec 既定處置進行（AC-09(a) 變紅須走 Spec 修訂不得靜默弱化）。檢核過程見 `docs/verification/WALKTHROUGH-PHASE-008-SPEC-GATE.md`。 | 人類 leonchih 2026-08-06（AskUserQuestion 三問全數照推薦） |
 
 ---
 
