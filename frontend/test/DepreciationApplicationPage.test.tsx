@@ -1,14 +1,22 @@
 /**
- * DepreciationApplicationPage 前端單元測試 — PHASE-007-T13／T14
+ * DepreciationApplicationPage 前端單元測試 — PHASE-007-T13／T14／R9
+ * （折舊模型修訂段）
  *
- * 涵蓋 AC-38（表單僅提供申請年度一項可輸入欄位；年度公務里程無任何可輸入／
- * 覆寫欄位之負向斷言）、AC-39（預覽顯示折舊每公里單價／年度公務里程／
- * 取整後金額，直取後端；前端零自算鑑別；車價／折舊年限／預估年度行駛公里
- * 數三推導值於任何狀態下皆不出現之負向斷言）、AC-40（五態：Loading／
- * Empty／Error／Success／Permission denied；blockingCodes 驅動顯示）、
- * AC-41（缺參數時顯示聯絡管理員文案並停用「完成申請」，仍允許儲存草稿）、
- * AC-42（同年度重複提醒但不阻擋；折舊證明上傳／預覽／刪除；已完成無上傳／
- * 刪除入口之負向斷言）。
+ * PHASE-007-R9 改造重點（§20.12 R9 列；取代原 AC-38／AC-39 對應之測試）：
+ *   - AC-58：表單提供「申請年度」與「該車年度總里程」兩項可輸入欄位，標籤
+ *     逐字互異；年度公務里程仍無 textbox 之負向斷言**保留**。
+ *   - AC-59：預覽與完成後詳情顯示五值（每年折舊費用／年度公務里程／年度
+ *     總里程／公務比例／補貼金額），逐字取自後端回應；前端零自算鑑別；
+ *     車價／折舊年限／每公里補助單價三推導值於草稿頁與已完成頁皆不出現。
+ *   - `BLOCKING_CODE_MESSAGES` 六碼對齊 `depreciation-blockers.ts`（退場
+ *     `DEPRECIATION_ATTACHMENT_REQUIRED`，新增
+ *     `ANNUAL_TOTAL_KM_REQUIRED`／`ANNUAL_TOTAL_KM_INVALID`／
+ *     `OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`）。
+ *
+ * 本次改造連帶更新所有 fixture（`previewFixture`／`draftFixture` 之
+ * `snapshot` 字面量）以符合新版 DTO 形狀——AC-40／41／42 段落之既有斷言
+ * **語意不變**，僅欄位名稱與夾帶值隨 DTO 改造同步（§20.11.2 授權範圍：
+ * 本檔整體列為 R9／R10 授權遷移）。
  *
  * 採用 URL/method 路由式 fetch mock（比照 MaintenanceApplicationPage.test.tsx
  * 既有慣例）——本頁掛載後會自動觸發一次 debounced 預覽請求，佇列式 mock 容易
@@ -24,6 +32,7 @@ import type { AttachmentDto } from "../src/api/attachments.js";
 import type {
   DepreciationApplicationDto,
   DepreciationComputedDto,
+  DepreciationSnapshotDto,
 } from "../src/api/depreciation.js";
 import DepreciationApplicationPage from "../src/pages/DepreciationApplicationPage.js";
 
@@ -46,11 +55,12 @@ function draftFixture(
     createdAt: "2026-03-01T00:00:00.000Z",
     updatedAt: "2026-03-01T00:00:00.000Z",
     applicationYear: null,
+    annualTotalKm: null,
     duplicateYearNotice: null,
     attachments: [],
     completionBlockers: [
       { code: "YEAR_REQUIRED", field: "applicationYear", message: "請選擇申請年度" },
-      { code: "DEPRECIATION_ATTACHMENT_REQUIRED", message: "請至少上傳 1 張折舊證明" },
+      { code: "ANNUAL_TOTAL_KM_REQUIRED", field: "annualTotalKm", message: "請輸入該車年度總里程" },
     ],
     computed: null,
     snapshot: null,
@@ -58,13 +68,15 @@ function draftFixture(
   };
 }
 
-// 已填年度之草稿——供 AC-41「僅缺參數」情境使用：唯一 blocker 為
-// PARAMETER_NOT_AVAILABLE（各測試視需要另以 overrides 補上 attachments）。
+// 已填年度＋年度總里程之草稿——供 AC-41「僅缺參數」等情境使用：唯一
+// blocker 為 PARAMETER_NOT_AVAILABLE（各測試視需要另以 overrides 補上
+// attachments）。
 function filledDraftFixture(
   overrides: Partial<DepreciationApplicationDto> = {}
 ): DepreciationApplicationDto {
   return draftFixture({
     applicationYear: 2025,
+    annualTotalKm: "12345.6",
     completionBlockers: [],
     ...overrides,
   });
@@ -85,17 +97,52 @@ function attachmentFixture(overrides: Partial<AttachmentDto> = {}): AttachmentDt
   };
 }
 
+// §20.6 五值預設組——彼此互相自洽（500.00 公里 ÷ 12345.6 公里 ×
+// 10000.00 ≈ 405；本檔零自算鑑別測試另以刻意不自洽之值覆寫）。
 function previewFixture(overrides: Partial<DepreciationComputedDto> = {}): DepreciationComputedDto {
   return {
     calculable: true,
+    annualDepreciation: "10000.00",
     officialKm: "500.00",
     officialApplicationCount: 3,
-    perKmUnitPrice: "1.1111",
-    rawAmount: "555.5500",
-    amount: 556,
+    annualTotalKm: "12345.6",
+    ratio: "0.040498",
+    ratioPercent: "4.0498",
+    rawAmount: "404.9800",
+    amount: 405,
     blockingCodes: [],
     ...overrides,
   };
+}
+
+function snapshotFixture(
+  overrides: Partial<DepreciationSnapshotDto> = {}
+): DepreciationSnapshotDto {
+  return {
+    model: "CURRENT",
+    annualDepreciation: "10000.00",
+    annualTotalKm: "12345.6",
+    ratio: "0.040498",
+    ratioPercent: "4.0498",
+    perKmUnitPrice: null,
+    officialKm: "500.00",
+    rawAmount: "404.9800",
+    totalAmount: 405,
+    calculatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/**
+ * 讀取 `<dl className="detail-list">` 中指定 `<dt>` 文字所緊鄰之 `<dd>` 文字
+ * 內容——用於「五值渲染來源錯置」鑑別（AC-59(a)）：若僅斷言某值之文字存在
+ * 於畫面任一處，無法鑑別「兩個 dt/dd 配對互換」之錯置 mutant（因兩值皆仍
+ * 出現在畫面上，只是配錯 dt）。本函式將值與其標籤綁定比對。
+ */
+function dtDdText(dtLabel: string): string | null {
+  const dt = screen.getByText(dtLabel, { selector: "dt" });
+  const dd = dt.nextElementSibling;
+  return dd?.textContent ?? null;
 }
 
 function jsonRes(body: unknown, status = 200): Response {
@@ -200,11 +247,11 @@ describe("DepreciationApplicationPage", () => {
   });
 
   // ===========================================================================
-  // AC-38：表單僅提供「申請年度」一項可輸入欄位；年度公務里程無任何可輸入／
-  // 覆寫欄位。
+  // AC-58：表單提供「申請年度」與「該車年度總里程」兩項可輸入欄位，標籤逐字
+  // 互異；年度公務里程無任何可輸入／覆寫欄位（負向斷言保留）。
   // ===========================================================================
 
-  it("AC-38：表單僅有申請年度一個可輸入欄位（逐字標籤）", async () => {
+  it("AC-58：表單提供申請年度與該車年度總里程兩個可輸入欄位（逐字標籤互異）", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
     router.on("POST", isPreview, () => jsonRes({ preview: previewFixture({ calculable: false }) }));
@@ -214,18 +261,19 @@ describe("DepreciationApplicationPage", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("申請年度")).toBeInTheDocument();
     });
+    expect(screen.getByLabelText("該車年度總里程")).toBeInTheDocument();
 
-    // 全頁僅有一個 <input>（申請年度），不存在任何名稱／標籤含「里程」之
-    // 輸入欄位——年度公務里程恆為後端唯讀計算值。
+    // 全頁恰有兩個 <input>（申請年度、該車年度總里程）——年度公務里程恆為
+    // 後端唯讀計算值，不存在任何名稱／標籤含「年度公務里程」之輸入欄位。
     const inputs = screen.getAllByRole("spinbutton");
-    expect(inputs).toHaveLength(1);
-    expect(inputs[0]).toHaveAttribute("id", "application-year");
+    expect(inputs).toHaveLength(2);
+    expect(inputs.map((el) => el.id).sort()).toEqual(["annual-total-km", "application-year"]);
 
-    expect(screen.queryByLabelText(/里程/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("年度公務里程")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
-  it("AC-38：年度可為空值儲存（null 為合法值，前端轉為 JSON number｜null）", async () => {
+  it("AC-58：兩者皆可為空值儲存（null 為合法值，前端轉為 JSON number｜null）", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
     router.on("POST", isPreview, () => jsonRes({ preview: previewFixture({ calculable: false }) }));
@@ -235,6 +283,7 @@ describe("DepreciationApplicationPage", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("申請年度")).toHaveValue(null);
     });
+    expect(screen.getByLabelText("該車年度總里程")).toHaveValue(null);
 
     screen.getByText("儲存草稿").click();
 
@@ -242,10 +291,10 @@ describe("DepreciationApplicationPage", () => {
       expect(router.countCalls("PUT", isPutDraft)).toBe(1);
     });
     const body = router.lastBody("PUT", isPutDraft);
-    expect(body).toEqual({ applicationYear: null, attachmentIds: [] });
+    expect(body).toEqual({ applicationYear: null, annualTotalKm: null, attachmentIds: [] });
   });
 
-  it("AC-38：填入年度後以 JSON number（非字串）送出", async () => {
+  it("AC-58：填入年度與年度總里程後皆以 JSON number（非字串）送出", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
     router.on("POST", isPreview, () => jsonRes({ preview: previewFixture({ calculable: false }) }));
@@ -257,6 +306,7 @@ describe("DepreciationApplicationPage", () => {
     });
 
     fireEvent.change(screen.getByLabelText("申請年度"), { target: { value: "2025" } });
+    fireEvent.change(screen.getByLabelText("該車年度總里程"), { target: { value: "12345.6" } });
 
     screen.getByText("儲存草稿").click();
 
@@ -264,15 +314,17 @@ describe("DepreciationApplicationPage", () => {
       expect(router.countCalls("PUT", isPutDraft)).toBe(1);
     });
     const body = router.lastBody("PUT", isPutDraft);
-    expect(body).toEqual({ applicationYear: 2025, attachmentIds: [] });
+    expect(body).toEqual({ applicationYear: 2025, annualTotalKm: 12345.6, attachmentIds: [] });
     expect(typeof body?.applicationYear).toBe("number");
+    expect(typeof body?.annualTotalKm).toBe("number");
   });
 
   // ===========================================================================
-  // AC-39：預覽直取後端；前端零自算鑑別；三推導值絕不出現。
+  // AC-59：預覽與完成後詳情顯示五值，直取後端；前端零自算鑑別；車價／折舊
+  // 年限／每公里補助單價三推導值絕不出現。
   // ===========================================================================
 
-  it("AC-39：預覽顯示折舊每公里單價／年度公務里程／年度補貼金額，逐字取自後端回應", async () => {
+  it("AC-59：預覽顯示每年折舊費用／年度公務里程／年度總里程／公務比例／補貼金額，逐字取自後端回應", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
     router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
@@ -282,21 +334,27 @@ describe("DepreciationApplicationPage", () => {
     await waitFor(() => {
       expect(screen.getByText("500.00 公里")).toBeInTheDocument();
     });
-    expect(screen.getByText("1.1111")).toBeInTheDocument();
-    expect(screen.getByText("556")).toBeInTheDocument();
+    // 逐值與其 <dt> 標籤綁定比對（鑑別「兩值互換配錯 dt」之渲染來源錯置
+    // mutant——僅斷言文字存在於畫面任一處不足以鑑別此類 mutant）。
+    expect(dtDdText("每年折舊費用")).toBe("10000.00");
+    expect(dtDdText("年度公務里程")).toBe("500.00 公里");
+    expect(dtDdText("年度總里程")).toBe("12345.6 公里");
+    expect(dtDdText("公務比例")).toBe("4.0498%");
+    expect(dtDdText("年度補貼金額")).toBe("405");
   });
 
-  it("AC-39：前端零自算鑑別——mock 之 amount 與 officialKm×perKmUnitPrice 刻意不符，畫面仍顯示 mock 值", async () => {
-    // 500.00 × 1.1111 = 555.55（四捨五入為 556）；此處刻意回傳一個算術上
-    // 不可能由此二值推得的 amount（99999），若前端曾自行相乘取整，畫面會顯示
-    // 556 而非 99999——本測試鎖定「前端從不自算」。
+  it("AC-59(b)：前端零自算鑑別——mock 之 amount 與 annualDepreciation×officialKm÷annualTotalKm 刻意不符，畫面仍顯示 mock 值", async () => {
+    // 10000.00 × 500.00 ÷ 12345.6 ≈ 405；此處刻意回傳一個算術上不可能由
+    // 此三值推得的 amount（99999），若前端曾自行計算取整，畫面會顯示 405
+    // 而非 99999——本測試鎖定「前端從不自算」。
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
     router.on("POST", isPreview, () =>
       jsonRes({
         preview: previewFixture({
+          annualDepreciation: "10000.00",
           officialKm: "500.00",
-          perKmUnitPrice: "1.1111",
+          annualTotalKm: "12345.6",
           amount: 99999,
         }),
       })
@@ -307,10 +365,10 @@ describe("DepreciationApplicationPage", () => {
     await waitFor(() => {
       expect(screen.getByText("99999")).toBeInTheDocument();
     });
-    expect(screen.queryByText("556")).not.toBeInTheDocument();
+    expect(screen.queryByText("405")).not.toBeInTheDocument();
   });
 
-  it("AC-39：車價／折舊年限／預估年度行駛公里數三推導值於草稿頁不出現", async () => {
+  it("AC-59(c)：車價／折舊年限／每公里補助單價三推導值於草稿頁不出現", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
     router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
@@ -322,17 +380,20 @@ describe("DepreciationApplicationPage", () => {
 
     expect(screen.queryByText(/車價/)).not.toBeInTheDocument();
     expect(screen.queryByText(/折舊年限/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/預估年度行駛公里數/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/每公里補助單價/)).not.toBeInTheDocument();
   });
 
-  it("AC-39：不可計算時不得顯示金額 0，須顯示「無法計算」＋zh-TW 說明", async () => {
+  it("AC-59：不可計算時不得顯示金額 0，須顯示「無法計算」＋zh-TW 說明", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
     router.on("POST", isPreview, () =>
       jsonRes({
         preview: previewFixture({
           calculable: false,
-          perKmUnitPrice: null,
+          annualDepreciation: null,
+          annualTotalKm: null,
+          ratio: null,
+          ratioPercent: null,
           rawAmount: null,
           amount: null,
           blockingCodes: ["PARAMETER_NOT_AVAILABLE"],
@@ -349,22 +410,17 @@ describe("DepreciationApplicationPage", () => {
     expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
 
-  it("車價／折舊年限／預估年度行駛公里數三推導值於已完成頁亦不出現", async () => {
+  it("AC-59(c)：車價／折舊年限／每公里補助單價三推導值於已完成頁亦不出現", async () => {
     const router = installFetchRouter();
     router.on("GET", isGetDraft, () =>
       jsonRes({
         application: draftFixture({
           status: "COMPLETED",
           applicationYear: 2025,
+          annualTotalKm: "12345.6",
           completionBlockers: null,
           computed: null,
-          snapshot: {
-            officialKm: "500.00",
-            perKmUnitPrice: "1.1111",
-            rawAmount: "555.5500",
-            totalAmount: 556,
-            calculatedAt: "2026-01-01T00:00:00.000Z",
-          },
+          snapshot: snapshotFixture(),
         }),
       })
     );
@@ -376,10 +432,15 @@ describe("DepreciationApplicationPage", () => {
       ).toBeInTheDocument();
     });
 
-    expect(screen.getByText("556")).toBeInTheDocument();
+    // 逐值與其 <dt> 標籤綁定比對（AC-59(a)；同上鑑別理由）。
+    expect(dtDdText("每年折舊費用")).toBe("10000.00");
+    expect(dtDdText("年度公務里程")).toBe("500.00 公里");
+    expect(dtDdText("年度總里程")).toBe("12345.6 公里");
+    expect(dtDdText("公務比例")).toBe("4.0498%");
+    expect(dtDdText("年度補貼金額（四捨五入後，實際核發）")).toBe("405");
     expect(screen.queryByText(/車價/)).not.toBeInTheDocument();
     expect(screen.queryByText(/折舊年限/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/預估年度行駛公里數/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/每公里補助單價/)).not.toBeInTheDocument();
   });
 
   // ===========================================================================
@@ -404,7 +465,9 @@ describe("DepreciationApplicationPage", () => {
       jsonRes({
         preview: previewFixture({
           calculable: false,
-          perKmUnitPrice: null,
+          annualDepreciation: null,
+          ratio: null,
+          ratioPercent: null,
           rawAmount: null,
           amount: null,
           blockingCodes: ["PARAMETER_NOT_AVAILABLE"],
@@ -439,13 +502,7 @@ describe("DepreciationApplicationPage", () => {
           status: "COMPLETED",
           completionBlockers: null,
           computed: null,
-          snapshot: {
-            officialKm: "500.00",
-            perKmUnitPrice: "1.1111",
-            rawAmount: "555.5500",
-            totalAmount: 556,
-            calculatedAt: "2026-01-01T00:00:00.000Z",
-          },
+          snapshot: snapshotFixture(),
         }),
       })
     );
@@ -486,7 +543,8 @@ describe("DepreciationApplicationPage", () => {
           preview: previewFixture({
             officialKm: "0.00",
             officialApplicationCount: 0,
-            perKmUnitPrice: "1.1111",
+            ratio: "0.000000",
+            ratioPercent: "0.0000",
             rawAmount: "0.0000",
             amount: 0,
           }),
@@ -509,7 +567,7 @@ describe("DepreciationApplicationPage", () => {
       expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
     });
 
-    it("B-10（終審 SF-3）：年度里程 > 0 但單價 0.0000（極大年里程參數）→ 補貼 0 元非錯誤，且不得誤顯示「尚無差旅」說明", async () => {
+    it("B-10（終審 SF-3）：年度里程 > 0 但每年折舊費用極小（每年折舊費用趨近 0）→ 補貼 0 元非錯誤，且不得誤顯示「尚無差旅」說明", async () => {
       const router = installFetchRouter();
       router.on("GET", isGetDraft, () => jsonRes({ application: filledDraftFixture() }));
       router.on("POST", isPreview, () =>
@@ -517,7 +575,9 @@ describe("DepreciationApplicationPage", () => {
           preview: previewFixture({
             officialKm: "5000.00",
             officialApplicationCount: 3,
-            perKmUnitPrice: "0.0000",
+            annualDepreciation: "0.00",
+            ratio: "0.405006",
+            ratioPercent: "40.5006",
             rawAmount: "0.0000",
             amount: 0,
           }),
@@ -570,7 +630,9 @@ describe("DepreciationApplicationPage", () => {
         jsonRes({
           preview: previewFixture({
             calculable: false,
-            perKmUnitPrice: null,
+            annualDepreciation: null,
+            ratio: null,
+            ratioPercent: null,
             rawAmount: null,
             amount: null,
             blockingCodes: ["SOME_UNKNOWN_BLOCKER_CODE"],
@@ -724,16 +786,13 @@ describe("DepreciationApplicationPage", () => {
       });
     });
 
-    it("完成前無證明 → 完成鈕停用並顯示提示；草稿仍可儲存", async () => {
+    it("AC-54(b)：完成前無證明 → 完成鈕仍可用（證明改選填，裁定②反轉）；草稿仍可儲存", async () => {
       const router = installFetchRouter();
-      const noAttachmentBlocker = [
-        { code: "DEPRECIATION_ATTACHMENT_REQUIRED", message: "請至少上傳 1 張折舊證明" },
-      ];
       router.on("GET", isGetDraft, () =>
         jsonRes({
           application: filledDraftFixture({
             attachments: [],
-            completionBlockers: noAttachmentBlocker,
+            completionBlockers: [],
           }),
         })
       );
@@ -742,23 +801,23 @@ describe("DepreciationApplicationPage", () => {
         jsonRes({
           application: filledDraftFixture({
             attachments: [],
-            completionBlockers: noAttachmentBlocker,
+            completionBlockers: [],
           }),
         })
       );
 
       renderPage();
       await waitFor(() => {
-        expect(screen.getByText("請至少上傳 1 張折舊證明")).toBeInTheDocument();
+        expect(screen.getByText("500.00 公里")).toBeInTheDocument();
       });
-      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
 
       fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
       await waitFor(() => {
         expect(screen.getByText("草稿已儲存。")).toBeInTheDocument();
       });
       expect(router.countCalls("PUT", isPutDraft)).toBe(1);
-      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "完成申請" })).not.toBeDisabled();
     });
 
     it("B-22／FW-11 裁定 A：attachmentIds 送出前去重（重複 id 不重複送出）", async () => {
@@ -794,16 +853,11 @@ describe("DepreciationApplicationPage", () => {
           application: draftFixture({
             status: "COMPLETED",
             applicationYear: 2025,
+            annualTotalKm: "12345.6",
             completionBlockers: null,
             computed: null,
             attachments: [attachmentFixture()],
-            snapshot: {
-              officialKm: "500.00",
-              perKmUnitPrice: "1.1111",
-              rawAmount: "555.5500",
-              totalAmount: 556,
-              calculatedAt: "2026-01-01T00:00:00.000Z",
-            },
+            snapshot: snapshotFixture(),
           }),
         })
       );

@@ -1,28 +1,45 @@
 /**
- * Depreciation (年度折舊補貼) applications API client — PHASE-007-T13
+ * Depreciation (年度折舊補貼) applications API client — PHASE-007-T13／R9
  *
  * Mirrors `frontend/src/api/maintenance.ts`'s existing pattern for the
  * MAINTENANCE vertical (relative `/api/...` URLs, `credentials: "include"`,
  * `parseApiResponse` for typed errors). Frontend-owned DTO copies kept in
  * sync with `backend/src/applications/depreciation-service.ts`'s
  * `DepreciationApplicationDto`/`DepreciationComputedDto`/
- * `DepreciationSnapshotDto`（Spec §7.2）— no shared package between
- * backend/frontend in this repo, same as the MAINTENANCE/TRAVEL types above.
+ * `DepreciationSnapshotDto`（Spec §20.6，取代 §7.2）— no shared package
+ * between backend/frontend in this repo, same as the MAINTENANCE/TRAVEL
+ * types above.
  *
- * §16 D8／AC-39（三推導值不外露）: `DepreciationComputedDto` 與
+ * PHASE-007-R9（折舊模型修訂段，§20.6 逐字讀後端源）: DTO 形狀改造——
+ *   ✗ 移除 `perKmUnitPrice`（`DepreciationComputedDto`；每公里單價退出申請
+ *     計算，裁定①）
+ *   ★ 新增 `annualDepreciation`（每年折舊費用，2dp）、`annualTotalKm`
+ *     （年度總里程，1dp，`DepreciationComputedDto`／`DepreciationApplicationDto`
+ *     皆新增）、`ratio`（6dp，顯示用）、`ratioPercent`（4dp，顯示用）
+ *   `DepreciationSnapshotDto` 同步改造為 §20.6 之 9 欄形狀，並新增 `model`
+ *   （`"CURRENT"|"LEGACY"`，AC-56 判別結果；`perKmUnitPrice` 僅 `LEGACY`
+ *   列非 `null`，本頁刻意不渲染——AC-59(c) 負向斷言）。
+ *
+ * §20.10（三推導值不外露，取代 §6.3／§16 D8）: `DepreciationComputedDto` 與
  * `DepreciationSnapshotDto` 皆不含 `vehiclePrice`／`usefulLifeYears`／
  * `estimatedAnnualKm`／`depreciationParameterVersionId`——本檔逐欄核對
- * 後端 §7.2 之 DTO 形狀，刻意不宣告這些欄位（避免前端誤以為可用）。
+ * 後端 §20.6 之 DTO 形狀，刻意不宣告這些欄位（避免前端誤以為可用）。
  *
- * AC-39（後端權威／前端零自算）: none of the request bodies below ever
- * carry a computed value (`officialKm`/`perKmUnitPrice`/`rawAmount`/
- * `amount`) — every displayed number in `DepreciationApplicationPage` comes
- * straight from a response body defined here, never computed client-side。
+ * AC-59(b)（後端權威／前端零自算）: none of the request bodies below ever
+ * carry a computed value (`officialKm`/`annualDepreciation`/`ratio`/
+ * `ratioPercent`/`rawAmount`/`amount`) — every displayed number in
+ * `DepreciationApplicationPage` comes straight from a response body defined
+ * here, never computed client-side。
  *
  * FW-5／B-02（T4 三裁定②）：`applicationYear` 於 wire 上僅收 JSON
  * number（或 `null`）——呼叫端（`DepreciationApplicationPage`）負責把
  * `<input type="number">` 的字串值轉為 `number` 才送出，**不得**以字串傳輸
  * （與其餘 Decimal 欄位之字串慣例不同，因 `applicationYear` 為 `Int`）。
+ *
+ * PHASE-007-R9（T13 慣例延續）：`annualTotalKm`（新欄）於 wire 上亦以 JSON
+ * number（或 `null`）送出（1dp；後端 `parseAnnualTotalKmField` 同時接受
+ * `string`／`number`，本頁選擇與 `applicationYear` 一致之 number wire，
+ * 呼叫端於送出前以 `Number()` 轉換空字串以外之輸入）。
  */
 
 import { parseApiResponse } from "../types/api.js";
@@ -35,17 +52,28 @@ import type { AttachmentDto } from "./attachments.js";
 
 export interface DepreciationComputedDto {
   calculable: boolean;
+  annualDepreciation: string | null; // ★ 每年折舊費用，2 位小數；無可用參數／推導失敗時 null
   officialKm: string | null; // 2 位小數，未取整（sumOfficialMileage.totalKm）
   officialApplicationCount: number | null; // 僅供顯示（AC-13），不得參與任何計算
-  perKmUnitPrice: string | null; // 4 位小數（deriveDepreciation 之回傳，逐字）
+  annualTotalKm: string | null; // ★ 年度總里程，1 位小數；申請資料原樣回傳，未輸入時 null
+  ratio: string | null; // ★ 公務比例，6 位小數（顯示用）
+  ratioPercent: string | null; // ★ 公務比例百分比，4 位小數（顯示用）
   rawAmount: string | null; // 4 位小數，取整前
   amount: number | null; // 新臺幣整數，取整後
-  blockingCodes: string[]; // 不可計算之原因代碼（§7.5）
+  blockingCodes: string[]; // 不可計算之原因代碼（§20.5.1，六碼）
 }
 
 export interface DepreciationSnapshotDto {
+  model: "CURRENT" | "LEGACY"; // ★ AC-56 判別結果
+  // ── 新模型欄（LEGACY 列為 null）──
+  annualDepreciation: string | null; // 2 位小數
+  annualTotalKm: string | null; // 1 位小數
+  ratio: string | null; // 6 位小數
+  ratioPercent: string | null; // 4 位小數
+  // ── 舊模型欄（CURRENT 列為 null）── AC-59(c)：本頁刻意不渲染此欄。
+  perKmUnitPrice: string | null; // 4 位小數
+  // ── 兩模型共有 ──
   officialKm: string; // 2 位小數
-  perKmUnitPrice: string; // 4 位小數
   rawAmount: string; // 4 位小數，取整前
   totalAmount: number; // 整數（＝ Application.totalAmount）
   calculatedAt: string; // ISO8601
@@ -64,6 +92,7 @@ export interface DepreciationApplicationDto {
   updatedAt: string; // ISO8601
 
   applicationYear: number | null; // 申請年度（西元年整數）
+  annualTotalKm: string | null; // ★ 年度總里程（1 位小數字串；使用者申報之申請資料，AC-48(a)）
 
   duplicateYearNotice: { count: number; hasCompleted: boolean } | null; // AC-07
 
@@ -79,6 +108,7 @@ export interface DepreciationApplicationDto {
 
 export interface DepreciationDraftFields {
   applicationYear?: number | null; // JSON number｜null（FW-5／B-02：不得傳字串）
+  annualTotalKm?: number | null; // ★ R9：JSON number｜null，1dp（AC-47／AC-58）
 }
 
 export async function apiCreateDepreciationDraft(

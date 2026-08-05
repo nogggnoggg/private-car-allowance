@@ -1,26 +1,29 @@
 /**
- * DepreciationApplicationPage — PHASE-007-T13／T14
+ * DepreciationApplicationPage — PHASE-007-T13／T14／R9（折舊模型修訂段）
  *
  * Routes: `/applications/depreciation/new`（建立草稿後導向 `:id`）、
  * `/applications/depreciation/:id`（草稿編輯 / 已完成檢視）。
  *
- * 涵蓋 AC-38（表單僅提供申請年度一項可輸入欄位；年度公務里程無任何可輸入／
- * 覆寫欄位）、AC-39（預覽顯示折舊每公里單價／年度公務里程／取整後金額，
- * 三推導值——車價／折舊年限／預估年度行駛公里數——絕不出現；前端零自算，
- * 一律取自後端回應）、AC-40（五態：Loading／Empty／Error／Success／
- * Permission denied；不可計算時不顯示金額 `0`，一律以 `blockingCodes`
- * 驅動顯示）、AC-41（該年度無有效折舊參數時顯示聯絡管理員文案並停用
- * 「完成申請」，但不阻擋草稿儲存）、AC-42（同年度重複申請提醒但不阻擋；
- * 折舊證明上傳／預覽／刪除——草稿階段；已完成申請無任何上傳／刪除入口之
- * 負向斷言）。
+ * 涵蓋 AC-58（表單提供申請年度＋該車年度總里程兩項可輸入欄位；年度公務
+ * 里程無任何可輸入／覆寫欄位之負向斷言**保留**；兩者標籤逐字互異）、
+ * AC-59（預覽與完成後詳情顯示五值——每年折舊費用／年度公務里程／年度
+ * 總里程／公務比例／補貼金額，逐字取自後端回應；前端零自算；車價／折舊
+ * 年限／每公里補助單價三推導值絕不出現）、AC-40（五態：Loading／Empty／
+ * Error／Success／Permission denied；不可計算時不顯示金額 `0`，一律以
+ * `blockingCodes` 驅動顯示）、AC-41（該年度無有效折舊參數時顯示聯絡管理員
+ * 文案並停用「完成申請」，但不阻擋草稿儲存）、AC-42（同年度重複申請提醒但
+ * 不阻擋；折舊證明上傳／預覽／刪除——草稿階段；已完成申請無任何上傳／
+ * 刪除入口之負向斷言）。
  *
  * T14 新增（折舊證明，沿用既有 `AttachmentUploader`，PHASE-003／006 同型）：
  *   - 上傳/刪除為即時 API 呼叫；關聯至本申請透過下一次「儲存草稿」PUT 之
  *     `attachmentIds[]` 宣告式全集對帳。B-22／T8 即審 FW-11 裁定 A：
  *     `attachmentIds` 送出前以 `Set` 去重（後端重複 id 觸發 409 且整筆
  *     回滾，前端去重使其不可達，同 006 T12 AR-3 同型）。
- *   - `completionBlockers` 含 `DEPRECIATION_ATTACHMENT_REQUIRED` 時已由既有
- *     `hasBlockers`（任一 blocker 即停用）涵蓋，無需額外判斷。
+ *   - AC-54(b)（裁定②）：折舊證明改為選填，零附件之草稿可完成——
+ *     `hasBlockers`（任一 blocker 即停用）之判斷邏輯零改動，僅後端 blocker
+ *     碼聯集已退場 `DEPRECIATION_ATTACHMENT_REQUIRED`，故零附件不再產生
+ *     該 blocker。
  *   - COMPLETED 檢視僅呈現唯讀縮圖清單，不掛載 `AttachmentUploader`（負向
  *     斷言：無任何上傳/刪除入口；T8 即審 FW-13：完成後附件讀取仍 200，
  *     AC-42「無上傳/刪除入口」為前端義務，後端不擋讀取）。
@@ -28,13 +31,15 @@
  *     提醒文字，但不停用任何操作（US 定稿「顯示提醒但允許繼續」）。
  *
  * 硬性約束落地重點（比照 MaintenanceApplicationPage.tsx 既有模式）：
- *   - §11.3／AC-39 不自算鑑別：本頁從不自行計算 `officialKm`／
- *     `perKmUnitPrice`／`rawAmount`／`amount`。草稿/預覽金額一律來自
+ *   - §20.6／AC-59(b) 不自算鑑別：本頁從不自行計算 `officialKm`／
+ *     `annualDepreciation`／`ratio`／`ratioPercent`／`rawAmount`／
+ *     `amount`。草稿/預覽金額一律來自
  *     `POST /applications/depreciation/preview`（`computed`）；已完成金額
  *     一律來自 `snapshot`。
  *   - FW-5／B-02（T4 三裁定②）：`applicationYear` 於 wire 上僅收 JSON
  *     number｜null——`<input type="number">` 之字串值送出前須轉為
- *     `number`，空字串轉為 `null`。
+ *     `number`，空字串轉為 `null`。PHASE-007-R9：`annualTotalKm`（新欄）
+ *     沿用同一 number wire 慣例（1dp）。
  *   - D8：預覽為 debounce 300ms 呼叫的獨立 stateless 端點。
  *   - AC-41：`completionBlockers` 含 `PARAMETER_NOT_AVAILABLE` 時停用
  *     「完成申請」鈕並顯示聯絡管理員文案；不影響「儲存草稿」鈕。
@@ -68,14 +73,22 @@ const PREVIEW_DEBOUNCE_MS = 300; // D8
 const DEPRECIATION_ATTACHMENT_LIMIT = 5;
 
 /**
- * §7.5 完成阻擋碼（blocker codes）固定文案——逐字對應後端
- * `depreciation-blockers.ts` 之訊息文案（純代碼→固定字串查表，不含任何
- * 金額/里程計算，§11.3 不自算鑑別）。
+ * §20.5.1 完成阻擋碼（blocker codes）固定文案——修訂後六碼固定順序表，逐字
+ * 對應後端 `depreciation-blockers.ts` 之訊息文案（純代碼→固定字串查表，
+ * 不含任何金額/里程計算，AC-59(b) 不自算鑑別）。
+ *
+ * PHASE-007-R9：退場 1（`DEPRECIATION_ATTACHMENT_REQUIRED`，AC-54(b)）、
+ * 新增 3（`ANNUAL_TOTAL_KM_REQUIRED`／`ANNUAL_TOTAL_KM_INVALID`／
+ * `OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`）——`backend/test/integration/
+ * phase7-contract.test.ts` 之 FW-2「後端 blocker 訊息 ↔ 前端本表」結構性
+ * 掃描逐碼逐字比對，本表任何文案異動須與該檔同步。
  */
 const BLOCKING_CODE_MESSAGES: Record<string, string> = {
   YEAR_REQUIRED: "請選擇申請年度",
-  DEPRECIATION_ATTACHMENT_REQUIRED: "請至少上傳 1 張折舊證明",
+  ANNUAL_TOTAL_KM_REQUIRED: "請輸入該車年度總里程",
+  ANNUAL_TOTAL_KM_INVALID: "年度總里程必須大於 0",
   PARAMETER_NOT_AVAILABLE: "該年度尚無有效折舊參數，請聯絡管理員設定",
+  OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM: "年度公務里程大於年度總里程，請檢查年度總里程",
   AMOUNT_OUT_OF_RANGE: "計算結果超出可儲存之金額範圍，請聯絡管理員檢查折舊參數",
 };
 
@@ -99,22 +112,34 @@ type PreviewState =
 
 interface FormFields {
   applicationYear: string; // <input type="number"> 之受控字串值
+  annualTotalKm: string; // ★ R9／AC-58：<input type="number"> 之受控字串值
 }
 
-const EMPTY_FORM: FormFields = { applicationYear: "" };
+const EMPTY_FORM: FormFields = { applicationYear: "", annualTotalKm: "" };
 
 function toFormFields(app: DepreciationApplicationDto): FormFields {
-  return { applicationYear: app.applicationYear === null ? "" : String(app.applicationYear) };
+  return {
+    applicationYear: app.applicationYear === null ? "" : String(app.applicationYear),
+    annualTotalKm: app.annualTotalKm === null ? "" : app.annualTotalKm,
+  };
 }
 
 /**
  * FW-5／B-02：`applicationYear` 僅收 JSON number｜null。空字串→`null`；
  * 其餘一律以 `Number()` 轉換後送出（含非整數/非數字之無效輸入——留給後端
  * `parseApplicationYearField` 判定並回 400 `fields[]`，本函式不重複驗證）。
+ *
+ * PHASE-007-R9：`annualTotalKm`（AC-47／AC-58）沿用同一 number wire 慣例——
+ * 空字串→`null`；其餘以 `Number()` 轉換後送出，格式／小數位／值域一律留給
+ * 後端 `parseAnnualTotalKmField` 判定並回 400 `fields[]`。
  */
 function buildPreviewRequestBody(form: FormFields): DepreciationDraftFields {
-  const trimmed = form.applicationYear.trim();
-  return { applicationYear: trimmed === "" ? null : Number(trimmed) };
+  const trimmedYear = form.applicationYear.trim();
+  const trimmedKm = form.annualTotalKm.trim();
+  return {
+    applicationYear: trimmedYear === "" ? null : Number(trimmedYear),
+    annualTotalKm: trimmedKm === "" ? null : Number(trimmedKm),
+  };
 }
 
 function isFormEntirelyBlank(form: FormFields): boolean {
@@ -237,7 +262,12 @@ export default function DepreciationApplicationPage(): React.ReactElement {
   }, [form, pageState.kind, application]);
 
   function updateApplicationYear(value: string) {
-    setForm({ applicationYear: value });
+    setForm((f) => ({ ...f, applicationYear: value }));
+    setDirty(true);
+  }
+
+  function updateAnnualTotalKm(value: string) {
+    setForm((f) => ({ ...f, annualTotalKm: value }));
     setDirty(true);
   }
 
@@ -429,15 +459,23 @@ export default function DepreciationApplicationPage(): React.ReactElement {
 
           {/* 已完成申請的快照 — 唯一顯示補貼金額的權威來源。B-12：rawAmount
               （取整前）與 totalAmount（取整後、實際核發）同屏並列時須以文案
-              區分兩者用途，避免使用者誤解為金額不一致。 */}
+              區分兩者用途，避免使用者誤解為金額不一致。
+              AC-59(a)：五值（每年折舊費用／年度公務里程／年度總里程／公務
+              比例／補貼金額）逐字取自 `snapshot`——本區塊不含任何計算。
+              AC-59(c) 負向斷言：`snapshot.perKmUnitPrice`（舊模型欄）刻意
+              不渲染——即使該欄非 null（LEGACY 快照），畫面上仍不得出現。 */}
           {snapshot && (
             <section aria-labelledby="snapshot-heading">
               <h2 id="snapshot-heading">計算依據（完成時快照）</h2>
               <dl className="detail-list">
+                <dt>每年折舊費用</dt>
+                <dd>{snapshot.annualDepreciation}</dd>
                 <dt>年度公務里程</dt>
                 <dd>{snapshot.officialKm} 公里</dd>
-                <dt>折舊每公里補助單價</dt>
-                <dd>{snapshot.perKmUnitPrice}</dd>
+                <dt>年度總里程</dt>
+                <dd>{snapshot.annualTotalKm} 公里</dd>
+                <dt>公務比例</dt>
+                <dd>{snapshot.ratioPercent}%</dd>
                 <dt>四捨五入前金額（僅供對照，非實際核發金額）</dt>
                 <dd>{snapshot.rawAmount}</dd>
                 <dt>年度補貼金額（四捨五入後，實際核發）</dt>
@@ -548,8 +586,10 @@ export default function DepreciationApplicationPage(): React.ReactElement {
 
         <section aria-labelledby="depreciation-form-heading">
           <h2 id="depreciation-form-heading">折舊資料</h2>
-          {/* AC-38：表單僅提供「申請年度」一項可輸入欄位——年度公務里程為
-              後端唯讀計算值，畫面上不存在任何可輸入／覆寫該值之欄位。 */}
+          {/* AC-58：表單提供「申請年度」與「該車年度總里程」兩項可輸入欄位
+              ——年度公務里程仍為後端唯讀計算值，畫面上不存在任何可輸入／
+              覆寫該值之欄位（負向斷言保留）。兩欄位標籤逐字互異且同時
+              可見，使兩者來源可被使用者區分。 */}
           <div className="form-group">
             <label htmlFor="application-year">申請年度</label>
             <input
@@ -566,6 +606,23 @@ export default function DepreciationApplicationPage(): React.ReactElement {
             {saveFieldErrors.applicationYear && (
               <span id="application-year-err" className="field-error" role="alert">
                 {saveFieldErrors.applicationYear}
+              </span>
+            )}
+          </div>
+          <div className="form-group">
+            <label htmlFor="annual-total-km">該車年度總里程</label>
+            <input
+              id="annual-total-km"
+              type="number"
+              step="0.1"
+              value={form.annualTotalKm}
+              onChange={(e) => updateAnnualTotalKm(e.target.value)}
+              disabled={saving}
+              aria-describedby={saveFieldErrors.annualTotalKm ? "annual-total-km-err" : undefined}
+            />
+            {saveFieldErrors.annualTotalKm && (
+              <span id="annual-total-km-err" className="field-error" role="alert">
+                {saveFieldErrors.annualTotalKm}
               </span>
             )}
           </div>
@@ -586,10 +643,10 @@ export default function DepreciationApplicationPage(): React.ReactElement {
                 )}
                 {preview &&
                   (!preview.calculable ? (
-                    // AC-39/41：不可計算狀態不得顯示金額 0，須顯示「無法計算」＋
-                    // 可行動之 zh-TW 說明；三推導值（車價／折舊年限／預估年度
-                    // 行駛公里數）在任何狀態下皆不出現於本頁——後端 DTO 本即
-                    // 不回傳這三值，此處無從顯示。
+                    // AC-59/41：不可計算狀態不得顯示金額 0，須顯示「無法計算」＋
+                    // 可行動之 zh-TW 說明；車價／折舊年限／每公里補助單價三
+                    // 推導值在任何狀態下皆不出現於本頁——後端 DTO 本即不回傳
+                    // 這三值，此處無從顯示。
                     <div className="warn-text">
                       <p>
                         <strong>年度補貼金額：無法計算</strong>
@@ -600,11 +657,17 @@ export default function DepreciationApplicationPage(): React.ReactElement {
                     </div>
                   ) : (
                     <>
+                      {/* AC-59(a)：五值逐字取自後端回應，本區塊不含任何計算
+                          （AC-59(b) 零自算鑑別）。 */}
                       <dl className="detail-list">
+                        <dt>每年折舊費用</dt>
+                        <dd>{preview.annualDepreciation}</dd>
                         <dt>年度公務里程</dt>
                         <dd>{preview.officialKm} 公里</dd>
-                        <dt>折舊每公里補助單價</dt>
-                        <dd>{preview.perKmUnitPrice}</dd>
+                        <dt>年度總里程</dt>
+                        <dd>{preview.annualTotalKm} 公里</dd>
+                        <dt>公務比例</dt>
+                        <dd>{preview.ratioPercent}%</dd>
                         <dt>年度補貼金額</dt>
                         <dd>{preview.amount}</dd>
                       </dl>
