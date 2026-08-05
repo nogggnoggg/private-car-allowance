@@ -104,6 +104,8 @@ interface DepreciationApplicationJson {
   onBehalf: boolean;
   primaryDate: string;
   applicationYear: number | null;
+  /** PHASE-007-R8b／§20.6：年度總里程（1 位小數定寬字串；未輸入為 `null`）。 */
+  annualTotalKm: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +147,54 @@ function assertNoSensitiveContent(value: unknown, path: string): void {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// PHASE-007-R8b — 稽核 summary 之**揭露面**守門（AC-35「不含敏感鍵」＋ §20.10）
+//
+// 上方 `assertNoSensitiveContent` 守的是**安全面**（密碼／token／session）。
+// 修訂段另有一組**揭露面**不變式（§20.10、Q6）：車價與折舊年限對使用者不外露
+// （每年折舊費用 × 年限 ＝ 車價，故年限亦須遮蔽），每公里補助單價已整體退場。
+// 稽核 summary 亦是一個對外可見面，故同受此約束——兩者判準不同，刻意分成兩個
+// 函式，不把參數面識別字塞進 FORBIDDEN_PATTERNS（那會混淆「安全」與「揭露」）。
+// ---------------------------------------------------------------------------
+
+const FORBIDDEN_DISCLOSURE_KEYS = [
+  "vehiclePrice",
+  "usefulLifeYears",
+  "perKmUnitPrice",
+  "estimatedAnnualKm",
+  "snapshotVehiclePrice",
+  "snapshotUsefulLifeYears",
+  "snapshotPerKmUnitPrice",
+  "snapshotEstimatedAnnualKm",
+  "depreciationParameterVersionId",
+];
+
+/** 遞迴走訪（含巢狀物件與陣列）：任一層出現參數面識別字即紅。 */
+function assertNoParameterDisclosure(value: unknown, path: string): void {
+  if (value === null || value === undefined || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => assertNoParameterDisclosure(item, `${path}[${i}]`));
+    return;
+  }
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    expect(
+      FORBIDDEN_DISCLOSURE_KEYS,
+      `§20.10 揭露面：${path}.${key} 為不得外露之參數面欄位`
+    ).not.toContain(key);
+    assertNoParameterDisclosure(v, `${path}.${key}`);
+  }
+}
+
+/**
+ * AC-35 之代修改稽核 `summary` **封閉欄位集合**（多一鍵、少一鍵皆紅）。
+ *
+ * 折舊草稿之可變業務欄位恰有兩個（`applicationYear`／`annualTotalKm`），兩者
+ * 皆須有前後值；其餘僅識別用之 `applicationId`／`type`。以「集合全等」而非
+ * 「包含」表達，使「漏寫 annualTotalKm」與「順手把車價塞進摘要」兩種 mutant
+ * 同時被同一條斷言攔下。
+ */
+const UPDATED_SUMMARY_KEYS = ["annualTotalKm", "applicationId", "applicationYear", "type"] as const;
 
 describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-34/35）", () => {
   let app: FastifyInstance;
@@ -525,9 +575,15 @@ describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-
 
   describe("AC-35 代修改 — 管理員 PUT 他人草稿 → 200 且寫 APPLICATION_UPDATED_ON_BEHALF", () => {
     it("PUT /applications/depreciation/:id（admin 對 U 之草稿）→ 200，AuditLog action/actorId/targetId/targetLabel/summary（含前後值）精確", async () => {
-      const id = await createOwnDraft(ownerCookie, { applicationYear: 2120 });
+      const id = await createOwnDraft(ownerCookie, {
+        applicationYear: 2120,
+        annualTotalKm: "12345.6",
+      });
 
-      const resp = await putDepreciation(adminCookie, id, { applicationYear: 2121 });
+      const resp = await putDepreciation(adminCookie, id, {
+        applicationYear: 2121,
+        annualTotalKm: "13579.2",
+      });
       expect(resp.statusCode).toBe(200);
       const application = resp.json<{ application: DepreciationApplicationJson }>().application;
       expect(application.applicationYear).toBe(2121);
@@ -557,17 +613,30 @@ describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-
       expect(summary.applicationId).toBe(id);
       expect(summary.type).toBe("DEPRECIATION");
       expect(summary.applicationYear).toEqual({ before: 2120, after: 2121 });
+      // R8b（AC-35 欄位摘要完整性）：年度總里程之前後值，1 位小數定寬字串
+      // （與 §20.6 之 DTO 契約同精度）。
+      expect(summary.annualTotalKm).toEqual({ before: "12345.6", after: "13579.2" });
+
+      // 封閉欄位集合：漏寫 annualTotalKm 或夾帶車價／年限皆於此紅。
+      expect(Object.keys(summary).sort()).toEqual([...UPDATED_SUMMARY_KEYS].sort());
 
       assertNoSensitiveContent(log?.targetLabel, "auditLog.targetLabel");
       assertNoSensitiveContent(log?.summary, "auditLog.summary");
+      assertNoParameterDisclosure(log?.summary, "auditLog.summary");
     });
 
-    it("前後值忠實反映兩個方向：null → 值、值 → null", async () => {
+    it("前後值忠實反映兩個方向：null → 值、值 → null（applicationYear 與 annualTotalKm 兩欄同步驗證）", async () => {
       const id = await createOwnDraft(ownerCookie, {});
 
-      const first = await putDepreciation(adminCookie, id, { applicationYear: 2122 });
+      const first = await putDepreciation(adminCookie, id, {
+        applicationYear: 2122,
+        annualTotalKm: "24680.2",
+      });
       expect(first.statusCode).toBe(200);
-      const second = await putDepreciation(adminCookie, id, { applicationYear: null });
+      const second = await putDepreciation(adminCookie, id, {
+        applicationYear: null,
+        annualTotalKm: null,
+      });
       expect(second.statusCode).toBe(200);
 
       const logs = await prisma.auditLog.findMany({
@@ -583,6 +652,43 @@ describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-
         before: 2122,
         after: null,
       });
+
+      // R8b：`null` ＝ 未輸入／被清空（AC-53(a)），一律如實記為 `null`——
+      // **絕不**以 0 或空字串代位（否則「清空」與「填 0」在稽核上無從區辨）。
+      expect((logs[0].summary as Record<string, unknown>).annualTotalKm).toEqual({
+        before: null,
+        after: "24680.2",
+      });
+      expect((logs[1].summary as Record<string, unknown>).annualTotalKm).toEqual({
+        before: "24680.2",
+        after: null,
+      });
+    });
+
+    it("R8b 鑑別：annualTotalKm 之前值取自**交易內新鮮讀取**，且 key 缺席時前後值相同（不變欄仍如實記錄）", async () => {
+      const id = await createOwnDraft(ownerCookie, {
+        applicationYear: 2126,
+        annualTotalKm: "11111.1",
+      });
+
+      // 只改年度、**完全不送** `annualTotalKm` key（三態語意之「缺席＝不變」）：
+      // 前後值皆須為現值，而非 `null`——「缺席就寫 null」之 mutant 於此必紅。
+      const resp = await putDepreciation(adminCookie, id, { applicationYear: 2127 });
+      expect(resp.statusCode).toBe(200);
+
+      const log = await prisma.auditLog.findFirst({
+        where: { action: "APPLICATION_UPDATED_ON_BEHALF", targetLabel: `${OWNER_LOGIN}#${id}` },
+        orderBy: { createdAt: "desc" },
+      });
+      const summary = log?.summary as Record<string, unknown>;
+      expect(summary.applicationYear).toEqual({ before: 2126, after: 2127 });
+      expect(summary.annualTotalKm).toEqual({ before: "11111.1", after: "11111.1" });
+
+      // DB 層佐證：該欄確實未被 PUT 動到。
+      const row = await prisma.depreciationApplication.findUniqueOrThrow({
+        where: { applicationId: id },
+      });
+      expect(row.annualTotalKm?.toFixed(1)).toBe("11111.1");
     });
 
     it("鑑別力：同一草稿先由 admin 代改（+1 列）、再由擁有人自改（不再 +1）", async () => {
@@ -618,13 +724,20 @@ describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-
       expect(logs).toBe(0);
     });
 
-    it("擁有人自己 PUT 自己的草稿 → 200，且不產生任何 ON_BEHALF 稽核列", async () => {
-      const id = await createOwnDraft(ownerCookie, { applicationYear: 2107 });
-      const resp = await putDepreciation(ownerCookie, id, { applicationYear: 2108 });
+    it("擁有人自己 PUT 自己的草稿（含改 annualTotalKm）→ 200，且不產生任何 ON_BEHALF 稽核列", async () => {
+      const id = await createOwnDraft(ownerCookie, {
+        applicationYear: 2107,
+        annualTotalKm: "31415.9",
+      });
+      const resp = await putDepreciation(ownerCookie, id, {
+        applicationYear: 2108,
+        annualTotalKm: "27182.8",
+      });
       expect(resp.statusCode).toBe(200);
-      expect(
-        resp.json<{ application: DepreciationApplicationJson }>().application.applicationYear
-      ).toBe(2108);
+      const updated = resp.json<{ application: DepreciationApplicationJson }>().application;
+      expect(updated.applicationYear).toBe(2108);
+      // R8b：自改確實生效（否則「零稽核」可能只是因為這次 PUT 什麼也沒改）。
+      expect(updated.annualTotalKm).toBe("27182.8");
 
       const logs = await prisma.auditLog.count({
         where: {

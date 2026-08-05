@@ -252,6 +252,15 @@ export interface DepreciationDraftUpdateAuditContext {
   ownerLoginName: string;
   before: {
     applicationYear: number | null;
+    /**
+     * PHASE-007-R8b（AC-35 欄位摘要完整性）：年度總里程之**修改前**值。
+     *
+     * 與 `applicationYear` 同源——皆取自 `updateDepreciationDraft` 於本次交易嘗試
+     * 內 `SELECT … FOR UPDATE` 之後的**新鮮讀取**（見該函式 `existing`），
+     * **不是**呼叫端於交易外先取的過期值。稽核前值一旦混用兩種讀取時點，同一份
+     * `summary` 內就會出現兩種一致性語意，併發下必寫出錯誤的前值。
+     */
+    annualTotalKm: Prisma.Decimal | null;
   };
 }
 
@@ -446,6 +455,9 @@ export async function updateDepreciationDraft(
                 ownerLoginName: existing.owner.loginName,
                 before: {
                   applicationYear: existing.depreciation?.applicationYear ?? null,
+                  // R8b：與上一行同源之交易內新鮮讀取（:398 之 select 已含此欄，
+                  // 故不新增任何查詢）。
+                  annualTotalKm: existing.depreciation?.annualTotalKm ?? null,
                 },
               },
               after

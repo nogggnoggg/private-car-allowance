@@ -1091,6 +1091,21 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const onUpdated: OnDepreciationDraftUpdated | undefined = isOnBehalf
         ? async (tx, context, after) => {
+            // PHASE-007-R8b（AC-35 欄位摘要完整性）：折舊草稿之**可變業務欄位**
+            // 恰有兩個（`applicationYear`／`annualTotalKm`），兩者皆須入摘要，
+            // 形狀沿三型既有慣例之 `{ before, after }`（PHASE-010 移交）。
+            //
+            // `annualTotalKm` 之字串化為 **1 位小數定寬**——與 §20.6 之
+            // `DepreciationApplicationDto.annualTotalKm` 對外契約同精度（逐字比照
+            // 同檔保養分支對 `Decimal` 欄位以 `toFixed(2)` 入摘要的既有寫法）。
+            // `null`（未輸入／被清空，AC-53(a)）一律如實記為 `null`，**絕不**以
+            // 0 或空字串代位——那會讓「清空」與「填 0」在稽核上無從區辨。
+            const ANNUAL_TOTAL_KM_SUMMARY_SCALE = 1;
+            const fmtAnnualTotalKm = (value: Prisma.Decimal | null) =>
+              value === null ? null : value.toFixed(ANNUAL_TOTAL_KM_SUMMARY_SCALE);
+
+            // §20.10 揭露面：摘要只含**申請資料**，不含車價／折舊年限／每公里
+            // 補助單價等參數面或推導值——本物件之欄位集合即為該不變式的落點。
             await tx.auditLog.create({
               data: {
                 action: "APPLICATION_UPDATED_ON_BEHALF",
@@ -1103,6 +1118,10 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
                   applicationYear: {
                     before: context.before.applicationYear,
                     after: after.depreciation?.applicationYear ?? null,
+                  },
+                  annualTotalKm: {
+                    before: fmtAnnualTotalKm(context.before.annualTotalKm),
+                    after: fmtAnnualTotalKm(after.depreciation?.annualTotalKm ?? null),
                   },
                 },
               },
