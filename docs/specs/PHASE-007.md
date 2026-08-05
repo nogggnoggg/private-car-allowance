@@ -1201,7 +1201,9 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 
 | 2026-08-05 | **折舊模型修訂（PHASE-007-SPEC-REV）**：依人類 leonchih 2026-08-05「照提案全部確認」之 US Gate 批准，將本 Spec 全面修訂為新折舊模型。①新增 **§20 修訂段**（全部修訂內容集中於此，衝突處覆蓋 §1~§17）：修訂後目標、AC 異動總表、**新增 AC-47~AC-61 全文**、新公式與**經實際驗算之 kill case 數對**、blocker 表與錯誤碼異動、DTO 與端點異動、**ALTER 型 M2 migration 與新舊模型判別**、Data Flow、五態與邊界增補（B-36~B-45）、揭露面修訂、測試策略與**既有測試遷移逐檔清單**、**修訂段 Task Graph R1~R13**、決策記錄 D15~D22、已知限制與 Rollback 增補。②新增 **§12R 修訂段狀態覆寫表**（退場 6 列、轉 `PENDING` 17 列、新增 15 列、明示不受影響 23 列；§12 開發段 `GREEN` 實名記錄一律保留不改寫）。③§1~§17 受影響節加註 **【已修訂 → §20.x】** 標記，歷史記錄性內容（§15 Task Graph、§16 D1~D14、§18 Gate 固化列）零改寫。**Spec 狀態維持 `ACTIVE`。** 本次修訂**不改變任何已批准之 US 原意、不縮減任何已批准 AC、不新增任何人類未批准之使用者可見行為**；Spec 層裁量 3 項（§20.13 D20~D22）已於 Handoff 逐項揭露。 | 人類 leonchih 2026-08-05「照提案全部確認」（`docs/specs/PHASE-007-US-REV-PROPOSAL.md` Status: APPROVED——§1 八條修訂全文、§6.2 E-1~E-8／S-1~S-4 十二項擴張與建議、§4 Q1~Q12 全數照推薦）；`userstory.md` HEAD 版八條（US-LAND `8b122b7`）；`docs/PRD.md`（REV-PRD-SYNC `237f4b2`）；`PROJECT_STATE.md` L5-L13 Gate 反饋列（裁定①②、連帶 A/B/C、細節 D/E/F）；REV-PRD-SYNC 移交三項（錯誤碼聯集變更、參數端點縮欄凍結式處置 Q9、新舊模型判別 Q7）；PHASE-005a Spec §8.4／§16 D1(a)（凍結式先例）、PHASE-006 Spec AC-16/17 與 T2R SF-1（比例分攤同型與 `.times(ratio)` 反例）、T1 即審 FW-1/FW-2/FW-3/FW-8；`docs/retrospective/PHASE-007-usage.md` §3 預算帶 |
 
-> Gate 固化義務已履行（上列 2026-08-04 第二列）。
+| 2026-08-05 | **修訂段 Gate 通過（固化）**：人類 leonchih 經 AskUserQuestion 三問全數照推薦裁定——①**R1/R2/R3/R4a/R4b/R5/R6/R7/R8/R13 共 10 項 High Task 事前批准**（依 §20.12 順序派工，R13 於 R7 後、R12 前）；②**D20 裁定＝夾帶 `estimatedAnnualKm` 不採用、寫 NULL、不回 400**（沿全案「夾帶欄位一律靜默不採用」慣例，不對既有公開契約新增拒絕面）；③三項明示事項照案確認（**快照 9 欄**＝業務 7 值＋calculatedAt＋參數版本 id；**AC-61 落點 PHASE-003a 參數頁前端**於本 branch 修改；**先乘後除等價實作** A×O÷I 為「不得對比例先行取整」之唯一合規算法）＋**D21 照案**（estimatedAnnualKm 轉 nullable、回滾部分不可逆已揭露）＋**D22 照案**（service 簽章保留 optional）。 | 人類 leonchih 2026-08-05 修訂段 Gate（AskUserQuestion 三問全數照推薦） |
+
+> Gate 固化義務已履行（上列 2026-08-04 第二列；修訂段 Gate 見上列 2026-08-05 末列）。
 
 ---
 
