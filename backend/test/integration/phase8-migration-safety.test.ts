@@ -22,8 +22,8 @@
  * Covers Spec docs/specs/PHASE-008.md §8 (資料模型與 migration) and §15 Task
  * T1's Done When, i.e. AC-01(a)~(g):
  *   (a) Report 表逐欄相符 §8.1；四個唯一約束＋一個一般索引；FK ON DELETE RESTRICT。
- *   (b) 既有 15 表逐欄零改寫；migration SQL 零 ALTER 於既有表／零 DROP／零
- *       INSERT・UPDATE／零 ALTER TYPE。
+ *   (b) 九表值比對＋零-ALTER 靜態掃描覆蓋 15 表；migration SQL 零 ALTER 於既有表／
+ *       零 DROP／零 INSERT・UPDATE／零 ALTER TYPE。
  *   (c) 乾淨 DB 與既有 DB 各一輪 migrate deploy 成功、重跑冪等；Report 表在既有
  *       DB 上為空表。
  *   (d) `Application.report Report?` 為零 DDL 虛擬關聯（Application 欄位集合
@@ -58,7 +58,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Prisma, PrismaClient } from "@prisma/client";
+import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { hashPassword } from "../../src/auth/password.js";
+import { buildServer } from "../../src/server.js";
 import { withSchema } from "../setup/db-isolation.js";
 import { countMigrationDirs } from "../setup/global-setup.js";
 
@@ -75,6 +78,17 @@ const REAL_SCHEMA_PATH = path.join(BACKEND_ROOT, "prisma", "schema.prisma");
 const REAL_MIGRATIONS_DIR = path.join(BACKEND_ROOT, "prisma", "migrations");
 const PRISMA_CLI_ENTRY = path.join(BACKEND_ROOT, "node_modules", "prisma", "build", "index.js");
 const SRC_DIR = path.join(BACKEND_ROOT, "src");
+
+/** T1 即審 FW-1 承接（§8.3）：`history.ts` 之路徑，及其零 diff 之權威來源。 */
+const HISTORY_TS_PATH = path.join(SRC_DIR, "users", "history.ts");
+/**
+ * §8.3 明文宣告：本 Phase 對 `backend/src/users/history.ts` 零變更
+ * （該檔自 PHASE-005a-T1 的 `35b30e7` 起未再變動）。此值為
+ * PHASE-008-T1b 開工當下該檔內容的 SHA-256（`sha256(fs.readFileSync(...,
+ * "utf8"))`，十六進位）——任何一個位元組的改動都會使下方比對變紅。
+ */
+const HISTORY_TS_EXPECTED_SHA256 =
+  "62f4841dc02d851460e46c8d747bfcffdd38a8dbeb7ff96ed57c0ca347221e89";
 
 /**
  * The migration directories that existed immediately before this Phase
@@ -206,6 +220,28 @@ function assertRowUnchanged(
 
 async function dropSchema(admin: PrismaClient, schema: string): Promise<void> {
   await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+}
+
+/**
+ * T1 即審 AR-1 承接（phase8 檔內部分）：純函式，統計一段 migration SQL 文字含
+ * 幾條語句（先去除 `-- ...` 行註解，再以 `;` 切割、濾除空白片段）。
+ *
+ * 目的：§8.5 逐字斷言（`CREATE TABLE` 恰 1、`CREATE UNIQUE INDEX` 恰 4……）
+ * 各自獨立比對「特定關鍵字」的出現次數，對「注入一條完全不含這些關鍵字的
+ * 新語句」（例如 `CREATE TYPE ... AS ENUM (...);`）沒有防禦力——那類語句不會
+ * 讓任何一條既有逐項斷言變紅，卻會讓語句總數多出一條。這條總數鎖是最後一道
+ * 防線（封 M10 型：注入 DELETE FROM 之類的破壞性語句／M12 型：注入一條不在
+ * 既有關鍵字清單內的全新語句類型）。
+ */
+function countSqlStatements(sql: string): number {
+  const withoutLineComments = sql
+    .split("\n")
+    .map((line) => (line.trim().startsWith("--") ? "" : line))
+    .join("\n");
+  return withoutLineComments
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0).length;
 }
 
 // ===========================================================================
@@ -883,6 +919,85 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
     expect((sql.match(/FOREIGN KEY/gi) ?? []).length).toBe(1);
   });
 
+  // ===========================================================================
+  // T1 即審 AR-1 承接（phase8 檔內部分）：語句總數鎖死——上面的逐項關鍵字比對
+  // 各自獨立，對「注入一條不含任何既有關鍵字的全新語句」沒有防禦力（見
+  // `countSqlStatements` 之說明）；此鎖為最後一道防線。
+  // ===========================================================================
+
+  it("T1 即審 AR-1: migration.sql 恰為 7 條語句（封 M10/M12 型穿透——任何被注入之額外語句，即使不含既有關鍵字，總數鎖仍會變紅）", () => {
+    const sql = fs.readFileSync(
+      path.join(REAL_MIGRATIONS_DIR, NEW_MIGRATION_DIR, "migration.sql"),
+      "utf8"
+    );
+    expect(countSqlStatements(sql)).toBe(7);
+  });
+
+  it("T1 即審 AR-1 mutant 自證: 注入一條 DELETE FROM（M10 型）或一條 CREATE TYPE（M12 型，不含任何既有關鍵字比對）皆使語句總數鎖變紅", () => {
+    const realSql = fs.readFileSync(
+      path.join(REAL_MIGRATIONS_DIR, NEW_MIGRATION_DIR, "migration.sql"),
+      "utf8"
+    );
+    const realCount = countSqlStatements(realSql);
+    expect(realCount).toBe(7); // control — 真實內容本身即為 7。
+
+    // M10 型：注入破壞性 DML。
+    const withDelete = `${realSql}\nDELETE FROM "Report";\n`;
+    expect(countSqlStatements(withDelete)).not.toBe(realCount);
+
+    // M12 型：注入一條「既有逐項關鍵字比對」完全偵測不到的全新語句類型
+    // （注入片段本身不含 CREATE TABLE / CREATE (UNIQUE) INDEX / ADD
+    // CONSTRAINT / FOREIGN KEY 任一關鍵字）——證明總數鎖是這類穿透的最後防線。
+    const injectedStatement = "CREATE TYPE \"InjectedEnum\" AS ENUM ('A');";
+    expect(injectedStatement).not.toMatch(
+      /CREATE TABLE|CREATE (?:UNIQUE )?INDEX|ADD CONSTRAINT|FOREIGN KEY/
+    );
+    const withCreateType = `${realSql}\n${injectedStatement}\n`;
+    expect(countSqlStatements(withCreateType)).not.toBe(realCount);
+  });
+
+  // ===========================================================================
+  // T1 即審 AR-2 承接：`Report.generatedAt` 之 `datetime_precision`／
+  // `column_default` 對照（§8.1 `generatedAt DateTime @default(now())`）。
+  // ===========================================================================
+
+  /**
+   * DDL 側 `datetime_precision`／`column_default` ↔ 期望值之比較器。雙側
+   * mutant 自證（下方 it）以此函式為受測對象，不直接改動真實 DB。
+   */
+  function assertGeneratedAtDefaultMatches(
+    label: string,
+    ddlDatetimePrecision: number | null,
+    ddlColumnDefault: string | null
+  ): void {
+    expect(ddlDatetimePrecision, `${label}: datetime_precision`).toBe(3);
+    expect(ddlColumnDefault, `${label}: column_default`).toContain("CURRENT_TIMESTAMP");
+  }
+
+  it("T1 即審 AR-2: Report.generatedAt 之 datetime_precision=3 ∧ column_default 含 CURRENT_TIMESTAMP", async () => {
+    const rows = await client.$queryRawUnsafe<
+      Array<{ datetime_precision: number | null; column_default: string | null }>
+    >(
+      `SELECT datetime_precision, column_default FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'Report' AND column_name = 'generatedAt'`
+    );
+    expect(rows).toHaveLength(1);
+    assertGeneratedAtDefaultMatches(
+      "Report.generatedAt",
+      rows[0].datetime_precision,
+      rows[0].column_default
+    );
+  });
+
+  it("T1 即審 AR-2 mutant 自證: 錯誤的 datetime_precision，或缺少 CURRENT_TIMESTAMP 之 default，各自獨立使比較器變紅", () => {
+    expect(() =>
+      assertGeneratedAtDefaultMatches("mutant/precision=6", 6, "CURRENT_TIMESTAMP")
+    ).toThrow();
+    expect(() => assertGeneratedAtDefaultMatches("mutant/default=null", 3, null)).toThrow();
+    // control — 兩側皆為真實值時不拋錯，證明比較器不是恆真拋錯。
+    expect(() => assertGeneratedAtDefaultMatches("control", 3, "CURRENT_TIMESTAMP")).not.toThrow();
+  });
+
   it("AC-01(a): a fully-populated row writes and reads back byte-for-byte (every column is required — no draft/null state exists for Report)", async () => {
     const owner = await client.user.create({
       data: {
@@ -1006,7 +1121,7 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
       },
     });
 
-    async function makeApp(suffix: string) {
+    async function makeApp() {
       return client.application.create({
         data: {
           type: "TRAVEL",
@@ -1020,7 +1135,7 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
       });
     }
 
-    const baseApp = await makeApp("base");
+    const baseApp = await makeApp();
     await client.report.create({
       data: {
         applicationId: baseApp.id,
@@ -1068,7 +1183,7 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
     );
 
     // (2) reportNumber collision — different applicationId, same reportNumber.
-    const app2 = await makeApp("2");
+    const app2 = await makeApp();
     await expectUniqueViolation(() =>
       client.report.create({
         data: {
@@ -1087,7 +1202,7 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
     );
 
     // (3) storageKey collision.
-    const app3 = await makeApp("3");
+    const app3 = await makeApp();
     await expectUniqueViolation(() =>
       client.report.create({
         data: {
@@ -1106,7 +1221,7 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
     );
 
     // (4) (numberPrefix, numberPeriod, sequence) collision.
-    const app4 = await makeApp("4");
+    const app4 = await makeApp();
     await expectUniqueViolation(() =>
       client.report.create({
         data: {
@@ -1318,5 +1433,207 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
     } finally {
       fs.rmSync(tmpFile, { force: true });
     }
+  });
+});
+
+// ===========================================================================
+// T1 即審 FW-1 承接 — §11.2 末列「刪除守門回歸」，併入本檔（Spec §11.2 :708）:
+//
+//   「§8.3：有報表之使用者刪除仍 409 CONFLICT；history.ts 零 diff 之結構性
+//   斷言」
+//
+// Spec §8.3 原文（逐字）：「`Report` 無 `User` FK，且每一份 `Report` 必依附於
+// 一筆 `Application`（`ownerId` FK 為 `Restrict`）——既有 `userHasHistory` 之
+// `application.count({ where: { ownerId } })` 已完整涵蓋。**本 Phase 不修改
+// `backend/src/users/history.ts`**；以測試固定此推論（有報表之使用者刪除 →
+// 仍為 `409 CONFLICT`，且錯誤來源為 Application 而非 FK 例外）。」
+//
+// 與 admin-users.test.ts 既有之「AC-23: userHasHistory=true → 409 CONFLICT
+// (tested via custom server with stub)」差異化：既有測試以**注入的 stub**
+// 強制 checker 回傳 true，驗證的是「route 層讀到 true 時會 409」；本段用真實
+// `productionHistoryChecker`（不注入任何 stub）、真實 `Report`/`Application`
+// 列，驗證的是「Report 這個新表本身不需要、也沒有另立一條刪除守門路徑——
+// 既有的 `Application.count` 路徑已天然涵蓋」這個 §8.3 的結構性推論本身。
+// 兩者鑑別面不同、互不取代。
+//
+// 本段自建獨立 scratch schema（同本檔既有紀律），透過真實
+// `DELETE /admin/users/:id` 路由驗證契約面；`history.ts` 零 diff 以 SHA-256
+// 內容雜湊固定（見上方 `HISTORY_TS_EXPECTED_SHA256`）。
+// ===========================================================================
+
+describeWithDb("T1 即審 FW-1 承接 — §8.3 刪除守門回歸", () => {
+  const schema = `phase8_t1b_fw1_${RUN_ID}`;
+  let scratchUrl: string;
+  let admin: PrismaClient;
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+
+  const ADMIN_LOGIN = `p8_t1b_admin_${RUN_ID}`;
+  const REPORT_OWNER_LOGIN = `p8_t1b_report_owner_${RUN_ID}`;
+  const CLEAN_USER_LOGIN = `p8_t1b_clean_user_${RUN_ID}`;
+  const PASSWORD = "T1bFw1Test99!";
+
+  let reportOwnerId: string;
+  let cleanUserId: string;
+
+  async function loginAndGetCookie(loginName: string): Promise<string> {
+    const resp = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { loginName, password: PASSWORD },
+    });
+    if (resp.statusCode !== 200) {
+      throw new Error(`Login failed for ${loginName}: ${resp.statusCode} ${resp.body}`);
+    }
+    const setCookie = resp.headers["set-cookie"];
+    const raw = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+    if (!raw) throw new Error("No Set-Cookie header on login response");
+    return raw.split(";")[0];
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    admin = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await admin.$connect();
+    await dropSchema(admin, schema);
+    scratchUrl = withSchema(DB_URL, schema);
+    await runMigrateDeploy(REAL_SCHEMA_PATH, scratchUrl);
+
+    prisma = new PrismaClient({ datasources: { db: { url: scratchUrl } } });
+    const passwordHash = await hashPassword(PASSWORD);
+
+    await prisma.user.create({
+      data: {
+        loginName: ADMIN_LOGIN,
+        displayName: "T1b FW-1 Admin (Fixture)",
+        passwordHash,
+        role: "ADMIN",
+        isActive: true,
+        mustChangePassword: false,
+      },
+    });
+
+    const reportOwner = await prisma.user.create({
+      data: {
+        loginName: REPORT_OWNER_LOGIN,
+        displayName: "T1b FW-1 Report Owner (Fixture)",
+        passwordHash,
+        role: "USER",
+        isActive: true,
+        mustChangePassword: false,
+      },
+    });
+    reportOwnerId = reportOwner.id;
+
+    const cleanUser = await prisma.user.create({
+      data: {
+        loginName: CLEAN_USER_LOGIN,
+        displayName: "T1b FW-1 Clean User (Fixture, no history)",
+        passwordHash,
+        role: "USER",
+        isActive: true,
+        mustChangePassword: false,
+      },
+    });
+    cleanUserId = cleanUser.id;
+
+    const application = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId: reportOwnerId,
+        createdById: reportOwnerId,
+        primaryDate: new Date("2034-06-04T00:00:00.000Z"),
+        totalAmount: 1,
+        completedAt: new Date(),
+      },
+    });
+    await prisma.report.create({
+      data: {
+        applicationId: application.id,
+        reportNumber: `TRV-203406-FW1-${RUN_ID}`,
+        numberPrefix: "TRV",
+        numberPeriod: "203406",
+        sequence: 9101,
+        storageKey: `rpt/${RUN_ID}-fw1/pdf`,
+        fileName: "fw1-fixture.pdf",
+        byteSize: 1024,
+        contentHash: "1".repeat(64),
+        generatedById: reportOwnerId,
+      },
+    });
+
+    // 真實 productionHistoryChecker（不注入 stub，`buildServer` 走預設值）。
+    app = await buildServer({ databaseUrl: scratchUrl, logLevel: "error" });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    if (!DB_URL) return;
+    if (app) await app.close();
+    if (prisma) await prisma.$disconnect();
+    await dropSchema(admin, schema);
+    await admin.$disconnect();
+  });
+
+  it("§8.3: Report 唯一的 FK 指向 Application，沒有指向 User 的 FK", async () => {
+    const fkRows = await prisma.$queryRawUnsafe<Array<{ confrelid_name: string }>>(
+      `SELECT rel.relname AS confrelid_name
+         FROM pg_constraint c
+         JOIN pg_class t ON c.conrelid = t.oid
+         JOIN pg_namespace n ON t.relnamespace = n.oid
+         JOIN pg_class rel ON c.confrelid = rel.oid
+        WHERE n.nspname = current_schema() AND t.relname = 'Report' AND c.contype = 'f'`
+    );
+    expect(fkRows.map((r) => r.confrelid_name)).toEqual(["Application"]);
+  });
+
+  it("§8.3 契約面: DELETE /admin/users/:id — 使用者的申請已產生 Report 時，刪除仍為 409 CONFLICT（真實 productionHistoryChecker，非 stub）", async () => {
+    const cookie = await loginAndGetCookie(ADMIN_LOGIN);
+    const resp = await app.inject({
+      method: "DELETE",
+      url: `/admin/users/${reportOwnerId}`,
+      headers: { cookie },
+    });
+    expect(resp.statusCode).toBe(409);
+    expect(resp.json<{ error: { code: string } }>().error.code).toBe("CONFLICT");
+
+    // 使用者必須仍然存在——刪除未部分成功。
+    const stillThere = await prisma.user.findUnique({ where: { id: reportOwnerId } });
+    expect(stillThere).not.toBeNull();
+  });
+
+  it("§8.3 契約面 control: 沒有任何申請／報表的使用者可正常刪除（200），證明上一則斷言具鑑別力（並非路由對這兩個使用者恆回 409）", async () => {
+    const cookie = await loginAndGetCookie(ADMIN_LOGIN);
+    const resp = await app.inject({
+      method: "DELETE",
+      url: `/admin/users/${cleanUserId}`,
+      headers: { cookie },
+    });
+    expect(resp.statusCode).toBe(200);
+
+    const stillThere = await prisma.user.findUnique({ where: { id: cleanUserId } });
+    expect(stillThere).toBeNull();
+  });
+
+  it("§8.3: backend/src/users/history.ts 為零 diff（Spec §8.3 明文宣告本 Phase 對此檔零變更）——內容 SHA-256 固定值比對", () => {
+    const content = fs.readFileSync(HISTORY_TS_PATH, "utf8");
+    const actualHash = crypto.createHash("sha256").update(content).digest("hex");
+    expect(
+      actualHash,
+      "backend/src/users/history.ts 內容已變更——Spec §8.3 明文宣告本 Phase 對此檔零變更"
+    ).toBe(HISTORY_TS_EXPECTED_SHA256);
+  });
+
+  it("§8.3 mutant 自證: SHA-256 零 diff 比對對內容變動有鑑別力（任一位元組改動即變紅；未變動內容維持綠燈）", () => {
+    const realContent = fs.readFileSync(HISTORY_TS_PATH, "utf8");
+    const realHash = crypto.createHash("sha256").update(realContent).digest("hex");
+    expect(realHash).toBe(HISTORY_TS_EXPECTED_SHA256); // control — 真實內容本身即比對相符。
+
+    const mutatedHash = crypto
+      .createHash("sha256")
+      .update(`${realContent}\n// mutant: a single appended comment line\n`)
+      .digest("hex");
+    expect(mutatedHash).not.toBe(HISTORY_TS_EXPECTED_SHA256);
   });
 });
