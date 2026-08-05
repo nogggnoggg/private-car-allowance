@@ -781,6 +781,9 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | **AC-62**（新增） | frontend | `frontend/test/ApplicationListSection.test.tsx` | `AC-62：操作欄之「檢視」連結三型一致——TRAVEL／MAINTENANCE／DEPRECIATION 各自導向既有詳情頁（草稿與已完成兩態皆適用）`；`AC-62：操作欄不再對任一型別渲染字面「—」（負向斷言）` | **REV2-G1** | `GREEN` — 實名與預定名**逐字相同**（`4115cae`；前端 238→240 兩輪、大總管獨立驗收；REV2 輕量複審 APPROVE） |
 | **AC-61 → AC-61R**（修訂） | frontend ＋ e2e | `frontend/test/ParametersPage.test.tsx`；`e2e/depreciation-allowance.spec.ts` | `AC-61R：折舊版本清單之表頭恰為五欄（生效日期／車價／折舊年限／每年折舊費用／建立時間），不含「預估年里程」「每公里單價」`；`AC-61R：歷史版本之預估年里程與每公里單價原值於折舊區塊不出現（新舊版本一律不顯示）`；E2E `情境7`（改寫後名稱見 §20.17.4 #6） | **REV2-G2** | `GREEN` — 兩條 vitest 實名與預定名**逐字相同**；E2E 實名 `情境7：管理員參數頁折舊參數區塊縮欄——建立三欄＋版本清單五欄（預估年里程／每公里單價已移除）`（`9a01f61`；前端 240/240 兩輪、大總管親跑折舊單檔 8/8；REV2 輕量複審 APPROVE。**§12R.3 AC-61 列之 R11 `GREEN` 實名為歷史記錄，保留不改寫**；4 條逐條處置見 §20.17.4；另 2 條同檔連動測試之處置補列見 §18 REV2 複審固化列） |
 | **AC-45**（連帶） | e2e | `e2e/depreciation-allowance.spec.ts` | 情境 1~6、8 **零改動**；**僅情境 7** 因 G2 而改寫（名稱與斷言見 §20.17.4 #6） | **REV2-G2** | `GREEN` — 情境 1~6、8 零改動續綠；情境 7 新實名見上列（大總管親跑全套 E2E **38/38**，2026-08-05；§12R.2 AC-45 列之 `4fb6dc9` 綠燈證據為歷史記錄，保留不改寫） |
+| **AC-63**（新增） | integration | `backend/test/integration/phase7-on-behalf.test.ts` | `AC-63：折舊代建立稽核 summary 含 annualTotalKm（1 位小數定寬），且鍵集恰為四鍵`；`AC-63：未提供 annualTotalKm 之代建立 → summary.annualTotalKm 為 null（不以 0 代位）` | **REV2-G3** | `PENDING` |
+
+> **AC-63 之連帶零改動（供終審核對）**：既有 `AC-34 代建立` describe 之四條、C3 邊界、同交易回滾、頂層純量夾帶、`targetLabel` mutant 鑑別**皆零改動且須續綠**（既有斷言為逐鍵包含式，新增鍵不使其變紅——實查見 §20.17.7）；`phase4-on-behalf-audit.test.ts`／`phase6-on-behalf.test.ts`（差旅／保養代建立）**零改動**（AC-63(e)）。
 
 > **明示不受影響（Gate 反饋段之判定，供終審核對）**：**AC-36／AC-37**（綜合列表與篩選）——AC-62 只新增「操作」欄之連結渲染，不改變列的組成、排序、篩選語意或任何欄位值；**AC-46**（響應式 375px）——G1 之連結取代既有「—」文字、G2 移除兩欄，兩者皆**不增加**版面寬度（E2E 情境 8 零改動，續綠即為證據）；**AC-57**（折舊參數端點）——G2 為純前端顯示面，`GET /parameters/depreciation` 對歷史版本仍回原值（AC-57(c) 逐字不變）；**AC-68**（PHASE-004 之「不適用欄位顯示『—』」）——其語意限於資料欄位（出差目的／里程／金額／段數），「操作」欄非資料欄位，G1 不觸及該 AC。
 
@@ -1231,6 +1234,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 
 | 2026-08-05 | **REV2-G1／REV2-G2 完成與輕量複審 APPROVE（固化＋勘誤）**：G1（`4115cae`）G2（`9a01f61`）依 TDD 落地，reviewer 輕量複審 **APPROVE**（0 Must／0 Should／4 AR 全 Low 記錄在案）；§12R.5 三列已由大總管以實際測試輸出回填 `GREEN`（前端 240/240 兩輪、E2E 大總管親跑折舊單檔 8/8＋全套 38/38）。**勘誤 a（§20.17.4 完整性缺口）**：該表漏列 2 條直接斷言 `6.6667` 在場之同檔連動測試（`ParametersPage — 折舊列表顯示 derived` 之列表顯示條、`ParametersPage — 版本列表渲染` 之 Depreciation 條）——implementer 比照 #5 機械連動原則改為負向斷言（正向斷言全數保留、零刪除），大總管裁量接受、reviewer 判讀「AC-61R(d) 之機械必然、非擴權」並獨立確認無 ETC 誤殺面；正式補列由下一次 Spec 修訂 Task 執行（FW-1）。**勘誤 b（檔名指稱）**：§20.17.2(f)／§20.12 REV2-G2 列所稱「`frontend/src/api/parameters.ts` 之 DTO」實際定義於 `frontend/src/types/api.ts` :57/:63——兩檔皆 Forbidden 且皆零 diff，實質約束已滿足，字面修正併下一次 Spec 修訂 Task。 | reviewer PHASE-007-REV2-REVIEW（APPROVE）；大總管獨立驗收與 E2E 親跑 2026-08-05 |
 | 2026-08-05 | **三項裁定（人類 leonchih，AskUserQuestion 全數照推薦；選項文字即操作粒度明確之裁定原文）**：①**Gate 揭露 #8＝補齊**——折舊「代建立」稽核（`APPLICATION_CREATED_ON_BEHALF`，`admin/routes.ts` 折舊分支）summary 加記 `annualTotalKm`＋測試，與「代修改」對稱；本 Phase 內派 Task（**稽核領域 High，事前批准由本裁定構成**）。②**Gate 揭露 #9＝接受現狀**——參數三端點 400 早於 401 **零程式變更**，記 RUNBOOK 待辦（跨 Phase 追蹤既有列）。③**`userstory.md` AD-US-13 第 5 條字面同步＝批准**——修為「歷史值保留於 API／資料庫；畫面不顯示」（純字面精確化、功能不變；派 spec-writer 執行）。 | 人類 leonchih 2026-08-05（AskUserQuestion 三問全數照推薦） |
+
+| 2026-08-05 | **三項裁定之 Spec／US 落地（`PHASE-007-SPEC-REV3`）**：依上列 2026-08-05 末列之人類裁定 **①②③**，四項落地——①**裁定①（Gate 揭露 #8＝補齊）**：新增 **§20.17.7**（實查結論、**AC-63 全文 (a)~(g)**、4 條測試義務、Task **REV2-G3** 派工要點、自查表、移交項）；連動增補 **§20.17.0** 裁定表 G3 列與「範圍延伸」註（原第 2 點「#8／#9 尚未裁定」**逐字保留**，其對 REV2-G1／G2 之範圍約束續存）、**§12R.5** AC-63 新列（`PENDING`）、**§20.11.2** REV2-G3 列、**§20.12** REV2-G3 列＋規模上限自查列＋Gate 反饋段 High 判定註。②**裁定②（#9＝接受現狀）**：**零程式變更**，本 Spec **不新增任何 AC／Task／測試義務**，僅於 §20.17.0 範圍延伸註記載並移交大總管記 RUNBOOK 待辦。③**勘誤 a 落地**：§20.17.4 補列 2 條同檔連動測試（`列表顯示後端回傳的 derived.annualDepreciation 與 derived.perKmUnitPrice`、`Depreciation: 列表顯示 vehiclePrice / usefulLifeYears / estimatedAnnualKm / derived`）之處置（**修改（含改名）**）、改寫後逐字新名、覆蓋面去向（正向斷言全數保留＋負向斷言新增，零流失）與 **reviewer AR-1**（全頁 `queryByText` 形狀；無誤殺面成立之依據＝該二 describe 之 ETC fixture 為 `[]`；下次觸檔 `within` 化）。④**勘誤 b 落地**：§20.17.2 加「勘誤 b」blockquote ＋ (f) 與 §20.12 REV2-G2 列加註——`DepreciationParameterDto` 之兩鍵**實定義於 `frontend/src/types/api.ts` :57／:63**（非 `frontend/src/api/parameters.ts`，後者僅 import）；兩檔皆 Forbidden 且皆零 diff，實質約束不變，**原文逐字保留以維持可追溯性**。⑤**裁定③（US 字面同步）**：`userstory.md` **AD-US-13 第 5 條**之 `Then` 句由「系統應保留該歷史版本內容供唯讀查閱，且不得於新版本提供該欄位。」修為「**系統應將該歷史值保留於 API／資料庫、畫面不顯示，且不得於新版本提供該欄位。**」（`Given`／`When` 兩行與同條其餘內容、其他一切條文 **byte-identical**；機械驗證：`git diff --numstat userstory.md` ＝ `1 1`，單一 hunk 於 :1146）。**歷史零改寫**：§20.17.0~§20.17.6 原文、§12R.1~§12R.4、§20.12 R1~R13 與 REV2-G1／G2 兩列之既有內容一律保留（僅追加勘誤括號註記）。**本次未觸及 #9 之任何程式面、未改變裁定範圍外之任何行為、未修改 `docs/PRD.md`**（實查發現 :301 有同型字面觸點，已列 §20.17.7 移交項 #2，**非阻塞**）**、未修改任何程式或測試**。**Spec 狀態維持 `ACTIVE`。** | 人類 leonchih 2026-08-05「三項裁定」（AskUserQuestion 三問全數照推薦；批准紀錄＝上列同日「三項裁定」列，`ac67acc`）；勘誤 a／b 之批准依據＝上列同日「REV2-G1／REV2-G2 完成與輕量複審 APPROVE」列（該列已載明「正式補列由下一次 Spec 修訂 Task 執行（FW-1）」「字面修正併下一次 Spec 修訂 Task」）；程式現況實查（`backend/src/admin/routes.ts` :499／:580／:679-695、`backend/src/applications/routes.ts` :515／:1092-1129、`backend/src/applications/depreciation-service.ts` :128-201、`backend/test/integration/phase7-on-behalf.test.ts` :161-197／:317-443、`frontend/src/types/api.ts` :52-65、`frontend/src/api/parameters.ts`、`frontend/test/ParametersPage.test.tsx` :810-893／:1060-1085、`9a01f61` 逐 hunk 比對、`docs/PRD.md` :301）；`docs/retrospective/PHASE-007-usage.md` §3 預算帶 |
 
 > Gate 固化義務已履行（上列 2026-08-04 第二列；修訂段 Gate 見上列 2026-08-05 第 `修訂段 Gate 通過` 列；修訂段 Gate 走查兩項反饋裁定見 2026-08-05 之 `修訂段 Gate 走查結果` 列，其 Spec 落地見其後之 `PHASE-007-SPEC-REV2` 列；G1/G2 完成與三項後續裁定見其後兩列）。
 
@@ -1847,8 +1852,9 @@ TDD（先紅後綠、Handoff 附修復前紅燈實際輸出）、禁止刪除／
 | `e2e/depreciation-allowance.spec.ts` | AC-45/46 之流程與播種 | **R12** |
 | `frontend/src/components/ApplicationListSection.tsx`、`frontend/test/ApplicationListSection.test.tsx` | **Gate 反饋 G1**：「操作」欄檢視連結由僅 TRAVEL 擴充至三型（新增 **AC-62**）；零測試退場 | **REV2-G1** |
 | `frontend/src/pages/ParametersPage.tsx`、`frontend/test/ParametersPage.test.tsx`、`e2e/depreciation-allowance.spec.ts` | **Gate 反饋 G2**：折舊版本清單移除二欄（**AC-61 → AC-61R**）；含 AC-61 既有 4 條之逐條處置（2 保留／2 退場改寫）、`num-col` 連動（UI-FIX-001-T1）、**E2E 情境7 之位置性斷言遷移** | **REV2-G2** |
+| `backend/src/admin/routes.ts`（**僅折舊分支之 `onCreated` summary**）、`backend/test/integration/phase7-on-behalf.test.ts` | **Gate 反饋 G3（裁定①／揭露 #8）**：折舊代建立稽核摘要加記 `annualTotalKm`（新增 **AC-63**）；**零測試退場**（既有代建立四條為包含式斷言，續綠）；travel／maintenance 分支與 `phase4`／`phase6` 兩 on-behalf 測試檔**零改動** | **REV2-G3** |
 
-> **兩段之分界**：上表第 1~31 列為**折舊模型修訂段**（R1~R13）之清單；末二列為其後之 **Gate 走查反饋段**（G1／G2），逐條處置與覆蓋面去向見 **§20.17.4**。
+> **兩段之分界**：上表第 1~31 列為**折舊模型修訂段**（R1~R13）之清單；其後二列為 **Gate 走查反饋段**（G1／G2），逐條處置與覆蓋面去向見 **§20.17.4**；**末列**為三項裁定之 **G3**（§20.17.7）。
 
 **明示不受影響（實查判定，供終審核對）**：`chore001-d4-decimal-placeholder.test.ts`、`chore003-string-fidelity.test.ts`、`phase3a-parameter-model.test.ts`、`parameter-version-engine.test.ts`（四檔皆**直呼 service 或直寫 prisma、零 HTTP**，受 **D22 簽章保留**保護）；`phase7-application-list.test.ts`（AC-36/37 語意不變）；`mileage-engine.ts`／`mileage-range.ts`／`maintenance-*`／`travel-*`／`completion-blockers.ts`（**零 diff**，Stop Condition 續存）。
 
@@ -1887,7 +1893,8 @@ TDD（先紅後綠、Handoff 附修復前紅燈實際輸出）、禁止刪除／
 | **R12** | E2E ＋ 響應式 | FE ＋ E2E | AC-45, 46 | `e2e/depreciation-allowance.spec.ts`、`frontend/src/index.css` | Medium | R8, R10, R11, R13 | ~600 | ~185-265k | 全情境綠（大總管親跑於 dev 拓撲）；**流程含輸入年度總里程且不上傳證明即完成**；管理員改參數後金額與五值不變；播種冪等；四畫面 375px 無溢位 |
 | **R13** | **裁定 F：清空既有舊公式折舊測試申請**（dev／Gate 環境合成資料） | 資料操作（**零檔案變更**） | —（無 AC，見 §12R 註記） | 無（指令與證據記錄於 Handoff；大總管以 `PROJECT_STATE` 白名單記錄） | **High**（資料刪除不可逆） | R7 | 0 | ~30-50k | 刪除前後**逐列 id 與計數證據**；範圍**限縮**於 `Application.type='DEPRECIATION'` 之列與其 `DepreciationApplication` 子列；其附件一律 **detach 回 `TEMP`**（不留孤兒 `LINKED`）；**`AuditLog` 不刪**（歷史不可逆資產，§14）；**不得**觸及差旅／保養／參數版本任何列；執行後 `SELECT count(*) FROM "DepreciationApplication"` 之結果附 Handoff |
 | **REV2-G1** | **Gate 反饋 G1**：綜合列表「操作」欄之「檢視」連結由僅 `TRAVEL` 擴充至三型（`MAINTENANCE`／`DEPRECIATION` 點入各自既有詳情頁） | FE | **AC-62** | `frontend/src/components/ApplicationListSection.tsx`、`frontend/test/ApplicationListSection.test.tsx` | **Medium**（保守可升 High——涉及管理員檢視他人紀錄之 UI 入口；**若升 High，其事前批准已由裁定 G1 構成，無須另取**） | —（僅依 §18 2026-08-05 末列之裁定 G1；與 R1~R13 無依賴） | ~150 | ~85-115k | 三型 × 兩態（`DRAFT`／`COMPLETED`）共 6 列 fixture 之連結 `href` 逐字正確（`/applications/{travel｜maintenance｜depreciation}/{id}`）；**TRAVEL 既有行為零回歸**；「操作」欄不再對任一型別渲染字面「—」；**零新增路由、零後端改動**（`App.tsx`、`backend/**` 皆為 Forbidden）；既有 `Success：顯示類型標籤、狀態、不適用欄位為「—」（AC-68）…` 一條續綠（其 dash 計數為 `>= 3`，5→4 仍成立）；`npx vitest run`（frontend）全綠且**測試零刪除／零 `skip`／零弱化** |
-| **REV2-G2** | **Gate 反饋 G2**：管理員參數頁折舊版本清單**移除**「預估年里程（公里）」與「每公里單價（元）」兩欄（新舊版本一律不顯示） | FE ＋ E2E | **AC-61R** | `frontend/src/pages/ParametersPage.tsx`、`frontend/test/ParametersPage.test.tsx`、`e2e/depreciation-allowance.spec.ts` | **Medium**（純前端顯示面；後端／API／DB 零改動為明文約束） | —（僅依 §18 2026-08-05 末列之裁定 G2；與 R1~R13 無依賴） | ~150 | ~95-130k | 折舊版本清單表頭**恰 5 欄**（生效日期／車價（元）／折舊年限（年）／每年折舊費用（元）／建立時間）之全等斷言，且**不含**該二欄之表頭；歷史版本 fixture（`estimatedAnnualKm=15000`、`perKmUnitPrice="6.6667"`）之兩值於**折舊區塊內**不出現（值層負向斷言，防「僅移表頭留儲存格」）；**斷言須以 `within(折舊參數版本清單)` 限縮**——不得以全頁 `queryByText` 誤殺 ETC 區塊之同名「每公里單價（元）」欄（`ParametersPage.tsx` :449，不在本 Task 範圍）；`frontend/src/api/parameters.ts` **零改動**（DTO 保留該二鍵，AC-61R(f)）；`num-col` 連動測試（UI-FIX-001-T1）改為三個數值欄；**E2E 情境7 之位置性斷言遷移並由大總管重跑**（基準 38/38）；測試零刪除／零 `skip`，**2 條退場改寫之覆蓋面去向依 §20.17.4 於 Handoff 逐條說明** |
+| **REV2-G2** | **Gate 反饋 G2**：管理員參數頁折舊版本清單**移除**「預估年里程（公里）」與「每公里單價（元）」兩欄（新舊版本一律不顯示） | FE ＋ E2E | **AC-61R** | `frontend/src/pages/ParametersPage.tsx`、`frontend/test/ParametersPage.test.tsx`、`e2e/depreciation-allowance.spec.ts` | **Medium**（純前端顯示面；後端／API／DB 零改動為明文約束） | —（僅依 §18 2026-08-05 末列之裁定 G2；與 R1~R13 無依賴） | ~150 | ~95-130k | 折舊版本清單表頭**恰 5 欄**（生效日期／車價（元）／折舊年限（年）／每年折舊費用（元）／建立時間）之全等斷言，且**不含**該二欄之表頭；歷史版本 fixture（`estimatedAnnualKm=15000`、`perKmUnitPrice="6.6667"`）之兩值於**折舊區塊內**不出現（值層負向斷言，防「僅移表頭留儲存格」）；**斷言須以 `within(折舊參數版本清單)` 限縮**——不得以全頁 `queryByText` 誤殺 ETC 區塊之同名「每公里單價（元）」欄（`ParametersPage.tsx` :449，不在本 Task 範圍）；`frontend/src/api/parameters.ts` **零改動**（DTO 保留該二鍵，AC-61R(f)）〔**檔名勘誤（SPEC-REV3）：該 DTO 實定義於 `frontend/src/types/api.ts` :57／:63，見 §20.17.2「勘誤 b」；兩檔於本 Task 皆 Forbidden 且皆零 diff，約束不變**〕；`num-col` 連動測試（UI-FIX-001-T1）改為三個數值欄；**E2E 情境7 之位置性斷言遷移並由大總管重跑**（基準 38/38）；測試零刪除／零 `skip`，**2 條退場改寫之覆蓋面去向依 §20.17.4 於 Handoff 逐條說明** |
+| **REV2-G3** | **Gate 反饋 G3（裁定①／Gate 揭露 #8＝補齊）**：折舊「代建立」稽核（`APPLICATION_CREATED_ON_BEHALF`）之 `summary` 加記 `annualTotalKm`，與「代修改」對稱 | BE | **AC-63** | `backend/src/admin/routes.ts`（**僅折舊分支之 `onCreated` summary 物件**）、`backend/test/integration/phase7-on-behalf.test.ts` | **High**（**稽核領域**；**事前批准已由 §18 之 2026-08-05「三項裁定」列之裁定①逐字構成——「稽核領域 High，事前批准由本裁定構成」，無須另取**） | —（僅依 §18 2026-08-05「三項裁定」列之裁定①；與 R1~R13、REV2-G1／G2 皆無依賴） | ~120 | ~95-130k | `summary` 鍵集**恰四鍵**（`applicationId`／`type`／`applicationYear`／`annualTotalKm`）之**集合全等**斷言；`annualTotalKm` 非 `null` 時為 **1 位小數定寬字串**（`toFixed(1)`，與代修改之 `ANNUAL_TOTAL_KM_SUMMARY_SCALE` 同精度），**未提供時恰為 `null`（`toBeNull()`，不以 `0`／`"0.0"`／`""` 代位）**；值取自**同一交易內**之 `created.depreciation?.annualTotalKm`（零額外查詢）；**travel（:499 起）與 maintenance（:580 起）兩分支 summary 零 diff**（AC-63(e)）；`phase4-on-behalf-audit.test.ts`／`phase6-on-behalf.test.ts` **零改動且續綠**；既有 `AC-34 代建立` 四條、C3 邊界、同交易回滾、頂層純量夾帶、`targetLabel` 鑑別**續綠**；**HTTP 回應（201 與 body）逐字不變**；`backend/src/applications/**`、`backend/prisma/**`、`frontend/**`、`e2e/**` 皆 Forbidden；後端整合測試全綠且**測試零刪除／零 `skip`／零弱化** |
 
 > **Gate 反饋段之定位**：REV2-G1／REV2-G2 **不屬** R1~R13 之依賴鏈（下方依賴圖不變），亦不阻塞其任何 Task——兩者皆在 R1~R13 全數 `DONE`、複審 `APPROVE`、文件同步完成之後，依 Gate 反饋流程（Spec 修訂 → implementer TDD → reviewer 複審 → 合入）獨立進行。兩 Task **彼此無依賴**，可並行派工（Allowed 檔案集合互斥，唯一共用檔為 `e2e/depreciation-allowance.spec.ts`，僅 G2 觸及）。
 
@@ -1925,9 +1932,12 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 | R13 | 0 | 0 | 資料操作 | ✅ |
 | REV2-G1 | 1 | 2 | FE only | ✅ |
 | REV2-G2 | 1 | 3 | FE ＋ E2E | ✅ |
+| REV2-G3 | 1 | 2 | BE only | ✅ |
 
 > **無任何 Task 同時橫跨 FE＋BE＋DB 三層；R1 為唯一含 schema/migration 之 Task。**
 > **High 風險 Task 清單（須於修訂段 Gate 一併取得事前批准）**：**R1、R2、R3、R4a、R4b、R5、R6、R7、R8、R13** 共 **10 項**。判準沿 CLAUDE.md「認證、授權…一律 High」＋本 Phase 既有升級先例（不可逆 migration、金額核心與上游、授權與欄位驗證、不可逆完成／快照、公開 API contract、不可逆資料刪除）。**此清單為保守方向，不縮減任何既有 High 判定。**
+> **Gate 反饋段之 High 判定（不併入上列 10 項——上列為修訂段 Gate 之批准包，屬歷史記錄）**：**REV2-G1／REV2-G2 為 Medium**（G1 保守可升 High，見 §20.17.3）；**REV2-G3 為 High（稽核領域）**，其**事前批准由 §18 之 2026-08-05「三項裁定」列之裁定①逐字構成**，**無須另取人類批准**。
+> **REV2-G3 之定位**：與 R1~R13 及 REV2-G1／G2 皆無依賴（Allowed 檔案集合與該二 Task 完全互斥），可獨立派工；依 Gate 反饋流程（Spec 修訂 → implementer TDD → reviewer 複審 → 合入）進行。
 > **TDD 順序**：R1（安全網先建）→ R2/R3（金額與守門純函式）→ R4a（引擎）→ R4b/R4c（參數縮欄）→ R5（草稿欄位）→ R6（計算接線）→ R7（不可逆完成）→ R8（權威）→ R9/R10/R11（前端）→ R13（資料清空）→ R12（E2E）。
 > **R13 排序**：必須在 **R7 之後**（新模型完成流程可用）且在 **R12 之前**（E2E 播種不得撞上舊模型殘列）。
 
@@ -2010,6 +2020,7 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 |---|---|---|---|
 | G1 | 列表「檢視」連結三型化 | 「操作」欄「檢視」連結由僅 TRAVEL 擴充至三型全部（MAINTENANCE／DEPRECIATION 點入各自既有詳情頁；**草稿與已完成兩態皆適用**）——補 006 起既存之入口缺口 | **§20.17.1（新增 AC-62）** |
 | G2 | 參數頁折舊版本清單移除兩欄 | 移除「預估年里程（公里）」與「每公里單價」兩欄（**新舊版本一律不顯示**；**歷史值保留於 DB／API**；建立表單三欄不變）——**修訂 AC-61 已批准形狀**（畫面「歷史唯讀顯示原值」義務取消），依據＝系統未上線、正式環境該二欄恆為「—」 | **§20.17.2（AC-61 → AC-61R）** |
+| G3 | 折舊代建立稽核摘要加記 `annualTotalKm` | **裁定①（Gate 揭露 #8＝補齊）**：折舊「代建立」稽核（`APPLICATION_CREATED_ON_BEHALF`，`admin/routes.ts` 折舊分支）summary 加記 `annualTotalKm`＋測試，與「代修改」對稱；本 Phase 內派 Task（**稽核領域 High，事前批准由該裁定構成**）。逐字原文見 §18 之 2026-08-05「**三項裁定**」列（`ac67acc`） | **§20.17.7（新增 AC-63）** |
 
 **適用範圍與優先序（機械可判）**
 
@@ -2017,6 +2028,11 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 2. 本節**僅**涵蓋裁定 G1／G2 兩項。Gate 揭露十項之 **#8（代建立稽核）**與 **#9（參數端點 400/401）尚未裁定**，**不在本節範圍**，亦不得於 REV2-G1／REV2-G2 兩 Task 內順手處理。
 3. 本節**不改變**任何 US 原意、**不縮減**任何未經 G2 批准觸及之 AC、**不新增**任何人類未批准之使用者可見行為（自查表見 §20.17.5）。
 4. 兩 Task 之派工依 **§20.12** 新增之 `REV2-G1`／`REV2-G2` 兩列；覆蓋檢查依 **§12R.5**。
+
+> **範圍延伸（`PHASE-007-SPEC-REV3`，2026-08-05 三項裁定）**：上列第 2 點所稱「#8／#9 **尚未裁定**」係 **REV2 時點之事實**，其對 **REV2-G1／REV2-G2 兩 Task** 之範圍約束**逐字續存**（該二 Task 已分別於 `4115cae`／`9a01f61` 完成並複審 APPROVE，範圍不再變動）。其後人類已就兩項作成裁定（§18 之 2026-08-05「三項裁定」列，`ac67acc`）：
+> - **#8＝補齊** → 落地於 **§20.17.7**（新增 **AC-63** 與 Task **REV2-G3**）；**稽核領域 High，事前批准由該裁定構成**。
+> - **#9＝接受現狀**（參數三端點 400 早於 401）→ **零程式變更**，**本 Spec 不因此新增任何 AC、Task 或測試義務**；僅記 RUNBOOK 待辦並沿跨 Phase 追蹤既有列（屬大總管 `PROJECT_STATE` 白名單，見 §20.17.7 移交項）。
+> - **③`userstory.md` AD-US-13 第 5 條字面同步＝批准** → 已於本次修訂落地（見 §18 SPEC-REV3 列；§20.17.6 移交項 #1 據此結案）。
 
 ---
 
@@ -2063,7 +2079,10 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 | 現況表頭（`ParametersPage.tsx` :653-661） | **7 欄**：生效日期／車價（元）／折舊年限（年）／**預估年里程（公里）**／每年折舊費用（元）／**每公里單價（元）**／建立時間 |
 | 現況儲存格（:666-676） | `{v.estimatedAnnualKm ?? "—"}`（:670）與 `{v.derived.perKmUnitPrice ?? "—"}`（:674） |
 | **同名欄位陷阱（實查重點）** | **ETC 區塊另有「每公里單價（元）」欄**（`ParametersPage.tsx` :449），屬 ETC 參數、**與折舊無關、不在 G2 範圍**。所有負向斷言**必須**以 `within(getByLabelText("折舊參數版本清單"))` 限縮 scope；既有 `ETC: 每公里單價欄（th 與 td）具備 num-col class` 一條須**零改動且續綠** |
-| API／型別層 | `frontend/src/api/parameters.ts` 之 DTO 仍含 `estimatedAnnualKm` 與 `derived.perKmUnitPrice`（後端 AC-57(c) 對歷史版本仍回原值）——**G2 不觸及該檔** |
+| API／型別層 | `frontend/src/api/parameters.ts` 之 DTO 仍含 `estimatedAnnualKm` 與 `derived.perKmUnitPrice`（後端 AC-57(c) 對歷史版本仍回原值）——**G2 不觸及該檔**（**檔名指稱勘誤見下方「勘誤 b」**） |
+
+> **勘誤 b（`PHASE-007-SPEC-REV3` 落地；批准依據＝§18 之 2026-08-05「REV2-G1／REV2-G2 完成與輕量複審 APPROVE」列所載「勘誤 b」，該列已載明「字面修正併下一次 Spec 修訂 Task」）**：上表「API／型別層」列與下方 **(f)** 所稱之「`frontend/src/api/parameters.ts` 之 DTO」為**檔名指稱錯誤**——`DepreciationParameterDto`（含 `estimatedAnnualKm` 與 `derived.perKmUnitPrice` 兩鍵）**實際定義於 `frontend/src/types/api.ts`**（:57／:63；spec-writer 於基準 `ac67acc` 親查），`frontend/src/api/parameters.ts` 僅 `import` 該型別而不定義之。
+> **實質約束未受影響**：兩檔於 §20.17.3 REV2-G2 之 **Forbidden 清單皆已明列**，且 `9a01f61` 實際觸檔恰三（`ParametersPage.tsx`／`ParametersPage.test.tsx`／`e2e/depreciation-allowance.spec.ts`），兩檔皆**零 diff**——「DTO 保留該二鍵」之義務已滿足。**原文逐字保留以維持可追溯性**（本勘誤即為更正依據）；後續一切引用**以本勘誤之檔名為準**。
 
 **AC-61R 參數維護頁之縮欄（取代 AC-61；裁定 G2）**（來源：**裁定 G2**；AD-US-13 修訂後第 1／3 條**不變**、第 5 條之**畫面**義務由本 AC 取消、**API 義務不變**）——
 
@@ -2072,7 +2091,7 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 - **(c) 版本清單移除兩欄（本次變更之全部內容）**：折舊參數版本清單**不再有**「預估年里程（公里）」與「每公里單價（元）」之**表頭**與**儲存格**；欄序改為 **5 欄**——`生效日期`／`車價（元）`／`折舊年限（年）`／`每年折舊費用（元）`／`建立時間`。
 - **(d) 新舊版本一律不顯示**：不論 `estimatedAnnualKm`／`derived.perKmUnitPrice` 為歷史原值或 `null`，畫面**皆不呈現**；原 AC-61 之「對含預估年里程之歷史版本以唯讀顯示其原值與每公里單價、對新版本該二欄顯示『—』」義務**取消**（裁定 G2 明文批准；依據＝系統未上線、正式環境該二欄恆為「—」）。
 - **(e) 負向斷言（兩層，缺一不可）**：①**表頭層**——折舊表內不存在名為「預估年里程（公里）」或「每公里單價（元）」之 `columnheader`，且表頭集合與 (c) **全等**（欄數與逐欄名稱）；②**值層**——以**歷史版本 fixture**（`estimatedAnnualKm=15000`、`derived.perKmUnitPrice="6.6667"`）渲染時，該二值於折舊區塊內**不出現於畫面任何處**（鑑別「僅移表頭、儲存格仍渲染」之實作必紅）。兩層斷言**一律** `within` 折舊表／折舊區塊，**不得**以全頁 `queryByText` 施作（見上表之同名欄位陷阱）。
-- **(f) 後端／API／DB 零改動（明文約束）**：`GET /parameters/depreciation` 對歷史版本仍回傳原值與 `perKmUnitPrice`（**AC-57(c) 逐字不變**）；`POST` 之縮欄與夾帶不採用（AC-57(a)(b)）不變；`DepreciationParameterVersion.estimatedAnnualKm` 之 nullable 凍結欄、M2 migration、`deriveDepreciation` 之行為凍結**一律零變更**（§20.7.5 其餘各列）；`frontend/src/api/parameters.ts` 之 DTO **保留該二鍵**（Forbidden 檔）。**本 AC 為純前端顯示面之修訂。**
+- **(f) 後端／API／DB 零改動（明文約束）**：`GET /parameters/depreciation` 對歷史版本仍回傳原值與 `perKmUnitPrice`（**AC-57(c) 逐字不變**）；`POST` 之縮欄與夾帶不採用（AC-57(a)(b)）不變；`DepreciationParameterVersion.estimatedAnnualKm` 之 nullable 凍結欄、M2 migration、`deriveDepreciation` 之行為凍結**一律零變更**（§20.7.5 其餘各列）；`frontend/src/api/parameters.ts` 之 DTO **保留該二鍵**（Forbidden 檔）〔**檔名勘誤：該 DTO 實定義於 `frontend/src/types/api.ts` :57／:63，見上方「勘誤 b」；兩檔皆 Forbidden、皆零 diff，約束不變**〕。**本 AC 為純前端顯示面之修訂。**
 - **(g) 零回歸**：油資／ETC 兩區塊之表頭、儲存格、`num-col` 與五態**零改動**（沿 §20.12 R11 之 Done When）；折舊區塊之五態（Loading／Empty／Error／Permission denied／Success）語意不變。
 
 ---
@@ -2111,6 +2130,17 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 |---|---|---|---|
 | 5 | `Depreciation: 五個數值欄（車價/折舊年限/預估年里程/每年折舊費用/每公里單價）均具備 num-col class`（`ParametersPage.test.tsx` :1043，UI-FIX-001-T1） | **修改** | 改為**三個數值欄**（車價／折舊年限／每年折舊費用）；移除 `15000`／`6.6667` 兩行 `toHaveClass("num-col")` 與對應之兩個表頭名稱。**覆蓋面去向**：`num-col` 靠右對齊之保障對**仍存在之每一欄**完整保留；被移除兩行所指欄位已不存在，屬**欄位退場之機械連動**，非弱化。同 describe 之 `Fuel:`／`ETC:` 兩條**零改動且須續綠**（ETC 之「每公里單價（元）」為不同欄位，正是誤殺與否之鑑別點） |
 
+**連動測試（補列——`PHASE-007-SPEC-REV3` 落地之「勘誤 a」；批准依據＝§18 之 2026-08-05「REV2-G1／REV2-G2 完成與輕量複審 APPROVE」列所載「勘誤 a」）**
+
+> **補列之緣由（如實記載）**：REV2 修訂時本節漏列下列 2 條**同檔、直接斷言 `6.6667` 在場**之測試。REV2-G2 之 implementer 依 **#5 之機械連動原則**逕行處置，大總管裁量接受、reviewer 判讀為「**AC-61R(d) 之機械必然、非擴權**」並獨立確認**無 ETC 誤殺面**；該列已載明「正式補列由下一次 Spec 修訂 Task 執行（FW-1）」。本補列為**事後正式化**，**不改變任何已落地之測試內容**（`9a01f61` 逐字）。
+
+| # | 既有測試（改寫**前**逐字實名） | 處置 | 說明與覆蓋面去向 |
+|---|---|---|---|
+| 9 | `ParametersPage — 折舊列表顯示 derived` ＞ `列表顯示後端回傳的 derived.annualDepreciation 與 derived.perKmUnitPrice`（`ParametersPage.test.tsx`） | **修改（含改名）** | 新名（逐字）：`列表顯示後端回傳的 derived.annualDepreciation；不顯示 derived.perKmUnitPrice（AC-61R 連動）`。**覆蓋面去向**：正向斷言 `getByText(/100000\.00/)`（`derived.annualDepreciation`）**逐字保留**；原對 `6.6667` 之 `getByText(...).toBeInTheDocument()` **反轉為** `queryByText(...).not.toBeInTheDocument()`——**同一 fixture、同一渲染路徑，正向覆蓋面零流失，另新增值層負向鑑別力**（防「僅移表頭、儲存格仍渲染」）。授權來源＝AC-61R(d)(e)② 之機械必然 |
+| 10 | `ParametersPage — 版本列表渲染` ＞ `Depreciation: 列表顯示 vehiclePrice / usefulLifeYears / estimatedAnnualKm / derived`（同檔） | **修改（含改名）** | 新名（逐字）：`Depreciation: 列表顯示 vehiclePrice / usefulLifeYears / derived.annualDepreciation；不顯示 derived.perKmUnitPrice（AC-61R 連動）`。**覆蓋面去向**：正向斷言 `500000.00`（車價）與 `100000.00`（每年折舊費用）**逐字保留**；`6.6667` 之斷言同 #9 反轉為負向。原測試名雖列 `estimatedAnnualKm`，**其本體並無 `15000` 之斷言**（改寫前後皆無），故無覆蓋面淨減——名稱同步更正即為勘誤之一部分 |
+
+> **AR-1 記錄（reviewer REV2 輕量複審，Low）**：上列 2 條之負向斷言採**全頁** `screen.queryByText(/6\.6667/)`，未如 AC-61R(e) 之 `within(折舊參數版本清單)` 限縮。**現況無誤殺面成立**（reviewer 獨立確認、spec-writer 於 `ac67acc` 複驗）：該二 `describe` 之 fixture 皆為 `mockGetVersions("etc", [])`，ETC 清單為空 → 畫面不存在 ETC 之「每公里單價（元）」儲存格，全頁查詢與 `within` 等價。**義務（非阻塞）**：**下次因任何理由觸及該二條時，一律 `within` 化**（避免未來有人為 ETC 補 fixture 而使負向斷言在折舊已正確時仍紅／或反向失去鑑別力）。**本次不派工修改**——為修改而修改不符 §3「surgical changes」，且現況斷言正確且會紅於真正的回歸。
+
 **E2E（`e2e/depreciation-allowance.spec.ts`）**
 
 | # | 既有測試 | 處置 | 說明與覆蓋面去向 |
@@ -2141,3 +2171,73 @@ R1 ─┬─▶ R2 ──▶ R3 ──┬─────────────
 1. **`userstory.md` AD-US-13 第 5 條之字面同步（建議、非必要）**：該條「歷史版本唯讀保留原值」同時涵蓋畫面與 API 兩面，裁定 G2 已取消**畫面**面。本 Spec 已於 AC-61R(d)(f) 明確分割兩面，**功能上不存在矛盾**；若大總管希望事實來源第 2 層之字面亦精確，須另行提請人類批准 US 文字修訂（屬「改變 User Story 原意」層級，**不得由 AI 自行定案**）。**本 Task 未修改 `userstory.md`。**
 2. **E2E 重跑與回填**：REV2-G2 完成後須由大總管親跑 `e2e/depreciation-allowance.spec.ts`（基準 38/38），並將情境 7 之新實名回填 §12R.5 之 AC-61R 與 AC-45 兩列。
 3. **Gate 揭露 #8／#9 仍未裁定**：本節未觸及；建議於兩 Task 合入後、Phase 結案前一併提請人類裁定。
+
+> **上列三項之結案狀態（`PHASE-007-SPEC-REV3` 回填）**：**#1 已結案**——人類 2026-08-05 裁定③批准 `userstory.md` AD-US-13 第 5 條之字面同步，本次修訂已落地（見 §18 SPEC-REV3 列之「US 修訂前後對照」）。**#2 已履行**——大總管已親跑 E2E（折舊單檔 8/8、全套 38/38）並回填 §12R.5。**#3 已裁定**——#8＝補齊（→ §20.17.7）、#9＝接受現狀零程式變更（見 §20.17.0 之「範圍延伸」註）。
+
+---
+
+#### 20.17.7 G3：折舊「代建立」稽核摘要之對稱補齊（裁定①／Gate 揭露 #8；新增 AC-63）
+
+**依據**：§18 之 2026-08-05「**三項裁定**」列（`ac67acc`）之裁定①，逐字：「**Gate 揭露 #8＝補齊**——折舊「代建立」稽核（`APPLICATION_CREATED_ON_BEHALF`，`admin/routes.ts` 折舊分支）summary 加記 `annualTotalKm`＋測試，與「代修改」對稱；本 Phase 內派 Task（**稽核領域 High，事前批准由本裁定構成**）。」
+
+**實查結論（spec-writer 於基準 commit `ac67acc` 親查，非推測）**
+
+| 項目 | 實查結果 |
+|---|---|
+| 現況缺口 | `backend/src/admin/routes.ts` :679-695——折舊代建立之 `onCreated` 於 `isOnBehalf` 時寫 `AuditLog`，`summary` **恰三鍵** `{applicationId, type: "DEPRECIATION", applicationYear}`（**無 `annualTotalKm`**） |
+| 對稱目標（代修改） | `backend/src/applications/routes.ts` :1092-1129——`summary` 含 `annualTotalKm: {before, after}`；格式化以 `ANNUAL_TOTAL_KM_SUMMARY_SCALE = 1` 之 `toFixed(1)`；`null` **一律如實記為 `null`**（絕不以 0 或空字串代位——「清空」與「填 0」須可區辨） |
+| 值之可得性 | **已具備，零新增查詢**：admin 端點沿用**同一份** `parseDepreciationFieldsInput`（`applications/routes.ts` :515），`annualTotalKm` 已隨 `...fields` 進入 `CreateDepreciationDraftInput`（`depreciation-service.ts` :128-145）並於同交易寫入（:188）；`createDepreciationDraft` 之回傳含 `depreciationApplicationInclude`，故 hook 內 `created.depreciation?.annualTotalKm` 為 `Prisma.Decimal \| null`，與 `applicationYear` 之取法同型 |
+| 三型代建立分支 | 共三處：travel `admin/routes.ts` :499、maintenance :580、depreciation :679。**裁定①僅及折舊分支**；travel／maintenance **不在範圍**（後者之 summary 本已含其全部可變業務欄位，`toFixed(2)`／`formatUtcDate` 同型慣例） |
+| 既有測試檔（實名） | **`backend/test/integration/phase7-on-behalf.test.ts`**（1068 行，`PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-34/35）`）。既有代建立 describe：`AC-34 代建立 — 201，ownerId=U、createdById=admin，AuditLog 欄位精確`（:369）；既有代修改之封閉鍵集常數 `UPDATED_SUMMARY_KEYS`（:197）與揭露面遞迴斷言 `FORBIDDEN_DISCLOSURE_KEYS`／`assertNoParameterDisclosure`（:161-187）**可直接複用** |
+| 既有代建立測試是否會紅 | **否**。:410-413 為**逐鍵「包含式」斷言**（`summary.applicationId`／`type`／`applicationYear`），非集合全等，故新增一鍵**不使其變紅**；:419 之 `{}` 案例僅斷言 `summary.applicationYear` 為 `null` |
+
+**AC-63 折舊「代建立」稽核摘要之 `annualTotalKm`（與「代修改」對稱）**（來源：**裁定①**；AD-US-06／07／08 與 BE-US-03 之代操作稽核語意；補 AC-34 摘要相對 AC-35 之欄位缺口）——
+
+- **(a) 摘要增鍵（本次變更之全部內容）**：`admin/routes.ts` 折舊代建立分支之 `onCreated`，其 `AuditLog.summary` 於既有三鍵之外**恰增一鍵** `annualTotalKm`，值取自**同一交易內**建立之列（`created.depreciation?.annualTotalKm`，不得於交易外另行查詢）。既有三鍵 `applicationId`／`type`（恆 `"DEPRECIATION"`）／`applicationYear` 之**鍵名、取值與型別逐字零變更**。
+- **(b) 格式與「代修改」逐字同**：非 `null` 時以**固定 1 位小數**之字串記錄（`toFixed(1)`，比照 `applications/routes.ts` 之 `ANNUAL_TOTAL_KM_SUMMARY_SCALE = 1`，與 §20.6 `DepreciationApplicationDto.annualTotalKm` 之對外契約同精度）；`null`（未輸入／body 未帶該 key）**一律如實記為 `null`**，**絕不**以 `0`、`"0.0"`、`"0"` 或空字串代位——否則「未申報」與「申報 0」於稽核上無從區辨。
+- **(c) 形狀非對稱之明文（代建立 vs 代修改）**：代建立為**單值**（`annualTotalKm: string | null`）、代修改為**前後值物件**（`{before, after}`）——建立時不存在「前值」。本 AC **不得**把代建立摘要改成 `{before: null, after: …}`（將與差旅／保養代建立之既有慣例分岔）。「與代修改對稱」之義為**欄位覆蓋面與格式精度對稱**，非結構同形。
+- **(d) 摘要欄位集合封閉（§20.10 揭露面不變式續守）**：折舊代建立摘要之鍵集**恰為** `{applicationId, type, applicationYear, annualTotalKm}` **四鍵**；**不得**出現車價／折舊年限／每公里補助單價／預估年里程／每年折舊費用／參數版本 id 等**參數面或推導值**（`FORBIDDEN_DISCLOSURE_KEYS` 遞迴斷言之落點）；亦不得出現密碼／token／session 等敏感字樣（AC-44 掃描語意不變）。
+- **(e) 適用範圍嚴格限於折舊分支**：`travel`（:499 起）與 `maintenance`（:580 起）兩個代建立分支之 `summary` **零改動**（欄位集合、取值與格式逐字不變）——裁定①僅及折舊。兩型之既有測試 `backend/test/integration/phase4-on-behalf-audit.test.ts`、`phase6-on-behalf.test.ts` **零改動且須續綠**。
+- **(f) 其餘代操作語意零回歸**：C3 邊界（`:userId` ＝ 管理員自己 → **完全不建構 hook**、不寫稽核，PHASE-004 AC-86）、`targetLabel` 恰為 `loginName#applicationId`、**同交易原子性與回滾**（AC-34；hook 拋錯 → 申請與稽核一併回滾）、**恰 1 列稽核**、授權判定順序（403 先於 400／404）**一律不變**。
+- **(g) 零對外契約變更**：本 AC **不改變任何 HTTP 回應**——代建立之 `201` status 與 body（`{ application: DepreciationApplicationDto }`）逐字不變；稽核摘要為**內部稽核資料**，非 API 對外揭露面。後端 DTO、前端、DB schema、migration **一律零改動**。
+
+**測試義務（AC-63）**
+
+| # | 測試（預定名稱） | 鑑別力 |
+|---|---|---|
+| 1 | `AC-63：折舊代建立稽核 summary 含 annualTotalKm（1 位小數定寬），且鍵集恰為四鍵` | 代建立 body 帶 `annualTotalKm`（建議 `"12345.6"`——與代修改既有 fixture 同值，便於對照）→ 201；斷言 `summary.annualTotalKm === "12345.6"` **且**鍵集全等 `["annualTotalKm","applicationId","applicationYear","type"]`（排序後；建議比照 `UPDATED_SUMMARY_KEYS` 新立 `CREATED_SUMMARY_KEYS` 常數）。**漏加鍵必紅**、**夾帶車價／年限必紅**、**以 `toFixed(2)` 或 `toString()` 實作必紅**（`"12345.60"`／`"12345.6"` 之窄窗須以帶尾零之值鑑別——建議另備 `"12345.0"` 之輸入以殺 `toString()` mutant） |
+| 2 | `AC-63：未提供 annualTotalKm 之代建立 → summary.annualTotalKm 為 null（不以 0 代位）` | body 不帶該 key（`{ applicationYear: … }`）→ 201；以 `toBeNull()`（**非** falsy 斷言）斷言 `summary.annualTotalKm`；`0`／`"0.0"`／`""` 代位之 mutant **必紅**。**同時鎖住「清空 vs 填 0 可區辨」之稽核語意** |
+| 3 | 既有 `POST /admin/users/:userId/applications/depreciation → 201，owner/creator 分離且 AuditLog action/actorId/targetId/targetLabel/summary 精確`（**零改動或僅增列斷言**，二擇一，Handoff 須說明） | 保障既有三鍵、`targetLabel`、恰 1 列與揭露面斷言零回歸 |
+| 4 | 既有 C3 邊界 `→ 201，onBehalf=false，且不寫 APPLICATION_CREATED_ON_BEHALF`、同交易回滾 `createDepreciationDraft: onCreated 注入失敗 → 交易整體 rollback…`（**零改動、續綠**） | 保障 (f) 之語意零回歸 |
+
+**Task REV2-G3 之派工要點（詳細列見 §20.12）**
+
+| 項目 | 內容 |
+|---|---|
+| **Allowed（唯二可寫檔）** | `backend/src/admin/routes.ts`（**僅折舊分支之 `onCreated` summary 物件**）、`backend/test/integration/phase7-on-behalf.test.ts` |
+| **Forbidden（明列）** | `backend/src/applications/**`（含 `routes.ts` 之代修改 hook、`depreciation-service.ts`——本 AC 零 service 變更）、`backend/prisma/**`、`backend/src/admin/routes.ts` **之 travel（:499 起）與 maintenance（:580 起）分支**（(e) 之明文約束：該二分支 summary 零 diff）、`backend/test/integration/phase4-on-behalf-audit.test.ts`／`phase6-on-behalf.test.ts`、`frontend/**`、`e2e/**`、`docs/**`、`userstory.md` |
+| **必要測試** | 上表 #1／#2（新增）；#3（零改動或僅增列）；#4 續綠。**夾帶防線**沿既有慣例評估：既有「頂層純量夾帶」describe（:813）與 `assertNoParameterDisclosure` 已覆蓋，**不需新增第二套**；若 implementer 判定需增，須於 Handoff 說明既有覆蓋之不足 |
+| **Diff 預算** | **~120 行**（src 約 +3~+8 含註解；測試約 +60~+100）。逾 50%（~180 行）須即時回報 |
+| **usage 帶** | **~95-130k** |
+| **預算依據** | `docs/retrospective/PHASE-007-usage.md` §3 之「**純測試檔 BE ~105-175k**」（下緣數據點 T6b 107k／T9b 113k，皆為**新建整張矩陣**、diff +307／+314）。本 Task 為「既有 hook **加一鍵** ＋ 既有測試檔**加兩條 `it`**」，改動面約為 T6b／T9b 之 **1/4~1/5**，故 diff 下修至 ~120；usage **不等比下修**——`admin/routes.ts`（708 行）與 `phase7-on-behalf.test.ts`（1068 行）之讀檔、既有慣例對照（三型代建立 ＋ 代修改）、以及 TDD 紅→綠兩輪與**整合層需 DB** 之開銷為固定成本，故維持 ~95-130k（與 REV2-G2 之 95-130k 同帶） |
+| **Risk** | **High**（稽核領域；CLAUDE.md「認證、授權…一律 High」之既有升級先例）。**事前批准已由裁定①逐字構成**（「稽核領域 High，事前批准由本裁定構成」），**無須另取人類批准** |
+| **Lite Packet 適用性（spec-writer 判定）** | **不建議 Lite**——雖僅 2 檔、1 條新 AC，但屬 **High 稽核領域**、需**整合層 DB** 與**四類 mutant 鑑別**（漏鍵／夾帶／精度／`null` 代位），且須逐條論證「travel／maintenance 零改動」。建議走**標準 Packet**，使 reviewer 有完整鑑別力論證可審 |
+| **依賴** | 無（與 R1~R13、REV2-G1／G2 皆無依賴；可獨立派工）。前提僅為 R8b 之代修改實作已在場（`ac67acc` 已滿足） |
+
+**自查表（spec-writer 逐項確認）**
+
+| # | 自查項 | 結果 |
+|---|---|---|
+| 1 | 是否改變裁定①範圍外之產品行為？ | **否**。AC-63 之範圍嚴格等同裁定①逐字內容（折舊代建立 summary 加記 `annualTotalKm`＋測試、與代修改對稱）；(e)(f)(g) 三條為**收斂性**明文約束（travel／maintenance 零改動、代操作語意零回歸、零對外契約變更） |
+| 2 | 是否觸及 Gate 揭露 #9 之程式面？ | **否**。#9 已裁定為**接受現狀、零程式變更**；本節不新增任何 AC／Task／測試義務，REV2-G3 之 Forbidden 清單涵蓋 `backend/src/parameters/**`（不在 Allowed 內即不可寫），結構上不可達 |
+| 3 | 是否縮減任何既有 AC？ | **否**。AC-34（代建立稽核）之既有義務**逐字保留並擴充一鍵**；AC-35（代修改）逐字不變；§20.10 揭露面不變式由 (d) 明文續守 |
+| 4 | 是否改寫任何歷史記錄？ | **否**。§20.17.0~§20.17.6 之原文一律保留，修訂以**新增列／加註／blockquote 勘誤**呈現；§12R.1~§12R.4、§20.12 R1~R13 與 REV2-G1／G2 兩列之既有內容零改寫（REV2-G2 列僅追加檔名勘誤之括號註記，原句逐字保留） |
+| 5 | 是否新增 DB／公開 API contract 變更？ | **否**。(g) 明文；Forbidden 清單含 `backend/prisma/**` 與 `backend/src/applications/**` |
+| 6 | AC↔測試映射是否完備？ | **是**。AC-63 → §12R.5 新列（2 條預定名，`PENDING`）；受影響檔 → §20.11.2 新列 |
+| 7 | 是否有 Blocking Unknown？ | **無**。惟 `docs/PRD.md` 有一處與 AD-US-13 第 5 條同型之字面觸點，已列為下方移交項 #2（**非阻塞**，且本 Task 之 PRD 為 Forbidden） |
+
+**移交大總管之事項（非 Blocking）**
+
+1. **#9 之 RUNBOOK 待辦**：裁定②要求「記 RUNBOOK 待辦（跨 Phase 追蹤既有列）」——屬大總管 `PROJECT_STATE` 白名單，本 Spec 不代行。
+2. **`docs/PRD.md` :301 之字面觸點（實查發現，本 Task 未修改——PRD 為 Packet Forbidden）**：該行「模型修訂註記（折舊）」載有「…自新版參數介面退場，**既有歷史版本內容唯讀保留**」，與 `userstory.md` AD-US-13 第 5 條**修訂前**之措辭同型，於裁定 G2（畫面不顯示）後同樣**字面不精確**。**功能上不構成矛盾**（事實來源優先序：最新人類裁定 > `userstory.md` > PRD；且該行為 PHASE-003a 段之**追溯性註記**，其末句已明載「折舊相關驗收以 PHASE-007 為準」）。**建議**：由大總管以 `PHASE-007-PRD-SYNC` Lite Packet 派工，將該句改為「…既有歷史版本內容保留於 API／資料庫，畫面不顯示」（**純字面精確化**，依據＝裁定 G2 與裁定③之同一批准）。
+3. **REV2-G3 完成後之回填**：§12R.5 之 AC-63 列須由大總管以實際測試輸出**逐字回填**實名與綠燈證據（沿 §12R 回填義務）。
