@@ -2,6 +2,14 @@
 
 State: ACTIVE
 
+> **PHASE 邊界作業（007→008，2026-08-06）**
+> - **PHASE-007 COMPLETED**：PR #15 合併（merge commit `b99ea6f`，人類 leonchih 批准；CI 三檢全綠）。
+> - **dev DB 全量重置（常設規則首次執行；大總管依環境維運授權直接執行——比照 INC 環境復原先例，指令證據如下）**：停 backend（PID 19548）→ `DROP SCHEMA public CASCADE`（23 物件）→ `prisma migrate deploy` 全部重放成功（含 M1/M2）→ backend 重啟（preview 管理）→ `seed:admin` 重建 e2eadmin（mustChangePassword）→ `POST /me/password` 引導至 E2E 慣例值（登入 200 驗證）→ 全套 E2E 自舉驗證。
+> - **自舉驗證抓到真缺口（常設規則首戰立功）**：30 通過/3 失敗/5 未跑——三套件（travel/mileage/admin-applications）播種 helper 仍呼叫 005a-T3b 已退場之 `POST /parameters/fuel`（404）；歷來全綠靠共用 DB 歷史資料使 `covers()` 恆真從不觸發。
+> - **CHORE-E2E-BOOTSTRAP：DONE**（`f7db085`，branch `chore/e2e-bootstrap-fuel-price`，3 檔 +14/-48；usage ~116k/26 tool uses）。純刪除已死 legacy fuel 分支＋3 孤兒常數（油資覆蓋由既有 ensureFuelModelCoversDate 新模型雙鏈負責，呼叫鏈逐點實查）；斷言零改動。乾淨環境 implementer 兩輪＋大總管第三輪＋reviewer 第四輪 **38/38 全綠**、冪等證明（零 409）。
+> - **CHORE 輕量複審：APPROVE**（0 Must/0 Should/3 AR 全 Low；usage ~84k/36 tool uses）。wire 探針證偽根因（POST fuel 404 vs etc 401）；NO_PARAM_TRIP_DATE 負路徑鑑別力實查（無假綠失敗模式）；孤兒常數 6→0 grep 證明。AR：複審輪走 skip 分支（以探針補強）/legacy 表零播種（GET /parameters/fuel 覆蓋降至後端整合層）/mileage 舊註解語彙。**FW 三項**：①「重置後首輪全綠」固化為每次邊界重置之強制驗收步驟（本常設規則補充條款）②端點退場檢查清單加「grep e2e/ 與 backend/test/ 播種路徑」（005a-T3b 當年漏 e2e/，時隔多 Phase 才暴露）③E2E 五份同型 fuel helper 重複，第六份出現時評估收斂 e2e/helpers/（本次不擴大範圍）。
+> - 待辦：PR＋CI → 人類合併批准（chore branch）。
+
 > **PHASE-007 Gate 反饋：折舊模型修訂（使用者 2026-08-05 裁定，經 AskUserQuestion 消歧確認）**
 > - 走查通過，但人類就功能提出兩項變更裁定（改變 US 原意，走 US 修訂流程）：
 > - **裁定①（公式改造）**：補貼 ＝ 每年折舊費用（車價÷年限）×（系統統計年度公務里程 ÷ **使用者輸入之該車年度總里程**），最終一次四捨五入為整數；「預估年度行駛公里數」不再參與申請計算；申請表單新增「年度總里程」輸入欄（保養比例分攤同型）。
