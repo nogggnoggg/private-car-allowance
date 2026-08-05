@@ -1203,6 +1203,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 
 | 2026-08-05 | **修訂段 Gate 通過（固化）**：人類 leonchih 經 AskUserQuestion 三問全數照推薦裁定——①**R1/R2/R3/R4a/R4b/R5/R6/R7/R8/R13 共 10 項 High Task 事前批准**（依 §20.12 順序派工，R13 於 R7 後、R12 前）；②**D20 裁定＝夾帶 `estimatedAnnualKm` 不採用、寫 NULL、不回 400**（沿全案「夾帶欄位一律靜默不採用」慣例，不對既有公開契約新增拒絕面）；③三項明示事項照案確認（**快照 9 欄**＝業務 7 值＋calculatedAt＋參數版本 id；**AC-61 落點 PHASE-003a 參數頁前端**於本 branch 修改；**先乘後除等價實作** A×O÷I 為「不得對比例先行取整」之唯一合規算法）＋**D21 照案**（estimatedAnnualKm 轉 nullable、回滾部分不可逆已揭露）＋**D22 照案**（service 簽章保留 optional）。 | 人類 leonchih 2026-08-05 修訂段 Gate（AskUserQuestion 三問全數照推薦） |
 
+| 2026-08-05 | **R1 即審 S-1 勘誤（§20.15 回滾程序增補；沿 AR-a「條文以本列勘誤」先例）**：§20.15 開發階段回滾除既載之 branch 還原＋`DROP COLUMN`×4／`SET NOT NULL` 外，**另須處理 migration ledger**——執行 `prisma migrate resolve --rolled-back 20260805090000_phase7_depreciation_revision`（或刪除 `_prisma_migrations` 該列）；否則後續 roll-forward 之 `migrate deploy` 會靜默跳過 M2，造成 DB 缺 4 欄而程式期待其存在之不一致（現存測試無法偵測——drift guard 比對 migrations↔schema 非已部署 DB）。§14 對 M1 之同型回滾程序比照辦理。 | R1 即審 S-1（reviewer 實證）；大總管白名單處置 |
+
 > Gate 固化義務已履行（上列 2026-08-04 第二列；修訂段 Gate 見上列 2026-08-05 末列）。
 
 ---
