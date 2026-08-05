@@ -994,6 +994,14 @@ export async function deleteApplication(prisma: PrismaClient, id: string): Promi
           // `isEligibleForCleanup` can never sweep, since LINKED is always
           // ineligible) — a real gap now closed.
           await detachAttachmentsByRefTx(tx, "MAINTENANCE", [id]);
+          // PHASE-007-T4 (AC-05／AC-26 之 B-25 補洞): 同理，刪除折舊草稿也
+          // 落在這個 generic 端點。折舊證明之 `LINKED` 附件同樣以
+          // `refId = Application.id` 本身為容器（Spec §16 D2(a)），故一次
+          // 依申請 id 的 detach 即足；對非折舊申請為無害 no-op（不會有任何
+          // 附件以該 id 帶 refType=DEPRECIATION）。缺少這一行時，已刪除之
+          // 折舊草稿的證明會永遠停在 LINKED，成為 `isEligibleForCleanup`
+          // 永遠掃不到的孤兒（LINKED 恆不合格）。
+          await detachAttachmentsByRefTx(tx, "DEPRECIATION", [id]);
           await tx.application.delete({ where: { id } });
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }

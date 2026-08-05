@@ -502,12 +502,32 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
       expect(resp.json<VersionBody>().version.usefulLifeYears).toBe(2147483647);
     });
 
-    it("estimatedAnnualKm = 2147483647 → 201（上界內最大，B-24）", async () => {
+    // PHASE-007-R4b（AC-57(a)(e)）：`estimatedAnnualKm` 已隨折舊參數端點縮欄退場
+    // ——請求集合不再含此欄，其容量／整數性守門一併移除（不再是「格式驗證」情
+    // 境）。以下三例（原 B-24／B-25 之 estimatedAnnualKm 分支）依 §20.12 R4c
+    // 遷移方向改寫為 **D20 覆蓋**：夾帶該欄任意值一律靜默不採用，201，回應與
+    // DB 該欄皆為 `null`——覆蓋面由「容量守門」轉為「縮欄後之不採用行為」，
+    // 未淨減（原 3 例仍為 3 例，且新增 DB 直查驗證 null，較原本「DB 無新增
+    // 列」斷言更嚴格）。usefulLifeYears 之對應覆蓋不受影響，維持原樣。
+    it("usefulLifeYears = 2147483647 → 201（上界內最大，B-24）", async () => {
       const resp = await postDep(
-        depPayload({ estimatedAnnualKm: 2147483647, effectiveFrom: "2097-03-08" })
+        depPayload({ usefulLifeYears: 2147483647, effectiveFrom: "2097-03-08" })
       );
       expect(resp.statusCode).toBe(201);
-      expect(resp.json<VersionBody>().version.estimatedAnnualKm).toBe(2147483647);
+      expect(resp.json<VersionBody>().version.usefulLifeYears).toBe(2147483647);
+    });
+
+    it("D20：夾帶 estimatedAnnualKm = 2147483647（原上界內最大值）→ 201，回應與 DB 該欄皆為 null（欄位退場，不採用）", async () => {
+      const resp = await postDep(
+        depPayload({ estimatedAnnualKm: 2147483647, effectiveFrom: "2097-03-09" })
+      );
+      expect(resp.statusCode).toBe(201);
+      const body = resp.json<VersionBody>();
+      expect(body.version.estimatedAnnualKm).toBeNull();
+      const row = await prisma.depreciationParameterVersion.findUnique({
+        where: { id: String(body.version.id) },
+      });
+      expect(row?.estimatedAnnualKm).toBeNull();
     });
 
     it("usefulLifeYears = 2147483648（2^31）→ 400 int 容量文案 且 DB 無新增列（B-25，原為非 400）", async () => {
@@ -516,10 +536,17 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
       expect(await countDepAt(DEP_REJECT_DATE)).toBe(0);
     });
 
-    it("estimatedAnnualKm = 2147483648 → 400 int 容量文案 且 DB 無新增列（兩欄位各守一次）", async () => {
-      const resp = await postDep(depPayload({ estimatedAnnualKm: 2147483648 }));
-      expectValidationError(resp, "estimatedAnnualKm", REASON_INT_CAPACITY);
-      expect(await countDepAt(DEP_REJECT_DATE)).toBe(0);
+    it("D20：夾帶 estimatedAnnualKm = 2147483648（原 2^31 容量邊界）→ 201，不再受容量守門，回應與 DB 該欄皆為 null", async () => {
+      const resp = await postDep(
+        depPayload({ estimatedAnnualKm: 2147483648, effectiveFrom: "2097-03-10" })
+      );
+      expect(resp.statusCode).toBe(201);
+      const body = resp.json<VersionBody>();
+      expect(body.version.estimatedAnnualKm).toBeNull();
+      const row = await prisma.depreciationParameterVersion.findUnique({
+        where: { id: String(body.version.id) },
+      });
+      expect(row?.estimatedAnnualKm).toBeNull();
     });
 
     it("usefulLifeYears = 3e9 → 400 int 容量文案（Number.isInteger 為 true，現行值域檢查放行）", async () => {
@@ -527,9 +554,17 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
       expectValidationError(resp, "usefulLifeYears", REASON_INT_CAPACITY);
     });
 
-    it("estimatedAnnualKm = 1e21 → 400 int 容量文案", async () => {
-      const resp = await postDep(depPayload({ estimatedAnnualKm: 1e21 }));
-      expectValidationError(resp, "estimatedAnnualKm", REASON_INT_CAPACITY);
+    it("D20：夾帶 estimatedAnnualKm = 1e21（原容量守門情境）→ 201，回應與 DB 該欄皆為 null", async () => {
+      const resp = await postDep(
+        depPayload({ estimatedAnnualKm: 1e21, effectiveFrom: "2097-03-11" })
+      );
+      expect(resp.statusCode).toBe(201);
+      const body = resp.json<VersionBody>();
+      expect(body.version.estimatedAnnualKm).toBeNull();
+      const row = await prisma.depreciationParameterVersion.findUnique({
+        where: { id: String(body.version.id) },
+      });
+      expect(row?.estimatedAnnualKm).toBeNull();
     });
 
     it("usefulLifeYears = 2147483648.5 → 只回容量文案，不同時回「必須為整數且大於 0」（per-field first-hit）", async () => {
@@ -752,7 +787,10 @@ describeWithDb("CHORE-003-T2 參數欄位容量／精度／字串保真（I 層�
         { vehiclePrice: "Infinity" },
         { vehiclePrice: [] },
         { usefulLifeYears: 2147483648 },
-        { estimatedAnnualKm: 2147483648 },
+        // PHASE-007-R4b（AC-57(a)(e)）：`estimatedAnnualKm` 已縮欄退場，夾帶任意
+        // 值一律 201（見上方 D20 覆蓋三例），不再是本掃描矩陣之合法 400 情境；
+        // 換入 vehiclePrice 之非十進位字面情境維持掃描密度不減（原 6 例仍 6 例）。
+        { vehiclePrice: "abc" },
       ];
       for (const overrides of depInputs) {
         const resp = await postDep(depPayload(overrides));

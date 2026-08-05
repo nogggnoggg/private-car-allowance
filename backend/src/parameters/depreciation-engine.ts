@@ -82,6 +82,105 @@ export type DepreciationResult =
   | { ok: true; annualDepreciation: string; perKmUnitPrice: string }
   | { ok: false };
 
+/**
+ * PHASE-007-R4a（Spec §20.3 AC-49(a)）：每年折舊費用之推導輸入。
+ * 修訂後模型不再需要 `estimatedAnnualKm`——每公里單價已退出申請路徑。
+ */
+export type AnnualDepreciationInput = {
+  vehiclePrice: Prisma.Decimal | string | number;
+  usefulLifeYears: number;
+};
+
+export type AnnualDepreciationResult = { ok: true; annualDepreciation: string } | { ok: false };
+
+// ---------------------------------------------------------------------------
+// 單一內部推導（AC-49(b)）
+// ---------------------------------------------------------------------------
+
+/**
+ * 每年折舊費用之取整規模（Spec §20.3 AC-49(a) 逐字：2 位小數）。
+ *
+ * 以具名常數而非裸字面持有，使「2dp → 4dp」之取整規模 mutant 只有**單一
+ * 施加點**，且該點同時支配 `toDecimalPlaces` 與定寬字串之 `toFixed`——
+ * 若只改其中之一，輸出字串寬度不變而 mutant 不可觀測（假綠）。
+ */
+const ANNUAL_DEPRECIATION_SCALE = 2;
+
+/**
+ * `vehiclePrice ÷ usefulLifeYears` 之**唯一**實作（AC-49(b) 單一事實來源；
+ * 禁止第二份拷貝——006 T5R SF-1 雙份漂移教訓，以原始碼結構性斷言守門）。
+ *
+ * 同時回傳「未取整的完整精度商」與「2dp 定寬字串」兩者：
+ *  - `annualRaw` 供 `deriveDepreciation` 作為 `perKmUnitPrice` 之分子
+ *    （既有 D3 選擇，行為凍結不得更動）；
+ *  - `annualDepreciation` 為 `ROUND_HALF_UP(商, 2)` 之定寬字串。
+ *
+ * 值域保護沿既有 AC-14：`vehiclePrice ≤ 0`、`usefulLifeYears` 非有限值或 `≤ 0`
+ * → `{ ok: false }`；`vehiclePrice` 不可解析為 Decimal 時捕捉例外後同樣回
+ * `{ ok: false }`，絕不拋出。
+ *
+ * ※ 本函式**不**檢查 `vehiclePrice` 之有限性，以保持 `deriveDepreciation`
+ *   行為逐位元凍結（AC-49(d)）；該檢查由 `deriveAnnualDepreciation` 於商的
+ *   層級施加（見該函式說明）。
+ */
+function deriveAnnualCore(
+  vehiclePrice: Prisma.Decimal | string | number,
+  usefulLifeYears: number
+): { ok: true; annualRaw: Prisma.Decimal; annualDepreciation: string } | { ok: false } {
+  let price: Prisma.Decimal;
+  try {
+    price = new Prisma.Decimal(toDecimalConstructorArg(vehiclePrice));
+  } catch {
+    return { ok: false };
+  }
+
+  if (price.lte(0) || !Number.isFinite(usefulLifeYears) || usefulLifeYears <= 0) {
+    return { ok: false };
+  }
+
+  // 保留完整精度的商（perKmUnitPrice 之分子；見 D3 說明）。
+  const annualRaw = price.dividedBy(usefulLifeYears);
+
+  // round_half_up to 2 decimal places (D3, CLAUDE.md: 一般四捨五入 0.5 進位)
+  const annualDecimal = annualRaw.toDecimalPlaces(
+    ANNUAL_DEPRECIATION_SCALE,
+    Prisma.Decimal.ROUND_HALF_UP
+  );
+
+  return {
+    ok: true,
+    annualRaw,
+    // 定寬字串（toFixed 保留尾零）
+    annualDepreciation: annualDecimal.toFixed(ANNUAL_DEPRECIATION_SCALE),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// deriveAnnualDepreciation（PHASE-007-R4a）
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the annual depreciation expense from vehicle price and useful life.
+ *
+ * Spec §20.3 AC-49(a) 逐字：
+ *   annualDepreciation = ROUND_HALF_UP(vehiclePrice ÷ usefulLifeYears, 2)
+ * 與既有 `deriveDepreciation` 之 `annualDepreciation` 語意**完全一致**——
+ * 兩者共用 `deriveAnnualCore` 這一份推導（AC-49(b)）。
+ *
+ * 回傳 `{ ok: false }` 當：
+ *  - `vehiclePrice ≤ 0` 或不可解析為 Decimal；
+ *  - `usefulLifeYears` 非有限值或 `≤ 0`；
+ *  - `vehiclePrice` 為非有限值（`NaN`／`±Infinity`）——此時商亦非有限值，
+ *    於商的層級一次擋下（沿 R2／R3 之同型守門：非有限值一律 `ok:false`，
+ *    絕不外洩 `"NaN"`／`"Infinity"` 字面、絕不拋錯）。
+ */
+export function deriveAnnualDepreciation(input: AnnualDepreciationInput): AnnualDepreciationResult {
+  const core = deriveAnnualCore(input.vehiclePrice, input.usefulLifeYears);
+  if (!core.ok) return { ok: false };
+  if (!core.annualRaw.isFinite()) return { ok: false };
+  return { ok: true, annualDepreciation: core.annualDepreciation };
+}
+
 // ---------------------------------------------------------------------------
 // deriveDepreciation
 // ---------------------------------------------------------------------------
@@ -97,42 +196,27 @@ export type DepreciationResult =
  * Returns { ok: false } if any input is ≤ 0 (AC-14, AC-05).
  */
 export function deriveDepreciation(input: DepreciationInput): DepreciationResult {
-  const { usefulLifeYears, estimatedAnnualKm } = input;
+  const { estimatedAnnualKm } = input;
 
   // Validate integer constraints (D8: usefulLifeYears and estimatedAnnualKm must be integers)
   // Note: this check is in the engine as well (service layer also validates, belt-and-suspenders)
   // However, the engine only handles the ≤ 0 check per AC-14; integer check is service-layer only.
   // The engine's contract (AC-14) only specifies ≤ 0 → { ok: false }.
 
-  // Convert vehiclePrice to Decimal
-  let price: Prisma.Decimal;
-  try {
-    price = new Prisma.Decimal(toDecimalConstructorArg(input.vehiclePrice));
-  } catch {
+  // vehiclePrice 之 Decimal 轉換、vehiclePrice/usefulLifeYears 之 ≤0 值域保護，
+  // 以及 annualDepreciation 之推導，一律委由共用內部推導（AC-49(b)）。
+  // 行為與 003a 原實作逐位元相同（AC-49(d) 凍結）。
+  const core = deriveAnnualCore(input.vehiclePrice, input.usefulLifeYears);
+  if (!core.ok) return { ok: false };
+
+  // Validate: estimatedAnnualKm must be > 0 (AC-14)
+  if (!Number.isFinite(estimatedAnnualKm) || estimatedAnnualKm <= 0) {
     return { ok: false };
   }
-
-  // Validate: all three values must be > 0 (AC-14)
-  if (
-    price.lte(0) ||
-    !Number.isFinite(usefulLifeYears) ||
-    usefulLifeYears <= 0 ||
-    !Number.isFinite(estimatedAnnualKm) ||
-    estimatedAnnualKm <= 0
-  ) {
-    return { ok: false };
-  }
-
-  // Compute annualDepreciation = vehiclePrice / usefulLifeYears
-  // Keep full precision for the intermediate value (used as numerator for perKmUnitPrice)
-  const annualRaw = price.dividedBy(usefulLifeYears);
-
-  // round_half_up to 2 decimal places (D3, CLAUDE.md: 一般四捨五入 0.5 進位)
-  const annualDecimal = annualRaw.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   // Compute perKmUnitPrice using the UNROUNDED intermediate value (annualRaw) as numerator
   // to reduce accumulated rounding error (Spec §4.4, Task Packet note)
-  const perKmRaw = annualRaw.dividedBy(estimatedAnnualKm);
+  const perKmRaw = core.annualRaw.dividedBy(estimatedAnnualKm);
 
   // round_half_up to 4 decimal places (D3)
   const perKmDecimal = perKmRaw.toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP);
@@ -140,7 +224,7 @@ export function deriveDepreciation(input: DepreciationInput): DepreciationResult
   return {
     ok: true,
     // Fixed-width decimal strings (toFixed ensures trailing zeros are included)
-    annualDepreciation: annualDecimal.toFixed(2),
+    annualDepreciation: core.annualDepreciation,
     perKmUnitPrice: perKmDecimal.toFixed(4),
   };
 }

@@ -474,7 +474,6 @@ function DepreciationSection(): React.ReactElement {
   });
   const [vehiclePrice, setVehiclePrice] = useState("");
   const [usefulLifeYears, setUsefulLifeYears] = useState("");
-  const [estimatedAnnualKm, setEstimatedAnnualKm] = useState("");
   const [effectiveFrom, setEffectiveFrom] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -513,13 +512,11 @@ function DepreciationSection(): React.ReactElement {
       await apiCreateDepreciationVersion({
         vehiclePrice,
         usefulLifeYears: Number(usefulLifeYears),
-        estimatedAnnualKm: Number(estimatedAnnualKm),
         effectiveFrom,
       });
       setFormSuccess("折舊參數版本建立成功。");
       setVehiclePrice("");
       setUsefulLifeYears("");
-      setEstimatedAnnualKm("");
       setEffectiveFrom("");
       await load();
     } catch (err) {
@@ -598,27 +595,6 @@ function DepreciationSection(): React.ReactElement {
             )}
           </div>
           <div className="form-group">
-            <label htmlFor="dep-estimatedAnnualKm">預估年度行駛公里數（公里）*</label>
-            <input
-              id="dep-estimatedAnnualKm"
-              type="number"
-              step="1"
-              min="1"
-              value={estimatedAnnualKm}
-              onChange={(e) => setEstimatedAnnualKm(e.target.value)}
-              disabled={submitting}
-              required
-              aria-describedby={
-                fieldErrors.estimatedAnnualKm ? "dep-estimatedAnnualKm-err" : undefined
-              }
-            />
-            {fieldErrors.estimatedAnnualKm && (
-              <span id="dep-estimatedAnnualKm-err" className="field-error" role="alert">
-                {fieldErrors.estimatedAnnualKm}
-              </span>
-            )}
-          </div>
-          <div className="form-group">
             <label htmlFor="dep-effectiveFrom">生效日期 *</label>
             <input
               id="dep-effectiveFrom"
@@ -678,9 +654,7 @@ function DepreciationSection(): React.ReactElement {
                   <th>生效日期</th>
                   <th className="num-col">車價（元）</th>
                   <th className="num-col">折舊年限（年）</th>
-                  <th className="num-col">預估年里程（公里）</th>
                   <th className="num-col">每年折舊費用（元）</th>
-                  <th className="num-col">每公里單價（元）</th>
                   <th>建立時間</th>
                 </tr>
               </thead>
@@ -690,10 +664,8 @@ function DepreciationSection(): React.ReactElement {
                     <td>{v.effectiveFrom}</td>
                     <td className="num-col">{v.vehiclePrice}</td>
                     <td className="num-col">{v.usefulLifeYears}</td>
-                    <td className="num-col">{v.estimatedAnnualKm}</td>
                     {/* derived — displayed from backend response, NOT calculated by frontend (AC-20) */}
                     <td className="num-col">{v.derived.annualDepreciation}</td>
-                    <td className="num-col">{v.derived.perKmUnitPrice}</td>
                     <td>{formatDateYmd(v.createdAt)}</td>
                   </tr>
                 ))}

@@ -182,8 +182,10 @@ export function assertContainerMutable(containerState: ContainerState): void {
  *        `MaintenanceApplication.applicationId` ＝ `Application.id`，故
  *        `refId` 直接就是要查的 `Application.id`，一次 `findUnique` 即可）
  *        COMPLETED → 'completed'；否則（DRAFT／不存在）→ 'draft'
- *   refType = DEPRECIATION                        → 'draft' (子表尚不存在，
- *                                                   PHASE-007，防禦性)
+ *   refType = DEPRECIATION → Application.status（PHASE-007-T8：子表已存在，
+ *        `DepreciationApplication.applicationId` ＝ `Application.id`，故
+ *        `refId` 直接就是要查的 `Application.id`，一次 `findUnique` 即可）
+ *        COMPLETED → 'completed'；否則（DRAFT／不存在）→ 'draft'
  *   refId 指向已不存在的 TripSegment／Application（孤兒）→ 'draft'（記錄 log；不得 500）
  *
  * The ONLY caller in this Phase is `routes.ts`'s `DELETE /attachments/:id` —
@@ -253,8 +255,41 @@ export async function deriveContainerState(
     return application.status === "COMPLETED" ? "completed" : "draft";
   }
 
-  // DEPRECIATION: sub-table doesn't exist this Phase (PHASE-007) — no real
-  // attachment can carry this refType yet, but handled defensively.
+  if (attachment.refType === "DEPRECIATION" && attachment.refId) {
+    // PHASE-007-T8 (AC-25, §16 D10(a)): `DepreciationApplication` now exists,
+    // and per Spec §16 D2(a) its attachment container uses
+    // `refId = Application.id` itself (= `DepreciationApplication.applicationId`,
+    // no child-table id to join through) — so deriving the real container state
+    // only needs `Application.status`, a single `findUnique`. Structurally
+    // identical to the MAINTENANCE branch above (PHASE-006-T6).
+    //
+    // Previously this branch unconditionally returned 'draft' (a PHASE-003-era
+    // placeholder comment said "sub-table doesn't exist yet, PHASE-007,
+    // defensive"). Once PHASE-007-T1 created the table that placeholder became
+    // a REAL safety gap: the proof attachments of a COMPLETED depreciation
+    // application could still be deleted/replaced, violating BE-US-25 §4 and
+    // NFR-US-10. Pre-fix RED evidence ("expected 200 to be 403") is recorded in
+    // the PHASE-007-T8 Task Handoff; the guarding cases live in
+    // `test/integration/phase7-depreciation-attachment.test.ts`.
+    const application = await prisma.application.findUnique({
+      where: { id: attachment.refId },
+      select: { status: true },
+    });
+    if (!application) {
+      // Orphan: refId points to an Application row that no longer exists.
+      // Should not normally happen (deleteApplication detaches DEPRECIATION
+      // attachments in the same transaction, B-25) but handled defensively
+      // per Spec §9.4 rather than allowed to throw/500.
+      log?.warn(
+        `deriveContainerState: orphan attachment ref — Application ${attachment.refId} (DEPRECIATION) not found; treating as draft`
+      );
+      return "draft";
+    }
+    return application.status === "COMPLETED" ? "completed" : "draft";
+  }
+
+  // No recognised refType/refId combination (e.g. LINKED with a null refId —
+  // not reachable through any current write path, kept defensive).
   return "draft";
 }
 

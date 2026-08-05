@@ -527,25 +527,26 @@ describe("ParametersPage — Success 態", () => {
       expect(screen.getByLabelText(/車價/)).toBeInTheDocument();
     });
 
-    // Fill depreciation form
+    // Fill depreciation form（PHASE-007-R11／AC-61：表單僅車價／折舊年限／生效日期）
     fireEvent.change(screen.getByLabelText(/車價/), { target: { value: "500000" } });
     fireEvent.change(screen.getByLabelText(/折舊年限/), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText(/預估年度行駛公里數/), { target: { value: "15000" } });
 
     const dateInputs = screen.getAllByLabelText(/生效日期/);
     const lastDateInput = dateInputs[dateInputs.length - 1];
     if (lastDateInput) fireEvent.change(lastDateInput, { target: { value: "2026-02-01" } });
 
-    // Mock POST → 201 success with derived from backend
+    // Mock POST → 201 success with derived from backend（新版本 estimatedAnnualKm／
+    // perKmUnitPrice 皆為 null，AC-57(b)）
     (fetch as Mock).mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           version: {
             ...depreciationVersion,
+            estimatedAnnualKm: null,
             effectiveFrom: "2026-02-01",
             derived: {
               annualDepreciation: "100000.00",
-              perKmUnitPrice: "6.6667",
+              perKmUnitPrice: null,
             },
           },
         }),
@@ -557,10 +558,11 @@ describe("ParametersPage — Success 態", () => {
     mockGetVersions("depreciation", [
       {
         ...depreciationVersion,
+        estimatedAnnualKm: null,
         effectiveFrom: "2026-02-01",
         derived: {
           annualDepreciation: "100000.00",
-          perKmUnitPrice: "6.6667",
+          perKmUnitPrice: null,
         },
       },
     ]);
@@ -573,11 +575,172 @@ describe("ParametersPage — Success 態", () => {
       expect(screen.getByText(/建立成功|已建立/)).toBeInTheDocument();
     });
 
-    // Verify derived values displayed (from backend, not calculated by frontend)
+    // Verify annualDepreciation displayed (from backend, not calculated by frontend);
+    // perKmUnitPrice 為 null → 唯讀顯示「—」，不再顯示具體單價數值
     await waitFor(() => {
       expect(screen.getByText(/100000\.00|100000/)).toBeInTheDocument();
-      expect(screen.getByText(/6\.6667/)).toBeInTheDocument();
     });
+    expect(screen.queryByText(/6\.6667/)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// AC-61 — 折舊參數縮欄與歷史唯讀（PHASE-007-R11）
+// ============================================================
+
+describe("ParametersPage — AC-61 折舊縮欄與歷史唯讀", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("AC-61：折舊參數建立表單僅有車價、折舊年限、生效日期（預估年度行駛公里數欄位不存在之負向斷言）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/車價/)).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText(/折舊年限/)).toBeInTheDocument();
+    expect(screen.getAllByLabelText(/生效日期/).length).toBeGreaterThanOrEqual(1);
+
+    // 負向斷言：預估年度行駛公里數輸入欄不存在
+    expect(screen.queryByLabelText(/預估年度行駛公里數/)).not.toBeInTheDocument();
+  });
+
+  it("AC-61：折舊預覽顯示每年折舊費用、不顯示每公里補助單價（負向斷言）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/車價/)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/車價/), { target: { value: "500000" } });
+    fireEvent.change(screen.getByLabelText(/折舊年限/), { target: { value: "5" } });
+    const dateInputs = screen.getAllByLabelText(/生效日期/);
+    const depDateInput = dateInputs[dateInputs.length - 1];
+    if (depDateInput) fireEvent.change(depDateInput, { target: { value: "2026-02-01" } });
+
+    // 新版本後端回應：estimatedAnnualKm 與 perKmUnitPrice 皆為 null（AC-57(b)）
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          version: {
+            id: "dep-v-new",
+            vehiclePrice: "500000.00",
+            usefulLifeYears: 5,
+            estimatedAnnualKm: null,
+            effectiveFrom: "2026-02-01",
+            createdAt: "2026-02-01T00:00:00.000Z",
+            derived: { annualDepreciation: "100000.00", perKmUnitPrice: null },
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    mockGetVersions("depreciation", [
+      {
+        id: "dep-v-new",
+        vehiclePrice: "500000.00",
+        usefulLifeYears: 5,
+        estimatedAnnualKm: null,
+        effectiveFrom: "2026-02-01",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        derived: { annualDepreciation: "100000.00", perKmUnitPrice: null },
+      },
+    ]);
+
+    const submitBtns = screen.getAllByRole("button", { name: /^建立$/ });
+    const depSubmitBtn = submitBtns[submitBtns.length - 1];
+    if (depSubmitBtn) fireEvent.click(depSubmitBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/建立成功|已建立/)).toBeInTheDocument();
+    });
+
+    // 顯示每年折舊費用
+    await waitFor(() => {
+      expect(screen.getByText(/100000\.00/)).toBeInTheDocument();
+    });
+    // 負向斷言：新版本不顯示每公里補助單價之數值
+    expect(screen.queryByText(/6\.6667/)).not.toBeInTheDocument();
+  });
+
+  it("AC-61R：歷史版本之預估年里程與每公里單價原值於折舊區塊不出現（新舊版本一律不顯示）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [depreciationVersion]);
+
+    renderPage();
+
+    const table = await screen.findByLabelText("折舊參數版本清單");
+    await waitFor(() => {
+      // 折舊區塊已渲染資料列（以車價確認渲染完成）
+      expect(within(table).getByText("500000.00")).toBeInTheDocument();
+    });
+
+    // depreciationVersion.estimatedAnnualKm = 15000（歷史原值）—— 不出現
+    expect(within(table).queryByText("15000")).not.toBeInTheDocument();
+    // depreciationVersion.derived.perKmUnitPrice = "6.6667"（歷史原值）—— 不出現
+    expect(within(table).queryByText("6.6667")).not.toBeInTheDocument();
+  });
+
+  it("AC-61R：折舊版本清單之表頭恰為五欄（生效日期／車價／折舊年限／每年折舊費用／建立時間），不含「預估年里程」「每公里單價」", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [
+      {
+        id: "dep-v-new2",
+        vehiclePrice: "500000.00",
+        usefulLifeYears: 5,
+        estimatedAnnualKm: null,
+        effectiveFrom: "2026-03-01",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        derived: { annualDepreciation: "100000.00", perKmUnitPrice: null },
+      },
+    ]);
+
+    renderPage();
+
+    const table = await screen.findByLabelText("折舊參數版本清單");
+    await waitFor(() => {
+      expect(within(table).getByText("500000.00")).toBeInTheDocument();
+    });
+
+    // 表頭全等斷言：欄數與逐欄名稱
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((th) => th.textContent);
+    expect(headers).toEqual([
+      "生效日期",
+      "車價（元）",
+      "折舊年限（年）",
+      "每年折舊費用（元）",
+      "建立時間",
+    ]);
+
+    // 負向斷言：兩欄之 columnheader 不存在
+    expect(
+      within(table).queryByRole("columnheader", { name: "預估年里程（公里）" })
+    ).not.toBeInTheDocument();
+    expect(
+      within(table).queryByRole("columnheader", { name: "每公里單價（元）" })
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -652,7 +815,7 @@ describe("ParametersPage — 折舊列表顯示 derived", () => {
     vi.restoreAllMocks();
   });
 
-  it("列表顯示後端回傳的 derived.annualDepreciation 與 derived.perKmUnitPrice", async () => {
+  it("列表顯示後端回傳的 derived.annualDepreciation；不顯示 derived.perKmUnitPrice（AC-61R 連動）", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", []);
     mockGetVersions("etc", []);
@@ -663,9 +826,9 @@ describe("ParametersPage — 折舊列表顯示 derived", () => {
     await waitFor(() => {
       // derived.annualDepreciation = "100000.00"
       expect(screen.getByText(/100000\.00/)).toBeInTheDocument();
-      // derived.perKmUnitPrice = "6.6667"
-      expect(screen.getByText(/6\.6667/)).toBeInTheDocument();
     });
+    // derived.perKmUnitPrice = "6.6667" — AC-61R：折舊區塊一律不顯示
+    expect(screen.queryByText(/6\.6667/)).not.toBeInTheDocument();
   });
 });
 
@@ -713,7 +876,7 @@ describe("ParametersPage — 版本列表渲染", () => {
     });
   });
 
-  it("Depreciation: 列表顯示 vehiclePrice / usefulLifeYears / estimatedAnnualKm / derived", async () => {
+  it("Depreciation: 列表顯示 vehiclePrice / usefulLifeYears / derived.annualDepreciation；不顯示 derived.perKmUnitPrice（AC-61R 連動）", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", []);
     mockGetVersions("etc", []);
@@ -724,8 +887,8 @@ describe("ParametersPage — 版本列表渲染", () => {
     await waitFor(() => {
       expect(screen.getByText(/500000\.00/)).toBeInTheDocument();
       expect(screen.getByText(/100000\.00/)).toBeInTheDocument();
-      expect(screen.getByText(/6\.6667/)).toBeInTheDocument();
     });
+    expect(screen.queryByText(/6\.6667/)).not.toBeInTheDocument();
   });
 });
 
@@ -897,7 +1060,7 @@ describe("ParametersPage — 數值欄具備靠右對齊 class", () => {
     expect(td).toHaveClass("num-col");
   });
 
-  it("Depreciation: 五個數值欄（車價/折舊年限/預估年里程/每年折舊費用/每公里單價）均具備 num-col class", async () => {
+  it("Depreciation: 三個數值欄（車價/折舊年限/每年折舊費用）均具備 num-col class", async () => {
     mockMeAs(adminUser);
     mockGetVersions("fuel", []);
     mockGetVersions("etc", []);
@@ -909,22 +1072,14 @@ describe("ParametersPage — 數值欄具備靠右對齊 class", () => {
       expect(screen.getByText(/500000\.00/)).toBeInTheDocument();
     });
 
-    const headerNames = [
-      "車價（元）",
-      "折舊年限（年）",
-      "預估年里程（公里）",
-      "每年折舊費用（元）",
-      "每公里單價（元）",
-    ];
+    const headerNames = ["車價（元）", "折舊年限（年）", "每年折舊費用（元）"];
     for (const name of headerNames) {
       expect(screen.getByRole("columnheader", { name })).toHaveClass("num-col");
     }
 
     expect(screen.getByText("500000.00")).toHaveClass("num-col");
     expect(screen.getByText("5")).toHaveClass("num-col");
-    expect(screen.getByText("15000")).toHaveClass("num-col");
     expect(screen.getByText("100000.00")).toHaveClass("num-col");
-    expect(screen.getByText("6.6667")).toHaveClass("num-col");
   });
 });
 

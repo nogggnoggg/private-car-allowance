@@ -502,7 +502,14 @@ describeWithDb("POST /parameters/depreciation → AuditLog (AC-18)", () => {
     expect(summary?.effectiveFrom).toBe(effectiveFrom);
     expect(summary?.vehiclePrice).toBeDefined();
     expect(summary?.usefulLifeYears).toBeDefined();
-    expect(summary?.estimatedAnnualKm).toBeDefined();
+    // PHASE-007-R4b（Spec §20.11.2 逐字列；R4b Handoff summary 鍵裁定）：
+    // 稽核 summary 已縮欄——`estimatedAnnualKm` 不再是 summary 的鍵（該欄每列
+    // 恆為 NULL，保留該鍵不具稽核意義）。改斷言鍵集封閉，同時鎖定既有其餘
+    // 四鍵不變，避免縮欄後鍵集被進一步（或反向）漂移而未被本測試發現。
+    expect(summary?.estimatedAnnualKm).toBeUndefined();
+    expect(Object.keys(summary).sort()).toEqual(
+      ["effectiveFrom", "parameterType", "usefulLifeYears", "vehiclePrice"].sort()
+    );
   });
 
   it("AC-18 depreciation security: summary must not contain sensitive keys", async () => {

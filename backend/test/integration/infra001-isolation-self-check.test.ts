@@ -6,9 +6,10 @@
  *   AC-01  current_schema() 為本 worker 專屬 schema，search_path 不含 public
  *   AC-03(c) 目標 schema 不存在時 fail-closed 拋出可行動錯誤
  *   AC-07  worker schema 的 _prisma_migrations 已完成筆數 = migrations 目錄數（動態）
- *   AC-08  worker schema 含全部 14 張業務表 + 6 個 schema 本地 enum（oid ≠ public）
+ *   AC-08  worker schema 含全部 15 張業務表 + 6 個 schema 本地 enum（oid ≠ public）
+ *          （14→15：PHASE-007-T1 新增 DepreciationApplication）
  *   AC-09  僅存在 ^vitest_w[0-9]+$ 且編號 ≤ maxForks；public 表數（run 前後）未變
- *   AC-10  本檔第一個 beforeAll 執行時（root TRUNCATE 已完成），14 張業務表
+ *   AC-10  本檔第一個 beforeAll 執行時（root TRUNCATE 已完成），15 張業務表
  *          列數皆為 0；_prisma_migrations 不受影響（T2）
  *   AC-11  beforeAll 建立的資料在該檔多個 it 之間持續存在（per-file 而非
  *          per-test 清空，T2）
@@ -73,7 +74,7 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(14);
+    expect(tableRows.length).toBe(15);
     for (const { table_name } of tableRows) {
       const rows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
         `SELECT count(*)::bigint AS count FROM "${table_name}"`
@@ -148,12 +149,12 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
     expect(finishedCount).toBeGreaterThan(0); // guards against the query itself silently matching nothing
   });
 
-  it("AC-08: worker schema 含全部 14 張業務表，且 6 個 enum 為 schema 本地型別（oid 與 public 不同）", async () => {
+  it("AC-08: worker schema 含全部 15 張業務表，且 6 個 enum 為 schema 本地型別（oid 與 public 不同）", async () => {
     const tableRows = await prisma.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(14);
+    expect(tableRows.length).toBe(15);
 
     for (const enumName of BUSINESS_ENUM_NAMES) {
       const rows = await prisma.$queryRawUnsafe<Array<{ oid: string; nspname: string }>>(

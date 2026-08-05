@@ -7,6 +7,7 @@ import AdminUserApplicationsPage from "./pages/AdminUserApplicationsPage.js";
 import AdminUsersPage from "./pages/AdminUsersPage.js";
 import AttachmentsDemoPage from "./pages/AttachmentsDemoPage.js";
 import ChangePasswordPage from "./pages/ChangePasswordPage.js";
+import DepreciationApplicationPage from "./pages/DepreciationApplicationPage.js";
 import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
 import HomePage from "./pages/HomePage.js";
 import LoginPage from "./pages/LoginPage.js";
@@ -118,6 +119,20 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <MaintenanceApplicationPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-007-T13: 折舊草稿建立／編輯／已完成檢視。單一 :id 路由
+              涵蓋「/applications/depreciation/new」與
+              「/applications/depreciation/:id」——理由同上方 MAINTENANCE/
+              TRAVEL 路由的既有註解（React Router 對靜態片段的比對優先於
+              動態參數）。 */}
+          <Route
+            path="/applications/depreciation/:id"
+            element={
+              <RequireAuth>
+                <DepreciationApplicationPage />
               </RequireAuth>
             }
           />

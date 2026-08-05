@@ -43,6 +43,14 @@
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type {
+  CreateDepreciationDraftInput,
+  OnDepreciationDraftCreated,
+} from "../applications/depreciation-service.js";
+import {
+  buildDepreciationApplicationDto,
+  createDepreciationDraft,
+} from "../applications/depreciation-service.js";
+import type {
   CreateMaintenanceDraftInput,
   OnMaintenanceDraftCreated,
 } from "../applications/maintenance-service.js";
@@ -51,6 +59,7 @@ import {
   createMaintenanceDraft,
 } from "../applications/maintenance-service.js";
 import {
+  parseDepreciationFieldsInput,
   parseMaintenanceFieldsInput,
   parsePurposeField,
   parseTripDateField,
@@ -607,6 +616,101 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
 
       const application = await createMaintenanceDraft(prisma, createInput, onCreated);
       const dto = await buildMaintenanceApplicationDto(prisma, application);
+      return reply.status(201).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /admin/users/:userId/applications/depreciation — 管理員代建立折舊草稿
+  // (PHASE-007-T11, AC-34, Spec §6.1 第 7 列／§8.2)
+  //
+  // 逐字同型於上方兩個既有代建立端點（差旅 PHASE-004-T10、保養 PHASE-006-T9）
+  // ——刻意不另立第二套代操作模式：
+  //
+  //   * body 形狀同 `POST /applications/depreciation`（單一選填欄
+  //     `applicationYear`），一律沿用 `applications/routes.ts` 匯出的**同一份**
+  //     解析器 `parseDepreciationFieldsInput`（其內為全案唯一的年度值域判定點
+  //     `parseApplicationYearField`，§16 D3(a) 之 [1900, 2999]）。**不得**在本
+  //     檔自建年度解析：`new Date(Date.UTC(year, …))` 會把 0~99 靜默映射成
+  //     1900+year，使 `applicationYear=50` 落成 1950-12-31，`applicationYear`
+  //     欄與 `primaryDate` 語意分裂（T4／T6／T8 即審 FW 列為安全地雷）。
+  //   * `ownerId` = `:userId`（被代理使用者，資源自此歸屬於他）、`createdById`
+  //     = 呼叫端管理員（純稽核來源）——兩者刻意為不同欄位（PHASE-004-T10 之
+  //     C2 原則）。本檔從不讀取 body 之任何識別值（§6.2 資料隔離不變式 1）。
+  //   * `:userId` 不存在 → 404 NOT_FOUND（B-27，判定於任何欄位解析與寫入之
+  //     前，兩分支皆零寫入）；`isActive=false` → 400 VALIDATION_ERROR，訊息與
+  //     `fields[]` 逐字比照差旅／保養端點（B-26；006 §18 SF-4 裁定 (a) 之跨型
+  //     一致性義務）。
+  //   * 稽核與業務寫入**同交易**：`createDepreciationDraft` 之 `onCreated`
+  //     （T4 已於交易內預留）於 hook 拋錯時一併回滾，不留孤兒稽核列（AC-34）。
+  //     沿用既有 `AuditAction.APPLICATION_CREATED_ON_BEHALF`，以
+  //     `summary.type = "DEPRECIATION"` 區分型別——**不新增 enum 值**（§6.2）。
+  //   * C3 邊界：`:userId` 恰為管理員自己時算「自己操作」而非代操作，完全不
+  //     建構 hook，天然滿足「本人自建不寫稽核」（PHASE-004 AC-86）。
+  //
+  // §16 D9(a)：本 Phase **不提供**任何代完成路徑——本檔刻意沒有、也不得新增
+  // 任何 complete 動詞之路由（AC-29 負向斷言＋整合測試之結構性掃描把關）。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/admin/users/:userId/applications/depreciation",
+    { preHandler: adminPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { userId } = request.params as { userId: string };
+      const actorId = request.currentUser.id;
+
+      const targetUser = await prisma.user.findUnique({ where: { id: userId } });
+      if (!targetUser) {
+        throw new AppError("NOT_FOUND", 404, "指定的使用者不存在");
+      }
+      if (!targetUser.isActive) {
+        throw new AppError("VALIDATION_ERROR", 400, "指定的使用者已停用，無法代其建立申請", [
+          { field: "userId", reason: "指定的使用者已停用" },
+        ]);
+      }
+
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const { errors: fieldErrors, fields } = parseDepreciationFieldsInput(body);
+      if (fieldErrors.length > 0) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
+      }
+
+      // PHASE-007-REV2-G3（AC-63，裁定①）：與代修改（applications/routes.ts
+      // 之 onUpdated）格式逐字同——非 null 時固定 1 位小數字串，null 一律如
+      // 實記錄（絕不以 0 代位）。代建立為單值（非 {before, after}），建立時
+      // 不存在前值（AC-63(c)）。值取自同一交易內建立之列，不另行查詢。
+      const ANNUAL_TOTAL_KM_SUMMARY_SCALE = 1;
+      const isOnBehalf = userId !== actorId;
+      const onCreated: OnDepreciationDraftCreated | undefined = isOnBehalf
+        ? async (tx, created) => {
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_CREATED_ON_BEHALF",
+                actorId,
+                targetId: userId,
+                targetLabel: `${targetUser.loginName}#${created.id}`,
+                summary: {
+                  applicationId: created.id,
+                  type: "DEPRECIATION",
+                  applicationYear: created.depreciation?.applicationYear ?? null,
+                  annualTotalKm:
+                    created.depreciation?.annualTotalKm == null
+                      ? null
+                      : created.depreciation.annualTotalKm.toFixed(ANNUAL_TOTAL_KM_SUMMARY_SCALE),
+                },
+              },
+            });
+          }
+        : undefined;
+
+      const createInput: CreateDepreciationDraftInput = {
+        ownerId: userId,
+        createdById: actorId,
+        ...fields,
+      };
+
+      const application = await createDepreciationDraft(prisma, createInput, onCreated);
+      const dto = await buildDepreciationApplicationDto(prisma, application);
       return reply.status(201).send({ application: dto });
     }
   );

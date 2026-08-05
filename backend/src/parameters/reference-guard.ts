@@ -42,10 +42,36 @@
  * defensive against any future path that might otherwise leave a stale
  * version id on a non-completed row.
  *
+ * PHASE-007-T10 (Spec §16 D12(a), human-approved 2026-08-04) adds
+ * `"DEPRECIATION"`, closing out the remaining half of the PHASE-003a §4.7
+ * promise (PHASE-004 covered the travel side only). `completeDepreciation-
+ * Application` writes `DepreciationApplication.depreciationParameterVersionId`
+ * as part of its 8-column completion snapshot, so the same shape applies —
+ * one extra branch plus one `count`:
+ *
+ *   parameterHasReferences("DEPRECIATION", versionId)
+ *     → prisma.depreciationApplication.count({
+ *         where: {
+ *           application: { status: "COMPLETED" },
+ *           depreciationParameterVersionId: versionId,
+ *         },
+ *       }) > 0
+ *
+ * `DepreciationApplication` is 1:1 with `Application` (`applicationId` is its
+ * primary key), exactly like `TravelApplication`. A DRAFT depreciation
+ * application never has that column populated — it is written only by the
+ * completion transaction — so the explicit `status: "COMPLETED"` filter is
+ * again defensive rather than load-bearing, and is kept for the same reason.
+ * Note the column carries **no foreign key** (PHASE-007-T1 FW-6, matching the
+ * PHASE-003a convention for parameter-version references), so this query is
+ * the only thing standing between an operator and an overwrite of a
+ * historically-referenced version — there is no database-level guard behind it.
+ *
  * Query efficiency (C4): equality filter on each snapshot column uses its
  * respective single-column index declared in schema.prisma
  * (`@@index([fuelParameterVersionId])` / `@@index([etcParameterVersionId])`
- * / `@@index([fuelPriceVersionId])` / `@@index([fuelConsumptionVersionId])`);
+ * / `@@index([fuelPriceVersionId])` / `@@index([fuelConsumptionVersionId])`
+ * / `@@index([depreciationParameterVersionId])`);
  * `count` is used (not a full fetch) per the Spec's own pseudocode, matching
  * the `userHasHistory` sibling pattern (`backend/src/users/history.ts`).
  */
@@ -61,21 +87,37 @@ export type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
  * `"FUEL_PRICE"` / `"FUEL_CONSUMPTION"` — new-model columns written by
  * `completeTravelApplication` from PHASE-005a-T7 onward.
  * `"ETC"` — unchanged across both models.
+ * `"DEPRECIATION"` — PHASE-007-T10 / D12(a); queries
+ * `DepreciationApplication.depreciationParameterVersionId` (a different
+ * table, not merely a different column).
  */
-export type ParameterType = "FUEL" | "FUEL_PRICE" | "FUEL_CONSUMPTION" | "ETC";
+export type ParameterType = "FUEL" | "FUEL_PRICE" | "FUEL_CONSUMPTION" | "ETC" | "DEPRECIATION";
 
 /**
  * Given a parameter version's type and id, returns true iff it is
- * referenced by at least one COMPLETED travel application's snapshot
- * (AC-93). Returns false for versions with no such reference — including
- * versions only referenced by DRAFT applications, which never carry a
- * snapshot.
+ * referenced by at least one COMPLETED application's snapshot (AC-93 for the
+ * travel types; PHASE-007 AC-33 for `"DEPRECIATION"`). Returns false for
+ * versions with no such reference — including versions only referenced by
+ * DRAFT applications, which never carry a snapshot.
  */
 export async function parameterHasReferences(
   prisma: PrismaClientOrTx,
   type: ParameterType,
   versionId: string
 ): Promise<boolean> {
+  // PHASE-007-T10: the depreciation reference lives in a different table, so
+  // it branches out before the travel-column selection below rather than
+  // joining that ternary chain.
+  if (type === "DEPRECIATION") {
+    const depreciationCount = await prisma.depreciationApplication.count({
+      where: {
+        application: { status: "COMPLETED" },
+        depreciationParameterVersionId: versionId,
+      },
+    });
+    return depreciationCount > 0;
+  }
+
   const versionIdFilter: Prisma.TravelApplicationWhereInput =
     type === "FUEL"
       ? { fuelParameterVersionId: versionId }
