@@ -677,11 +677,13 @@ describeWithDb("PHASE-007-T1 migration safety net — clean DB", () => {
   });
 
   it("AC-01(f) 表數 14→15 — DepreciationApplication is the 15th business table", async () => {
+    // PHASE-008-T1: 表數 15→16（新增 Report）——標題內之數字為 PHASE-007 之
+    // 歷史事實（Spec docs/specs/PHASE-008.md §8.5 明令不得改寫），僅改斷言值。
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(15);
+    expect(tableRows.length).toBe(16);
     expect(tableRows.map((r) => r.table_name)).toContain("DepreciationApplication");
   });
 
@@ -1787,12 +1789,18 @@ describeWithDb("PHASE-007-R1 M2 migration safety net — clean DB", () => {
     expect(Number(afterRows[0]?.count ?? -1)).toBe(countMigrationDirs());
   });
 
+  // PHASE-008-T1（第五處表數斷言連動——Spec §8.5 之四處清單未列此處；implementer
+  // 實查發現後，依 Packet Stop Condition「回報後依 T1R 先例處置」與 AC-01(f)
+  // 逐字「implementer 須於 Handoff 回報實查處數」處置：據實回報＋同 Task 內更新
+  // 斷言值，標題依「僅表數斷言連動；標題零改寫」規則不改寫，見 Task Handoff）：
+  // 表數 15→16（新增 Report；本測試驗證的是「M2 零建表、零刪表」相對於 M1 的
+  // 表數守恆，該守恆本身仍成立，只是絕對值隨後續 Phase 的新表而移動）。
   it("AC-01: 業務表總數仍為 15（M2 零建表、零刪表）", async () => {
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(15);
+    expect(tableRows.length).toBe(16);
     const names = tableRows.map((r) => r.table_name);
     expect(names).toContain("DepreciationApplication");
     expect(names).toContain("DepreciationParameterVersion");
