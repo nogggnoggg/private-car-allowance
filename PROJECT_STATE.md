@@ -8,7 +8,8 @@ State: ACTIVE
 > - **自舉驗證抓到真缺口（常設規則首戰立功）**：30 通過/3 失敗/5 未跑——三套件（travel/mileage/admin-applications）播種 helper 仍呼叫 005a-T3b 已退場之 `POST /parameters/fuel`（404）；歷來全綠靠共用 DB 歷史資料使 `covers()` 恆真從不觸發。
 > - **CHORE-E2E-BOOTSTRAP：DONE**（`f7db085`，branch `chore/e2e-bootstrap-fuel-price`，3 檔 +14/-48；usage ~116k/26 tool uses）。純刪除已死 legacy fuel 分支＋3 孤兒常數（油資覆蓋由既有 ensureFuelModelCoversDate 新模型雙鏈負責，呼叫鏈逐點實查）；斷言零改動。乾淨環境 implementer 兩輪＋大總管第三輪＋reviewer 第四輪 **38/38 全綠**、冪等證明（零 409）。
 > - **CHORE 輕量複審：APPROVE**（0 Must/0 Should/3 AR 全 Low；usage ~84k/36 tool uses）。wire 探針證偽根因（POST fuel 404 vs etc 401）；NO_PARAM_TRIP_DATE 負路徑鑑別力實查（無假綠失敗模式）；孤兒常數 6→0 grep 證明。AR：複審輪走 skip 分支（以探針補強）/legacy 表零播種（GET /parameters/fuel 覆蓋降至後端整合層）/mileage 舊註解語彙。**FW 三項**：①「重置後首輪全綠」固化為每次邊界重置之強制驗收步驟（本常設規則補充條款）②端點退場檢查清單加「grep e2e/ 與 backend/test/ 播種路徑」（005a-T3b 當年漏 e2e/，時隔多 Phase 才暴露）③E2E 五份同型 fuel helper 重複，第六份出現時評估收斂 e2e/helpers/（本次不擴大範圍）。
-> - 待辦：PR＋CI → 人類合併批准（chore branch）。
+> - **PR #16 已合併**（merge commit `1b227a9`，人類 leonchih 2026-08-06 批准；CI 三檢全綠）。**Phase 邊界作業全數完成——「每 Phase 重置 dev DB＋自舉驗證」常設規則首個完整閉環。**
+> - **★ 使用者裁定（2026-08-06）：暫不進入 PHASE-008 ★**——大總管停在待命狀態，待使用者指示開工。下個 session 接續點：PHASE-008（報表）開工前必讀＝跨 Phase 追蹤節（五值揭露面/LEGACY 快照判別/DEP·MNT 編號列印版/drift guard 升常設/RATIO_DISPLAY_SCALE 對照測試/稽核統一議題含 1dp 格式器共用化）＋usage 復盤 §3/§6.3 預算帶＋三 FW（重置首輪全綠強制/端點退場 grep e2e/第六份 helper 收斂）＋待辦議題（大總管專屬 skill 討論）。dev DB 現況＝乾淨（僅 e2eadmin＋E2E 播種殘留一輪合成資料）。
 
 > **PHASE-007 Gate 反饋：折舊模型修訂（使用者 2026-08-05 裁定，經 AskUserQuestion 消歧確認）**
 > - 走查通過，但人類就功能提出兩項變更裁定（改變 US 原意，走 US 修訂流程）：
