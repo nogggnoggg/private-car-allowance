@@ -142,6 +142,20 @@ function buildPreviewRequestBody(form: FormFields): DepreciationDraftFields {
   };
 }
 
+/**
+ * R10 裁定（R9 移交項）：`isFormEntirelyBlank` 之判斷**不擴及**
+ * `annualTotalKm`——僅以 `applicationYear` 是否為空作為「尚未開始輸入」之
+ * 佔位文案（「請先選擇申請年度」）觸發條件。理由（AC-53(d)／§20.9）：
+ *   - 若擴及 `annualTotalKm`，則「申請年度已填、年度總里程未填」情境會被
+ *     導向佔位文案「請先選擇申請年度」——與畫面上申請年度欄位實際已填之
+ *     狀態矛盾，對使用者具誤導性。
+ *   - 維持現狀（僅查 `applicationYear`）時，該情境改由預覽 API 之
+ *     `calculable=false` ＋ `blockingCodes=["ANNUAL_TOTAL_KM_REQUIRED"]`
+ *     驅動顯示「無法計算」＋「請輸入該車年度總里程」——訊息精確對應缺漏
+ *     欄位，且仍滿足 AC-53(d)「不得顯示金額 0」之硬性要求。
+ * 兩條路徑皆不顯示金額 0，故本裁定不影響 AC-53(d) 之滿足與否，僅影響
+ * 文案精確度；後者更精確，故維持現狀、不擴大本函式範圍。
+ */
 function isFormEntirelyBlank(form: FormFields): boolean {
   return form.applicationYear.trim() === "";
 }
@@ -647,7 +661,25 @@ export default function DepreciationApplicationPage(): React.ReactElement {
                     // 可行動之 zh-TW 說明；車價／折舊年限／每公里補助單價三
                     // 推導值在任何狀態下皆不出現於本頁——後端 DTO 本即不回傳
                     // 這三值，此處無從顯示。
-                    <div className="warn-text">
+                    //
+                    // R10／AC-60：比例 >100%（`OFFICIAL_KM_EXCEEDS_ANNUAL_
+                    // TOTAL_KM`）須「顯示錯誤」——以 `error-block`／
+                    // `role="alert"` 呈現，區別於其餘不可計算態（尚未輸入、
+                    // 缺參數等）之一般提示 `warn-text`；顯示邏輯仍一律以
+                    // `blockingCodes` 驅動（AC-60 末句），非新增 `calculable`
+                    // 以外之第二旗標。
+                    <div
+                      className={
+                        preview.blockingCodes.includes("OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM")
+                          ? "error-block"
+                          : "warn-text"
+                      }
+                      role={
+                        preview.blockingCodes.includes("OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM")
+                          ? "alert"
+                          : undefined
+                      }
+                    >
                       <p>
                         <strong>年度補貼金額：無法計算</strong>
                       </p>

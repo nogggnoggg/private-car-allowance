@@ -647,6 +647,157 @@ describe("DepreciationApplicationPage", () => {
       });
       expect(screen.queryByText("0")).not.toBeInTheDocument();
     });
+
+    // R10／AC-40／AC-53(d)：「未輸入年度總里程」與「Empty（totalKm=0.00,
+    // amount 合法為 0）」為兩種不同不可計算態，須各自有測試——本測試鎖定
+    // 前者：申請年度已填、年度總里程未填，後端回 calculable=false ＋
+    // ANNUAL_TOTAL_KM_REQUIRED，畫面須顯示「無法計算」，絕不得出現金額
+    // `0`（與上方「Empty：年度無任何有效差旅」測試之 amount=0 合法情境
+    // 互異——該測試 officialKm/annualTotalKm 皆有值，本測試 annualTotalKm
+    // 為 null）。
+    it("R10／AC-40／AC-53(d)：未輸入年度總里程時顯示「無法計算」，不得出現金額 0（與 Empty 態互異）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: draftFixture({
+            applicationYear: 2025,
+            annualTotalKm: null,
+            completionBlockers: [
+              {
+                code: "ANNUAL_TOTAL_KM_REQUIRED",
+                field: "annualTotalKm",
+                message: "請輸入該車年度總里程",
+              },
+            ],
+          }),
+        })
+      );
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            calculable: false,
+            annualDepreciation: null,
+            officialKm: null,
+            annualTotalKm: null,
+            ratio: null,
+            ratioPercent: null,
+            rawAmount: null,
+            amount: null,
+            blockingCodes: ["ANNUAL_TOTAL_KM_REQUIRED"],
+          }),
+        })
+      );
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("年度補貼金額：無法計算")).toBeInTheDocument();
+      });
+      // 「請輸入該車年度總里程」同時出現於「尚未完成項目」清單（來自
+      // application.completionBlockers）與預覽區塊（來自 preview.
+      // blockingCodes）——兩者皆為合法揭露面，用 getAllByText 容忍重複。
+      expect(screen.getAllByText("請輸入該車年度總里程").length).toBeGreaterThan(0);
+      // 負向斷言：不得出現金額 0（AC-53(d)）；且不得誤顯示 Empty 態之
+      // 「尚無差旅」說明文字（該文字之出現條件為 officialKm==="0.00"，
+      // 本情境 officialKm 為 null）。
+      expect(screen.queryByText("0")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("該年度尚無已完成之差旅公務里程，補貼金額為 0；申請仍可完成。")
+      ).not.toBeInTheDocument();
+    });
+
+    // R10／AC-41：即使申請年度已填，僅缺年度總里程仍須停用「完成申請」，
+    // 但「儲存草稿」不受影響（前置條件補填 annualTotalKm）。
+    it("R10／AC-41：僅缺年度總里程時仍停用「完成申請」，「儲存草稿」不受影響", async () => {
+      const router = installFetchRouter();
+      const fixture = draftFixture({
+        applicationYear: 2025,
+        annualTotalKm: null,
+        completionBlockers: [
+          {
+            code: "ANNUAL_TOTAL_KM_REQUIRED",
+            field: "annualTotalKm",
+            message: "請輸入該車年度總里程",
+          },
+        ],
+      });
+      router.on("GET", isGetDraft, () => jsonRes({ application: fixture }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            calculable: false,
+            annualDepreciation: null,
+            officialKm: null,
+            annualTotalKm: null,
+            ratio: null,
+            ratioPercent: null,
+            rawAmount: null,
+            amount: null,
+            blockingCodes: ["ANNUAL_TOTAL_KM_REQUIRED"],
+          }),
+        })
+      );
+      router.on("PUT", isPutDraft, () => jsonRes({ application: fixture }));
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+      });
+      expect(screen.getByRole("button", { name: "儲存草稿" })).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => {
+        expect(router.countCalls("PUT", isPutDraft)).toBe(1);
+      });
+    });
+
+    // R10／AC-60：公務比例 >100%（officialKm > annualTotalKm）時顯示錯誤
+    // （role="alert"）與「請檢查年度總里程」提示，並停用「完成申請」，但
+    // 「儲存草稿」仍可用；顯示邏輯以 blockingCodes 驅動（本碼固有訊息即含
+    // 「請檢查年度總里程」字樣，AC-52(a) 文案）。
+    it("R10／AC-60：公務比例 >100% 時顯示錯誤與「請檢查年度總里程」提示並停用完成申請，草稿仍可儲存", async () => {
+      const router = installFetchRouter();
+      const fixture = filledDraftFixture({
+        completionBlockers: [
+          {
+            code: "OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM",
+            field: "annualTotalKm",
+            message: "年度公務里程大於年度總里程，請檢查年度總里程",
+          },
+        ],
+      });
+      router.on("GET", isGetDraft, () => jsonRes({ application: fixture }));
+      router.on("POST", isPreview, () =>
+        jsonRes({
+          preview: previewFixture({
+            calculable: false,
+            officialKm: "20000.00",
+            ratio: null,
+            ratioPercent: null,
+            rawAmount: null,
+            amount: null,
+            blockingCodes: ["OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM"],
+          }),
+        })
+      );
+      router.on("PUT", isPutDraft, () => jsonRes({ application: fixture }));
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("年度補貼金額：無法計算")).toBeInTheDocument();
+      });
+      const alertBlock = screen.getByRole("alert");
+      expect(alertBlock.textContent).toContain("年度公務里程大於年度總里程，請檢查年度總里程");
+      expect(screen.getByRole("button", { name: "完成申請" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "儲存草稿" })).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: "儲存草稿" }));
+      await waitFor(() => {
+        expect(router.countCalls("PUT", isPutDraft)).toBe(1);
+      });
+    });
   });
 
   // ===========================================================================
