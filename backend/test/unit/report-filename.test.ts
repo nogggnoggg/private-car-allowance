@@ -59,16 +59,33 @@
  */
 
 import type { ApplicationType } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_FILE_NAME_LENGTH,
   MAX_NAME_SEGMENT_LENGTH,
   REPORT_TYPE_LABEL,
   buildReportFileName,
   getReportTypeLabel,
+  resolveDateOrYearSegment,
   sanitizeDisplayName,
 } from "../../src/reports/report-filename.js";
 import { generateReportNumber } from "../../src/reports/report-number.js";
+
+/**
+ * SF-2（期中複審）：控制字元（0x00-0x1F、0x7F）不變式檢查——以逐字元比對取代
+ * 正則（biome `noControlCharactersInRegex` 禁止正則字面量內含控制字元跳脫），
+ * 邊界值 0x1F 與 isControlChar 之 `<=0x1f` 判斷一致（鑑別 `<=0x1f`→`<0x1f`
+ * mutant 的必要前提）。
+ */
+function containsControlChar(s: string): boolean {
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0x1f || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
 
 describe("REPORT_TYPE_LABEL / getReportTypeLabel — AC-20 型別 zh-TW 標籤", () => {
   it("TRAVEL → 差旅", () => {
@@ -214,6 +231,9 @@ describe("sanitizeDisplayName / buildReportFileName — AC-21 不安全字元 ga
     expect(fileName).not.toContain("\r");
     expect(fileName).not.toContain("\n");
     expect(fileName).not.toContain("\x00");
+    // SF-2（期中複審）：控制字元規則（isControlChar `<=0x1f`）之不變式斷言——
+    // 未涵蓋此前恰於邊界值 0x1f 存活（mutant `<=0x1f`→`<0x1f`）。
+    expect(containsControlChar(fileName)).toBe(false);
     expect(fileName).toContain(REPORT_NUMBER);
     expect(fileName.endsWith(".pdf")).toBe(true);
   }
@@ -325,7 +345,16 @@ describe("sanitizeDisplayName — 個別規則之精確斷言", () => {
   });
 
   it("恆不含 / \\ \\r \\n \\x00（任意輸入）", () => {
-    const inputs = ["../../etc/passwd", "a/b\\c", '名字:*?"<>|', "王\r\n明", "王\x00明"];
+    const inputs = [
+      "../../etc/passwd",
+      "a/b\\c",
+      '名字:*?"<>|',
+      "王\r\n明",
+      "王\x00明",
+      // SF-2（期中複審）：\x1f 恰為 isControlChar 邊界值（mutant `<=0x1f`→`<0x1f`
+      // 存活之關鍵輸入）。
+      "王\x1f明",
+    ];
     for (const input of inputs) {
       const result = sanitizeDisplayName(input);
       expect(result).not.toContain("/");
@@ -333,6 +362,8 @@ describe("sanitizeDisplayName — 個別規則之精確斷言", () => {
       expect(result).not.toContain("\r");
       expect(result).not.toContain("\n");
       expect(result).not.toContain("\x00");
+      // SF-2（期中複審）：控制字元規則之不變式斷言（涵蓋邊界值 0x1f）。
+      expect(containsControlChar(result)).toBe(false);
     }
   });
 });
@@ -447,6 +478,9 @@ describe("200 例不變式 sweep — 恆不含 / \\ CR LF \\x00、恆含報表�
       expect(fileName).not.toContain("\r");
       expect(fileName).not.toContain("\n");
       expect(fileName).not.toContain("\x00");
+      // SF-2（期中複審）：控制字元規則之不變式斷言（含邊界值 0x1f；UNSAFE_CHAR_POOL
+      // 已含 "\x1f"，200 例覆蓋下足以鑑別 isControlChar 邊界 mutant）。
+      expect(containsControlChar(fileName)).toBe(false);
       expect(fileName).toContain(reportNumber);
       expect(fileName.endsWith(".pdf")).toBe(true);
       expect(fileName.length).toBeLessThanOrEqual(MAX_FILE_NAME_LENGTH);
@@ -455,5 +489,122 @@ describe("200 例不變式 sweep — 恆不含 / \\ CR LF \\x00、恆含報表�
     }
     // 200 例逐一驗證覆蓋數固定，避免迴圈邏輯誤刪樣本而靜默通過
     expect(checked).toBe(200);
+  });
+});
+
+describe("SF-1（期中複審）：姓名段截斷不得產生孤兒代理字元（surrogate pair 邊界）", () => {
+  /**
+   * 逐 UTF-16 碼元掃描字串，偵測未成對之代理字元（孤兒高代理／孤兒低代理）。
+   * 自寫檢查（非依賴 ES2024 `String.prototype.isWellFormed`，本專案 lib 為
+   * ES2022）。
+   */
+  function hasLoneSurrogate(s: string): boolean {
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      const isHigh = code >= 0xd800 && code <= 0xdbff;
+      const isLow = code >= 0xdc00 && code <= 0xdfff;
+      if (isHigh) {
+        const next = i + 1 < s.length ? s.charCodeAt(i + 1) : Number.NaN;
+        if (!(next >= 0xdc00 && next <= 0xdfff)) {
+          return true;
+        }
+        i += 1; // 跳過已配對之低代理
+      } else if (isLow) {
+        return true; // 低代理未被前一個高代理消耗，即為孤兒
+      }
+    }
+    return false;
+  }
+
+  it("sanitizeDisplayName：'a' + 😀×20（UTF-16 碼元數 41 > 30）截斷後段內無孤兒代理，encodeURIComponent 不擲錯", () => {
+    const raw = `a${"😀".repeat(20)}`;
+    const result = sanitizeDisplayName(raw);
+    expect(hasLoneSurrogate(result)).toBe(false);
+    expect(() => encodeURIComponent(result)).not.toThrow();
+  });
+
+  it("buildReportFileName：完整管線之輸出亦無孤兒代理，encodeURIComponent 不擲錯", () => {
+    const raw = `a${"😀".repeat(20)}`;
+    const primaryDate = new Date("2026-03-05T00:00:00Z");
+    const fileName = buildReportFileName({
+      type: "TRAVEL",
+      displayName: raw,
+      dateOrYearSource: primaryDate,
+      primaryDate,
+      reportNumber: "TRV-202608-0001",
+    });
+    expect(hasLoneSurrogate(fileName)).toBe(false);
+    expect(() => encodeURIComponent(fileName)).not.toThrow();
+  });
+});
+
+describe("SF-3（期中複審）：日期／年度段跨時區不變式（getUTC*，不受主機時區影響）", () => {
+  // T2 複審 FW-6 修正版還原語意：一律以 vi.stubEnv／vi.unstubAllEnvs 覆寫與還原
+  // TZ，不用裸 `process.env.TZ = original`（original 為 undefined 時會寫入字串
+  // "undefined"）。
+  const TIMEZONES = ["UTC", "EST5EDT", "Asia/Taipei", "Pacific/Kiritimati"];
+
+  it("resolveDateOrYearSegment — TRAVEL/MAINTENANCE 日期段（UTC 早晨邊界，落後 UTC 之時區會使本地日期倒退一天）", () => {
+    // 2026-08-01T02:00:00Z：EST5EDT（UTC-4）本地為 2026-07-31T22:00 ——若採本地
+    // getter 將得 2026-07-31，與 UTC 之 2026-08-01 不同。
+    const date = new Date("2026-08-01T02:00:00Z");
+    try {
+      for (const tz of TIMEZONES) {
+        vi.stubEnv("TZ", tz);
+        expect(resolveDateOrYearSegment("TRAVEL", date, date)).toBe("2026-08-01");
+        expect(resolveDateOrYearSegment("MAINTENANCE", date, date)).toBe("2026-08-01");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("resolveDateOrYearSegment — TRAVEL/MAINTENANCE 日期段（UTC 深夜邊界，領先 UTC 之時區會使本地日期提前一天）", () => {
+    // 2026-08-31T23:30:00Z：Pacific/Kiritimati（UTC+14）本地為
+    // 2026-09-01T13:30 ——若採本地 getter 將得 2026-09-01，與 UTC 之
+    // 2026-08-31 不同。
+    const date = new Date("2026-08-31T23:30:00Z");
+    try {
+      for (const tz of TIMEZONES) {
+        vi.stubEnv("TZ", tz);
+        expect(resolveDateOrYearSegment("TRAVEL", date, date)).toBe("2026-08-31");
+        expect(resolveDateOrYearSegment("MAINTENANCE", date, date)).toBe("2026-08-31");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("resolveDateOrYearSegment — DEPRECIATION 之 primaryDate fallback 年度段（UTC 跨年邊界，落後 UTC 之時區會使本地年度倒退一年）", () => {
+    // 2026-01-01T02:00:00Z：EST5EDT（UTC-4）本地為 2025-12-31T22:00 ——若採本地
+    // getter 將得 2025，與 UTC 之 2026 不同。
+    const primaryDate = new Date("2026-01-01T02:00:00Z");
+    try {
+      for (const tz of TIMEZONES) {
+        vi.stubEnv("TZ", tz);
+        expect(resolveDateOrYearSegment("DEPRECIATION", null, primaryDate)).toBe("2026");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("buildReportFileName — 完整管線之日期段跨時區不變（UTC 深夜邊界）", () => {
+    const date = new Date("2026-08-31T23:30:00Z");
+    try {
+      for (const tz of TIMEZONES) {
+        vi.stubEnv("TZ", tz);
+        const fileName = buildReportFileName({
+          type: "TRAVEL",
+          displayName: "王小明",
+          dateOrYearSource: date,
+          primaryDate: date,
+          reportNumber: "TRV-202608-0001",
+        });
+        expect(fileName).toBe("差旅_王小明_2026-08-31_TRV-202608-0001.pdf");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

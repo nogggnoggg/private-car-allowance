@@ -76,7 +76,7 @@ export function sanitizeDisplayName(raw: string): string {
 
   value = value.replace(/\s+/g, "_");
 
-  value = value.slice(0, MAX_NAME_SEGMENT_LENGTH);
+  value = Array.from(value).slice(0, MAX_NAME_SEGMENT_LENGTH).join("");
 
   return value.length === 0 ? "使用者" : value;
 }
