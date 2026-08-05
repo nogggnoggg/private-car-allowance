@@ -56,7 +56,6 @@ const EMPTY_FROM = "2020-01-01"; // 空區間（不含 T-1/T-2，且 ownerId 隔
 const EMPTY_TO = "2020-01-02";
 
 const PARAM_EFFECTIVE_FROM = "2021-01-01";
-const PARAM_FUEL_UNIT_PRICE = 6.0;
 const PARAM_ETC_UNIT_PRICE = 1.5;
 
 // ---------------------------------------------------------------------------
@@ -93,26 +92,17 @@ async function loginAsAdmin(page: Page): Promise<void> {
   await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
 }
 
+// CHORE-E2E-BOOTSTRAP：`POST /parameters/fuel` 已於 PHASE-005a-T3b（§16
+// D1(a)、AC-37）退場回 404——油資本身之覆蓋改由下方 `ensureFuelModelCoversDate`
+// 負責（新模型：擁有人油耗版本 → 對應油種油價版本），本函式僅餘 ETC。
 async function ensureParametersCoverDate(page: Page, dateStr: string): Promise<void> {
-  const [fuelRes, etcRes] = await Promise.all([
-    page.request.get(`${API_BASE}/parameters/fuel`),
-    page.request.get(`${API_BASE}/parameters/etc`),
-  ]);
-  const { versions: fuelVersions } = (await fuelRes.json()) as {
-    versions: { effectiveFrom: string }[];
-  };
+  const etcRes = await page.request.get(`${API_BASE}/parameters/etc`);
   const { versions: etcVersions } = (await etcRes.json()) as {
     versions: { effectiveFrom: string }[];
   };
   const covers = (versions: { effectiveFrom: string }[]) =>
     versions.some((v) => v.effectiveFrom <= dateStr);
 
-  if (!covers(fuelVersions)) {
-    const res = await page.request.post(`${API_BASE}/parameters/fuel`, {
-      data: { unitPrice: PARAM_FUEL_UNIT_PRICE, effectiveFrom: PARAM_EFFECTIVE_FROM },
-    });
-    if (!res.ok()) throw new Error(`E2E 設定油資參數失敗: ${res.status()} ${await res.text()}`);
-  }
   if (!covers(etcVersions)) {
     const res = await page.request.post(`${API_BASE}/parameters/etc`, {
       data: { unitPrice: PARAM_ETC_UNIT_PRICE, effectiveFrom: PARAM_EFFECTIVE_FROM },

@@ -61,7 +61,6 @@ function isoDateMonthsAgo(months: number): string {
 const SUCCESS_TRIP_DATE = isoDateMonthsAgo(2);
 const NO_PARAM_TRIP_DATE = "1999-05-05";
 const PARAM_EFFECTIVE_FROM = "2020-06-01";
-const PARAM_FUEL_UNIT_PRICE = 6.5;
 const PARAM_ETC_UNIT_PRICE = 1.8;
 
 // ---------------------------------------------------------------------------
@@ -82,21 +81,19 @@ const NEW_MODEL_PRICE_PER_LITER = "65.0000";
 const NEW_MODEL_BASIS_NOTE = "PHASE-005a-T13R E2E 合成資料（新油資模型播種）";
 
 /**
- * 確保油資／ETC 補助參數至少有一版本覆蓋 `dateStr`（若缺，於
+ * 確保 ETC 補助參數至少有一版本覆蓋 `dateStr`（若缺，於
  * `PARAM_EFFECTIVE_FROM` 建立一版）。先查後建（idempotent）——`backend`
  * 是跨多次 E2E 執行共用的持久化 dev DB，且參數版本沒有 DELETE 端點（財務
  * 參數歷史不可變，AC-07 之精神），故重複執行本函式不得因「已存在」而
  * 409（PARAMETER_PERIOD_OVERLAP）。呼叫端須先以管理員身分登入（`page` 的
  * cookie 需已通過 `requireAuth`/`requireAdmin`）。
+ *
+ * CHORE-E2E-BOOTSTRAP：`POST /parameters/fuel` 已於 PHASE-005a-T3b（§16
+ * D1(a)、AC-37）退場回 404——油資本身之覆蓋改由 `ensureFuelModelCoversDate`
+ * 負責（新模型：擁有人油耗版本 → 對應油種油價版本），本函式僅餘 ETC。
  */
 async function ensureParametersCoverDate(page: Page, dateStr: string): Promise<void> {
-  const [fuelRes, etcRes] = await Promise.all([
-    page.request.get(`${API_BASE}/parameters/fuel`),
-    page.request.get(`${API_BASE}/parameters/etc`),
-  ]);
-  const { versions: fuelVersions } = (await fuelRes.json()) as {
-    versions: { effectiveFrom: string }[];
-  };
+  const etcRes = await page.request.get(`${API_BASE}/parameters/etc`);
   const { versions: etcVersions } = (await etcRes.json()) as {
     versions: { effectiveFrom: string }[];
   };
@@ -104,14 +101,6 @@ async function ensureParametersCoverDate(page: Page, dateStr: string): Promise<v
   const covers = (versions: { effectiveFrom: string }[]) =>
     versions.some((v) => v.effectiveFrom <= dateStr);
 
-  if (!covers(fuelVersions)) {
-    const res = await page.request.post(`${API_BASE}/parameters/fuel`, {
-      data: { unitPrice: PARAM_FUEL_UNIT_PRICE, effectiveFrom: PARAM_EFFECTIVE_FROM },
-    });
-    if (!res.ok()) {
-      throw new Error(`E2E 設定油資參數失敗: ${res.status()} ${await res.text()}`);
-    }
-  }
   if (!covers(etcVersions)) {
     const res = await page.request.post(`${API_BASE}/parameters/etc`, {
       data: { unitPrice: PARAM_ETC_UNIT_PRICE, effectiveFrom: PARAM_EFFECTIVE_FROM },
