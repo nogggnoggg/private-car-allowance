@@ -527,25 +527,26 @@ describe("ParametersPage — Success 態", () => {
       expect(screen.getByLabelText(/車價/)).toBeInTheDocument();
     });
 
-    // Fill depreciation form
+    // Fill depreciation form（PHASE-007-R11／AC-61：表單僅車價／折舊年限／生效日期）
     fireEvent.change(screen.getByLabelText(/車價/), { target: { value: "500000" } });
     fireEvent.change(screen.getByLabelText(/折舊年限/), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText(/預估年度行駛公里數/), { target: { value: "15000" } });
 
     const dateInputs = screen.getAllByLabelText(/生效日期/);
     const lastDateInput = dateInputs[dateInputs.length - 1];
     if (lastDateInput) fireEvent.change(lastDateInput, { target: { value: "2026-02-01" } });
 
-    // Mock POST → 201 success with derived from backend
+    // Mock POST → 201 success with derived from backend（新版本 estimatedAnnualKm／
+    // perKmUnitPrice 皆為 null，AC-57(b)）
     (fetch as Mock).mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           version: {
             ...depreciationVersion,
+            estimatedAnnualKm: null,
             effectiveFrom: "2026-02-01",
             derived: {
               annualDepreciation: "100000.00",
-              perKmUnitPrice: "6.6667",
+              perKmUnitPrice: null,
             },
           },
         }),
@@ -557,10 +558,11 @@ describe("ParametersPage — Success 態", () => {
     mockGetVersions("depreciation", [
       {
         ...depreciationVersion,
+        estimatedAnnualKm: null,
         effectiveFrom: "2026-02-01",
         derived: {
           annualDepreciation: "100000.00",
-          perKmUnitPrice: "6.6667",
+          perKmUnitPrice: null,
         },
       },
     ]);
@@ -573,11 +575,152 @@ describe("ParametersPage — Success 態", () => {
       expect(screen.getByText(/建立成功|已建立/)).toBeInTheDocument();
     });
 
-    // Verify derived values displayed (from backend, not calculated by frontend)
+    // Verify annualDepreciation displayed (from backend, not calculated by frontend);
+    // perKmUnitPrice 為 null → 唯讀顯示「—」，不再顯示具體單價數值
     await waitFor(() => {
       expect(screen.getByText(/100000\.00|100000/)).toBeInTheDocument();
-      expect(screen.getByText(/6\.6667/)).toBeInTheDocument();
     });
+    expect(screen.queryByText(/6\.6667/)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// AC-61 — 折舊參數縮欄與歷史唯讀（PHASE-007-R11）
+// ============================================================
+
+describe("ParametersPage — AC-61 折舊縮欄與歷史唯讀", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("AC-61：折舊參數建立表單僅有車價、折舊年限、生效日期（預估年度行駛公里數欄位不存在之負向斷言）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/車價/)).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText(/折舊年限/)).toBeInTheDocument();
+    expect(screen.getAllByLabelText(/生效日期/).length).toBeGreaterThanOrEqual(1);
+
+    // 負向斷言：預估年度行駛公里數輸入欄不存在
+    expect(screen.queryByLabelText(/預估年度行駛公里數/)).not.toBeInTheDocument();
+  });
+
+  it("AC-61：折舊預覽顯示每年折舊費用、不顯示每公里補助單價（負向斷言）", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", []);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/車價/)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/車價/), { target: { value: "500000" } });
+    fireEvent.change(screen.getByLabelText(/折舊年限/), { target: { value: "5" } });
+    const dateInputs = screen.getAllByLabelText(/生效日期/);
+    const depDateInput = dateInputs[dateInputs.length - 1];
+    if (depDateInput) fireEvent.change(depDateInput, { target: { value: "2026-02-01" } });
+
+    // 新版本後端回應：estimatedAnnualKm 與 perKmUnitPrice 皆為 null（AC-57(b)）
+    (fetch as Mock).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          version: {
+            id: "dep-v-new",
+            vehiclePrice: "500000.00",
+            usefulLifeYears: 5,
+            estimatedAnnualKm: null,
+            effectiveFrom: "2026-02-01",
+            createdAt: "2026-02-01T00:00:00.000Z",
+            derived: { annualDepreciation: "100000.00", perKmUnitPrice: null },
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    mockGetVersions("depreciation", [
+      {
+        id: "dep-v-new",
+        vehiclePrice: "500000.00",
+        usefulLifeYears: 5,
+        estimatedAnnualKm: null,
+        effectiveFrom: "2026-02-01",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        derived: { annualDepreciation: "100000.00", perKmUnitPrice: null },
+      },
+    ]);
+
+    const submitBtns = screen.getAllByRole("button", { name: /^建立$/ });
+    const depSubmitBtn = submitBtns[submitBtns.length - 1];
+    if (depSubmitBtn) fireEvent.click(depSubmitBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/建立成功|已建立/)).toBeInTheDocument();
+    });
+
+    // 顯示每年折舊費用
+    await waitFor(() => {
+      expect(screen.getByText(/100000\.00/)).toBeInTheDocument();
+    });
+    // 負向斷言：新版本不顯示每公里補助單價之數值
+    expect(screen.queryByText(/6\.6667/)).not.toBeInTheDocument();
+  });
+
+  it("AC-61：版本列表對含預估年里程之歷史版本以唯讀顯示原值", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [depreciationVersion]);
+
+    renderPage();
+
+    await waitFor(() => {
+      // depreciationVersion.estimatedAnnualKm = 15000（歷史原值）
+      expect(screen.getByText("15000")).toBeInTheDocument();
+      // depreciationVersion.derived.perKmUnitPrice = "6.6667"（歷史原值）
+      expect(screen.getByText("6.6667")).toBeInTheDocument();
+    });
+  });
+
+  it("AC-61：新版本之預估年里程與每公里單價欄顯示「—」", async () => {
+    mockMeAs(adminUser);
+    mockGetVersions("fuel", []);
+    mockGetVersions("etc", []);
+    mockGetVersions("depreciation", [
+      {
+        id: "dep-v-new2",
+        vehiclePrice: "500000.00",
+        usefulLifeYears: 5,
+        estimatedAnnualKm: null,
+        effectiveFrom: "2026-03-01",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        derived: { annualDepreciation: "100000.00", perKmUnitPrice: null },
+      },
+    ]);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("折舊參數版本清單")).toBeInTheDocument();
+    });
+
+    const table = screen.getByLabelText("折舊參數版本清單");
+    const dashCells = within(table).getAllByText("—");
+    // 預估年里程欄 + 每公里單價欄 = 2 個「—」
+    expect(dashCells.length).toBe(2);
   });
 });
 

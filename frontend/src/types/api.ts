@@ -53,12 +53,14 @@ export interface DepreciationParameterDto {
   id: string;
   vehiclePrice: string; // Decimal as string
   usefulLifeYears: number;
-  estimatedAnnualKm: number;
+  /** PHASE-007-R11：新版本為 `null`（AC-57(b)）；歷史版本回原值（AC-57(c)） */
+  estimatedAnnualKm: number | null;
   effectiveFrom: string;
   createdAt: string;
   derived: {
     annualDepreciation: string;
-    perKmUnitPrice: string;
+    /** PHASE-007-R11：新版本為 `null`（AC-57(b)）；歷史版本回原值（AC-57(c)） */
+    perKmUnitPrice: string | null;
   };
 }
 

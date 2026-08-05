@@ -72,7 +72,6 @@ export async function apiGetEtcVersions(): Promise<{ versions: EtcParameterDto[]
 export interface CreateDepreciationVersionRequest {
   vehiclePrice: string | number;
   usefulLifeYears: number;
-  estimatedAnnualKm: number;
   effectiveFrom: string;
 }
 
