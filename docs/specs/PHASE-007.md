@@ -1205,6 +1205,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 
 | 2026-08-05 | **R1 即審 S-1 勘誤（§20.15 回滾程序增補；沿 AR-a「條文以本列勘誤」先例）**：§20.15 開發階段回滾除既載之 branch 還原＋`DROP COLUMN`×4／`SET NOT NULL` 外，**另須處理 migration ledger**——執行 `prisma migrate resolve --rolled-back 20260805090000_phase7_depreciation_revision`（或刪除 `_prisma_migrations` 該列）；否則後續 roll-forward 之 `migrate deploy` 會靜默跳過 M2，造成 DB 缺 4 欄而程式期待其存在之不一致（現存測試無法偵測——drift guard 比對 migrations↔schema 非已部署 DB）。§14 對 M1 之同型回滾程序比照辦理。 | R1 即審 S-1（reviewer 實證）；大總管白名單處置 |
 
+| 2026-08-05 | **§20.4.3 R2 回填義務交付（`.times(ratio)` kill 數對）**：`annualDepreciation=10004.17`（車價 30012.51÷3，引擎可達）× `officialKm=99995.00` ÷ `annualTotalKm=100041.7` → `ratio=0.99953319465782768585`、`rawAmount=9999.5`（恰 .5）→ 正確 `amount=10000`；mutant `annualDepreciation.times(ratio)` → `9999.4999999999999999` → `9999` ✗ 必紅。窮舉構造：`raw=k/2` 恆精確 .5、`ratio` 無盡小數，掃描 4165 組命中 5 組（Decimal.precision=20 已釘）。AC-50(c) 以實際數對＋原始碼結構性斷言雙防線落地。 | R2 Handoff Warnings ①（窮舉實跑）；大總管白名單回填 |
+
 > Gate 固化義務已履行（上列 2026-08-04 第二列；修訂段 Gate 見上列 2026-08-05 末列）。
 
 ---
