@@ -96,7 +96,12 @@ import {
   toTravelApplicationDto,
   updateTravelDraft,
 } from "./travel-service.js";
-import { parseActualCostField, parseKmField, parseLocationField } from "./trip-validation.js";
+import {
+  parseActualCostField,
+  parseAnnualTotalKmField,
+  parseKmField,
+  parseLocationField,
+} from "./trip-validation.js";
 
 // ---------------------------------------------------------------------------
 // Plugin options
@@ -485,13 +490,26 @@ export function parseApplicationYearField(value: unknown): FieldParseResult<numb
 }
 
 /**
+ * PHASE-007-R5（AC-47(e)）：年度總里程之欄位路徑一律為字面 `"annualTotalKm"`
+ * ——與 `depreciation-blockers.ts` 之 `Blocker.field` 一致，前端依此定位欄位
+ * （006 T3 AR-2／FW-5 教訓）。
+ */
+const ANNUAL_TOTAL_KM_FIELD = "annualTotalKm";
+
+/**
  * 折舊 body 之欄位解析（POST／PUT 共用同一條驗證路徑——006 T4R SF-1 教訓：
  * 只在 PUT 驗證會讓「POST 少一道守門」之 mutant 存活）。三態語意由呼叫端依
  * `hasOwnProperty` 決定是否帶入 patch 的對應 key。
+ *
+ * `annualTotalKm`（AC-47）之解析一律委派 `trip-validation.ts` 之
+ * `parseAnnualTotalKmField`（其內部與 `parseKmField`／`parseActualCostField`
+ * 共用同一份 `parseDecimalField`）——**本檔不持有第二份格式／精度／值域判準**。
+ * 本函式對兩個欄位一律「各自解析、各自累積錯誤」，故同一請求之多欄不合法時
+ * `fields[]` 會完整回報（非只回第一項）。
  */
 interface ParsedDepreciationFields {
   errors: FieldError[];
-  fields: { applicationYear?: number | null };
+  fields: { applicationYear?: number | null; annualTotalKm?: Prisma.Decimal | null };
 }
 
 export function parseDepreciationFieldsInput(
@@ -504,6 +522,12 @@ export function parseDepreciationFieldsInput(
     const result = parseApplicationYearField(body.applicationYear);
     if (!result.ok) errors.push(result.error);
     else fields.applicationYear = result.value;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, ANNUAL_TOTAL_KM_FIELD)) {
+    const result = parseAnnualTotalKmField(body.annualTotalKm, ANNUAL_TOTAL_KM_FIELD);
+    if (!result.ok) errors.push(result.error);
+    else fields.annualTotalKm = result.value;
   }
 
   return { errors, fields };

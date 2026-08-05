@@ -128,6 +128,20 @@ export interface CreateDepreciationDraftInput {
   ownerId: string;
   createdById: string;
   applicationYear?: number | null;
+  /**
+   * PHASE-007-R5（AC-48(a)）：**使用者申報之申請資料**，應予採用——請求 body
+   * 之值原樣寫入 `DepreciationApplication.annualTotalKm`（`Decimal(9,1)`）。
+   *
+   * 與 CLAUDE.md「後端不得採用前端提交的金額」不衝突：後者約束「計算結果」
+   * （`officialKm`／`ratio`／`amount`／快照欄，本檔一律不讀取），本欄約束
+   * 「申請輸入資料」，與保養之 `actualCost` 同型（AC-48 消歧義註記，人類已於
+   * US Gate 明文批准）。
+   *
+   * 格式／精度／值域驗證（AC-47）**100% 落在 `routes.ts` 之
+   * `parseAnnualTotalKmField`**（沿 `applicationYear` 之既有分層）；本檔只收
+   * 已驗證之 `Prisma.Decimal | null`，不重複驗證、也不自行放寬。
+   */
+  annualTotalKm?: Prisma.Decimal | null;
 }
 
 /**
@@ -168,6 +182,9 @@ export async function createDepreciationDraft(
         depreciation: {
           create: {
             applicationYear,
+            // AC-48(a)：原樣採用（`?? null` 僅處理「key 缺省」，不改變任何已
+            // 驗證之值）。全部快照欄一律不寫入（保持 `null`，AC-02）。
+            annualTotalKm: input.annualTotalKm ?? null,
           },
         },
       },
@@ -222,6 +239,9 @@ export async function getDepreciationApplication(
  */
 export interface UpdateDepreciationDraftPatch {
   applicationYear?: number | null;
+  /** PHASE-007-R5（AC-48(a)）：三態語意同 `applicationYear`；語意說明見
+   *  `CreateDepreciationDraftInput.annualTotalKm`。 */
+  annualTotalKm?: Prisma.Decimal | null;
   attachmentIds?: string[];
 }
 
@@ -365,7 +385,7 @@ export async function updateDepreciationDraft(
               createdAt: true,
               ownerId: true,
               owner: { select: { loginName: true } },
-              depreciation: { select: { applicationYear: true } },
+              depreciation: { select: { applicationYear: true, annualTotalKm: true } },
             },
           });
 
@@ -375,6 +395,12 @@ export async function updateDepreciationDraft(
           const nextApplicationYear = hasKey(patch, "applicationYear")
             ? (patch.applicationYear ?? null)
             : (existing.depreciation?.applicationYear ?? null);
+
+          // AC-48(a)：三態語意——key 缺席＝不變（沿用交易內新鮮讀取之現值，
+          // 非交易外過期值）、`null`＝清空（草稿寬容，AC-53(a)）、有值＝設定。
+          const nextAnnualTotalKm = hasKey(patch, "annualTotalKm")
+            ? (patch.annualTotalKm ?? null)
+            : (existing.depreciation?.annualTotalKm ?? null);
 
           const primaryDate = deriveDepreciationPrimaryDate(
             nextApplicationYear,
@@ -388,6 +414,7 @@ export async function updateDepreciationDraft(
               depreciation: {
                 update: {
                   applicationYear: nextApplicationYear,
+                  annualTotalKm: nextAnnualTotalKm,
                 },
               },
             },
@@ -457,14 +484,31 @@ export async function updateDepreciationDraft(
 // ---------------------------------------------------------------------------
 
 /**
- * §7.2 `DepreciationComputedDto`。本 Task 不填充（恆 `null`）——形狀先行宣告
- * 以固定對外契約；T6（年度里程）／T7（參數與單價）落地其內容。
+ * §20.6 `DepreciationComputedDto`（修訂後形狀，取代 §7.2）。
+ *
+ * 修訂段異動（PHASE-007-R5）：
+ *   ★ 新增 `annualDepreciation`（2dp，`deriveAnnualDepreciation` 逐字）
+ *   ★ 新增 `annualTotalKm`（1dp，申請資料原樣回傳）
+ *   ★ 新增 `ratio`（6dp）／`ratioPercent`（4dp）——**顯示用**，絕不參與金額
+ *     （AC-50(b)(c)；金額一律由 `calculateDepreciation` 之先乘後除求得）
+ *   ✗ 移除 `perKmUnitPrice`（每公里單價已退出申請計算，裁定①）
+ *
+ * §20.6 揭露面不變式：本型別**不含** `vehiclePrice`／`usefulLifeYears`／
+ * `estimatedAnnualKm`／`depreciationParameterVersionId`（Q6 已將年限之遮蔽固化
+ * 為契約——每年折舊費用 × 年限 ＝ 車價）。
  */
 export interface DepreciationComputedDto {
   calculable: boolean;
+  /** ★ 每年折舊費用（2 位小數）；無可用參數／推導失敗時 `null`。 */
+  annualDepreciation: string | null;
   officialKm: string | null;
   officialApplicationCount: number | null;
-  perKmUnitPrice: string | null;
+  /** ★ 年度總里程（1 位小數）——申請資料原樣回傳，未輸入時 `null`。 */
+  annualTotalKm: string | null;
+  /** ★ 公務比例（6 位小數，顯示用）。 */
+  ratio: string | null;
+  /** ★ 公務比例百分比（4 位小數，顯示用）。 */
+  ratioPercent: string | null;
   rawAmount: string | null;
   amount: number | null;
   blockingCodes: string[];
@@ -595,6 +639,30 @@ function formatRawAmount(rawAmount: Prisma.Decimal): string {
 }
 
 /**
+ * 年度總里程之 DTO 呈現（§20.6：`annualTotalKm` 為 **1 位小數**字串）。
+ *
+ * 純呈現，零量化風險：欄位為 `Decimal(9,1)`、且 `parseAnnualTotalKmField`
+ * （AC-47(b)）已於寫入前把小數位限死在 1 位，故 `toFixed(1)` 對持久值恆為
+ * 無損定寬（不會發生第二次捨入）。定寬而非 `toString()`：`20000` 與 `20000.0`
+ * 在 wire 上必須是同一個字面（DTO 契約為固定小數位字串）。
+ */
+function formatAnnualTotalKm(annualTotalKm: Prisma.Decimal | null): string | null {
+  return annualTotalKm === null ? null : annualTotalKm.toFixed(1);
+}
+
+/**
+ * `ratioPercent` 之百分比乘數（§20.6：`ratioPercent = ratio × 100`，4 位小數）。
+ * `Prisma.Decimal` 建構一律以字串字面（D4 bright-line）。
+ */
+const PERCENT_MULTIPLIER = new Prisma.Decimal("100");
+
+/** `ratio` 之顯示位數（6 位小數；對應 `snapshotRatio Decimal(9,6)`）。 */
+const RATIO_DISPLAY_SCALE = 6;
+
+/** `ratioPercent` 之顯示位數（4 位小數；比照保養之 `ratioPercentString`）。 */
+const RATIO_PERCENT_DISPLAY_SCALE = 4;
+
+/**
  * 計算折舊補貼之 `computed`（§7.2 `DepreciationComputedDto`）與其原始 Decimal
  * 值（§9.2 唯讀路徑之完整實作）。
  *
@@ -639,9 +707,14 @@ async function computeDepreciationComputedResult(
     return {
       dto: {
         calculable: false,
+        annualDepreciation: null,
         officialKm: null,
         officialApplicationCount: null,
-        perKmUnitPrice: null,
+        // §20.6：申請資料**原樣回傳**——年度缺漏但總里程已填時仍如實呈現
+        // （AC-53(b) 只要求未輸入時金額面全 `null`，未要求抹除已輸入之申報值）。
+        annualTotalKm: formatAnnualTotalKm(annualTotalKm),
+        ratio: null,
+        ratioPercent: null,
         rawAmount: null,
         amount: null,
         blockingCodes: structuralBlockers.map((blocker) => blocker.code),
@@ -661,7 +734,9 @@ async function computeDepreciationComputedResult(
 
   // ③ AC-15/18/49：選版（`depreciation-parameters.ts`，不重寫選版）＋每年折舊
   //    費用（`deriveAnnualDepreciation`，不重寫推導）。
-  const { perKmUnitPrice, version } = await resolveDepreciationParameters(db, applicationYear);
+  // 修訂後之申請路徑不再消費 `perKmUnitPrice`（每公里單價已退出申請計算，
+  // 裁定①；`resolveDepreciationParameters` 仍回傳該值供舊模型快照面使用）。
+  const { version } = await resolveDepreciationParameters(db, applicationYear);
   const annualDepreciation = resolveAnnualDepreciation(version);
 
   // 第二段：`officialKm`／`annualDepreciation` 同給（§20.5）。
@@ -678,9 +753,15 @@ async function computeDepreciationComputedResult(
     return {
       dto: {
         calculable: false,
+        annualDepreciation: null,
         officialKm: totalKm.toFixed(2),
         officialApplicationCount: applicationCount,
-        perKmUnitPrice: null,
+        annualTotalKm: formatAnnualTotalKm(annualTotalKm),
+        // 比例與金額同屬「算不出來」——`calculateDepreciation` 之呼叫需要每年
+        // 折舊費用，故此路徑不呼叫它（§20.5 FW-1：缺參數路徑絕不觸發比例／容量
+        // 判定），比例欄一律 `null`，**絕不**以 0 或任何佔位值填充。
+        ratio: null,
+        ratioPercent: null,
         rawAmount: null,
         amount: null,
         blockingCodes,
@@ -699,13 +780,16 @@ async function computeDepreciationComputedResult(
   return {
     dto: {
       calculable,
+      // §20.6：每年折舊費用逐字呈現（2 位小數，`deriveAnnualDepreciation` 之
+      // 契約值），**不再取整**（AC-51(b)：本 Phase 之取整恰一處，即最終金額）。
+      annualDepreciation: annualDepreciation.toFixed(2),
       officialKm: totalKm.toFixed(2),
       officialApplicationCount: applicationCount,
-      // D6(a)：單價逐字呈現（4 位小數），不再取整。舊模型欄位（§20.6 之 DTO
-      // 形狀變更屬 R6 本體）；縮欄後之新版本無 `estimatedAnnualKm`，
-      // `resolveDepreciationParameters` 之單價為 `null` → 此處如實呈現 `null`，
-      // **絕不**以 0 或任何佔位值填充。
-      perKmUnitPrice: perKmUnitPrice === null ? null : perKmUnitPrice.toFixed(4),
+      annualTotalKm: formatAnnualTotalKm(annualTotalKm),
+      // AC-50(b)：顯示字串取自 R2 之計算結果（本檔零除法、零第二份精度規則）；
+      // 兩者**不回流金額**（AC-50(c)：`rawAmount` 一律先乘後除）。
+      ratio: result.ratioString,
+      ratioPercent: result.ratioPercentString,
       // 超出容量時不呈現金額（沿 PHASE-006 `computeMaintenanceComputed` 之既有
       // 處置：不可計算即不給數字，避免前端顯示一個存不進去的金額）。
       rawAmount: calculable && result.rawAmount !== null ? formatRawAmount(result.rawAmount) : null,
@@ -730,13 +814,27 @@ export async function computeDepreciationComputed(
 }
 
 /**
- * §7.2 `DepreciationSnapshotDto`。**刻意不含** `vehiclePrice`／
- * `usefulLifeYears`／`estimatedAnnualKm`／`depreciationParameterVersionId`
- * （§16 D8：推導三值與版本 id 仍持久化於 DB，但於任何折舊申請 DTO 皆不外露）。
+ * §20.6 `DepreciationSnapshotDto`（修訂後形狀，取代 §7.2）。**刻意不含**
+ * `vehiclePrice`／`usefulLifeYears`／`estimatedAnnualKm`／
+ * `depreciationParameterVersionId`（§16 D8 ＋ Q6：推導值與版本 id 仍持久化於
+ * DB，但於任何折舊申請 DTO 皆不外露）。
+ *
+ * AC-56：`model` 為新舊模型之判別結果，由 `snapshotAnnualTotalKm` 推導——
+ * 新模型欄於 `LEGACY` 列一律 `null`、舊模型欄（`perKmUnitPrice`）於 `CURRENT`
+ * 列一律 `null`。**舊模型列一律以快照原值呈現，不得以新模型重算**
+ * （BE-US-14 第 3 條逐字）。
  */
 export interface DepreciationSnapshotDto {
+  model: "CURRENT" | "LEGACY";
+  // ── 新模型欄（LEGACY 列為 null）──
+  annualDepreciation: string | null; // 2 位小數
+  annualTotalKm: string | null; // 1 位小數
+  ratio: string | null; // 6 位小數
+  ratioPercent: string | null; // 4 位小數
+  // ── 舊模型欄（CURRENT 列為 null）──
+  perKmUnitPrice: string | null; // 4 位小數
+  // ── 兩模型共有 ──
   officialKm: string; // 2 位小數
-  perKmUnitPrice: string; // 4 位小數
   rawAmount: string; // 4 位小數
   totalAmount: number; // 整數（＝ Application.totalAmount）
   calculatedAt: string; // ISO8601
@@ -755,6 +853,8 @@ export interface DepreciationApplicationDto {
   updatedAt: string;
 
   applicationYear: number | null;
+  /** ★ §20.6：年度總里程（1 位小數字串；使用者申報之申請資料，AC-48(a)）。 */
+  annualTotalKm: string | null;
 
   duplicateYearNotice: { count: number; hasCompleted: boolean } | null;
 
@@ -785,16 +885,46 @@ function buildSnapshotDto(
     application.status !== "COMPLETED" ||
     !depreciation ||
     depreciation.snapshotOfficialKm == null ||
-    depreciation.snapshotPerKmUnitPrice == null ||
     depreciation.snapshotRawAmount == null ||
     depreciation.calculatedAt == null ||
     application.totalAmount == null
   ) {
     return null;
   }
+
+  // AC-56(a) 判別（**單一判準**，逐字）：
+  //   新模型列：`snapshotAnnualTotalKm != null`
+  //   舊模型列：`snapshotPerKmUnitPrice != null` 且 `snapshotAnnualTotalKm == null`
+  // 兩者皆 `null` 之 `COMPLETED` 列不屬任一模型（草稿列之判別條件），無從如實
+  // 揭露 `model`——沿本函式既有之保守處置優雅回 `null`（不猜、不 500）。
+  const snapshotAnnualTotalKm = depreciation.snapshotAnnualTotalKm;
+  const snapshotPerKmUnitPrice = depreciation.snapshotPerKmUnitPrice;
+  if (snapshotAnnualTotalKm == null && snapshotPerKmUnitPrice == null) {
+    return null;
+  }
+  const isCurrentModel = snapshotAnnualTotalKm != null;
+
+  // AC-56(c)：舊模型列**零重算**——本函式只做定精度字串化，沒有任何算式；
+  // `ratioPercent` 亦僅由已持久化之 `snapshotRatio` 乘 100 呈現（`Decimal`
+  // 全程，零浮點中介），**不**由 `officialKm ÷ annualTotalKm` 重算。
+  const snapshotRatio = depreciation.snapshotRatio;
+
   return {
+    model: isCurrentModel ? "CURRENT" : "LEGACY",
+    annualDepreciation:
+      isCurrentModel && depreciation.snapshotAnnualDepreciation != null
+        ? depreciation.snapshotAnnualDepreciation.toFixed(2)
+        : null,
+    annualTotalKm: isCurrentModel ? formatAnnualTotalKm(snapshotAnnualTotalKm) : null,
+    ratio:
+      isCurrentModel && snapshotRatio != null ? snapshotRatio.toFixed(RATIO_DISPLAY_SCALE) : null,
+    ratioPercent:
+      isCurrentModel && snapshotRatio != null
+        ? snapshotRatio.times(PERCENT_MULTIPLIER).toFixed(RATIO_PERCENT_DISPLAY_SCALE)
+        : null,
+    perKmUnitPrice:
+      !isCurrentModel && snapshotPerKmUnitPrice != null ? snapshotPerKmUnitPrice.toFixed(4) : null,
     officialKm: depreciation.snapshotOfficialKm.toFixed(2),
-    perKmUnitPrice: depreciation.snapshotPerKmUnitPrice.toFixed(4),
     rawAmount: depreciation.snapshotRawAmount.toFixed(4),
     totalAmount: application.totalAmount,
     calculatedAt: depreciation.calculatedAt.toISOString(),
@@ -856,6 +986,8 @@ export function toDepreciationApplicationDto(
     updatedAt: application.updatedAt.toISOString(),
 
     applicationYear: depreciation?.applicationYear ?? null,
+    // AC-48(a)：申請資料原樣回傳（1 位小數定寬字串）。
+    annualTotalKm: formatAnnualTotalKm(depreciation?.annualTotalKm ?? null),
 
     duplicateYearNotice,
 

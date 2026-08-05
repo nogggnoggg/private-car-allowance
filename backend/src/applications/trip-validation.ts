@@ -55,6 +55,14 @@ const KM_MAGNITUDE_LIMIT = new Prisma.Decimal("100000000"); // 10^8
  */
 const ACTUAL_COST_MAGNITUDE_LIMIT = new Prisma.Decimal("10000000000"); // 10^10
 
+/**
+ * `Decimal(9,1)` capacity (PHASE-007-R1／Spec §20.7.1：
+ * `DepreciationApplication.annualTotalKm`): precision 9, scale 1 → 整數部分
+ * 最多 `9 - 1 = 8` 位。值域 `|v| ≥ 10^8` 無法儲存，於本層以明確理由拒絕
+ * （AC-47(d)），而非留到 DB 層炸成不透明錯誤（T1 FW-2 容量守門在驗證層）。
+ */
+const ANNUAL_TOTAL_KM_MAGNITUDE_LIMIT = new Prisma.Decimal("100000000"); // 10^(9-1)
+
 export type ParseKmFieldResult =
   | { ok: true; value: Prisma.Decimal | null }
   | { ok: false; error: FieldError };
@@ -72,11 +80,21 @@ export type ParseKmFieldResult =
  *      千分位逗號或指數記號，`Number.isFinite` 擋 `NaN`/`Infinity` 數字輸入）
  *   3. 小數位層：超過 `maxDecimalPlaces` → 400
  *   4. 容量層：超過 `magnitudeLimit`（欄位精度推導，非魔術數）→ 400
+ *   5. 正值層（**選用**，PHASE-007-R5／AC-47(c) 裁定 E）：僅在呼叫端提供
+ *      `positiveReason` 時啟用——`≤ 0` → 400。里程／金額欄之既有語意是「格式層
+ *      放行負值，業務層（完成時）才擋」（AC-21），而年度總里程之裁定 E 明文要求
+ *      **當場**拒絕，故以一個選用參數表達此差異，而不是複製一份解析器。
  */
 function parseDecimalField(
   value: unknown,
   field: string,
-  options: { maxDecimalPlaces: number; magnitudeLimit: Prisma.Decimal; capacityReason: string }
+  options: {
+    maxDecimalPlaces: number;
+    magnitudeLimit: Prisma.Decimal;
+    capacityReason: string;
+    /** 提供時啟用「必須 > 0」之值域層；未提供 ＝ 沿既有欄位之寬容語意。 */
+    positiveReason?: string;
+  }
 ): ParseKmFieldResult {
   if (value === null) {
     return { ok: true, value: null };
@@ -120,6 +138,14 @@ function parseDecimalField(
     return { ok: false, error: { field, reason: options.capacityReason } };
   }
 
+  // 5. 正值層（選用；AC-47(c)）。此處之 `≤ 0` 比較是安全的：`NaN`／`±Infinity`
+  //    已於型別層（`Number.isFinite`）與格式層（`DECIMAL_LITERAL_PATTERN` 不接受
+  //    `NaN`／`Infinity` 字面）排除，故不存在「與 `NaN` 比較恆為 false 而靜默
+  //    放行」之缺口（005a T2 SF-1 同型陷阱）。
+  if (options.positiveReason !== undefined && decimalValue.lessThanOrEqualTo(0)) {
+    return { ok: false, error: { field, reason: options.positiveReason } };
+  }
+
   return { ok: true, value: decimalValue };
 }
 
@@ -155,6 +181,32 @@ export function parseActualCostField(value: unknown, field: string): ParseKmFiel
     maxDecimalPlaces: 2,
     magnitudeLimit: ACTUAL_COST_MAGNITUDE_LIMIT,
     capacityReason: "數值超出可儲存範圍（整數部分最多 10 位）",
+  });
+}
+
+/**
+ * PHASE-007-R5 新增：解析 `DepreciationApplication.annualTotalKm`
+ * （`Decimal(9,1)`，Spec §20.7.1；AC-47）——**使用者申報之年度總里程**。
+ *
+ * 與 `parseKmField`／`parseActualCostField` 共用同一份 `parseDecimalField`
+ * 實作（AC-47 之「不新增第二套驗證實作」；`trip-validation.test.ts` 之
+ * 「結構性證明」describe 以原始碼掃描機械守護），四個參數之依據逐項：
+ *   - `maxDecimalPlaces: 1` ── 裁定 D／AC-47(b)：小數位 > 1 → 400，**不得靜默
+ *     取整**（Postgres 對超 scale 之小數是靜默四捨五入，T1 FW-3，故守門必須
+ *     發生在寫入之前）。
+ *   - `magnitudeLimit` ── `Decimal(9,1)` 之整數位推導（AC-47(d)）。
+ *   - `capacityReason` ── 沿既有里程欄文案（AC-47(d) 逐字）。
+ *   - `positiveReason` ── 裁定 E／AC-47(c)：`0` 與負數**當場** 400，不延後至完成
+ *     階段（與 `parseKmField` 對負值之寬容刻意相異）。`null`／缺省則仍允許
+ *     （草稿寬容，AC-53(a)），由 `computeDepreciationBlockers` 之
+ *     `ANNUAL_TOTAL_KM_REQUIRED` 於完成時擋下。
+ */
+export function parseAnnualTotalKmField(value: unknown, field: string): ParseKmFieldResult {
+  return parseDecimalField(value, field, {
+    maxDecimalPlaces: 1,
+    magnitudeLimit: ANNUAL_TOTAL_KM_MAGNITUDE_LIMIT,
+    capacityReason: "數值超出可儲存範圍（整數部分最多 8 位）",
+    positiveReason: "年度總里程必須大於 0",
   });
 }
 
