@@ -196,6 +196,16 @@ function assertNoParameterDisclosure(value: unknown, path: string): void {
  */
 const UPDATED_SUMMARY_KEYS = ["annualTotalKm", "applicationId", "applicationYear", "type"] as const;
 
+/**
+ * AC-63（裁定①／Gate 揭露 #8）— 折舊代建立稽核 `summary` **封閉欄位集合**。
+ *
+ * 與 `UPDATED_SUMMARY_KEYS` 同一組四鍵，但代建立為**單值**
+ * （`annualTotalKm: string | null`），非代修改之 `{before, after}`——形狀非
+ * 對稱之明文見 Spec §20.17.7 AC-63(c)。以集合全等表達，使「漏加鍵」與「夾帶
+ * 車價／年限」兩種 mutant 同時被同一條斷言攔下。
+ */
+const CREATED_SUMMARY_KEYS = ["annualTotalKm", "applicationId", "applicationYear", "type"] as const;
+
 describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-34/35）", () => {
   let app: FastifyInstance;
   let prisma: PrismaClient;
@@ -439,6 +449,55 @@ describeWithDb("PHASE-007-T11 — 折舊代操作（代建立）＋ 稽核（AC-
       const application = resp.json<{ application: DepreciationApplicationJson }>().application;
       trackApp(application.id);
       expect(application.applicationYear).toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // AC-63（裁定①／Gate 揭露 #8）— 折舊代建立稽核 summary 加記 annualTotalKm，
+  // 與代修改對稱（Spec §20.17.7）
+  // ===========================================================================
+
+  describe("AC-63", () => {
+    it("AC-63：折舊代建立稽核 summary 含 annualTotalKm（1 位小數定寬），且鍵集恰為四鍵", async () => {
+      // 尾零輸入（"12345.0"）用以殺 toString() mutant——Decimal.toString() 會
+      // 修剪尾零成 "12345"，唯有 toFixed(1) 才會定寬保留為 "12345.0"。
+      const resp = await onBehalfCreate(adminCookie, ownerId, {
+        applicationYear: 2130,
+        annualTotalKm: "12345.0",
+      });
+      expect(resp.statusCode).toBe(201);
+      const application = resp.json<{ application: DepreciationApplicationJson }>().application;
+      trackApp(application.id);
+      expect(application.annualTotalKm).toBe("12345.0");
+
+      const log = await prisma.auditLog.findFirst({
+        where: { targetLabel: `${OWNER_LOGIN}#${application.id}` },
+      });
+      expect(log).not.toBeNull();
+      const summary = log?.summary as Record<string, unknown>;
+      expect(summary.annualTotalKm).toBe("12345.0");
+
+      // 封閉欄位集合：漏加鍵或夾帶車價／年限皆於此紅。
+      expect(Object.keys(summary).sort()).toEqual([...CREATED_SUMMARY_KEYS].sort());
+
+      assertNoSensitiveContent(log?.summary, "auditLog.summary");
+      assertNoParameterDisclosure(log?.summary, "auditLog.summary");
+    });
+
+    it("AC-63：未提供 annualTotalKm 之代建立 → summary.annualTotalKm 為 null（不以 0 代位）", async () => {
+      const resp = await onBehalfCreate(adminCookie, ownerId, { applicationYear: 2131 });
+      expect(resp.statusCode).toBe(201);
+      const application = resp.json<{ application: DepreciationApplicationJson }>().application;
+      trackApp(application.id);
+      expect(application.annualTotalKm).toBeNull();
+
+      const log = await prisma.auditLog.findFirst({
+        where: { targetLabel: `${OWNER_LOGIN}#${application.id}` },
+      });
+      const summary = log?.summary as Record<string, unknown>;
+      // 「清空 vs 填 0」須可區辨——絕不以 0／"0.0"／"" 代位。
+      expect(summary.annualTotalKm).toBeNull();
+      expect(Object.keys(summary).sort()).toEqual([...CREATED_SUMMARY_KEYS].sort());
     });
   });
 

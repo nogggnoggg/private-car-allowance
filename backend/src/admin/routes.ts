@@ -675,6 +675,11 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
         throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
       }
 
+      // PHASE-007-REV2-G3（AC-63，裁定①）：與代修改（applications/routes.ts
+      // 之 onUpdated）格式逐字同——非 null 時固定 1 位小數字串，null 一律如
+      // 實記錄（絕不以 0 代位）。代建立為單值（非 {before, after}），建立時
+      // 不存在前值（AC-63(c)）。值取自同一交易內建立之列，不另行查詢。
+      const ANNUAL_TOTAL_KM_SUMMARY_SCALE = 1;
       const isOnBehalf = userId !== actorId;
       const onCreated: OnDepreciationDraftCreated | undefined = isOnBehalf
         ? async (tx, created) => {
@@ -688,6 +693,10 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
                   applicationId: created.id,
                   type: "DEPRECIATION",
                   applicationYear: created.depreciation?.applicationYear ?? null,
+                  annualTotalKm:
+                    created.depreciation?.annualTotalKm == null
+                      ? null
+                      : created.depreciation.annualTotalKm.toFixed(ANNUAL_TOTAL_KM_SUMMARY_SCALE),
                 },
               },
             });
