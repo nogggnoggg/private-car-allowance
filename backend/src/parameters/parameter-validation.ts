@@ -10,6 +10,13 @@
  *   - CD-3(a)：折舊整數欄位（`usefulLifeYears`／`estimatedAnnualKm`）之 int4
  *     容量守門納入。
  *
+ * PHASE-007-R4b（Spec §20.3 AC-57(a)(e)、§20.7.5）：折舊建立端點之請求欄位集合
+ * 已縮為 `{ vehiclePrice, usefulLifeYears, effectiveFrom }`——`estimatedAnnualKm`
+ * 不再被解析／驗證／持久化，故 **`parseParameterIntField` 於折舊路徑之唯一適用
+ * 對象為 `usefulLifeYears`**。本函式本身維持**通用**（`field` 名稱為呼叫端傳入的
+ * 標籤，函式對其無語意假設），行為與文案零變更；上文 CD-3(a) 之欄位列舉保留為
+ * 歷史裁定原文，不改寫。
+ *
  * Pure functions, zero IO —— 無 prisma client、無 env、無 DB／network／filesystem。
  * 與 `applications/trip-validation.ts` **同形但不共用**（§14.7 備註：PHASE-004
  * 領域回歸面過大，本回合不抽共用模組）。本檔為**葉節點模組**，不 import
@@ -61,7 +68,11 @@ export const DEPRECIATION_VEHICLE_PRICE_CAPACITY: DecimalColumnCapacity = decima
   2
 );
 
-/** PostgreSQL `integer`（int4）之上界；`usefulLifeYears`／`estimatedAnnualKm` 為 `Int`。 */
+/**
+ * PostgreSQL `integer`（int4）之上界。`DepreciationParameterVersion` 之
+ * `usefulLifeYears`（現行）與 `estimatedAnnualKm`（PHASE-007-R4b 後已自建立端點
+ * 退場、欄位保留為 nullable）皆為 `Int`。
+ */
 export const INT4_MAX = 2 ** 31 - 1; // 2147483647
 
 /**
@@ -181,7 +192,8 @@ export type ParseParameterIntFieldResult =
   | { ok: false; error: FieldError };
 
 /**
- * 折舊整數欄位（`usefulLifeYears`／`estimatedAnnualKm`）之 **int4 容量**守門
+ * 折舊整數欄位之 **int4 容量**守門（PHASE-007-R4b 後，折舊路徑之適用對象為
+ * `usefulLifeYears`；`estimatedAnnualKm` 已縮欄退場，見檔頭）
  * （CD-3(a)／AC-28）。`≥ 2^31` 之整數（`2147483648`、`3e9`、`1e21` —— 三者
  * `Number.isInteger` 皆為 `true`，故現行值域檢查放行）在此被攔下，消滅其
  * 非 400 路徑。

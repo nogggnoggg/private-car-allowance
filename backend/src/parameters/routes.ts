@@ -101,9 +101,16 @@ const createFuelPriceBodySchema = {
 /**
  * Body schema for POST /parameters/depreciation.
  * effectiveFrom is required.
- * vehiclePrice, usefulLifeYears, estimatedAnnualKm are passed through without type coercion
+ * vehiclePrice, usefulLifeYears are passed through without type coercion
  * so the service layer can handle both string/number input and return proper field errors.
  * additionalProperties:false prevents unexpected fields.
+ *
+ * PHASE-007-R4b（Spec §20.3 AC-57(a)、§20.13 **D20**）：`estimatedAnnualKm` 已縮欄
+ * 退場——handler **不再讀取**它，其值不進入 service、不進入 DB（新列該欄為 `NULL`）。
+ * 但此 property **刻意保留宣告**：本 schema 為 `additionalProperties: false`，若一併
+ * 刪除 property，夾帶該欄的舊呼叫端會被 Fastify schema 層擋成 **400**，正好違反
+ * D20「夾帶不採用、**不回 400**」之裁定（沿全案「夾帶欄位一律靜默不採用」慣例）。
+ * 保留宣告＝接受但忽略；其餘未知欄位仍由 `additionalProperties: false` 擋下。
  */
 const createDepreciationBodySchema = {
   type: "object",
@@ -111,7 +118,7 @@ const createDepreciationBodySchema = {
   properties: {
     vehiclePrice: {}, // accept any — service validates > 0 and Decimal (AC-05, D8)
     usefulLifeYears: {}, // accept any — service validates > 0 and integer (AC-05, D8)
-    estimatedAnnualKm: {}, // accept any — service validates > 0 and integer (AC-05, D8)
+    estimatedAnnualKm: {}, // accepted for backward compatibility, never read (AC-57(a), D20)
     effectiveFrom: { type: "string", minLength: 1 },
   },
   additionalProperties: false,
@@ -314,10 +321,12 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
       schema: { body: createDepreciationBodySchema },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
+      // PHASE-007-R4b（AC-57(a)）：請求欄位集合縮為
+      // `{ vehiclePrice, usefulLifeYears, effectiveFrom }`——`estimatedAnnualKm`
+      // **不出現在此型別中**，故其值在本 handler 內無從被讀取或傳遞（夾帶不採用）。
       const body = request.body as {
         vehiclePrice?: number | string;
         usefulLifeYears?: number;
-        estimatedAnnualKm?: number;
         effectiveFrom: string;
       };
 
@@ -337,16 +346,7 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
       ) {
         fieldErrors.push({ field: "usefulLifeYears", reason: "折舊年限為必填且必須大於 0" });
       }
-      if (
-        body.estimatedAnnualKm === undefined ||
-        body.estimatedAnnualKm === null ||
-        body.estimatedAnnualKm === ("" as unknown)
-      ) {
-        fieldErrors.push({
-          field: "estimatedAnnualKm",
-          reason: "預估年度行駛公里數為必填且必須大於 0",
-        });
-      }
+      // AC-57(a)：`estimatedAnnualKm` 之「必填」缺值檢查隨欄位退場而移除。
 
       if (fieldErrors.length > 0) {
         throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", fieldErrors);
@@ -359,7 +359,8 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
         {
           vehiclePrice: body.vehiclePrice as number | string,
           usefulLifeYears: body.usefulLifeYears as number,
-          estimatedAnnualKm: body.estimatedAnnualKm as number,
+          // AC-57(a)：不傳 `estimatedAnnualKm`（service 之 optional 參數預設 null，
+          // D22）——新列該欄一律寫 `NULL`，夾帶值永遠不會抵達持久層。
           effectiveFrom: body.effectiveFrom,
           createdById: actorId,
         },
@@ -371,11 +372,18 @@ export const parametersPlugin: FastifyPluginAsync<ParametersPluginOptions> = asy
               actorId,
               targetId: null,
               targetLabel: `DEPRECIATION#${dto.id}`,
+              // PHASE-007-R4b（Spec §20.11.2 之 `phase3a-parameter-audit.test.ts`
+              // 列逐字：「稽核 `summary` 欄位集合**縮欄**」）：移除
+              // `estimatedAnnualKm` 鍵。稽核 summary 與回應 DTO 是兩份契約，故
+              // 需各自裁定——此處之依據為：本端點建立的**每一列**該欄皆為 `NULL`
+              // （AC-57(a)），保留該鍵只會在每一筆稽核紀錄留下一個恆為 null 的欄，
+              // 既非「建立當下的輸入」也非「落地的值」，不具稽核意義；而歷史稽核
+              // 紀錄（縮欄前寫入者）之 summary 為既存 JSON，本變更不回溯改寫，
+              // 其原值續存可讀（與 AC-57(c) 之歷史唯讀精神一致）。
               summary: {
                 parameterType: "DEPRECIATION",
                 vehiclePrice: dto.vehiclePrice,
                 usefulLifeYears: dto.usefulLifeYears,
-                estimatedAnnualKm: dto.estimatedAnnualKm,
                 effectiveFrom: dto.effectiveFrom,
               },
             },

@@ -47,7 +47,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
-import { deriveDepreciation } from "./depreciation-engine.js";
+import { deriveAnnualDepreciation, deriveDepreciation } from "./depreciation-engine.js";
 import {
   DEPRECIATION_VEHICLE_PRICE_CAPACITY,
   UNIT_PRICE_CAPACITY,
@@ -470,16 +470,26 @@ export interface DepreciationParameterDto {
   id: string;
   vehiclePrice: string; // Decimal(12,2) as string, 2 decimal places (D8)
   usefulLifeYears: number;
-  // PHASE-007-R1b：`DepreciationParameterVersion.estimatedAnnualKm` 已轉 nullable
-  // （Spec §20.7.1／D21）。此處僅放寬型別並如實 pass-through，語意由已批准之
-  // AC-57(c)「新版本該欄為 null、歷史版本回原值」涵蓋。縮欄、`perKmUnitPrice`
-  // 退場、回應改含 `annualDepreciation` 等 AC-57 其餘行為一律留給 R4b。
+  /**
+   * PHASE-007-R4b（Spec §20.3 AC-57(c)、§20.7.5）：
+   *   - **歷史版本**（縮欄前建立、該欄 `!= null`）：回**原值**（唯讀）。
+   *   - **新版本**（縮欄後建立）：一律 `null`——欄位已不再被解析、驗證或持久化
+   *     （AC-57(a)），故新列此欄恆為 `NULL`（D21：欄位保留並轉 nullable，
+   *     不寫哨兵值，使歷史原值與新版本可被區分）。
+   */
   estimatedAnnualKm: number | null;
   effectiveFrom: string; // YYYY-MM-DD
   createdAt: string; // ISO timestamp
   derived: {
     annualDepreciation: string; // round_half_up(vehiclePrice / usefulLifeYears, 2) — display 2 dp (D3)
-    perKmUnitPrice: string; // round_half_up(vehiclePrice/usefulLifeYears/estimatedAnnualKm, 4) — display 4 dp (D3)
+    /**
+     * PHASE-007-R4b（AC-57(b)(c)）：每公里補助單價已自新模型**退場**。
+     *   - 歷史版本：仍以既有 `deriveDepreciation` 推導其原值（唯讀顯示，
+     *     行為凍結，AC-49(c)(d)）。
+     *   - 新版本：`null`——`estimatedAnnualKm` 為 `NULL`，**無來源可推導**；
+     *     此處刻意為 `null` 而非 `"0.0000"`，避免 fail-open 之假值外洩。
+     */
+    perKmUnitPrice: string | null; // round_half_up(vehiclePrice/usefulLifeYears/estimatedAnnualKm, 4) — display 4 dp (D3)
   };
 }
 
@@ -497,23 +507,35 @@ type DepreciationRow = {
 };
 
 export function toDepreciationDto(row: DepreciationRow): DepreciationParameterDto {
-  // Derive the non-persisted fields (D7: not stored in DB, calculated on-the-fly)
-  const derivationResult = deriveDepreciation({
+  // Derive the non-persisted fields (D7: not stored in DB, calculated on-the-fly).
+  //
+  // PHASE-007-R4b（Spec §20.7.5「查詢端點」列、AC-57(b)(c)）：
+  // `annualDepreciation` 一律取自 R4a 之 `deriveAnnualDepreciation`——它**不需要**
+  // `estimatedAnnualKm`，故新版本（該欄為 NULL）與歷史版本走同一條路徑，且與
+  // `deriveDepreciation` 共用同一份內部推導（AC-49(b)），兩者結果逐位元一致。
+  // 這也移除了 R1b 的 `estimatedAnnualKm ?? 0` 過渡碼：該寫法會讓新版本落入
+  // 引擎的 `{ ok: false }` 分支而使 `annualDepreciation` fail-open 成 "0.00"。
+  const annualResult = deriveAnnualDepreciation({
     vehiclePrice: row.vehiclePrice,
     usefulLifeYears: row.usefulLifeYears,
-    // PHASE-007-R1b：`estimatedAnnualKm` 為 null 時（＝縮欄後之新版本）沿用
-    // 引擎既有的「≤ 0 → { ok: false }」契約（AC-14），落到下方**既有**的
-    // fallback，不新增分支、不改變任何非 null 列之結果。此路徑於本 Task 後
-    // 仍不可達（建立端點目前仍必填該欄，縮欄為 R4b）；新版本之
-    // `annualDepreciation` 正確來源為 R4a 之 `deriveAnnualDepreciation`。
-    estimatedAnnualKm: row.estimatedAnnualKm ?? 0,
   });
 
   // Since values are already validated as > 0 before saving, this should always succeed.
   // If somehow it fails (shouldn't happen), derive a safe fallback to avoid runtime crash.
-  const derived = derivationResult.ok
-    ? derivationResult
-    : { annualDepreciation: "0.00", perKmUnitPrice: "0.0000" };
+  const annualDepreciation = annualResult.ok ? annualResult.annualDepreciation : "0.00";
+
+  // `perKmUnitPrice` 僅對**歷史版本**推導（唯讀顯示；引擎行為凍結，AC-49(c)(d)）。
+  // 新版本無 `estimatedAnnualKm` 可用，一律 `null`（AC-57(b)(c)）——不得以任何
+  // 代用值（0／哨兵）推導，否則歷史原值與新版本將無法區分（D21）。
+  let perKmUnitPrice: string | null = null;
+  if (row.estimatedAnnualKm !== null) {
+    const legacyResult = deriveDepreciation({
+      vehiclePrice: row.vehiclePrice,
+      usefulLifeYears: row.usefulLifeYears,
+      estimatedAnnualKm: row.estimatedAnnualKm,
+    });
+    perKmUnitPrice = legacyResult.ok ? legacyResult.perKmUnitPrice : "0.0000";
+  }
 
   return {
     id: row.id,
@@ -523,8 +545,8 @@ export function toDepreciationDto(row: DepreciationRow): DepreciationParameterDt
     effectiveFrom: formatUtcDate(row.effectiveFrom),
     createdAt: row.createdAt.toISOString(),
     derived: {
-      annualDepreciation: derived.annualDepreciation,
-      perKmUnitPrice: derived.perKmUnitPrice,
+      annualDepreciation,
+      perKmUnitPrice,
     },
   };
 }
@@ -536,7 +558,17 @@ export function toDepreciationDto(row: DepreciationRow): DepreciationParameterDt
 export interface CreateDepreciationVersionInput {
   vehiclePrice: number | string;
   usefulLifeYears: number;
-  estimatedAnnualKm: number;
+  /**
+   * PHASE-007-R4b（Spec §20.7.5 之 `createDepreciationVersion` 列、§20.13 **D22**）：
+   * 簽章**保留為 optional**（`number | null`，未帶＝`null`），使既有直呼本 service
+   * 的測試零改動（005a T3b 硬性約束同型）。
+   *
+   * 語意：**建立端點（`POST /parameters/depreciation`）已不再傳入此值**
+   * （AC-57(a)：不解析、不驗證、不持久化；夾帶不採用）。此參數僅供既有直呼
+   * 路徑（測試播種歷史形狀之列）使用，其 `≤0`／整數性驗證已隨欄位退場而
+   * 移除（AC-57(e)）。
+   */
+  estimatedAnnualKm?: number | null;
   effectiveFrom: string; // YYYY-MM-DD
   createdById: string;
 }
@@ -548,7 +580,8 @@ export interface CreateDepreciationVersionInput {
  *   - vehiclePrice 格式層：型別／十進位字面／≤2 位小數／|value| < 1e10（AC-22/24/25/26/27）
  *   - vehiclePrice > 0 (AC-05) —— 值域層，以 `Prisma.Decimal` 比較
  *   - usefulLifeYears ≤ 2147483647（int4 容量，AC-28）且 > 0 and integer (AC-05, D8)
- *   - estimatedAnnualKm ≤ 2147483647（int4 容量，AC-28）且 > 0 and integer (AC-05, D8)
+ *   - estimatedAnnualKm：**不驗證**——PHASE-007-R4b／AC-57(a)(e) 縮欄後該欄已退出
+ *     建立端點之請求欄位集合；簽章保留 optional 僅為既有直呼路徑（D22）
  *   - effectiveFrom is a valid YYYY-MM-DD date (AC-06)
  *   - No overlap with existing versions via checkNoOverlap (AC-08)
  *
@@ -611,26 +644,10 @@ export async function createDepreciationVersion(
     }
   }
 
-  // estimatedAnnualKm：同上。
-  const estimatedAnnualKmResult = parseParameterIntField(
-    input.estimatedAnnualKm,
-    "estimatedAnnualKm"
-  );
-  if (!estimatedAnnualKmResult.ok) {
-    fieldErrors.push(estimatedAnnualKmResult.error);
-  } else if (
-    // Validate estimatedAnnualKm > 0 and integer (AC-05, D8) —— 既有邏輯逐字不變
-    typeof input.estimatedAnnualKm !== "number" ||
-    !Number.isFinite(input.estimatedAnnualKm) ||
-    !Number.isInteger(input.estimatedAnnualKm) ||
-    input.estimatedAnnualKm <= 0
-  ) {
-    if (!Number.isInteger(input.estimatedAnnualKm) && input.estimatedAnnualKm > 0) {
-      fieldErrors.push({ field: "estimatedAnnualKm", reason: "必須為整數且大於 0" });
-    } else {
-      fieldErrors.push({ field: "estimatedAnnualKm", reason: "必須大於 0" });
-    }
-  }
+  // PHASE-007-R4b（AC-57(a)(e)）：`estimatedAnnualKm` 之容量／整數性／`≤0` 驗證
+  // **隨欄位退場而移除**——該欄已不屬於建立端點之請求欄位集合，對一個不再被
+  // 端點接受的欄位保留驗證只會產生無法由 API 觸發的死路徑。既有 `≤0` 驗證
+  // **仍適用於車價與年限兩值**（上方兩段，逐字不變）。
 
   // Validate effectiveFrom (AC-06)
   const effectiveFromDate = parseUtcDate(input.effectiveFrom);
@@ -677,7 +694,8 @@ export async function createDepreciationVersion(
         data: {
           vehiclePrice: validVehiclePrice,
           usefulLifeYears: input.usefulLifeYears,
-          estimatedAnnualKm: input.estimatedAnnualKm,
+          // D22：未帶（＝端點路徑，AC-57(a)）→ `NULL`；直呼路徑帶值則如實寫入。
+          estimatedAnnualKm: input.estimatedAnnualKm ?? null,
           effectiveFrom: validEffectiveFrom,
           createdById: input.createdById,
         },
@@ -719,7 +737,8 @@ export async function createDepreciationVersion(
 
 /**
  * Returns all DepreciationParameterVersion records sorted by effectiveFrom ascending (AC-19).
- * Each version includes derived fields (annualDepreciation, perKmUnitPrice) computed on-the-fly (D7).
+ * Each version includes derived fields computed on-the-fly (D7)： 一律
+ * 提供； 僅歷史版本有值，新版本為 null（PHASE-007-R4b／AC-57(c)）。
  */
 export async function listDepreciationVersions(
   prisma: PrismaClient

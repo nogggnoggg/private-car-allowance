@@ -8,16 +8,28 @@
  * DATABASE_URL env var must be set; tests skip otherwise.
  *
  * AC covered (from PHASE-003a Spec §2):
- *   AC-04: Create depreciation parameter, all three values > 0 → 201 + DTO with derived
+ *   AC-04: Create depreciation parameter, both values > 0 → 201 + DTO with derived
  *   AC-05: Any value ≤ 0 → 400 VALIDATION_ERROR, fields point exact violating field(s);
  *          response must NOT contain derived
  *   AC-06: missing/invalid effectiveFrom → 400 VALIDATION_ERROR fields=[effectiveFrom]
  *   AC-08: overlapping effectiveFrom → 409 PARAMETER_PERIOD_OVERLAP + conflictVersion
  *   AC-12: derived.annualDepreciation = round_half_up(vehiclePrice / usefulLifeYears, 2)
- *   AC-13: derived.perKmUnitPrice = round_half_up(vehiclePrice/usefulLifeYears/estimatedAnnualKm, 4)
  *   AC-16: USER role → 403 FORBIDDEN
  *   AC-17: unauthenticated → 401 UNAUTHORIZED
  *   AC-19: GET list sorted by effectiveFrom; each version contains derived
+ *
+ * PHASE-007-R4b（Spec §20.3 AC-57、§20.7.5、§20.13 D20/D21/D22）——折舊參數縮欄
+ * （凍結式）之測試遷移。**依已批准之 US 修訂更新既有斷言，非弱化測試**
+ * （§20.11.1「測試遷移」之定義；005a §16 D1(a) 同型授權）：
+ *   AC-57(a): POST 請求欄位集合縮為 { vehiclePrice, usefulLifeYears, effectiveFrom }；
+ *             夾帶 estimatedAnnualKm **不採用**（新列該欄寫 NULL）且**不回 400**（D20）
+ *   AC-57(b): 建立回應不含 estimatedAnnualKm／perKmUnitPrice 之值；含 annualDepreciation
+ *   AC-57(c): GET 對歷史版本（estimatedAnnualKm != null）回原值與其 perKmUnitPrice
+ *             （唯讀）；對新版本該二欄為 null
+ *   AC-57(e): estimatedAnnualKm 之 ≤0／整數性驗證隨欄位退場而移除
+ *             （原兩例 400 遷移為 201＋NULL，鑑別意圖以更強形式保留）
+ *   PHASE-003a AC-13（perKmUnitPrice 之推導）於新版本已無適用對象；其引擎
+ *   `deriveDepreciation` 行為凍結（AC-49(c)(d)），覆蓋面由歷史版本唯讀正例續存。
  *
  * Permission matrix (§8.2):
  *   POST/GET /parameters/depreciation:
@@ -185,7 +197,8 @@ describeWithDb("POST /parameters/depreciation", () => {
     }
   });
 
-  // AC-04: all three values > 0 → 201 + DTO with derived
+  // AC-04（PHASE-007-R4b／AC-57(a)(b) 後）：請求欄位集合縮為
+  // `{ vehiclePrice, usefulLifeYears, effectiveFrom }`，兩值 > 0 → 201 + DTO with derived
   it("AC-04: admin creates depreciation → 201 with DTO including derived", async () => {
     const resp = await app.inject({
       method: "POST",
@@ -194,7 +207,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: "500000.00",
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-01",
       },
     });
@@ -206,24 +218,25 @@ describeWithDb("POST /parameters/depreciation", () => {
     // vehiclePrice should be 2 decimal places string
     expect(String(body.version.vehiclePrice)).toBe("500000.00");
     expect(body.version.usefulLifeYears).toBe(5);
-    expect(body.version.estimatedAnnualKm).toBe(20000);
+    // AC-57(a)/(c)：新版本之 `estimatedAnnualKm` 一律為 null（欄位已退場）
+    expect(body.version.estimatedAnnualKm).toBeNull();
     expect(body.version.createdAt).toBeDefined();
     // DTO must NOT expose createdById
     expect(body.version.createdById).toBeUndefined();
 
-    // Must include derived (AC-04, AC-12, AC-13)
+    // Must include derived (AC-04, AC-12)
     const derived = body.version.derived as
-      | { annualDepreciation: string; perKmUnitPrice: string }
+      | { annualDepreciation: string; perKmUnitPrice: string | null }
       | undefined;
     expect(derived).toBeDefined();
     // 500000 / 5 = 100000.00
     expect(derived?.annualDepreciation).toBe("100000.00");
-    // 500000 / 5 / 20000 = 5.0000
-    expect(derived?.perKmUnitPrice).toBe("5.0000");
+    // AC-57(b)：每公里補助單價已自新版本退場（無來源可推導）
+    expect(derived?.perKmUnitPrice).toBeNull();
   });
 
-  // AC-12/13: verify derived calculation with non-trivial values
-  it("AC-12/13: derived calculation with rounding — vehiclePrice=100000, years=3, km=20000", async () => {
+  // AC-12: verify derived calculation with non-trivial values
+  it("AC-12: derived calculation with rounding — vehiclePrice=100000, years=3", async () => {
     const resp = await app.inject({
       method: "POST",
       url: "/parameters/depreciation",
@@ -231,18 +244,17 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: "100000.00",
         usefulLifeYears: 3,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-02",
       },
     });
     expect(resp.statusCode).toBe(201);
     const body = resp.json<{
-      version: { derived: { annualDepreciation: string; perKmUnitPrice: string } };
+      version: { derived: { annualDepreciation: string; perKmUnitPrice: string | null } };
     }>();
     // 100000 / 3 = 33333.333... → round_half_up(2) = 33333.33
     expect(body.version.derived.annualDepreciation).toBe("33333.33");
-    // 100000 / 3 / 20000 = 1.6666... → round_half_up(4) = 1.6667
-    expect(body.version.derived.perKmUnitPrice).toBe("1.6667");
+    // AC-57(b)：perKmUnitPrice 退場
+    expect(body.version.derived.perKmUnitPrice).toBeNull();
   });
 
   // AC-05: vehiclePrice = 0 → 400 VALIDATION_ERROR, fields=[vehiclePrice]
@@ -254,7 +266,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 0,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -279,7 +290,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: -100,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -299,7 +309,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 0,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -319,7 +328,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: -1,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -330,8 +338,12 @@ describeWithDb("POST /parameters/depreciation", () => {
     expect(fields.some((f) => f.field === "usefulLifeYears")).toBe(true);
   });
 
-  // AC-05: estimatedAnnualKm = 0
-  it("AC-05: estimatedAnnualKm=0 → 400 VALIDATION_ERROR fields=[estimatedAnnualKm]", async () => {
+  // AC-57(e)（原「AC-05: estimatedAnnualKm=0 → 400」之 Spec 授權遷移）：
+  // `estimatedAnnualKm` 之 `≤0` 驗證隨欄位退場而移除——**依 Spec 更新斷言，
+  // 非弱化測試**（PHASE-007 Spec §20.3 AC-57(e)，比照 005a §16 D1(a) 授權）。
+  // 原鑑別意圖（「非法的年里程值不得靜默寫入資料庫」）以更強的形式保留：
+  // 該值**根本不再被寫入**（欄位為 NULL），故本例斷言 201＋NULL 而非 400。
+  it("AC-57(e): 夾帶 estimatedAnnualKm=0（原 ≤0 違規值）→ 201，且該欄不被採用（DB 寫 NULL）", async () => {
     const resp = await app.inject({
       method: "POST",
       url: "/parameters/depreciation",
@@ -340,14 +352,41 @@ describeWithDb("POST /parameters/depreciation", () => {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
         estimatedAnnualKm: 0,
-        effectiveFrom: "2099-03-10",
+        effectiveFrom: "2099-03-11",
       },
     });
-    expect(resp.statusCode).toBe(400);
-    const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
-    expect(body.error.code).toBe("VALIDATION_ERROR");
-    const fields = body.error.fields ?? [];
-    expect(fields.some((f) => f.field === "estimatedAnnualKm")).toBe(true);
+    expect(resp.statusCode).toBe(201);
+    const body = resp.json<{ version: { id: string; estimatedAnnualKm: unknown } }>();
+    expect(body.version.estimatedAnnualKm).toBeNull();
+
+    const row = await prisma.depreciationParameterVersion.findUnique({
+      where: { id: body.version.id },
+    });
+    expect(row?.estimatedAnnualKm).toBeNull();
+  });
+
+  // AC-57(e)（原「AC-05: estimatedAnnualKm=1234.5（非整數）→ 400」之 Spec 授權遷移；
+  // 同上，整數性驗證隨欄位退場而移除，且非整數值同樣不可能抵達 DB）
+  it("AC-57(e): 夾帶 estimatedAnnualKm=1234.5（原非整數違規值）→ 201，且該欄不被採用（DB 寫 NULL）", async () => {
+    const resp = await app.inject({
+      method: "POST",
+      url: "/parameters/depreciation",
+      headers: { cookie: adminCookie },
+      payload: {
+        vehiclePrice: 500000,
+        usefulLifeYears: 5,
+        estimatedAnnualKm: 1234.5,
+        effectiveFrom: "2099-03-12",
+      },
+    });
+    expect(resp.statusCode).toBe(201);
+    const body = resp.json<{ version: { id: string; estimatedAnnualKm: unknown } }>();
+    expect(body.version.estimatedAnnualKm).toBeNull();
+
+    const row = await prisma.depreciationParameterVersion.findUnique({
+      where: { id: body.version.id },
+    });
+    expect(row?.estimatedAnnualKm).toBeNull();
   });
 
   // AC-05: multiple violations → all violating fields indicated
@@ -359,7 +398,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 0,
         usefulLifeYears: 0,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -380,7 +418,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 2.5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -389,26 +426,6 @@ describeWithDb("POST /parameters/depreciation", () => {
     expect(body.error.code).toBe("VALIDATION_ERROR");
     const fields = body.error.fields ?? [];
     expect(fields.some((f) => f.field === "usefulLifeYears")).toBe(true);
-  });
-
-  // AC-05: non-integer estimatedAnnualKm → 400
-  it("AC-05: estimatedAnnualKm=1234.5 (non-integer) → 400 VALIDATION_ERROR fields=[estimatedAnnualKm]", async () => {
-    const resp = await app.inject({
-      method: "POST",
-      url: "/parameters/depreciation",
-      headers: { cookie: adminCookie },
-      payload: {
-        vehiclePrice: 500000,
-        usefulLifeYears: 5,
-        estimatedAnnualKm: 1234.5,
-        effectiveFrom: "2099-03-10",
-      },
-    });
-    expect(resp.statusCode).toBe(400);
-    const body = resp.json<{ error: { code: string; fields?: { field: string }[] } }>();
-    expect(body.error.code).toBe("VALIDATION_ERROR");
-    const fields = body.error.fields ?? [];
-    expect(fields.some((f) => f.field === "estimatedAnnualKm")).toBe(true);
   });
 
   // AC-06: missing effectiveFrom → 400
@@ -420,7 +437,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
       },
     });
     expect(resp.statusCode).toBe(400);
@@ -439,7 +455,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "not-a-date",
       },
     });
@@ -460,7 +475,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-05",
       },
     });
@@ -474,7 +488,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 600000,
         usefulLifeYears: 6,
-        estimatedAnnualKm: 25000,
         effectiveFrom: "2099-03-05",
       },
     });
@@ -501,7 +514,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-20",
       },
     });
@@ -515,7 +527,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 600000,
         usefulLifeYears: 6,
-        estimatedAnnualKm: 25000,
         effectiveFrom: "2099-03-21",
       },
     });
@@ -531,7 +542,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-15",
       },
     });
@@ -547,7 +557,6 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-15",
       },
     });
@@ -564,12 +573,92 @@ describeWithDb("POST /parameters/depreciation", () => {
       payload: {
         vehiclePrice: 500000,
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-15",
       },
     });
     expect(resp.statusCode).toBe(403);
     expect(resp.json<{ error: { code: string } }>().error.code).toBe("PASSWORD_CHANGE_REQUIRED");
+  });
+
+  // -------------------------------------------------------------------------
+  // AC-57 折舊參數縮欄（凍結式）—— PHASE-007-R4b
+  // -------------------------------------------------------------------------
+
+  it("AC-57 折舊參數縮欄（凍結式）: POST no longer accepts estimatedAnnualKm (夾帶不採用，欄位寫 NULL) and no longer returns perKmUnitPrice", async () => {
+    // (1) 縮欄後之正常請求：僅三欄
+    const clean = await app.inject({
+      method: "POST",
+      url: "/parameters/depreciation",
+      headers: { cookie: adminCookie },
+      payload: {
+        vehiclePrice: "1200000.00",
+        usefulLifeYears: 6,
+        effectiveFrom: "2099-03-06",
+      },
+    });
+    expect(clean.statusCode).toBe(201);
+    const cleanBody = clean.json<{
+      version: {
+        id: string;
+        estimatedAnnualKm: unknown;
+        derived: { annualDepreciation: string; perKmUnitPrice: unknown };
+      };
+    }>();
+    // AC-57(b)：含 annualDepreciation——**數值級**斷言（1200000 / 6 = 200000.00）。
+    // 僅斷言「鍵存在」會讓推導失敗之 fail-open（"0.00"）靜默通過。
+    expect(cleanBody.version.derived.annualDepreciation).toBe("200000.00");
+    // AC-57(b)：不含 estimatedAnnualKm 與 perKmUnitPrice 之值
+    expect(cleanBody.version.estimatedAnnualKm).toBeNull();
+    expect(cleanBody.version.derived.perKmUnitPrice).toBeNull();
+    // 回應之鍵集封閉：不得出現任何頂層 estimatedAnnualKm 以外的洩漏鍵
+    expect(Object.keys(cleanBody.version.derived).sort()).toEqual([
+      "annualDepreciation",
+      "perKmUnitPrice",
+    ]);
+
+    // (2) D20：夾帶 estimatedAnnualKm → **不採用**、**不回 400**、DB 寫 NULL
+    const smuggled = await app.inject({
+      method: "POST",
+      url: "/parameters/depreciation",
+      headers: { cookie: adminCookie },
+      payload: {
+        vehiclePrice: "1200000.00",
+        usefulLifeYears: 6,
+        estimatedAnnualKm: 99999,
+        effectiveFrom: "2099-03-07",
+      },
+    });
+    expect(smuggled.statusCode).toBe(201);
+    const smuggledBody = smuggled.json<{
+      version: {
+        id: string;
+        estimatedAnnualKm: unknown;
+        derived: { annualDepreciation: string; perKmUnitPrice: unknown };
+      };
+    }>();
+    expect(smuggledBody.version.estimatedAnnualKm).toBeNull();
+    expect(smuggledBody.version.derived.perKmUnitPrice).toBeNull();
+    expect(smuggledBody.version.derived.annualDepreciation).toBe("200000.00");
+
+    // 持久層證明：夾帶值 99999 絕不得落地
+    const row = await prisma.depreciationParameterVersion.findUnique({
+      where: { id: smuggledBody.version.id },
+    });
+    expect(row).not.toBeNull();
+    expect(row?.estimatedAnnualKm).toBeNull();
+
+    // (3) 稽核 summary 亦不含該欄（欄位集合縮欄；summary 與回應 DTO 為兩份契約，
+    //     但兩者皆不得持有一個永遠為 null 的退場欄）
+    const audit = await prisma.auditLog.findFirst({
+      where: { targetLabel: `DEPRECIATION#${smuggledBody.version.id}` },
+    });
+    expect(audit).not.toBeNull();
+    expect(Object.keys(audit?.summary as Record<string, unknown>).sort()).toEqual([
+      "effectiveFrom",
+      "parameterType",
+      "usefulLifeYears",
+      "vehiclePrice",
+    ]);
   });
 });
 
@@ -616,7 +705,6 @@ describeWithDb("GET /parameters/depreciation", () => {
       payload: {
         vehiclePrice: "500000.00",
         usefulLifeYears: 5,
-        estimatedAnnualKm: 20000,
         effectiveFrom: "2099-03-15",
       },
     });
@@ -627,7 +715,6 @@ describeWithDb("GET /parameters/depreciation", () => {
       payload: {
         vehiclePrice: "600000.00",
         usefulLifeYears: 6,
-        estimatedAnnualKm: 25000,
         effectiveFrom: "2099-03-10",
       },
     });
@@ -657,24 +744,31 @@ describeWithDb("GET /parameters/depreciation", () => {
     }
 
     // Each version must have derived with annualDepreciation and perKmUnitPrice
+    // AC-57(c)：本 describe 之版本皆由縮欄後之端點建立（＝新版本），故
+    // `estimatedAnnualKm` 與 `derived.perKmUnitPrice` 必為 **null**（非僅「已定義」——
+    // `toBeDefined()` 對 null 恆真，無鑑別力）。
     for (const v of sentinelVersions) {
       expect(v.id).toBeDefined();
       expect(v.vehiclePrice).toBeDefined();
       expect(v.usefulLifeYears).toBeDefined();
-      expect(v.estimatedAnnualKm).toBeDefined();
       expect(v.effectiveFrom).toBeDefined();
       expect(v.createdAt).toBeDefined();
       expect(v.createdById).toBeUndefined(); // must not expose internal field
       const derived = v.derived as
-        | { annualDepreciation: string; perKmUnitPrice: string }
+        | { annualDepreciation: string; perKmUnitPrice: string | null }
         | undefined;
       expect(derived).toBeDefined();
-      expect(derived?.annualDepreciation).toBeDefined();
-      expect(derived?.perKmUnitPrice).toBeDefined();
+      expect(typeof derived?.annualDepreciation).toBe("string");
+      if (v.estimatedAnnualKm === null) {
+        expect(derived?.perKmUnitPrice).toBeNull();
+      } else {
+        // 歷史版本（本 describe 內由 AC-57 唯讀測試播種者）：兩欄同時為原值
+        expect(typeof derived?.perKmUnitPrice).toBe("string");
+      }
     }
   });
 
-  // Verify specific derived values in list (AC-12/13)
+  // Verify specific derived values in list (AC-12；AC-57(b)(c) 後 perKmUnitPrice 為 null)
   it("AC-19: list derived values are correct for each version", async () => {
     const resp = await app.inject({
       method: "GET",
@@ -686,30 +780,90 @@ describeWithDb("GET /parameters/depreciation", () => {
       versions: {
         vehiclePrice: string;
         usefulLifeYears: number;
-        estimatedAnnualKm: number;
+        estimatedAnnualKm: number | null;
         effectiveFrom: string;
-        derived: { annualDepreciation: string; perKmUnitPrice: string };
+        derived: { annualDepreciation: string; perKmUnitPrice: string | null };
       }[];
     }>();
 
     // Find the version created in this test suite (2099-03-10)
     const v10 = body.versions.find((v) => v.effectiveFrom === "2099-03-10");
-    if (v10) {
-      // vehiclePrice=600000, years=6, km=25000
-      // annualDepreciation = 600000 / 6 = 100000.00
-      // perKmUnitPrice = 100000 / 25000 = 4.0000
-      expect(v10.derived.annualDepreciation).toBe("100000.00");
-      expect(v10.derived.perKmUnitPrice).toBe("4.0000");
-    }
+    expect(v10).toBeDefined();
+    // vehiclePrice=600000, years=6 → annualDepreciation = 600000 / 6 = 100000.00
+    expect(v10?.derived.annualDepreciation).toBe("100000.00");
+    expect(v10?.estimatedAnnualKm).toBeNull();
+    expect(v10?.derived.perKmUnitPrice).toBeNull();
 
     const v15 = body.versions.find((v) => v.effectiveFrom === "2099-03-15");
-    if (v15) {
-      // vehiclePrice=500000, years=5, km=20000
-      // annualDepreciation = 500000 / 5 = 100000.00
-      // perKmUnitPrice = 100000 / 20000 = 5.0000
-      expect(v15.derived.annualDepreciation).toBe("100000.00");
-      expect(v15.derived.perKmUnitPrice).toBe("5.0000");
-    }
+    expect(v15).toBeDefined();
+    // vehiclePrice=500000, years=5 → annualDepreciation = 500000 / 5 = 100000.00
+    expect(v15?.derived.annualDepreciation).toBe("100000.00");
+    expect(v15?.estimatedAnnualKm).toBeNull();
+    expect(v15?.derived.perKmUnitPrice).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // AC-57(c) 歷史版本唯讀 —— PHASE-007-R4b
+  // -------------------------------------------------------------------------
+
+  it("AC-57: GET still returns the original estimatedAnnualKm/perKmUnitPrice for legacy versions (read-only) and null for new versions", async () => {
+    // 歷史版本（縮欄前建立者）：直接播種一列帶 estimatedAnnualKm 的資料。
+    // 縮欄後之端點已無從產生此形狀，故以 prisma 播種為唯一可行手段
+    // （欄位為 nullable，Prisma client 型別可表達此列，無須 raw SQL）。
+    const legacy = await prisma.depreciationParameterVersion.create({
+      data: {
+        vehiclePrice: "600000.00",
+        usefulLifeYears: 6,
+        estimatedAnnualKm: 25000,
+        effectiveFrom: new Date("2099-03-18"),
+        createdById: users.adminId,
+      },
+    });
+
+    // 新版本（縮欄後由端點建立）
+    const created = await app.inject({
+      method: "POST",
+      url: "/parameters/depreciation",
+      headers: { cookie: adminCookie },
+      payload: {
+        vehiclePrice: "600000.00",
+        usefulLifeYears: 6,
+        effectiveFrom: "2099-03-19",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const resp = await app.inject({
+      method: "GET",
+      url: "/parameters/depreciation",
+      headers: { cookie: adminCookie },
+    });
+    expect(resp.statusCode).toBe(200);
+    const body = resp.json<{
+      versions: {
+        id: string;
+        effectiveFrom: string;
+        estimatedAnnualKm: number | null;
+        derived: { annualDepreciation: string; perKmUnitPrice: string | null };
+      }[];
+    }>();
+
+    // 正例：歷史版本回**原值**與其 perKmUnitPrice（唯讀）
+    const legacyDto = body.versions.find((v) => v.id === legacy.id);
+    expect(legacyDto).toBeDefined();
+    expect(legacyDto?.estimatedAnnualKm).toBe(25000);
+    // 600000 / 6 = 100000.00；100000 / 25000 = 4.0000（原值，不得被重算為 null）
+    expect(legacyDto?.derived.annualDepreciation).toBe("100000.00");
+    expect(legacyDto?.derived.perKmUnitPrice).toBe("4.0000");
+
+    // 負例：同車價／同年限之**新版本**該二欄為 null——
+    // 兩列的 annualDepreciation 相同而該二欄互異，證明差異來自「列的 estimatedAnnualKm
+    // 是否為 NULL」，而非車價／年限。
+    const newDto = body.versions.find((v) => v.effectiveFrom === "2099-03-19");
+    expect(newDto).toBeDefined();
+    expect(newDto?.estimatedAnnualKm).toBeNull();
+    expect(newDto?.derived.annualDepreciation).toBe("100000.00");
+    expect(newDto?.derived.perKmUnitPrice).toBeNull();
   });
 
   // AC-16: USER role → 403 FORBIDDEN on GET
@@ -781,7 +935,6 @@ describeWithDb("Precision: vehiclePrice Decimal round-trip (D8)", () => {
       payload: {
         vehiclePrice: "123456.78",
         usefulLifeYears: 5,
-        estimatedAnnualKm: 25000,
         effectiveFrom: "2099-03-28",
       },
     });
@@ -798,7 +951,6 @@ describeWithDb("Precision: vehiclePrice Decimal round-trip (D8)", () => {
       payload: {
         vehiclePrice: "987654.32",
         usefulLifeYears: 7,
-        estimatedAnnualKm: 15000,
         effectiveFrom: "2099-03-29",
       },
     });
@@ -825,7 +977,6 @@ describeWithDb("Precision: vehiclePrice Decimal round-trip (D8)", () => {
       payload: {
         vehiclePrice: "300000.00",
         usefulLifeYears: 4,
-        estimatedAnnualKm: 30000,
         effectiveFrom: "2099-03-30",
       },
     });
@@ -833,7 +984,7 @@ describeWithDb("Precision: vehiclePrice Decimal round-trip (D8)", () => {
     const postBody = post.json<{
       version: {
         effectiveFrom: string;
-        derived: { annualDepreciation: string; perKmUnitPrice: string };
+        derived: { annualDepreciation: string; perKmUnitPrice: string | null };
       };
     }>();
 
@@ -845,7 +996,7 @@ describeWithDb("Precision: vehiclePrice Decimal round-trip (D8)", () => {
     const getBody = getResp.json<{
       versions: {
         effectiveFrom: string;
-        derived: { annualDepreciation: string; perKmUnitPrice: string };
+        derived: { annualDepreciation: string; perKmUnitPrice: string | null };
       }[];
     }>();
     const v = getBody.versions.find((x) => x.effectiveFrom === "2099-03-30");
@@ -893,7 +1044,6 @@ describeWithDb("Concurrent defense: DB unique constraint → 409 not 500 (deprec
         payload: {
           vehiclePrice: 500000,
           usefulLifeYears: 5,
-          estimatedAnnualKm: 20000,
           effectiveFrom: "2099-03-25",
         },
       }),
@@ -904,7 +1054,6 @@ describeWithDb("Concurrent defense: DB unique constraint → 409 not 500 (deprec
         payload: {
           vehiclePrice: 600000,
           usefulLifeYears: 6,
-          estimatedAnnualKm: 25000,
           effectiveFrom: "2099-03-25",
         },
       }),

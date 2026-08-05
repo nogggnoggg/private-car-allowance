@@ -319,10 +319,16 @@ describe("AC-27 前後空白字串處置（CD-1(a) trim 後判定）；全空白
 // AC-28
 // ---------------------------------------------------------------------------
 
+// PHASE-007-R4b（Spec §20.3 AC-57(a)(e)）：折舊建立端點已縮欄，`estimatedAnnualKm`
+// 不再是其請求欄位。`parseParameterIntField` 為**通用**純函式——`field` 僅是呼叫端
+// 傳入的標籤字串，函式對其零語意假設——故本 describe 保留以該名稱為標籤的案例，
+// 用意是證明「同一守門對任意 int 欄位標籤行為一致、`field` 精確回填」，覆蓋面與
+// 斷言數量零減損（無任何案例被刪除／skip／弱化）。折舊路徑實際適用者為
+// `usefulLifeYears`（見下方各例）。
 describe("AC-28 折舊整數欄位 ≥2^31 → 400（2147483647 → 201 上界鑑別）", () => {
   const CAPACITY_REASON = "數值超出可儲存範圍（最大 2147483647）";
 
-  it("上界內最大值 2147483647 通過（兩欄位各測）", () => {
+  it("上界內最大值 2147483647 通過（兩個欄位標籤各測）", () => {
     for (const field of ["usefulLifeYears", "estimatedAnnualKm"]) {
       const result = parseParameterIntField(2147483647, field);
       expect(result.ok, `field=${field}`).toBe(true);
@@ -330,7 +336,7 @@ describe("AC-28 折舊整數欄位 ≥2^31 → 400（2147483647 → 201 上界�
     }
   });
 
-  it("恰為上界 2147483648 被拒（兩欄位各測，field 精確定位）", () => {
+  it("恰為上界 2147483648 被拒（兩個欄位標籤各測，field 精確定位）", () => {
     for (const field of ["usefulLifeYears", "estimatedAnnualKm"]) {
       const result = parseParameterIntField(2147483648, field);
       expect(result.ok, `field=${field}`).toBe(false);
@@ -428,7 +434,9 @@ describe("AC-32 多重違規之 reason 順序決定性；折舊多欄位彙總",
     expect(fields.map((f) => f.field)).toContain("usefulLifeYears");
   });
 
-  it("折舊三欄同時格式違規：三個欄位皆各自回報，不彼此吞噬", () => {
+  // R4b 後折舊建立端點僅二欄；本例續以三個標籤驗證「各欄位各自回報、不彼此吞噬」
+  // 之彙總語意（AC-32），標籤數與斷言數維持不變。
+  it("多個整數欄位同時格式違規：三個欄位皆各自回報，不彼此吞噬", () => {
     const fields: { field: string; reason: string }[] = [];
     const price = vehiclePrice("Infinity");
     if (!price.ok) fields.push(price.error);
