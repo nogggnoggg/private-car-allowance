@@ -1207,6 +1207,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 
 | 2026-08-05 | **§20.4.3 R2 回填義務交付（`.times(ratio)` kill 數對）**：`annualDepreciation=10004.17`（車價 30012.51÷3，引擎可達）× `officialKm=99995.00` ÷ `annualTotalKm=100041.7` → `ratio=0.99953319465782768585`、`rawAmount=9999.5`（恰 .5）→ 正確 `amount=10000`；mutant `annualDepreciation.times(ratio)` → `9999.4999999999999999` → `9999` ✗ 必紅。窮舉構造：`raw=k/2` 恆精確 .5、`ratio` 無盡小數，掃描 4165 組命中 5 組（Decimal.precision=20 已釘）。AC-50(c) 以實際數對＋原始碼結構性斷言雙防線落地。 | R2 Handoff Warnings ①（窮舉實跑）；大總管白名單回填 |
 
+| 2026-08-05 | **R8 檔案清單漏列勘誤（沿 T11 先例）**：§20.12 R8 列將「稽核前後值」義務指派 routes.ts，但 AC-35 前值結構上需擴充 `depreciation-service.ts` 之 `DepreciationDraftUpdateAuditContext.before`（hook 於更新後呼叫、tx 讀取必為後值；交易外過期讀取與檔內「新鮮讀取」語意自相矛盾故不可用）——Allowed 清單漏列該檔致 implementer 正確 BLOCKED。處置：R8b-LITE 限縮授權（service 三處＋routes onUpdated 摘要＋on-behalf 測試）。 | R8 Handoff W-1；大總管白名單勘誤 |
+
 > Gate 固化義務已履行（上列 2026-08-04 第二列；修訂段 Gate 見上列 2026-08-05 末列）。
 
 ---
