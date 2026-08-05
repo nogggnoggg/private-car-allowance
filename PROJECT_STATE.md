@@ -10,6 +10,7 @@ State: ACTIVE
 > - **處理容器（大總管裁定）**：於 PHASE-007 branch 內以 Spec 修訂＋修訂 Task 批次處理（branch 未合併 main，避免發佈中間態模型；比照 Gate 反饋流程——US 修訂提案→人類逐字確認→Spec 修訂→TDD→複審）。**PR/合併凍結至修訂完成。**
 > - **細節三裁定（使用者 2026-08-05 追加）**：(D) 年度總里程小數點後最多 1 位（超位/格式錯 → 驗證錯誤）；(E) 0 或空白＝無效——大總管消歧解讀（已向使用者複述）：空白可存草稿（沿年度欄慣例）、預覽提示、完成擋；0/負數當場驗證錯誤；(F) 既有舊公式測試申請**清空**（合成資料直接刪除，不轉換）。
 > - **US-REV-PROPOSAL：DONE＋US Gate 通過**（`fa54ffc`，699 行；usage ~121k/28 tool uses；人類 2026-08-05「照提案全部確認」——§1 八條修訂、§6.2 十二項擴張建議含 S-3 詮釋、Q1~Q12 全數照推薦含 Q6 年限不顯示/Q8 報表五值收斂）。提案狀態欄已固化 APPROVED。**新 session 落地序：①US-LAND（userstory.md 八條修訂落地，spec-writer）②PRD-SYNC ③SPEC-REV（Spec 修訂＋§12 映射表重整——受影響列轉 PENDING、錯誤碼/快照欄/migration 決策）④修訂 Task Graph TDD ⑤複審 ⑥測試資料清空（裁定 F）⑦重走 Gate 走查 ⑧Draft PR。**
+> - **US-LAND：DONE**（`8b122b7`，1 檔 +77/-28；usage ~85k/19 tool uses——低於 140k 帶，同型帶下修候選）。八條逐字落地（含 BE-US-14 更名、Q10 車輛主檔不加註）；spec-writer 雙向機械驗證（修訂後各恰 1 次／現行原文落地後 0 次／§2 廿五節 byte-identical／US 總數不變），大總管以獨立腳本重跑同兩檢全數通過後 commit。零偏差、零 Blocking Unknown。下一步：PRD-SYNC（提案 §3 六觸點，含 §4.3 BE-US-14 更名連動、§1 產品描述改比例語）。
 > - **Session 邊界計畫（使用者 2026-08-05 指示）**：US-PROPOSAL 經人類確認後 → 產 usage 復盤檔（workflow loop agent 用，`docs/retrospective/PHASE-007-usage.md`，常設規則提前執行）→ commit → **本 session 結束、新 session 接手**（接手起點：US 落地派工 → Spec 修訂 → 修訂 Task Graph）。新 session 開工必讀：本 Gate 反饋列全部裁定＋PR/合併凍結狀態＋usage 復盤預算帶。
 
 > **PHASE-007（年度折舊補貼）開工記錄（2026-08-04，使用者指令「開工」）**
