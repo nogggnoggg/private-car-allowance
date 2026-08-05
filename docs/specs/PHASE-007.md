@@ -643,7 +643,7 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | AC-02 | integration | `phase7-depreciation-draft.test.ts` | `AC-02: POST /applications/depreciation creates a DRAFT with all-null snapshot columns and ignores body-supplied ownerId/status/totalAmount`（describe 逐字實名，內含 DTO＋DB 逐欄斷言） | T4 | GREEN |
 | AC-03 | integration | `phase7-depreciation-draft.test.ts` | `AC-03: applicationYear validation gate table — type/format/range, with fields[].field asserted`（describe 逐字實名；20 invalid×2 端點＋6 valid×2） | T4 | GREEN |
 | AC-04 | integration | `phase7-depreciation-draft.test.ts` | `AC-04: PUT rejects COMPLETED at both the outer guard and inside the transaction (FOR UPDATE re-check)`（describe 逐字實名）；同交易對帳鑑別：`attachmentIds[] 混合批次（合法 id ＋ 不存在 id）→ 404，且先前已 link 之合法附件一併回滾為 TEMP（AC-04「同一交易內完成」之鑑別測試）`（T4R-LITE，M13 恰 1 紅） | T4 | GREEN |
-| AC-05 | integration | `phase7-depreciation-draft.test.ts` | `AC-05: GET returns blockers+computed for DRAFT and snapshot for COMPLETED; DELETE detaches DEPRECIATION attachments in the same transaction; wrong-type id is 404`（describe 逐字實名）。**computed 恆 null 待 T6/T7 接線**（T4 即審 AR-8） | T4 | **PARTIAL**（computed 段待 T6/T7） |
+| AC-05 | integration | `phase7-depreciation-draft.test.ts` | `AC-05: GET returns blockers+computed for DRAFT and snapshot for COMPLETED; DELETE detaches DEPRECIATION attachments in the same transaction; wrong-type id is 404`（describe 逐字實名）。computed 段已由 T7 落地並經 `phase7-depreciation-parameters.test.ts` 草稿 DTO 面覆蓋（終審核對確認實質 GREEN） | T4 ＋ T7 | GREEN |
 | AC-06 | integration | `phase7-depreciation-year.test.ts` | `AC-06: primaryDate is derived from applicationYear (YYYY-12-31) and falls back to the creation date when the year is null`（describe 逐字實名；D2(a) mutant 雙側殺——12-31→01-01 4 紅、null fallback 2 紅） | T5 | GREEN |
 | AC-07 | integration | `phase7-depreciation-year.test.ts` | `AC-07: duplicateYearNotice counts same-owner same-year applications excluding self, and is null when applicationYear is null`（describe 逐字實名；排除自身 mutant 7 紅、跨 owner 洩漏側 1 紅） | T5 | GREEN |
 | AC-08 | integration | `phase7-depreciation-year.test.ts` | 建立面實名：`AC-08` describe（皆 201＋唯一約束等效 mutant）。完成面已落地：T9 之 AC-08 完成測試（`phase7-depreciation-complete.test.ts`，同年度兩筆皆完成 200） | T5 ＋ T9 | GREEN |
@@ -670,7 +670,7 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | AC-29 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-29 完成授權：僅擁有人本人`（管理員 403＋本人 200 對照；三候選路徑 404 負向；M6 mutant 殺） | T9 | GREEN |
 | AC-30 | integration | `phase7-depreciation-complete.test.ts` | describe 逐字實名：`AC-30 原子性`（快照寫入後注入失敗全回滾；P2025→404；M11 快照逃逸交易 mutant 殺） | T9 | GREEN |
 | AC-31 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-31 事後改參數，歷史不變`（三種生效日 8 欄逐位元＋鑑別力探針＋spy 零重算——B1 mutant 6 紅） | T10 | GREEN |
-| AC-32 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-32 後端為唯一權威 — 建立端點（POST /applications/depreciation)`／`— 更新端點（PUT /applications/depreciation/:id)`／`— 完成端點（POST /applications/:id/complete)`（頂層純量矩陣 DB 指紋；三恆真格 T10R 修復——T10 即審 SF-1） | T10 ＋ T10R | GREEN（T10R 補三格） |
+| AC-32 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-32 後端為唯一權威 — 建立端點（POST /applications/depreciation）`／`AC-32 後端為唯一權威 — 更新端點（PUT /applications/depreciation/:id）`／`AC-32 後端為唯一權威 — 完成端點（POST /applications/:id/complete）`（頂層純量矩陣 DB 指紋；三恆真格 T10R 修復——T10 即審 SF-1） | T10 ＋ T10R | GREEN（T10R 補三格） |
 | AC-33 | integration | `phase7-snapshot-immutability.test.ts` | describe 逐字實名：`AC-33 雙完成併發`（**20 輪**恰一成功、敗方 403）＋`AC-33 parameterHasReferences('DEPRECIATION') 正負例`（真實完成流程正例＋型別鑑別） | T10 | GREEN |
 | AC-34 | integration | `phase7-on-behalf.test.ts` | 實名（逐字）：`POST /admin/users/:userId/applications/depreciation → 201，owner/creator 分離且 AuditLog action/actorId/targetId/targetLabel/summary 精確`（＋真交易回滾 sentinel、停用 400、頂層純量夾帶） | T11 | GREEN |
 | AC-35 | integration | `phase7-on-behalf.test.ts` | 實名（逐字）：`PUT /applications/depreciation/:id（admin 對 U 之草稿）→ 200，AuditLog action/actorId/targetId/targetLabel/summary（含前後值）精確`（＋前後值雙方向、自改零稽核鑑別、COMPLETED 403） | T11 ＋ T11b | GREEN |
@@ -681,10 +681,10 @@ Packet 要求評估 PHASE-005 遺項 **B-12/15/17/19/24/25** 是否落本 Phase�
 | AC-40 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`AC-39：不可計算時不得顯示金額 0，須顯示「無法計算」＋zh-TW 說明`；`Empty：年度無任何有效差旅（totalKm=0.00、applicationCount=0）時顯示 0 值＋說明，非錯誤、非空白頁`（T14R 補說明文字＋完成鈕可用）；`Error：讀取草稿 500 時顯示錯誤訊息與重試按鈕，點擊重試重新呼叫 GET`；`blockingCodes 驅動顯示：未知代碼原樣顯示（非以 calculable 單一旗標決定文案內容）`；Loading/Permission denied 各一 | T13 ＋ T14 ＋ T14R | GREEN |
 | AC-41 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`AC-41：缺參數時顯示聯絡管理員文案、停用「完成申請」，但「儲存草稿」仍可用`；`AC-41：條件齊備（無 blocker）時「完成申請」鈕可用，點擊後呼叫完成端點` | T13 | GREEN |
 | AC-42 | frontend | `DepreciationApplicationPage.test.tsx` | 實名：`同年度已有其他申請時顯示提醒文字，但不阻擋建立與完成（提醒在場且完成鈕可用）`；`已有 5 張再上傳（第 6 張）→ 前端拒絕並顯示上限訊息、零上傳呼叫`；`B-22／FW-11 裁定 A：attachmentIds 送出前去重（重複 id 不重複送出）`；`已完成之折舊申請不存在任何上傳／刪除入口（負向斷言）`（等） | T14 | GREEN |
-| AC-43 | integration | `phase7-contract.test.ts` | `AC-43: the ErrorCode union exactly matches the baseline (BOGUS mutant turns red) and error bodies keep a closed top-level key set` | T15 | PENDING |
-| AC-44 | integration | `phase7-contract.test.ts` | `AC-44: logStream contains no password, token, session cookie or attachment bytes across the depreciation paths` | T15 | PENDING |
-| AC-45 | e2e | `e2e/depreciation-allowance.spec.ts` | `AC-45: full depreciation flow — draft, year, mileage, unit price, amount, proof, complete, list; parameter change afterwards leaves the amount unchanged` | T16 | PENDING |
-| AC-46 | e2e | `e2e/depreciation-allowance.spec.ts` | `AC-46: no horizontal overflow at 375px across the four depreciation screens` | T16 | PENDING |
+| AC-43 | integration | `phase7-contract.test.ts` | 實名：`AC-43 ErrorCode 聯集全等 + 本 Phase src 僅用基線字面值`（含 `errors.ts ErrorCode union equals the known baseline`、`PHASE-007 source references only baseline ErrorCode literals`——BOGUS mutant 終審重放恰紅）＋`AC-43 — PHASE-007 折舊端點錯誤合約` | T15 | GREEN |
+| AC-44 | integration | `phase7-contract.test.ts` | 實名：`AC-44 日誌安全：logStream 六類掃描`（6 條；終審反向探針 2 紅證非恆真） | T15 | GREEN |
+| AC-45 | e2e | `e2e/depreciation-allowance.spec.ts` | 實名：`年度折舊補貼 — PHASE-007 Gate E2E` 情境 1~6（大總管親跑 37/37＋單檔二輪 7/7；FW-7 控制組證參數確變） | T16 | GREEN |
+| AC-46 | e2e | `e2e/depreciation-allowance.spec.ts` | 實名：`情境7：響應式 375px——折舊表單／預覽／證明／列表／已完成詳情皆無水平溢位`（覆蓋面多於條文四畫面） | T16 | GREEN |
 
 ---
 
@@ -1114,6 +1114,8 @@ T1 ──▶ T2 ──▶ T3 ──▶ T4 ──┬──▶ T5
 | 2026-08-05 | **§15 T11 檔案清單勘誤（大總管，§11.2 內部技術細節記錄）**：AC-35 之 `onUpdated` 稽核 hook 唯一正當落點為 `applications/routes.ts` 之 PUT depreciation handler（呼叫端持有 actorId；service 層刻意無 actor 概念防夾帶面；006 T9 同型先例修同檔 :865-910）——T11 檔案清單漏列該檔致 implementer 正確 BLOCKED。處置：T11b-LITE 限縮授權（僅該 handler 之 onUpdated 建構）。 | T11 Handoff W-1 落點分析（實查非推測）；大總管裁定 (a) |
 
 | 2026-08-05 | **§4 Empty 態勘誤（T12~T14 複審 SF-3 處置）**：Empty 列字面「補貼金額 0 元」之「元」單位——全站既有慣例為金額不帶單位字（Maintenance/快照頁同型），維持慣例；說明文字與「完成仍可執行」已由 T14R 補齊（`29632df`）。 | 大總管裁定（沿全站慣例）；T12~T14 合併複審 SF-3 |
+
+| 2026-08-05 | **終審處置（大總管白名單）**：①MF-1——§12 AC-43~46 轉 GREEN（實名逐字回填）＋AC-05 依 T7 落地事實轉 GREEN；②SF-1——AC-32 列三處括號全形化（逐字可 grep）；③**AR-a 勘誤**：§2 AC-43 條文漏列 `requestId`——系統自 PHASE-001 起錯誤體恆含 requestId（errors.ts 檔頭引 Spec 5.2 權威形狀），歷代 contract test 皆斷言之；T15 沿系統基準正確，條文以本列勘誤不改程式；④AR-c 措辭修正：T9b「4dp 窄窗 22003 結構性不可達」宜讀為「實務不可達（未證明數學上不可能）」。 | PHASE-007 終審報告 MF-1/SF-1/AR-a/AR-c |
 
 > Gate 固化義務已履行（上列 2026-08-04 第二列）。
 
