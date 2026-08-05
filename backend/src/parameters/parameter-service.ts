@@ -470,7 +470,11 @@ export interface DepreciationParameterDto {
   id: string;
   vehiclePrice: string; // Decimal(12,2) as string, 2 decimal places (D8)
   usefulLifeYears: number;
-  estimatedAnnualKm: number;
+  // PHASE-007-R1b：`DepreciationParameterVersion.estimatedAnnualKm` 已轉 nullable
+  // （Spec §20.7.1／D21）。此處僅放寬型別並如實 pass-through，語意由已批准之
+  // AC-57(c)「新版本該欄為 null、歷史版本回原值」涵蓋。縮欄、`perKmUnitPrice`
+  // 退場、回應改含 `annualDepreciation` 等 AC-57 其餘行為一律留給 R4b。
+  estimatedAnnualKm: number | null;
   effectiveFrom: string; // YYYY-MM-DD
   createdAt: string; // ISO timestamp
   derived: {
@@ -487,7 +491,7 @@ type DepreciationRow = {
   id: string;
   vehiclePrice: Prisma.Decimal;
   usefulLifeYears: number;
-  estimatedAnnualKm: number;
+  estimatedAnnualKm: number | null; // PHASE-007-R1b：欄位已轉 nullable（§20.7.1／D21）
   effectiveFrom: Date;
   createdAt: Date;
 };
@@ -497,7 +501,12 @@ export function toDepreciationDto(row: DepreciationRow): DepreciationParameterDt
   const derivationResult = deriveDepreciation({
     vehiclePrice: row.vehiclePrice,
     usefulLifeYears: row.usefulLifeYears,
-    estimatedAnnualKm: row.estimatedAnnualKm,
+    // PHASE-007-R1b：`estimatedAnnualKm` 為 null 時（＝縮欄後之新版本）沿用
+    // 引擎既有的「≤ 0 → { ok: false }」契約（AC-14），落到下方**既有**的
+    // fallback，不新增分支、不改變任何非 null 列之結果。此路徑於本 Task 後
+    // 仍不可達（建立端點目前仍必填該欄，縮欄為 R4b）；新版本之
+    // `annualDepreciation` 正確來源為 R4a 之 `deriveAnnualDepreciation`。
+    estimatedAnnualKm: row.estimatedAnnualKm ?? 0,
   });
 
   // Since values are already validated as > 0 before saving, this should always succeed.

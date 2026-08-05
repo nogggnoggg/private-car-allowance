@@ -136,7 +136,7 @@ model DepreciationParameterVersion {
   id                String   @id @default(cuid())
   vehiclePrice      Decimal  @db.Decimal(12, 2) // 車價（新臺幣），>0；D8 精度
   usefulLifeYears   Int // 折舊年限（年），>0；整數（D8）
-  estimatedAnnualKm Int // 預估年度行駛公里數，>0；整數（D8）
+  estimatedAnnualKm Int? // 修訂段 §20.7.1／D21：NOT NULL → NULLABLE（凍結欄；新版本恆 null，歷史列原值保留）
   effectiveFrom     DateTime @db.Date
   createdById       String
   createdAt         DateTime @default(now())
@@ -392,17 +392,23 @@ model DepreciationApplication {
 
   // ── 業務欄位（草稿可為 null；完成後不可變）──
   applicationYear Int? // 申請年度（西元年）；primaryDate 之來源（§16 D2）
+  annualTotalKm   Decimal? @db.Decimal(9, 1) // 修訂段 §20.7.1：使用者申報之年度總里程（裁定①＋裁定 D）
 
-  // ── 完成快照（BE-US-18 第 3 條）；一經寫入不可變 ──
+  // ── 完成快照（BE-US-18 修訂後；9 欄）；一經寫入不可變 ──
   snapshotVehiclePrice           Decimal?  @db.Decimal(12, 2) // 車價（＝參數版本值）
   snapshotUsefulLifeYears        Int? // 折舊年限
-  snapshotEstimatedAnnualKm      Int? // 預估年度行駛公里數
-  snapshotPerKmUnitPrice         Decimal?  @db.Decimal(14, 4) // 折舊每公里單價（003a 之 4dp；§8.3 容量缺口 #1：不可沿差旅 (10,4)）
+  snapshotAnnualDepreciation     Decimal?  @db.Decimal(12, 2) // 修訂段 §20.7.1：每年折舊費用（2dp 來源值）
   snapshotOfficialKm             Decimal?  @db.Decimal(12, 2) // 年度公務里程
+  snapshotAnnualTotalKm          Decimal?  @db.Decimal(9, 1) // 修訂段 §20.7.1：年度總里程快照＝新舊模型判別欄（§20.7.4）
+  snapshotRatio                  Decimal?  @db.Decimal(9, 6) // 修訂段 §20.7.1：公務比例（比照保養）
   snapshotRawAmount              Decimal?  @db.Decimal(14, 4) // 取整前補貼金額
   calculatedAt                   DateTime?
   depreciationParameterVersionId String? // 引用保護來源（§16 D12）
   // 註：最終金額落於既有 `Application.totalAmount`（Int），不重複持久化。
+
+  // ── 凍結唯讀（舊模型；新申請恆為 null，AC-55(b)）──
+  snapshotEstimatedAnnualKm Int? // 預估年度行駛公里數（保留，不再寫入）
+  snapshotPerKmUnitPrice    Decimal? @db.Decimal(14, 4) // 折舊每公里單價（保留，不再寫入；§8.3 容量缺口 #1）
 
   @@index([applicationYear])
   @@index([depreciationParameterVersionId])

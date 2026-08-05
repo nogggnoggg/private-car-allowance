@@ -56,7 +56,7 @@ export interface DepreciationVersionRow {
   effectiveFrom: Date;
   vehiclePrice: Prisma.Decimal;
   usefulLifeYears: number;
-  estimatedAnnualKm: number;
+  estimatedAnnualKm: number | null; // PHASE-007-R1c：欄位已轉 nullable（§20.7.1／D21）
 }
 
 export interface ResolvedDepreciationParameters {
@@ -145,7 +145,11 @@ export async function resolveDepreciationParameters(
   const derived = deriveDepreciation({
     vehiclePrice: version.vehiclePrice,
     usefulLifeYears: version.usefulLifeYears,
-    estimatedAnnualKm: version.estimatedAnnualKm,
+    // PHASE-007-R1c：`estimatedAnnualKm` 為 null 時（＝縮欄後之新版本）沿用引擎
+    // 既有的「≤ 0 → { ok: false }」契約（AC-14），落入下方 :151 既有的 AC-18
+    // 處置（視同缺參數、絕不 500、絕不以單價 0 繼續計算）。零新增分支；非 null
+    // 版本之結果逐位元不變。新模型之每年折舊費用來源為 R4a／R6。
+    estimatedAnnualKm: version.estimatedAnnualKm ?? 0,
   });
 
   if (!derived.ok) {
