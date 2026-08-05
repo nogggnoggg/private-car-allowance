@@ -42,6 +42,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  insertDraftDepreciationRowRaw,
+  insertLegacyDepreciationRowRaw,
+} from "../fixtures/depreciation-legacy-row.js";
 import { withSchema } from "../setup/db-isolation.js";
 import { countMigrationDirs } from "../setup/global-setup.js";
 
@@ -1081,71 +1085,13 @@ describeWithDb("PHASE-007-T1 migration safety net — clean DB", () => {
 // ===========================================================================
 
 /**
- * FW-8 raw SQL fixture 之輸入形狀 —— 舊模型（M2 前）折舊快照列。
+ * FW-8 raw SQL fixture（`insertLegacyDepreciationRowRaw`／
+ * `insertDraftDepreciationRowRaw`）已於 **PHASE-007-R7** 抽為共用檔
+ * `backend/test/fixtures/depreciation-legacy-row.ts`——AC-56(d) 之舊模型列來源
+ * 需在 `phase7-depreciation-complete.test.ts` 複用同一份 SQL 形狀，而
+ * 直接 import 本測試檔會重複註冊本檔全部測試並重跑 `migrate deploy`。
+ * 本檔之用法與 SQL 形狀**零變更**（見檔案頂端之 import）。
  */
-export interface LegacyDepreciationRowInput {
-  applicationId: string;
-  applicationYear: number | null;
-  snapshotVehiclePrice: string | null;
-  snapshotUsefulLifeYears: number | null;
-  snapshotEstimatedAnnualKm: number | null;
-  snapshotPerKmUnitPrice: string | null;
-  snapshotOfficialKm: string | null;
-  snapshotRawAmount: string | null;
-  calculatedAt: Date | null;
-  depreciationParameterVersionId: string | null;
-}
-
-/**
- * FW-8 raw SQL fixture —— 舊模型折舊快照列。
- *
- * 僅列出 **M2 之前就存在的 10 欄**；M2 新增的 4 欄一律不出現在 INSERT 中，
- * 因此：
- *   - 在 **M2 之前**的 DB 上執行 → 產生真正的「migration 前列形狀」；
- *   - 在 **M2 之後**的 DB 上執行 → 新 4 欄取 DB 預設值 `NULL`，恰好滿足
- *     Spec §20.7.4／AC-56(a) 之**舊模型列**述詞（`snapshotPerKmUnitPrice
- *     != null` 且 `snapshotAnnualTotalKm == null`）。
- *
- * 後續 Task（R7 之 AC-56(d)）需要「以 raw SQL 播種一列舊模型快照」時，應複用
- * 本函式之 SQL 形狀——Prisma Client 因型別已含新欄，**不得**用於此目的。
- */
-export async function insertLegacyDepreciationRowRaw(
-  client: PrismaClient,
-  row: LegacyDepreciationRowInput
-): Promise<void> {
-  await client.$executeRawUnsafe(
-    `INSERT INTO "DepreciationApplication" (
-       "applicationId", "applicationYear", "snapshotVehiclePrice", "snapshotUsefulLifeYears",
-       "snapshotEstimatedAnnualKm", "snapshotPerKmUnitPrice", "snapshotOfficialKm",
-       "snapshotRawAmount", "calculatedAt", "depreciationParameterVersionId"
-     ) VALUES (
-       $1, $2, CAST($3 AS numeric), $4,
-       $5, CAST($6 AS numeric), CAST($7 AS numeric),
-       CAST($8 AS numeric), $9, $10
-     )`,
-    row.applicationId,
-    row.applicationYear,
-    row.snapshotVehiclePrice,
-    row.snapshotUsefulLifeYears,
-    row.snapshotEstimatedAnnualKm,
-    row.snapshotPerKmUnitPrice,
-    row.snapshotOfficialKm,
-    row.snapshotRawAmount,
-    row.calculatedAt,
-    row.depreciationParameterVersionId
-  );
-}
-
-/** FW-8 raw SQL fixture —— 草稿列（M2 前後皆為「兩者皆 null」之草稿列）。 */
-export async function insertDraftDepreciationRowRaw(
-  client: PrismaClient,
-  applicationId: string
-): Promise<void> {
-  await client.$executeRawUnsafe(
-    `INSERT INTO "DepreciationApplication" ("applicationId") VALUES ($1)`,
-    applicationId
-  );
-}
 
 /**
  * 執行 `prisma migrate diff --exit-code`：比對「migrations 目錄逐一套用後的

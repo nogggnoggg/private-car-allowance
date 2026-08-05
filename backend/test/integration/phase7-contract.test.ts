@@ -293,16 +293,38 @@ describe("FW-2 文案雙份零守護：後端 blocker 訊息 ↔ 前端 BLOCKING
     return result;
   }
 
-  it("四則 blocker 訊息之後端字面值與前端字面值逐碼逐字相等", () => {
+  /**
+   * §20.5.2「blocker code 聯集（折舊）」之**修訂後聯集**（公開契約）：
+   *   退場 1：`DEPRECIATION_ATTACHMENT_REQUIRED`（AC-54(b)）
+   *   新增 3：`ANNUAL_TOTAL_KM_REQUIRED`、`ANNUAL_TOTAL_KM_INVALID`、
+   *           `OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM`
+   * 順序沿 §20.5.1 之固定順序（1~6）。
+   *
+   * **本斷言依 Spec 更新，非弱化測試**（§20.5.2 逐字授權）。
+   */
+  const REVISED_BLOCKER_CODES = [
+    "YEAR_REQUIRED",
+    "ANNUAL_TOTAL_KM_REQUIRED",
+    "ANNUAL_TOTAL_KM_INVALID",
+    "PARAMETER_NOT_AVAILABLE",
+    "OFFICIAL_KM_EXCEEDS_ANNUAL_TOTAL_KM",
+    "AMOUNT_OUT_OF_RANGE",
+  ];
+
+  // 後端側與前端側拆為兩條（PHASE-007-R7）：R7 只授權後端層，前端文案表之
+  // 縮欄／新增屬 **R9／R10**（跨層禁令）。拆條後兩層之紅可各自歸因，不會互相
+  // 遮蔽。
+  it("後端 blocker code 聯集恰為 §20.5.2 之修訂後六碼（退場 1、新增 3）", () => {
+    const backend = extractBackendBlockerMessages(blockersSrc);
+    expect(Object.keys(backend).sort()).toEqual([...REVISED_BLOCKER_CODES].sort());
+    expect(Object.keys(backend)).not.toContain("DEPRECIATION_ATTACHMENT_REQUIRED");
+  });
+
+  it("六則 blocker 訊息之後端字面值與前端字面值逐碼逐字相等（§20.5.2 修訂後聯集）", () => {
     const backend = extractBackendBlockerMessages(blockersSrc);
     const frontend = extractFrontendBlockingCodeMessages(pageSrc);
 
-    const expectedCodes = [
-      "YEAR_REQUIRED",
-      "DEPRECIATION_ATTACHMENT_REQUIRED",
-      "PARAMETER_NOT_AVAILABLE",
-      "AMOUNT_OUT_OF_RANGE",
-    ];
+    const expectedCodes = REVISED_BLOCKER_CODES;
     expect(Object.keys(backend).sort()).toEqual([...expectedCodes].sort());
     expect(Object.keys(frontend).sort()).toEqual([...expectedCodes].sort());
     for (const code of expectedCodes) {
@@ -347,12 +369,24 @@ describeWithDb("AC-43 — PHASE-007 折舊端點錯誤合約", () => {
     return { id: user.id, cookie };
   }
 
-  async function createDepreciationDraftViaApi(cookie: string, applicationYear?: number) {
+  /**
+   * PHASE-007-R7：`annualTotalKm`（§20.7.1／AC-47）為修訂後之必要申請資料，
+   * 完成端點缺之即以第 2 碼 `ANNUAL_TOTAL_KM_REQUIRED` 於 400 拒絕。故需要走到
+   * 「結構性全過」之錯誤路徑（例如 409 缺參數）者，須一併帶入該欄。
+   */
+  async function createDepreciationDraftViaApi(
+    cookie: string,
+    applicationYear?: number,
+    annualTotalKm?: string
+  ) {
+    const payload: Record<string, unknown> = {};
+    if (applicationYear !== undefined) payload.applicationYear = applicationYear;
+    if (annualTotalKm !== undefined) payload.annualTotalKm = annualTotalKm;
     const resp = await app.inject({
       method: "POST",
       url: "/applications/depreciation",
       headers: { cookie },
-      payload: applicationYear === undefined ? {} : { applicationYear },
+      payload,
     });
     expect(resp.statusCode).toBe(201);
     const id = resp.json<{ application: { id: string } }>().application.id;
@@ -639,8 +673,11 @@ describeWithDb("AC-43 — PHASE-007 折舊端點錯誤合約", () => {
         expect(typeof blocker.message).toBe("string");
         expect((blocker.message as string).length).toBeGreaterThan(0);
       }
+      // §20.5.2（修訂段）：`DEPRECIATION_ATTACHMENT_REQUIRED` 退場（AC-54(b)）、
+      // `ANNUAL_TOTAL_KM_REQUIRED` 新增（AC-53(c)）——**依 Spec 更新斷言**。
       const codes = (details.blockers as { code: string }[]).map((b) => b.code).sort();
-      expect(codes).toEqual(["DEPRECIATION_ATTACHMENT_REQUIRED", "YEAR_REQUIRED"].sort());
+      expect(codes).toEqual(["ANNUAL_TOTAL_KM_REQUIRED", "YEAR_REQUIRED"].sort());
+      expect(codes).not.toContain("DEPRECIATION_ATTACHMENT_REQUIRED");
     });
 
     it("403 FORBIDDEN (caller is not the owner, §16 D9(a) owner-only — even ADMIN) — unified shape", async () => {
@@ -659,7 +696,11 @@ describeWithDb("AC-43 — PHASE-007 折舊端點錯誤合約", () => {
     // FW-3：前端實際依賴之 PARAMETER_NOT_AVAILABLE（AC-16/18）——本套件專屬
     // 年份（2140+）天然無有效折舊參數版本，觸發 §16 D5(a) 之 409 拒絕形狀。
     it("409 PARAMETER_NOT_AVAILABLE (sentinel year has no parameter version) — unified shape with details.missing + details.applicationYear (FW-1, Spec §7.5/§16 D5(a))", async () => {
-      const id = await createDepreciationDraftViaApi(userCookie, SENTINEL_YEAR_NO_PARAMETER);
+      const id = await createDepreciationDraftViaApi(
+        userCookie,
+        SENTINEL_YEAR_NO_PARAMETER,
+        "10000.0"
+      );
       const attachmentId = await uploadTemp(userCookie, "t15-param.jpg");
       expect(
         (

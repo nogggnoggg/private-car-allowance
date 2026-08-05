@@ -1143,6 +1143,18 @@ export interface CompleteDepreciationApplicationOptions {
 const COMPLETE_DEPRECIATION_MAX_RETRIES = 6;
 
 /**
+ * 快照寫入之顯式定精度（AC-55(c)）——scale 一律取自 §20.7.1 之 DDL，零魔術數。
+ *
+ * `snapshotRatio` 之 scale 不另立常數：其值一律取自
+ * `calculateDepreciation().ratioString`（已由 `RATIO_DISPLAY_SCALE` 量化至
+ * 6dp），與 `computed.ratio` 之對外呈現**同一份**實作。
+ */
+/** `snapshotAnnualDepreciation Decimal(12,2)`。 */
+const SNAPSHOT_ANNUAL_DEPRECIATION_SCALE = 2;
+/** `snapshotAnnualTotalKm Decimal(9,1)`。 */
+const SNAPSHOT_ANNUAL_TOTAL_KM_SCALE = 1;
+
+/**
  * 完成中該申請被刪除（`P2025`）之偵測（AC-30 逐字：「`P2025`（完成中被刪）
  * 不得以 500 呈現」）。形狀沿 `admin/routes.ts` 之既有 `isRecordNotFound`。
  */
@@ -1324,40 +1336,63 @@ export async function completeDepreciationApplication(
             officialKm: totalKm,
             annualTotalKm,
           });
-          if (result.rawAmount === null || result.amount === null) {
+          if (result.rawAmount === null || result.amount === null || result.ratioString === null) {
             // 不可達：非有限值會使容量 predicate 回 `true` → 第 4 碼 → 上方
-            // 已於寫入前拒絕。
+            // 已於寫入前拒絕。三者於 `calculateDepreciation` 同進同退
+            // （`calculable=false` ⇒ 全 `null`），此處僅為型別窄化。
             throw new AppError("INTERNAL_ERROR", 500, "計算結果異常，請聯絡管理員");
           }
 
-          // ⑥a：8 個快照欄，**顯式定精度**（AC-28 逐字：`toFixed(scale)` 後以
-          //      字串建構 `Decimal`，防裁尾零與 Postgres 靜默第二次取整）。
-          //      四個 `Decimal` 欄之 scale 逐一對應 §8.2 之 DDL：
-          //        snapshotVehiclePrice   Decimal(12,2)
-          //        snapshotPerKmUnitPrice Decimal(14,4)
-          //        snapshotOfficialKm     Decimal(12,2)
-          //        snapshotRawAmount      Decimal(14,4)
-          //      三個來源值天然即為該 scale（參數表 2dp／引擎 4dp／里程和 2dp），
-          //      故量化為無損；`snapshotRawAmount` 則必然發生一次量化（2dp×4dp
-          //      最多 6dp），一律走既有 `formatRawAmount`（顯式 `ROUND_HALF_UP`，
-          //      與 `computed.rawAmount` 之呈現同一份實作，勿寫第二份）。
+          // ⑥a：**9 個快照欄**（AC-55(a) 逐字），**顯式定精度**（AC-55(c)：
+          //      `toFixed(scale)` 後以字串建構 `Decimal`，防裁尾零與 Postgres
+          //      對超 scale 小數之**靜默四捨五入**——T1 FW-3：Postgres 不報錯，
+          //      故服務層定精度為承重需求，不可依賴 DB 捨入）。
+          //      五個 `Decimal` 欄之 scale 逐一對應 §20.7.1 之 DDL：
+          //        snapshotVehiclePrice       Decimal(12,2)
+          //        snapshotAnnualDepreciation Decimal(12,2)
+          //        snapshotOfficialKm         Decimal(12,2)
+          //        snapshotAnnualTotalKm      Decimal(9,1)
+          //        snapshotRatio              Decimal(9,6)
+          //        snapshotRawAmount          Decimal(14,4)
+          //      前四者之來源天然即為該 scale（參數表 2dp／引擎 2dp／里程和
+          //      2dp／`parseAnnualTotalKmField` 1dp），故量化為無損；
+          //      `snapshotRatio`（全精度除法，可為無窮循環小數）與
+          //      `snapshotRawAmount`（2dp×2dp÷1dp）則必然發生量化，一律走與
+          //      DTO 呈現**同一份**實作（`ratioString` 由 `calculateDepreciation`
+          //      產出、`formatRawAmount` 為既有函式），勿寫第二份。
+          //
+          // AC-55(b) 舊二欄恆 `null`（**兩欄皆明文寫 `null`，不是省略**——
+          // 省略會讓「順手寫入」之 mutant 與正確實作在 diff 上難以區辨，明文
+          // `null` 則使該意圖成為可讀的契約）：
+          //   - `snapshotPerKmUnitPrice`：修訂後之申請路徑**零呼叫**
+          //     `deriveDepreciation`（AC-49(c)），每公里單價結構性不可得；
+          //   - `snapshotEstimatedAnnualKm`：參數版本之 `estimatedAnnualKm` 已
+          //     為凍結唯讀欄（§20.7.5），歷史版本雖仍帶原值，**絕不**順手抄進
+          //     新模型快照（AC-56(a) 之判別依賴此不變式）。
+          // 兩者一律 `null`，**絕不**以 0 或任何佔位值填充。
           const calculatedAt = new Date();
           await tx.depreciationApplication.update({
             where: { applicationId: id },
             data: {
               snapshotVehiclePrice: new Prisma.Decimal(version.vehiclePrice.toFixed(2)),
               snapshotUsefulLifeYears: version.usefulLifeYears,
-              snapshotEstimatedAnnualKm: version.estimatedAnnualKm,
-              // 舊模型欄：修訂後之申請路徑**零呼叫** `deriveDepreciation`
-              // （AC-49(c)），故每公里單價於本流程結構性不可得——一律寫 `null`，
-              // **絕不**以 0 或任何佔位值填充。此即 AC-55(b)「舊二欄恆 null」
-              // 之第一半；`snapshotEstimatedAnnualKm` 之反轉與 9 欄快照之完整
-              // 落地屬 **R7**（本 Task 不擴大範圍）。
-              snapshotPerKmUnitPrice: null,
+              snapshotAnnualDepreciation: new Prisma.Decimal(
+                result.annualDepreciation.toFixed(SNAPSHOT_ANNUAL_DEPRECIATION_SCALE)
+              ),
               snapshotOfficialKm: new Prisma.Decimal(result.officialKm.toFixed(2)),
+              snapshotAnnualTotalKm: new Prisma.Decimal(
+                result.annualTotalKm.toFixed(SNAPSHOT_ANNUAL_TOTAL_KM_SCALE)
+              ),
+              // `ratioString` 為 `calculateDepreciation` 已以顯式 `ROUND_HALF_UP`
+              // 量化至 6dp 之字串（AC-50(b)），與 `computed.ratio` 之對外呈現
+              // 同一來源；此處直接還原為 `Decimal` 寫入，不重算、不二次量化。
+              snapshotRatio: new Prisma.Decimal(result.ratioString),
               snapshotRawAmount: new Prisma.Decimal(formatRawAmount(result.rawAmount)),
               calculatedAt,
               depreciationParameterVersionId: version.id,
+              // ── 凍結唯讀（舊模型）：新模型列恆 `null`，AC-55(b) ──
+              snapshotEstimatedAnnualKm: null,
+              snapshotPerKmUnitPrice: null,
             },
           });
 
@@ -1366,8 +1401,8 @@ export async function completeDepreciationApplication(
           options.__testOnlyFailAfterSnapshotWrite?.();
 
           // ⑥b：狀態轉換 —— 最後一筆寫入。`totalAmount` 直接取
-          //      `result.amount`（AC-28：不得二次取整、不得由 4dp
-          //      `snapshotRawAmount` 反推）。
+          //      `result.amount`（AC-55(d)：不得二次取整、不得由 4dp
+          //      `snapshotRawAmount` 反推、不得經 `snapshotRatio`）。
           await tx.application.update({
             where: { id },
             data: {
