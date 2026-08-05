@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：2026-08-04（最後同步至 PHASE-006 已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`、`PHASE-007-DOC-SYNC-B`）
+- 更新日期：2026-08-05（最後同步至 PHASE-007 已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`、`PHASE-007-DOC-SYNC-B`、`PHASE-007-DOC-SYNC`）
 - 上游：`userstory.md`、`docs/PRD.md`、`docs/ARCHITECTURE.md`
 - 說明：概念層資料模型與資料流草案。實體命名為概念名稱，非最終 DB schema；不含欄位型別、索引、API I/O 格式（於 Phase Spec 定案）。
 
@@ -48,7 +48,7 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 | TravelApplication | 出差日期、出差目的；**完成快照**：油資／ETC 每公里單價、快照總里程、取整前金額、計算時間 ＋ **PHASE-005a 新增五欄** `snapshotFuelType`／`snapshotFuelPricePerLiter`（元／L）／`snapshotFuelConsumption`（km/L）／`fuelPriceVersionId`／`fuelConsumptionVersionId` | 差旅專屬 + 多段行程；**PHASE-005a 落地**：新增五欄全部 nullable、無 default、零回填；新舊模型判別與寫入順序見 §2.2 |
 | TripSegment | 出發地、到達地、總里程、高速里程、排序 | 屬差旅；≥1 段且每段完成須 ≥1 附件 |
 | MaintenanceApplication | **業務 5 欄**：上次/本次保養日期（`@db.Date`，日粒度）、上次/本次里程表、實際費用；**快照 5 欄**：`snapshotIntervalKm`（區間里程）／`snapshotOfficialKm`（期間公務里程）／`snapshotRatio`（比例，6 位小數）／`snapshotRawAmount`（取整前分攤金額）／`calculatedAt` | **PHASE-006 已落地之實體**：`MaintenanceApplication` 子表，1:1 於 `Application`（PK ＝ `applicationId`，`onDelete: Cascade`），與既有 `TravelApplication` 對稱（D1(a)）；本次保養日期為 `Application.primaryDate` 之來源；**最終金額落於既有 `Application.totalAmount`（`Int`）不重複持久化**；**實際費用之快照即 `actualCost` 欄位本身**（完成後凍結，D11(a)，不另存冗餘副本） |
-| DepreciationApplication | 申請年度；(快照:車價/年限/預估年里程/單價/年度里程/補貼金額) | 折舊專屬 |
+| DepreciationApplication | **業務 1 欄**：申請年度 `applicationYear`（`Int?`，西元年，值域 [1900, 2999]，草稿可為 `null`）；**快照 8 欄**：`snapshotVehiclePrice`（`Decimal(12,2)`，車價）／`snapshotUsefulLifeYears`（`Int`）／`snapshotEstimatedAnnualKm`（`Int`）／`snapshotPerKmUnitPrice`（`Decimal(14,4)`，折舊每公里單價之 4 位小數）／`snapshotOfficialKm`（`Decimal(12,2)`，年度公務里程）／`snapshotRawAmount`（`Decimal(14,4)`，取整前補貼金額）／`calculatedAt`／`depreciationParameterVersionId`（所引用之折舊參數版本） | **PHASE-007 已落地之實體**：`DepreciationApplication` 子表，1:1 於 `Application`（PK ＝ `applicationId`，`onDelete: Cascade`），與既有 `TravelApplication`／`MaintenanceApplication` 對稱（D1(a)）；`Application.primaryDate` ＝ 該年 `12-31`（`applicationYear` 為 `null` 時 ＝ 建立日，D2(a)），為列表排序與期間篩選之權威；**最終金額落於既有 `Application.totalAmount`（`Int`）不重複持久化**；單價欄刻意用 `Decimal(14,4)` 而非沿差旅之 `(10,4)`，以容納引擎全部合法輸出（D3(a)）；三推導輸入值與版本 id **持久化但不出現於任何折舊 DTO**（D8(a)）；自身兩索引：`applicationYear`、`depreciationParameterVersionId` |
 | Attachment | 檔案參照(volume 路徑)、格式、大小、暫存/關聯狀態、所屬申請/項目、上傳時間 | 生命週期核心 |
 | Report | 報表編號(TRV/MNT/DEP+月內唯一)、產生時間、所屬申請版本 | 已完成才有；冪等 |
 | PdfFile | volume 檔案參照、安全檔名 | 保存不可變內容 |
@@ -62,6 +62,7 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 - 一般使用者只能存取自己擁有的 Application/Attachment/Report。
 - Application 完成即鎖定業務欄位與附件，並寫入 CalculationSnapshot；快照不可變。
 - 各類參數版本（ETC／折舊 ParameterVersion、`FuelPriceVersion` 依油種、`UserFuelConsumptionVersion` 依使用者）各自時間軸之有效期間不重疊；被歷史申請引用後內容不可覆寫。
+- **折舊快照引用之參數版本不可覆寫**（PHASE-007 D12(a)，已落地）：已完成折舊申請之 `depreciationParameterVersionId` 即為 `DepreciationParameterVersion` 之真實引用來源，`parameterHasReferences("DEPRECIATION", versionId)` 據此判定（引用 ＝ 存在指向該版本且 `Application.status = COMPLETED` 之折舊申請）；歷史補貼金額由快照保證不變（BE-US-19／AD-US-13）。
 - 修正版為新 Application（草稿），透過版本關聯指向原申請；原申請與其 PDF 不被改動。
 - 統計/計算僅納入「已完成且未作廢」的差旅。
 
@@ -103,7 +104,7 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 ```
 
 - 保養差異：完成時計算區間里程(本次−上次里程表)、期間公務里程(2.8 統計)、比例(>100% 拒絕)、分攤金額；快照存區間里程/公務里程/比例/費用/金額。**PHASE-006 落地流程見下。**
-- 折舊差異：完成時取年度公務里程(2.8)、依申請年度 1/1 有效折舊參數算每公里單價與補貼；年度里程唯讀不可覆寫；快照存車價/年限/預估年里程/單價/年度里程/金額。**（PHASE-007 尚未落地。）**
+- 折舊差異：完成時取年度公務里程(2.8)、依申請年度 1/1 有效折舊參數算每公里單價與補貼；年度里程唯讀不可覆寫；快照存車價/年限/預估年里程/單價/年度里程/金額。**PHASE-007 落地流程見下。**
 
 PHASE-005a 落地細節（差旅單價解析；預覽與完成共用，取代上文「依出差日期套用油資參數」之舊敘述）：
 
@@ -167,6 +168,51 @@ POST /applications/:id/complete（依 type 分派 → MAINTENANCE）
 - **②與③④之順序不可對調**：完成度未過時**不查詢**期間里程（省一次聚合，錯誤語意單一）。故 blocker 分兩段計算——結構性條件先算，全通過才執行 ③，再算依賴里程之項目並二次判定；純函式以 `officialKm?: Decimal | null` 表達「尚未查詢」而不產生該類 blocker。
 - **預覽為純讀取路徑**（`POST /applications/maintenance/preview`）：`resolveOwnerId` 授權 → 欄位驗證 → `sumOfficialMileage`（唯讀）→ `calculateMaintenance` → 容量判定；**絕不寫入任何資料列**。
 - **草稿與預覽即暴露不可計算狀態**（blocker ＋ `computed.calculable=false`），不得出現「預覽說可以、完成才擋」之反模式。
+
+PHASE-007 落地細節（折舊分支；預覽唯讀路徑與完成快照寫入）：
+
+```
+POST /applications/depreciation/preview（唯讀；D13(a)）
+  → requireAuth + requirePasswordChanged
+  → 【授權】resolveOwnerId(actor, body.ownerId) ── 一般使用者帶他人 → 403（不靜默降級）
+       （授權判定先於欄位格式驗證，沿 PHASE-005 B-26／006 §6.1）
+  → 欄位驗證（同草稿）→ 400 fields[]
+  → applicationYear == null → calculable=false + [YEAR_REQUIRED]，**不查 DB**
+  → sumOfficialMileage(prisma, { ownerId, YYYY-01-01, YYYY-12-31 })   ← 唯讀，起訖含當日
+  → findMany(DepreciationParameterVersion 全部版本)
+       → findEffectiveVersion(YYYY-01-01)   ← 純函式選版
+  → deriveDepreciation(version)             ← PHASE-003a 引擎，零改動
+  → calculateDepreciation({ officialKm, perKmUnitPrice }) → 容量判定
+  → DepreciationComputedDto
+```
+
+```
+POST /applications/:id/complete（依 type 分派 → DEPRECIATION）
+  → requireAuth + requirePasswordChanged
+  → 【授權】嚴格 actor.id === ownerId（D9(a)：僅本人可完成；管理員代操作僅及於草稿）
+  → SERIALIZABLE tx（重試）：
+       ① SELECT ... FOR UPDATE；assertTransition(status → COMPLETED)   非 DRAFT → 403
+       ② attachmentCount = count(LINKED, DEPRECIATION, applicationId)  ← tx 內現算
+          computeDepreciationBlockers（**結構性條件先算**）
+             非空 → 400 VALIDATION_ERROR + fields[] + details.blockers[]
+       ③ sumOfficialMileage(tx, { ownerId, YYYY-01-01, YYYY-12-31 })
+             ← 同一交易內呼叫既有引擎（不重寫過濾與加總）
+       ④ version = findEffectiveVersion(findMany(tx), YYYY-01-01)
+             null → 409 PARAMETER_NOT_AVAILABLE + details.missing/applicationYear
+             deriveDepreciation → ok:false → 409（訊息與缺參數逐字互異）
+       ⑤ calculateDepreciation({ officialKm: totalKm, perKmUnitPrice })
+             容量守門（AMOUNT_OUT_OF_RANGE）**於寫入前**拒絕（4xx；絕不 500、絕不截斷）
+       ⑥a DepreciationApplication.update(8 個快照欄，顯式定精度)
+       ⑥b Application.update(status=COMPLETED, totalAmount, completedAt)
+  → 回應 DTO（含 snapshot；completionBlockers=null、computed=null）
+```
+
+- **②與③④之順序不可對調**（同保養）：完成度未過時**不查詢**年度里程與參數。blocker 分兩段計算——結構性條件先算，全通過才執行 ③④，再算 `PARAMETER_NOT_AVAILABLE`／`AMOUNT_OUT_OF_RANGE` 並二次判定；純函式以 `officialKm?`／`perKmUnitPrice?` 之 `null` 表達「尚未查詢」而不產生該類 blocker。
+- **零寫入不變式**：預覽路徑**絕不**寫入任何資料列；完成失敗時亦零寫入（`Application.status` 仍為 `DRAFT`、八個快照欄仍為 `null`）。
+- **草稿與預覽即暴露不可計算狀態**（blocker ＋ `computed.calculable=false`），不得出現「預覽說可以、完成才擋」之反模式。
+- **單價與取整**：單價一律為 PHASE-003a `deriveDepreciation` 之 4 位小數字串，以 `Prisma.Decimal(字串)` 還原；`rawAmount = 年度里程 × 單價`（未取整），`amount = ROUND_HALF_UP(rawAmount, 0)`——**本 Phase 取整恰一處**（ARCHITECTURE §4.1 折舊段）。
+- **選版一律走純函式**：折舊參數以一次 `findMany` 取**全部版本**後 `findEffectiveVersion(YYYY-01-01)` 選版，**不得**在 DB 層以 `effectiveFrom: { lte }` 先過濾（沿 PHASE-005a 明文紀律）。
+- **代操作與年度歸屬**：`ownerId` 恆取自 `Application.ownerId`（絕不為操作者）；年度區間為 `[YYYY-01-01, YYYY-12-31]` **起訖含當日**，依差旅之**出差日期**歸屬。`applicationCount` 純供顯示，金額只用 `totalKm`（D14(a)，見 ARCHITECTURE §4.10 末條）。
 
 ### 2.3 附件上傳生命週期（暫存 → 關聯 → 鎖定 → 清理）
 
@@ -252,7 +298,8 @@ PHASE-003a 落地細節（已實作事實）：
 
 - 三類 `ParameterVersion` 之 `effectiveFrom` 為**日粒度**（`@db.Date`，含當日）；有效期間結束為「同類下一版生效日前一日」隱含推導，不重疊退化為同類 `effectiveFrom` 唯一（D2 方案 A）。
 - 折舊 derived（每年費用 / 每公里單價）**不持久化**（D7），依推導引擎即算即回。
-- **引用保護以「只增不改」保證**：本 Phase 不提供改/刪版本端點，覆寫版本內容之路徑天然不存在。提供引用偵測介面契約 `parameterHasReferences(type, versionId): boolean`；本 Phase 引用來源（已完成申請快照）尚不存在，故**本 Phase 回傳 false**。真實引用判斷與「歷史金額不變」回歸於 PHASE-004/007（以申請完成快照為權威）。
+- **引用保護以「只增不改」保證**：本 Phase 不提供改/刪版本端點，覆寫版本內容之路徑天然不存在。提供引用偵測介面契約 `parameterHasReferences(type, versionId): boolean`；PHASE-003a 當下引用來源（已完成申請快照）尚不存在，故該 Phase 回傳 false。真實引用判斷與「歷史金額不變」回歸於 PHASE-004/007（以申請完成快照為權威）。
+- **上述承諾已於 PHASE-007 兌現完畢（D12(a)，已落地）**：`ParameterType` 加入 `"DEPRECIATION"`，查 `DepreciationApplication.depreciationParameterVersionId` ＋ `Application.status = "COMPLETED"`（與 PHASE-004 之 `"FUEL"`／`"FUEL_PRICE"`／`"FUEL_CONSUMPTION"`／`"ETC"` 同型，一個分支 ＋ 一次 `count`）。**尚無生產呼叫端**——參數版本仍以「只增不改」保證引用保護（無改／刪端點），本函式之接線（清理與覆寫守門）屬 PHASE-010／011。
 
 錯誤流（PHASE-003a）：
 
