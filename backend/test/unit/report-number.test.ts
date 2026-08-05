@@ -87,6 +87,19 @@ describe("getReportNumberPeriod — AC-03(b) Asia/Taipei 四點邊界", () => {
   it("2026-01-01T00:00:00Z → 202601（台北 01/01 08:00:00，仍屬 1 月）", () => {
     expect(getReportNumberPeriod(new Date("2026-01-01T00:00:00Z"))).toBe("202601");
   });
+
+  it("YYYYMM 不受主機時區影響（TZ 覆寫下四點邊界不變）", () => {
+    const original = process.env.TZ;
+    try {
+      for (const tz of ["UTC", "EST5EDT", "Asia/Taipei"]) {
+        process.env.TZ = tz;
+        expect(getReportNumberPeriod(new Date("2026-08-31T15:59:59Z"))).toBe("202608");
+        expect(getReportNumberPeriod(new Date("2026-08-31T16:00:00Z"))).toBe("202609");
+      }
+    } finally {
+      process.env.TZ = original;
+    }
+  });
 });
 
 describe("buildReportNumber / generateReportNumber — AC-03(a)(c) 格式與序號", () => {
