@@ -654,9 +654,7 @@ function DepreciationSection(): React.ReactElement {
                   <th>生效日期</th>
                   <th className="num-col">車價（元）</th>
                   <th className="num-col">折舊年限（年）</th>
-                  <th className="num-col">預估年里程（公里）</th>
                   <th className="num-col">每年折舊費用（元）</th>
-                  <th className="num-col">每公里單價（元）</th>
                   <th>建立時間</th>
                 </tr>
               </thead>
@@ -666,12 +664,8 @@ function DepreciationSection(): React.ReactElement {
                     <td>{v.effectiveFrom}</td>
                     <td className="num-col">{v.vehiclePrice}</td>
                     <td className="num-col">{v.usefulLifeYears}</td>
-                    {/* PHASE-007-R11／AC-61：新版本該欄為 null，唯讀顯示「—」；歷史版本顯示原值 */}
-                    <td className="num-col">{v.estimatedAnnualKm ?? "—"}</td>
                     {/* derived — displayed from backend response, NOT calculated by frontend (AC-20) */}
                     <td className="num-col">{v.derived.annualDepreciation}</td>
-                    {/* PHASE-007-R11／AC-61：新版本每公里單價為 null，唯讀顯示「—」；歷史版本顯示原值 */}
-                    <td className="num-col">{v.derived.perKmUnitPrice ?? "—"}</td>
                     <td>{formatDateYmd(v.createdAt)}</td>
                   </tr>
                 ))}

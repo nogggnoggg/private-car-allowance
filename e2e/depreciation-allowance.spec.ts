@@ -16,8 +16,9 @@
  *   - 情境5：已完成之折舊申請不可修改（403，不可變性回歸，沿 AC-04 既有語意）。
  *   - 情境6：列表出現已完成折舊列且金額一致（AC-45）。
  *   - 情境7（⑤）：管理員參數頁「折舊參數」區塊縮欄——建立表單僅三個可輸入
- *     欄位（車價／折舊年限／生效日期，`estimatedAnnualKm` 已退場）；新版本
- *     歷史列之「預估年里程」／「每公里單價」唯讀顯示「—」（AC-57/AC-61）。
+ *     欄位（車價／折舊年限／生效日期，`estimatedAnnualKm` 已退場）；版本清單
+ *     縮為五欄，「預估年里程」／「每公里單價」表頭與儲存格皆不再顯示，新舊
+ *     版本一律不呈現（AC-57／AC-61R；裁定 G2）。
  *   - 情境8（⑥）：375px 無水平溢位——折舊表單／預覽／證明（同一草稿頁）、
  *     列表頁、已完成詳情頁、管理員參數頁，共四類畫面（AC-46）。
  *
@@ -647,11 +648,13 @@ test.describe("年度折舊補貼（新模型）— PHASE-007-R12 Gate E2E", () 
   });
 
   // -------------------------------------------------------------------------
-  // 情境7（Packet ⑤／AC-57／AC-61）：管理員參數頁「折舊參數」區塊縮欄——
-  // 建立表單僅三個可輸入欄位；新版本歷史列之「預估年里程」／「每公里單價」
-  // 唯讀顯示「—」。
+  // 情境7（Packet ⑤／AC-57／AC-61R；裁定 G2）：管理員參數頁「折舊參數」區塊
+  // 縮欄——建立表單僅三個可輸入欄位；版本清單縮為五欄，「預估年里程」／
+  // 「每公里單價」表頭與儲存格皆已移除，新舊版本一律不顯示。
   // -------------------------------------------------------------------------
-  test("情境7：管理員參數頁折舊參數區塊縮欄——建立三欄＋歷史唯讀「—」", async ({ page }) => {
+  test("情境7：管理員參數頁折舊參數區塊縮欄——建立三欄＋版本清單五欄（預估年里程／每公里單價已移除）", async ({
+    page,
+  }) => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/admin/parameters`);
     await page.waitForURL(`${BASE}/admin/parameters`);
@@ -681,12 +684,16 @@ test.describe("年度折舊補貼（新模型）— PHASE-007-R12 Gate E2E", () 
     await section.locator('button:has-text("建立")').click();
     await expect(section.getByText("折舊參數版本建立成功。")).toBeVisible({ timeout: 10000 });
 
+    // AC-61R：折舊表頭不含「預估年里程（公里）」與「每公里單價（元）」
+    const headerNames = await section.locator("table.param-table thead th").allTextContents();
+    expect(headerNames).not.toContain("預估年里程（公里）");
+    expect(headerNames).not.toContain("每公里單價（元）");
+
     const newRow = section.locator("table.param-table tbody tr", { hasText: scratchEffectiveFrom });
     await expect(newRow).toBeVisible({ timeout: 10000 });
     const cells = await newRow.locator("td").allTextContents();
-    // 欄序：生效日期／車價／折舊年限／預估年里程／每年折舊費用／每公里單價／建立時間
-    expect(cells[3]).toBe("—"); // 預估年里程
-    expect(cells[5]).toBe("—"); // 每公里單價
+    // 欄序（AC-61R 縮欄後）：生效日期／車價／折舊年限／每年折舊費用／建立時間
+    expect(cells.length).toBe(5);
   });
 
   // -------------------------------------------------------------------------
