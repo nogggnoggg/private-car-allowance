@@ -369,6 +369,46 @@ describeWithDb("PHASE-007-T12 — GET /applications 折舊列映射與篩選", (
       expect(maintenanceItem?.title).toBe("保養 2129-12-15 ~ 2130-01-15");
     });
 
+    it("T12R2-LITE SF-2 (終審 M2b): rows sharing the same primaryDate but with distinct createdAt values are ordered by createdAt DESC, independent of id", async () => {
+      // 終審 M2b mutant 證據：application-query.ts:394 之
+      // `{ createdAt: "desc" }` 改 `"asc"` 後全套仍全綠——既有 AC-36 fixture
+      // 四筆同鍵列共用「相同 primaryDate 且相同 createdAt」，tie-breaker 只有
+      // id DESC 被行使，從未真的行使 createdAt 排序鍵。本測試三筆共用
+      // primaryDate，但 createdAt 兩兩相異（不共用任何 createdAt 值），迫使
+      // 排序結果完全由 createdAt DESC 決定、id 從不介入判定——mutant 改
+      // asc 後，這三筆的相對順序會整組反轉，本斷言必紅。
+      const samePrimaryDate = "2135-01-15";
+      const rowEarliest = await createDepreciationApp({
+        ownerId: mixedOwnerId,
+        primaryDate: samePrimaryDate,
+        createdAt: new Date("2135-01-15T01:00:00.000Z"),
+        applicationYear: 2135,
+      });
+      const rowMiddle = await createDepreciationApp({
+        ownerId: mixedOwnerId,
+        primaryDate: samePrimaryDate,
+        createdAt: new Date("2135-01-15T12:00:00.000Z"),
+        applicationYear: 2135,
+      });
+      const rowLatest = await createDepreciationApp({
+        ownerId: mixedOwnerId,
+        primaryDate: samePrimaryDate,
+        createdAt: new Date("2135-01-15T23:00:00.000Z"),
+        applicationYear: 2135,
+      });
+
+      const resp = await getList(mixedOwnerCookie, {
+        dateFrom: "2135-01-15",
+        dateTo: "2135-01-15",
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = resp.json<ListResponse>();
+
+      const relevantIds = new Set([rowEarliest.id, rowMiddle.id, rowLatest.id]);
+      const ordered = body.items.filter((i) => relevantIds.has(i.id)).map((i) => i.id);
+      expect(ordered).toEqual([rowLatest.id, rowMiddle.id, rowEarliest.id]);
+    });
+
     it("depreciation rows carry type=DEPRECIATION and the correct status", async () => {
       const draft = await createDepreciationApp({
         ownerId: mixedOwnerId,
