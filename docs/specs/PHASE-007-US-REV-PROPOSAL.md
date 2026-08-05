@@ -1,6 +1,6 @@
 # PHASE-007 — User Story 修訂提案（折舊模型修訂）
 
-- **Status: DRAFT — 待人類 US Gate 逐條確認**
+- **Status: APPROVED — 人類 leonchih 2026-08-05「照提案全部確認」**（含 §1 八條修訂全文、§6.2 擴張與建議 12 項（含 S-3 詮釋——年度總里程屬申請資料非金額，不違「後端不採前端金額」鐵律）、Q1~Q12 全數照推薦（含 Q6 折舊年限不顯示、Q8 報表五值同步收斂跨 Phase 追蹤條）。落地順序：US-LAND → PRD-SYNC → SPEC-REV（含 §12 映射表重整）→ TDD → 複審。）
 - Task ID：PHASE-007-US-REV-PROPOSAL
 - 建立日期：2026-08-05
 - 產出角色：spec-writer（依大總管 Task Context Packet 派工）
