@@ -7,6 +7,7 @@ State: ACTIVE
 > - Effort 崗哨：本 session effort=medium，已警告使用者（低於 high 建議），使用者裁定開工。模型確認提醒已出。
 > - branch：`phase-007`（自 main @ `973d48f` 切出）。流程：DOC-SYNC（spec-writer，前置文件債）→ spec-writer 產 Phase Spec（DRAFT）→ 人類 Spec Gate（含 High Task 事前批准）→ implementer TDD → reviewer → Gate → Draft PR + CI → 合併。
 > - **DOC-SYNC-A（005a+006 文件債）**：範圍＝005a Spec §13 第 1~4 項＋006 Spec §13 第 1~6 項（ARCHITECTURE/DATA_FLOW 二檔）；兩清單各自第 5/7 項（PROJECT_STATE 跨 Phase 追蹤）由大總管白名單補記（見下）。
+> - **跨 Phase 追蹤補記（PHASE-007 終審 DOC-SYNC #11）**：④PHASE-008 報表須支援 `DEP` 編號與折舊列印版（**三推導值是否呈現於報表須另行人類裁定**——D8 只約束申請 DTO；對帳說明以三來源值重算、勿直接以 4dp snapshotRawAmount 呈現）⑤PHASE-009 折舊作廢須擴 ALLOWED_TRANSITIONS＋作廢差旅改變後續折舊年度里程但已完成折舊快照不變（AC-31 刻意設計）＋修正版複製 applicationYear 重算⑥**PHASE-009 VOIDED 引用語意須人類裁定**（parameterHasReferences 只認 COMPLETED——作廢後參數版本會被判可覆寫，差旅同型一併）。
 > - **跨 Phase 追蹤補記（005a §13-5、006 §13-7 落地）**：①PHASE-008 報表須同時支援舊模型快照（新五欄 NULL）與新模型快照，判別依 `fuelPriceVersionId` 是否 null（005a Spec §8.4）②PHASE-008 報表須支援 `MNT` 編號與保養列印版（四值＋實際費用＋證明）③PHASE-009 保養作廢須同時排除於後續保養／折舊之公務里程統計。
 > - Packet 必引（開工前提清單）：①PHASE-005 結案列補測遺項（B-12/15/17/19/24/25）②005a/006 快照與容量守門慣例（D4(a) 同型單次取整、Decimal 欄容量守門）③006 附件三端點 on-behalf 一致模式④AR-1（代修改停用者草稿）PHASE-011 候選⑤usage 復盤 `docs/retrospective/PHASE-006-usage.md` §3.1 預算帶＋§3.2 條款。
 > - 派工模式沿用：subagent 一律背景派工；寫入型依序；Review 節奏（High 即審重驗證級/期中/終審）照 §19。
