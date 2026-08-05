@@ -2,6 +2,13 @@
 
 State: ACTIVE
 
+> **PHASE-008（報表列印與正式 PDF）開工記錄（2026-08-06，使用者指令「繼續開工」）**
+> - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令。治理變更權責：管理協作 agent 專屬（2026-08-06 裁定），本 session 只執行既有規則。模型/effort 確認提醒已出。
+> - branch：`phase-008`（自 main `e597810` 切出）。流程：spec-writer 產 SPEC-008（DRAFT）→ 人類 Spec Gate（含 High Task 事前批准）→ TDD → Review 節奏照 §19 → Mock UI/整合 Gate（含走查腳本固化）→ Draft PR＋CI。
+> - 範圍（PRD :454-459）：三類已完成申請之唯一報表編號（TRV/MNT/DEP＋月內唯一）、列印版 HTML、Playwright PDF 產生與保存、安全檔名、下載重下一致；PDF 失敗不得標成功。US：FE-US-22/23/24/27、BE-US-26/27/28、NFR-US-14（10 秒目標）。
+> - Packet 必讀（跨 Phase 追蹤核銷）：①LEGACY 快照雙軌——差旅判別依 fuelPriceVersionId null（005a §8.4）、折舊判別依 snapshotAnnualTotalKm null，LEGACY 不得以新模型重算②折舊揭露面五值（Q8）、不呈現車價/折舊年限③對帳說明以三來源值重算、勿呈現 4dp snapshotRawAmount④保養列印版四值＋實際費用＋證明⑤RATIO_DISPLAY_SCALE↔DDL 對照測試（AR-1）＋drift guard 升常設 infra⑥T1 FW-7 表數斷言 4 點＋FW-8（新 migration 型）⑦人工檢核點走查腳本常設規則納入 Gate 規劃。
+> - 基準線起點：後端 2573/0、前端 240/0、E2E 38/38；dev DB 乾淨（e2eadmin＋一輪 E2E 播種）。
+
 > **PHASE 邊界作業（007→008，2026-08-06）**
 > - **PHASE-007 COMPLETED**：PR #15 合併（merge commit `b99ea6f`，人類 leonchih 批准；CI 三檢全綠）。
 > - **dev DB 全量重置（常設規則首次執行；大總管依環境維運授權直接執行——比照 INC 環境復原先例，指令證據如下）**：停 backend（PID 19548）→ `DROP SCHEMA public CASCADE`（23 物件）→ `prisma migrate deploy` 全部重放成功（含 M1/M2）→ backend 重啟（preview 管理）→ `seed:admin` 重建 e2eadmin（mustChangePassword）→ `POST /me/password` 引導至 E2E 慣例值（登入 200 驗證）→ 全套 E2E 自舉驗證。
