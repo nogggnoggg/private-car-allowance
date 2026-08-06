@@ -272,8 +272,26 @@ describe("ReportSection", () => {
       expect(router.countCalls("POST", isPostReport)).toBe(0);
     });
 
-    // Empty／Success 兩態已由本檔 AC-30 之既有測試涵蓋（Packet 裁定「既有可
-    // 沿用」，不重複新增）：見「AC-30: 已完成但尚未產生報表時顯示 Empty 態
-    // 文案與「產生正式報表」按鈕」與「AC-30: 點擊產生後成功…」兩則。
+    // Empty 態已由本檔 AC-30 既有測試涵蓋。Success 態則有兩條路徑：AC-30
+    // 既有測試僅涵蓋「產生後（POST 回應）進入 Success」；「重開詳情頁時
+    // GET 直接帶回已產生報表」路徑另補於下方，兩者不可互相取代。
+    it("Success（經 GET 進入，非點擊產生）：mount 時 GET 直接回傳已產生報表，逐字顯示編號與產生時間、兩入口在場、產生鈕不在場，且零 POST", async () => {
+      const router = installFetchRouter();
+      const report = reportFixture();
+      router.on("GET", isGetReport, () => jsonRes({ report }));
+
+      render(<ReportSection applicationId="app-1" status="COMPLETED" />);
+
+      expect(await screen.findByText(report.reportNumber)).toBeInTheDocument();
+      expect(screen.getByText(report.generatedAt)).toBeInTheDocument();
+
+      expect(screen.getByRole("link", { name: "檢視列印版" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "下載 PDF" })).toBeInTheDocument();
+
+      expect(screen.queryByRole("button", { name: "產生正式報表" })).not.toBeInTheDocument();
+      expect(screen.queryByText("尚未產生正式報表")).not.toBeInTheDocument();
+
+      expect(router.countCalls("POST", isPostReport)).toBe(0);
+    });
   });
 });
