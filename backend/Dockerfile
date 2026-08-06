@@ -21,7 +21,10 @@ COPY backend/prisma/ ./backend/prisma/
 # node_modules (verified: no version conflict with root's @playwright/test devDependency).
 RUN npm ci
 
-# Download Playwright's pinned Chromium browser binary (PHASE-008-T7b; Spec §16 D4).
+# Download Playwright's pinned Chromium Headless Shell binary (PHASE-008-T7b; Spec
+# §16 D4; --only-shell scope narrowed by PHASE-008-T7bR SF-2 — renderPdf only ever
+# launches chromium_headless_shell, never full Chrome; full chromium (~389MB) is
+# downloaded and shipped unused otherwise).
 # T7b FW-1 (即審): package-lock's playwright/@playwright/test/playwright-core entries
 # have NO postinstall script (`hasInstallScript` absent) — `npm ci` alone does NOT
 # fetch the browser. This explicit step is required. Revision is derived from the
@@ -34,7 +37,7 @@ RUN npm ci
 # directory) would otherwise mismatch between builder root and runtime appuser
 # (T7b FW-1 "下載路徑地雷").
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx playwright install chromium
+RUN npx playwright install --only-shell chromium
 
 # Copy backend source
 COPY backend/src/ ./backend/src/
@@ -53,17 +56,38 @@ WORKDIR /app
 #   initialising the storage volume directory (D4, Spec §8; volume mounted after
 #   image layers so mkdir must run at startup as root, not in a RUN layer).
 # Install fonts-noto-cjk — CJK glyph coverage for report PDFs (PHASE-008-T7b, Spec
-#   §16 D4 附帶批准①／AC-09(c)). Without this package, Chinese characters in a
-#   container-rendered PDF render as .notdef "tofu" boxes — a failure that does NOT
-#   reproduce on Windows dev machines (which already have system CJK fonts), so it
-#   is a high-probability escaped defect if omitted (see T7b Handoff for measurement
-#   evidence). report-html.ts's CSS font-family stack does not name "Noto Sans CJK
-#   TC" explicitly, but Chromium's fontconfig-backed per-glyph fallback substitutes
-#   any installed font that has the required glyph once none of the named families
-#   resolve — this is the standard mechanism by which installing fonts-noto-cjk
-#   fixes tofu boxes without needing to change the CSS.
+#   §16 D4 附帶批准①／AC-09(c)). Without SOME CJK-capable font present, Chinese
+#   characters in a container-rendered PDF render as .notdef "tofu" boxes — a
+#   failure that does NOT reproduce on Windows dev machines (which already have
+#   system CJK fonts), so it is a high-probability escaped defect if omitted (see
+#   T7b Handoff for measurement evidence).
+# CORRECTED (PHASE-008-T7bR MF-1, was wrong in T7b): installing fonts-noto-cjk does
+#   NOT by itself make Chromium select it. report-html.ts's CSS font-family stack
+#   never names "Noto Sans CJK TC" (Debian's actual family name), so it always falls
+#   through to the generic "sans-serif" alias — and fontconfig's per-glyph fallback
+#   resolved that alias to WenQuanYi Zen Hei (fonts-wqy-zenhei), an undeclared
+#   transitive dependency pulled in by `playwright install-deps chromium` below, not
+#   to Noto. fonts-noto-cjk was inert for glyph selection even though it incidentally
+#   fixed the tofu symptom (WenQuanYi also covers CJK). The /etc/fonts/local.conf
+#   rule added below is what actually forces Noto Sans CJK TC to win.
 # node:20-slim is Debian-based (bookworm); openssl satisfies libssl dependency
 RUN apt-get update -y && apt-get install -y openssl gosu fonts-noto-cjk --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+# Force fontconfig's generic "sans-serif" fallback to resolve to Noto Sans CJK TC
+# ahead of any other installed CJK-capable font (PHASE-008-T7bR MF-1 fix, reviewer-
+# tested). Prepend (not replace) so non-CJK glyph fallback is unaffected.
+RUN printf '%s\n' \
+      '<?xml version="1.0"?>' \
+      '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+      '<fontconfig>' \
+      '  <match target="pattern">' \
+      '    <test qual="any" name="family"><string>sans-serif</string></test>' \
+      '    <edit name="family" mode="prepend" binding="strong">' \
+      '      <string>Noto Sans CJK TC</string>' \
+      '    </edit>' \
+      '  </match>' \
+      '</fontconfig>' \
+      > /etc/fonts/local.conf
 
 # Create non-root group and user for security, with a proper home directory
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /home/appuser -m appuser
@@ -95,15 +119,18 @@ COPY --from=builder /app/backend/package.json ./backend/package.json
 # bookworm) and the installed `playwright` version, avoiding a hand-maintained
 # package list that drifts across Playwright releases (T7b FW-1).
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-COPY --from=builder /ms-playwright /ms-playwright
-RUN npx playwright install-deps chromium
+# --chown here (rather than the blanket `chown -R` below) avoids overlayfs
+# copy-up duplicating this ~267MB directory into a second layer (T7bR SF-1).
+COPY --from=builder --chown=appuser:appgroup /ms-playwright /ms-playwright
+RUN npx playwright install-deps chromium && rm -rf /var/lib/apt/lists/*
 
 # Copy entrypoint script
 COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Set ownership to non-root user for application files
-RUN chown -R appuser:appgroup /app /home/appuser /ms-playwright
+# Set ownership to non-root user for application files (/ms-playwright is already
+# owned by appuser via COPY --chown above; excluded here, see T7bR SF-1)
+RUN chown -R appuser:appgroup /app /home/appuser
 
 # NOTE: USER appuser is intentionally NOT set here.
 # docker-entrypoint.sh runs as root so it can:
