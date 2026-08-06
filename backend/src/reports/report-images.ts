@@ -5,6 +5,11 @@
  * 寸為列印用派生圖，長邊上限 `REPORT_IMAGE_MAX_PX` 預設 1600、不放大小圖、
  * 不持久化，以 `data:` URI 嵌入）。
  *
+ * **T6R（2026-08-06 期中複審 #2 SF-1 人類裁定；§16 D16 修訂後定案；AC-13(a)
+ * 修訂註）**：①**取小者**——降尺寸重編碼結果大於原圖位元組時改用原圖（像
+ * 素尺寸保留）；②**EXIF 轉正（SF-3）**——`resize` 之前 `.rotate()`，長邊
+ * 上限與不放大以轉正後幾何為準。詳見 {@link resizeForEmbed}。
+ *
  * ---------------------------------------------------------------------------
  * 分工（與 T4 `report-data.ts`、T5 `report-html.ts` 之邊界）
  * ---------------------------------------------------------------------------
@@ -112,22 +117,50 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
 // ---------------------------------------------------------------------------
 
 /**
- * 先以 `sharp(...).metadata()` 讀出原圖尺寸（不重編碼）判斷長邊是否已在上限
- * 內：若已在上限內，原樣回傳輸入位元組——結構性保證「不放大」與「嵌入位元
- * 組 = 原圖（必然 ≤ 原圖）」，不倚賴 sharp 重編碼後之位元組數比較（重編碼即
- * 使未縮放亦可能因編碼參數差異而改變位元組數）。僅當長邊超過上限時才呼叫
- * `.resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true })`
- * （沿 `upload-service.ts produceThumbnail` 既有慣例之同一組 sharp 參數）
- * 降尺寸；此分支之輸出長邊必然 ≤ maxPx。
+ * 先以 `sharp(...).metadata()` 讀出原圖尺寸與 EXIF `orientation`（不重編
+ * 碼）。`orientation` 非 1（或缺省）代表需轉正（SF-3；T6R）；長邊
+ * `Math.max(width, height)` 與轉正無關（互換 width/height 之 max 值不
+ * 變），故沿用此原始 metadata 之長邊即等同「轉正後幾何」之長邊，毋須另外
+ * 呼叫 sharp 取得轉正後尺寸。
+ *
+ * 三分支：
+ * 1. 無需轉正且長邊未超過上限 → 原樣回傳輸入位元組——結構性保證「不放
+ *    大」與「嵌入位元組 = 原圖（必然 ≤ 原圖）」，不倚賴位元組數比較。
+ * 2. 長邊超過上限（無論是否需轉正）→ `.rotate()`（SF-3：置於 `resize` **之
+ *    前**；`orientation` 為 1 時為 no-op）後
+ *    `.resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true })`
+ *    （沿 `upload-service.ts produceThumbnail` 既有慣例之同一組 sharp 參
+ *    數）降尺寸。**取小者閘門（SF-1；§16 D16 修訂後定案）**：僅當「無需轉
+ *    正」時才可能回退——重編碼結果之位元組數大於原圖時改用原圖位元組（像
+ *    素尺寸保留原尺寸，版面由 AC-13(b) 之 `max-width:100%` 承擔）；需轉正
+ *    時不得回退（回退會使圖片維持側躺，喪失轉正義務——orientation 6／8 之
+ *    fixture 之「兩分支輸出方向一致」即驗證此點）。
+ * 3. 長邊未超過上限但需轉正 → 僅 `.rotate()`（無需降尺寸）；此分支之輸出
+ *    寬高已依 EXIF 互換。
  */
 async function resizeForEmbed(bytes: Buffer, maxPx: number): Promise<Buffer> {
   const sharp = (await import("sharp")).default;
   const metadata = await sharp(bytes).metadata();
+  const orientation = metadata.orientation ?? 1;
+  const needsRotation = orientation !== 1;
   const longEdge = Math.max(metadata.width ?? 0, metadata.height ?? 0);
-  if (longEdge > 0 && longEdge <= maxPx) {
+
+  if (!needsRotation && longEdge > 0 && longEdge <= maxPx) {
     return bytes;
   }
-  return sharp(bytes).resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true }).toBuffer();
+
+  if (longEdge > maxPx) {
+    const resized = await sharp(bytes)
+      .rotate()
+      .resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true })
+      .toBuffer();
+    if (!needsRotation && resized.length > bytes.length) {
+      return bytes;
+    }
+    return resized;
+  }
+
+  return sharp(bytes).rotate().toBuffer();
 }
 
 // ---------------------------------------------------------------------------

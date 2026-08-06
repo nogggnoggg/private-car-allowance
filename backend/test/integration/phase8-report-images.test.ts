@@ -71,34 +71,117 @@ function removeTempStorageRoot(root: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// 合成圖片產生器（procedurally 產生，非真實照片；真實可解碼位元組，供 sharp
-// 實際降尺寸邏輯驗證，區別於其他測試檔之「magic bytes only」fixture）
+// 確定性偽亂數（xorshift32；非 Math.random——T6R SF-2 義務：fixture 種子須
+// 固定使測試可重現，且非低熵純色，見下方「高熵 fixture」節）
 // ---------------------------------------------------------------------------
 
-async function makeRealJpeg(width: number, height: number): Promise<Buffer> {
+function makeXorshift32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state;
+  };
+}
+
+function makeNoiseRaw(width: number, height: number, channels: number, seed: number): Buffer {
+  const rnd = makeXorshift32(seed);
+  const buf = Buffer.alloc(width * height * channels);
+  for (let i = 0; i < buf.length; i++) {
+    buf[i] = rnd() & 0xff;
+  }
+  return buf;
+}
+
+// ---------------------------------------------------------------------------
+// 合成圖片產生器（procedurally 產生，非真實照片；真實可解碼位元組，供 sharp
+// 實際降尺寸邏輯驗證，區別於其他測試檔之「magic bytes only」fixture）
+//
+// T6R SF-2：改為高熵（確定性種子雜訊）而非低熵純色——純色圖片經 sharp
+// decode→encode 往返會位元組全等（同參數之 JPEG/PNG 編碼器對平坦色塊具確
+// 定性輸出），使「重編碼是否曾發生」在純色 fixture 下不可鑑別，令 M2b（移
+// 除原樣短路）／M8（`<=` 改 `<`）兩 mutant 存活。高熵內容之 decode→encode
+// 往返必產生不同位元組（實測見 Task Handoff），使鑑別力恢復。
+// ---------------------------------------------------------------------------
+
+async function makeRealJpeg(width: number, height: number, seed = 0x2545f491): Promise<Buffer> {
   const sharp = (await import("sharp")).default;
-  return sharp({
-    create: { width, height, channels: 3, background: { r: 120, g: 140, b: 160 } },
-  })
+  const raw = makeNoiseRaw(width, height, 3, seed);
+  return sharp(raw, { raw: { width, height, channels: 3 } })
     .jpeg({ quality: 80 })
     .toBuffer();
 }
 
-async function makeRealPng(width: number, height: number): Promise<Buffer> {
+async function makeRealPng(width: number, height: number, seed = 0x9e3779b9): Promise<Buffer> {
   const sharp = (await import("sharp")).default;
-  return sharp({
-    create: { width, height, channels: 3, background: { r: 10, g: 200, b: 30 } },
-  })
+  const raw = makeNoiseRaw(width, height, 3, seed);
+  return sharp(raw, { raw: { width, height, channels: 3 } })
     .png()
     .toBuffer();
 }
 
-async function makeRealWebp(width: number, height: number): Promise<Buffer> {
+async function makeRealWebp(width: number, height: number, seed = 0x85ebca6b): Promise<Buffer> {
   const sharp = (await import("sharp")).default;
-  return sharp({
-    create: { width, height, channels: 3, background: { r: 200, g: 10, b: 100 } },
-  })
+  const raw = makeNoiseRaw(width, height, 3, seed);
+  return sharp(raw, { raw: { width, height, channels: 3 } })
     .webp()
+    .toBuffer();
+}
+
+// ---------------------------------------------------------------------------
+// 索引色地圖型 fixture（T6R SF-1；沿期中複審 #2 實測之地圖截圖特徵重現——細
+// 網格線 ＋ 兩色階，palette PNG 原圖極小；sharp 重編碼〔無 `palette` 選
+// 項〕之濾波在線條邊界產生大量中間色，破壞可壓縮性而膨脹，實測見 Task
+// Handoff）
+// ---------------------------------------------------------------------------
+
+function makeGridMapRaw(width: number, height: number, channels: number): Buffer {
+  const buf = Buffer.alloc(width * height * channels);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const off = (y * width + x) * channels;
+      const isLine = x % 2 === 0 || y % 2 === 0;
+      if (isLine) {
+        buf[off] = 30;
+        buf[off + 1] = 30;
+        buf[off + 2] = 30;
+      } else {
+        buf[off] = 235;
+        buf[off + 1] = 235;
+        buf[off + 2] = 235;
+      }
+    }
+  }
+  return buf;
+}
+
+async function makeIndexColorMapPng(width: number, height: number): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  const raw = makeGridMapRaw(width, height, 3);
+  return sharp(raw, { raw: { width, height, channels: 3 } })
+    .png({ palette: true })
+    .toBuffer();
+}
+
+// ---------------------------------------------------------------------------
+// EXIF orientation fixture（T6R SF-3；sharp `withMetadata({orientation})`
+// 合成——原始像素以橫向排列儲存，`orientation` 標記實際應轉正之方向）
+// ---------------------------------------------------------------------------
+
+async function makeOrientedJpeg(
+  width: number,
+  height: number,
+  orientation: number,
+  seed = 0x1b873593
+): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  const raw = makeNoiseRaw(width, height, 3, seed);
+  return sharp(raw, { raw: { width, height, channels: 3 } })
+    .withMetadata({ orientation })
+    .jpeg({ quality: 80 })
     .toBuffer();
 }
 
@@ -535,5 +618,77 @@ describe("PHASE-008-T6 — embedImages", () => {
       expect(img.dataUri).not.toBeNull();
       expect((img.dataUri as string).startsWith("data:")).toBe(true);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // T6R SF-1（§16 D16 修訂後定案；期中複審 #2 SF-1 人類裁定「取小者」）：
+  // 索引色 PNG 之重編碼膨脹時改用原圖位元組，像素尺寸保留
+  // -------------------------------------------------------------------------
+
+  it("AC-13(a) 取小者: 索引色地圖型 PNG（2400x2400）重編碼膨脹時改用原圖位元組，像素尺寸保留", async () => {
+    freshStorage();
+    const original = await makeIndexColorMapPng(2400, 2400);
+    const key = await putAtt("map", original, "image/png");
+    const data = maintenanceData([makeImage("map", key, { mimeType: "image/png" })]);
+    const { log } = makeLoggerSpy();
+
+    const result = await embedImages(storage, data, 1600, log);
+    if (result.kind !== "MAINTENANCE") throw new Error("unreachable");
+    const img = result.maintenance.attachments[0];
+    expect(img.missing).toBe(false);
+    const embeddedBytes = Buffer.from((img.dataUri as string).split(",")[1], "base64");
+
+    // 取小者之直接結果：嵌入位元組恆 <= 原圖（AC-13(a) 修訂：由約定升為不變式）
+    expect(embeddedBytes.length).toBeLessThanOrEqual(original.length);
+    // 改用原圖：位元組逐位元組相等、像素尺寸保留原尺寸（不縮至 1600）
+    expect(embeddedBytes.equals(original)).toBe(true);
+    const dims = await dimsOf(embeddedBytes);
+    expect(dims.width).toBe(2400);
+    expect(dims.height).toBe(2400);
+  });
+
+  // -------------------------------------------------------------------------
+  // T6R SF-3（AC-13(a) 修訂註）：EXIF 轉正——resize 之前 `.rotate()`；長邊上
+  // 限與不放大以轉正後幾何為準；兩分支（需/不需降尺寸）輸出方向須一致
+  // -------------------------------------------------------------------------
+
+  it("AC-13(a) EXIF 轉正: orientation 6（轉正後長邊未超過上限）resize 前轉正，寬高互換", async () => {
+    freshStorage();
+    // 原始像素儲存為橫向 1200x800；orientation=6 標記「實際應轉正為直向」
+    const original = await makeOrientedJpeg(1200, 800, 6);
+    const key = await putAtt("oriented-small", original, "image/jpeg");
+    const data = maintenanceData([makeImage("oriented-small", key)]);
+    const { log } = makeLoggerSpy();
+
+    const result = await embedImages(storage, data, 1600, log);
+    if (result.kind !== "MAINTENANCE") throw new Error("unreachable");
+    const img = result.maintenance.attachments[0];
+    const embeddedBytes = Buffer.from((img.dataUri as string).split(",")[1], "base64");
+    const dims = await dimsOf(embeddedBytes);
+    // 轉正後：寬高互換為直向（800x1200），非原始儲存之橫向（1200x800）——
+    // 移除 `.rotate()` 之 mutant 會使輸出維持橫向，本斷言必紅（見 Task Handoff）
+    expect(dims.width).toBe(800);
+    expect(dims.height).toBe(1200);
+  });
+
+  it("AC-13(a) EXIF 轉正: orientation 6（轉正後長邊超過上限）resize 前轉正且降尺寸，長邊 1600 且方向正確", async () => {
+    freshStorage();
+    // 原始像素儲存為橫向 2400x1200；orientation=6 標記「實際應轉正為直向
+    // 1200x2400」，轉正後長邊 2400 超過上限 1600，須降尺寸
+    const original = await makeOrientedJpeg(2400, 1200, 6);
+    const key = await putAtt("oriented-large", original, "image/jpeg");
+    const data = maintenanceData([makeImage("oriented-large", key)]);
+    const { log } = makeLoggerSpy();
+
+    const result = await embedImages(storage, data, 1600, log);
+    if (result.kind !== "MAINTENANCE") throw new Error("unreachable");
+    const img = result.maintenance.attachments[0];
+    const embeddedBytes = Buffer.from((img.dataUri as string).split(",")[1], "base64");
+    const dims = await dimsOf(embeddedBytes);
+    // 轉正後為直向（寬 < 高）且長邊（高）等於上限 1600——移除 `.rotate()` 之
+    // mutant 會使輸出維持橫向（寬 1600、高 800），本斷言必紅（見 Task Handoff）
+    expect(dims.width).toBeLessThan(dims.height);
+    expect(dims.height).toBe(1600);
+    expect(dims.width).toBeLessThanOrEqual(1600);
   });
 });
