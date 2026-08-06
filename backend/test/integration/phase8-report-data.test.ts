@@ -65,7 +65,10 @@ import {
   buildReportData,
   reportApplicationInclude,
 } from "../../src/reports/report-data.js";
-import { insertLegacyDepreciationRowRaw } from "../fixtures/depreciation-legacy-row.js";
+import {
+  insertDraftDepreciationRowRaw,
+  insertLegacyDepreciationRowRaw,
+} from "../fixtures/depreciation-legacy-row.js";
 import { insertLegacyTravelRowRaw } from "../fixtures/travel-legacy-row.js";
 
 // ── 五個計算引擎之 spy 包裝（真實實作原樣保留；沿 phase7-snapshot-immutability
@@ -248,6 +251,16 @@ function assertDepreciationForbiddenFieldsAbsent(
   for (const literal of forbiddenLiterals) {
     expect(serialized).not.toContain(literal);
   }
+  // 鍵名負向斷言（非僅頂層值）：禁列欄位縱使被藏入巢狀結構（例如
+  // attachments[i]）亦須被攔下，故直接掃描序列化字串之鍵名字面。
+  for (const key of [
+    '"vehiclePrice"',
+    '"usefulLifeYears"',
+    '"estimatedAnnualKm"',
+    '"depreciationParameterVersionId"',
+  ]) {
+    expect(serialized).not.toContain(key);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +276,12 @@ describeWithDb("PHASE-008-T4 — buildReportData（AC-17／AC-18／AC-19／AC-27
   let maintenanceId: string;
   let depreciationCurrentId: string;
   let depreciationLegacyId: string;
+
+  // SF-2（段—圖對應 + LINKED 過濾）之逐段附件識別碼。
+  let segment0LinkedAttachmentId: string;
+  let segment1LinkedAttachmentId: string;
+  let segment0NonLinkedFilename: string;
+  let segment1NonLinkedFilename: string;
 
   const createdAttachmentIds: string[] = [];
 
@@ -346,6 +365,78 @@ describeWithDb("PHASE-008-T4 — buildReportData（AC-17／AC-18／AC-19／AC-27
       },
     });
     travelCurrentId = travelCurrent.id;
+
+    // ── SF-2：CURRENT 差旅兩段各播 1 張 LINKED 附件（可辨識檔名）＋1 張同
+    //    refId 但 status="TEMP"（非 LINKED）之附件，佐證「段—圖對應」與
+    //    「LINKED 過濾」皆有資料側覆蓋 ──────────────────────────────────────
+    const [travelSegment0, travelSegment1] = await prisma.tripSegment.findMany({
+      where: { travelApplicationId: travelCurrentId },
+      orderBy: { sortOrder: "asc" },
+    });
+    segment0NonLinkedFilename = "segment0-temp-not-linked.jpg";
+    segment1NonLinkedFilename = "segment1-temp-not-linked.jpg";
+    const segment0Linked = await prisma.attachment.create({
+      data: {
+        status: "LINKED",
+        storageKey: `att/p8t4-seg0-linked-${RUN_ID}/pdf-source.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1111,
+        originalFilename: "segment0-linked.jpg",
+        uploaderId: ownerId,
+        ownerId,
+        refType: "TRIP_SEGMENT",
+        refId: travelSegment0.id,
+        linkedAt: new Date(),
+      },
+    });
+    const segment0NonLinked = await prisma.attachment.create({
+      data: {
+        status: "TEMP",
+        storageKey: `att/p8t4-seg0-temp-${RUN_ID}/pdf-source.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1112,
+        originalFilename: segment0NonLinkedFilename,
+        uploaderId: ownerId,
+        ownerId,
+        refType: "TRIP_SEGMENT",
+        refId: travelSegment0.id,
+      },
+    });
+    const segment1Linked = await prisma.attachment.create({
+      data: {
+        status: "LINKED",
+        storageKey: `att/p8t4-seg1-linked-${RUN_ID}/pdf-source.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1113,
+        originalFilename: "segment1-linked.jpg",
+        uploaderId: ownerId,
+        ownerId,
+        refType: "TRIP_SEGMENT",
+        refId: travelSegment1.id,
+        linkedAt: new Date(),
+      },
+    });
+    const segment1NonLinked = await prisma.attachment.create({
+      data: {
+        status: "TEMP",
+        storageKey: `att/p8t4-seg1-temp-${RUN_ID}/pdf-source.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1114,
+        originalFilename: segment1NonLinkedFilename,
+        uploaderId: ownerId,
+        ownerId,
+        refType: "TRIP_SEGMENT",
+        refId: travelSegment1.id,
+      },
+    });
+    segment0LinkedAttachmentId = segment0Linked.id;
+    segment1LinkedAttachmentId = segment1Linked.id;
+    createdAttachmentIds.push(
+      segment0Linked.id,
+      segment0NonLinked.id,
+      segment1Linked.id,
+      segment1NonLinked.id
+    );
 
     // ── TRAVEL／LEGACY（AC-17(a) 舊模型；raw SQL 播種，AC-17(c)）───────────
     const travelLegacy = await prisma.application.create({
@@ -568,6 +659,28 @@ describeWithDb("PHASE-008-T4 — buildReportData（AC-17／AC-18／AC-19／AC-27
     expect(preview.common.generatedAt).toBeNull();
   });
 
+  it("AC-27/SF-2: 差旅段—圖對應 — 逐段恰為該段之 LINKED 附件，非 LINKED 者不出現，ReportImage 鍵集封閉", async () => {
+    const record = await loadRecord(travelCurrentId);
+    const data = await buildReportData(prisma, record, REPORT_META);
+    expect(data.kind).toBe("TRAVEL");
+    if (data.kind !== "TRAVEL") throw new Error("unreachable");
+    const [segment0, segment1] = data.travel.segments;
+
+    // ① 逐段 attachments[0].attachmentId 恰為該段者
+    expect(segment0.attachments.map((a) => a.attachmentId)).toEqual([segment0LinkedAttachmentId]);
+    expect(segment1.attachments.map((a) => a.attachmentId)).toEqual([segment1LinkedAttachmentId]);
+
+    // ② 非 LINKED 者不出現（逐段長度恰 1，且可辨識檔名字面不出現於序列化輸出）
+    const serialized = JSON.stringify(data);
+    expect(serialized).not.toContain(segment0NonLinkedFilename);
+    expect(serialized).not.toContain(segment1NonLinkedFilename);
+
+    // ③ ReportImage 鍵集封閉
+    expect(Object.keys(segment0.attachments[0]).sort()).toEqual(
+      ["attachmentId", "storageKey", "mimeType", "originalFilename", "dataUri", "missing"].sort()
+    );
+  });
+
   // -------------------------------------------------------------------------
   // AC-17(b) 折舊雙軌
   // -------------------------------------------------------------------------
@@ -742,6 +855,37 @@ describeWithDb("PHASE-008-T4 — buildReportData（AC-17／AC-18／AC-19／AC-27
     expect(data.maintenance.companyAmount).toBe(1963);
     expect(data.maintenance.attachments.length).toBeGreaterThanOrEqual(1);
     expect(data.maintenance.attachments[0].originalFilename).toBe("maintenance-proof.jpg");
+  });
+
+  // -------------------------------------------------------------------------
+  // SF-3：required() 大聲失敗（非靜默 passthrough）
+  // -------------------------------------------------------------------------
+
+  it("SF-3: 快照缺欄（status=COMPLETED 但折舊快照未寫入）— required() 顯式拋錯，訊息僅含欄名與 applicationId", async () => {
+    const draftDepreciation = await prisma.application.create({
+      data: {
+        type: "DEPRECIATION",
+        status: "COMPLETED",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2026-01-01T00:00:00.000Z"),
+        totalAmount: 1,
+        completedAt: new Date(),
+      },
+    });
+    try {
+      await insertDraftDepreciationRowRaw(prisma, draftDepreciation.id);
+      const record = await loadRecord(draftDepreciation.id);
+      await expect(buildReportData(prisma, record, REPORT_META)).rejects.toThrow(
+        /missing required field/
+      );
+      // 錯誤訊息僅含欄名與 applicationId，無金額/快照值洩漏。
+      await expect(buildReportData(prisma, record, REPORT_META)).rejects.toThrow(
+        new RegExp(`"snapshotOfficialKm".*${draftDepreciation.id}`)
+      );
+    } finally {
+      await prisma.application.delete({ where: { id: draftDepreciation.id } });
+    }
   });
 
   // -------------------------------------------------------------------------
