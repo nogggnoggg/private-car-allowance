@@ -1,29 +1,42 @@
 /**
- * 報表路由 — PHASE-008-T8／T9（BE-US-26／27／28）
+ * 報表路由 — PHASE-008-T8／T9／T10（BE-US-26／27／28）
  *
- * T8 落地 `POST /applications/:id/report`（產生，冪等）。**本檔（T9）新增**
- * `GET /applications/:id/report`（查詢）與 `GET .../report/pdf`（下載）；
- * `GET .../report/print`（列印版）為 T10 之範圍（Spec §15 Task Graph），本
- * 檔預留供該 Task 於同一 plugin 內擴充。
+ * T8 落地 `POST /applications/:id/report`（產生，冪等）。T9 新增
+ * `GET /applications/:id/report`（查詢）與 `GET .../report/pdf`（下載）。
+ * **本檔（T10）新增** `GET .../report/print`（列印版 HTML）＋產生／列印兩
+ * 端點之 409 狀態守門（AC-25）＋列印安全標頭（AC-16(c)）。
  *
  * Spec `docs/specs/PHASE-008.md` §7.1（端點總表）、§7.2（`ReportDto`）、
- * §7.5（錯誤合約）、§6.1（授權矩陣，判定紀律①②）、§16 D7(a)+(i)（安全檔名
- * 規則 ＋ 產生時持久化）、D9(a)（管理員可代產生／存取）、D10(a)（查詢為獨
- * 立端點，未產生回 `200 { report: null }`）、D11（草稿 409 CONFLICT，僅適
- * 用產生／列印，見下）。
+ * §7.4（列印版與 PDF 同一版型契約）、§7.5（錯誤合約）、§6.1（授權矩陣，判
+ * 定紀律①②）、§9.2（列印版唯讀路徑）、§16 D7(a)+(i)（安全檔名規則 ＋ 產生
+ * 時持久化）、D9(a)（管理員可代產生／存取）、D10(a)（查詢為獨立端點，未產
+ * 生回 `200 { report: null }`）、D11（草稿 409 CONFLICT，僅適用產生／列
+ * 印，見下）。
+ *
+ * ---------------------------------------------------------------------------
+ * AC-15（T10 斷言基礎）：列印端點與持久化 PDF 之 HTML 字串全等
+ * ---------------------------------------------------------------------------
+ * 列印端點與 `report-service.ts` 之 (4)d 皆呼叫**同一函式**
+ * `renderReportHtml`，且對**已產生報表**之申請皆以「`buildReportData` 讀出
+ * 之基底資料 ＋ 已持久化之 `{ reportNumber, generatedAt }`」為輸入形狀
+ * （前者經 `buildReportData(prisma, application, meta)` 之 `meta` 參數，
+ * 後者經 `withReportMeta`）——兩條路徑**各自獨立**組裝、組裝結果經同一份
+ * 純函式渲染，故字串全等係「同函式、同輸入」之直接結果，非重用同一次呼叫
+ * 之結果（T5 複審 FW-A 綁定義務）。若任一路徑改為第二份模板或第二組樣
+ * 式，兩者 HTML 即會分歧，`phase8-report-print.test.ts` 之 wire 斷言必紅。
  *
  * ---------------------------------------------------------------------------
  * 判定順序（§6.1 判定紀律②；AC-25 側信道守門）
  * ---------------------------------------------------------------------------
  * `requireAuth`（401）→ `requirePasswordChanged`（403）→ 申請存在性（404）
- * → `assertOwnershipOrAdmin`（403）→ 狀態守門（409，D11；**僅產生端點**，
- * 見下）。**授權先於狀態**——他人之草稿與他人之已完成申請一律先以同一個
- * 403 FORBIDDEN 收斂（逐字相同回應），不因狀態差異而洩漏他人申請是否為草
- * 稿。
+ * → `assertOwnershipOrAdmin`（403）→ 狀態守門（409，D11；**僅產生／列印兩
+ * 端點**，見下）。**授權先於狀態**——他人之草稿與他人之已完成申請一律先以
+ * 同一個 403 FORBIDDEN 收斂（逐字相同回應），不因狀態差異而洩漏他人申請是
+ * 否為草稿。
  *
  * ---------------------------------------------------------------------------
  * 查詢／下載端點**不**另立狀態守門（§3.3／§3.4 pseudocode 逐字如此；與
- * AC-25 之產生端點 409 CONFLICT 不同型）
+ * AC-25 之產生／列印兩端點 409 CONFLICT 不同型；SPEC-REV-T9）
  * ---------------------------------------------------------------------------
  * 草稿申請之產生端點被拒絕（409），故草稿**恆無** `Report` 列（結構性不可
  * 達）。查詢端點對此天然回 `200 { report: null }`（D10 之既定行為，與是否
@@ -60,6 +73,9 @@ import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest 
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { AppError, buildErrorBody } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
+import { type ReportMeta, buildReportData, reportApplicationInclude } from "./report-data.js";
+import { renderReportHtml } from "./report-html.js";
+import { embedImages } from "./report-images.js";
 import {
   type GeneratedReportRow,
   ReportGenerationError,
@@ -249,6 +265,73 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
         .header("Cache-Control", "no-store")
         .header("X-Content-Type-Options", "nosniff")
         .send(bytes);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /applications/:id/report/print — 列印版 HTML（PHASE-008-T10）
+  // §3.2／§9.2；AC-11（已產生時含編號）／AC-15（與持久化 PDF 同一版型，見
+  // 檔頭）／AC-16(c)（安全標頭）／AC-24（列印列）／AC-25（草稿 409）。
+  // 唯讀路徑：絕不寫入任何資料列、絕不寫入任何檔案（§9.2 明文）。
+  // -------------------------------------------------------------------------
+
+  fastify.get(
+    "/applications/:id/report/print",
+    { preHandler: [requireAuth(prisma), requirePasswordChanged] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const actor = request.currentUser;
+
+      const application = await prisma.application.findUnique({
+        where: { id },
+        select: { id: true, ownerId: true, status: true },
+      });
+      if (!application) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // 判定紀律②：授權先於狀態（AC-25 側信道守門）。
+      assertOwnershipOrAdmin(actor, application.ownerId);
+
+      // D11／AC-25（SPEC-REV-T9 修訂後）：草稿一律拒絕（409 CONFLICT +
+      // details.status）——本端點與產生端點同型，下載／查詢兩端點不適用。
+      if (application.status !== "COMPLETED") {
+        throw new AppError("CONFLICT", 409, "僅已完成之申請可檢視列印版", undefined, {
+          status: application.status,
+        });
+      }
+
+      // §9.2：組裝與 §9.1 (2)(3)(4)d 同一份實作——buildReportData（讀快照，
+      // 零重算）→ embedImages（附件降尺寸內嵌）→ renderReportHtml（純函
+      // 式，與持久化 PDF 同一函式，見檔頭 AC-15）。已產生報表時以持久化之
+      // reportNumber／generatedAt 為 meta 輸入（與 report-service.ts 之
+      // withReportMeta 同構）；尚未產生時 meta 為 null（AC-11「已產生
+      // 時」，列印版仍可預覽）。
+      const fullApplication = await prisma.application.findUniqueOrThrow({
+        where: { id },
+        include: reportApplicationInclude,
+      });
+      const existingReport = await findReportByApplicationId(prisma, id);
+      const meta: ReportMeta | null = existingReport
+        ? { reportNumber: existingReport.reportNumber, generatedAt: existingReport.generatedAt }
+        : null;
+
+      const rawData = await buildReportData(prisma, fullApplication, meta);
+      const data = await embedImages(attachmentStorage, rawData, imageMaxPx, {
+        error: (obj: Record<string, unknown>, msg: string) => request.log.error(obj, msg),
+      });
+      const html = renderReportHtml(data);
+
+      // AC-16(c)：四個安全標頭逐字在場（CSP 移除任一部分之 mutant 必紅）。
+      return reply
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "no-store")
+        .header(
+          "Content-Security-Policy",
+          "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+        )
+        .send(html);
     }
   );
 };

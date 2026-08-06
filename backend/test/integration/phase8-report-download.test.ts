@@ -740,6 +740,14 @@ describeWithDb("PHASE-008-T9 — GET /applications/:id/report ／ GET .../report
       expect(first.headers["content-type"]).toBe("application/pdf");
       expect(second.headers["content-type"]).toBe("application/pdf");
 
+      // T10 回補（T9 即審 AR-3：下載端點另兩個安全標頭原無斷言）——
+      // Cache-Control／X-Content-Type-Options 逐字相符（routes.ts 既有行為，
+      // 本次僅補斷言，非新增實作）。
+      expect(first.headers["cache-control"]).toBe("no-store");
+      expect(first.headers["x-content-type-options"]).toBe("nosniff");
+      expect(second.headers["cache-control"]).toBe("no-store");
+      expect(second.headers["x-content-type-options"]).toBe("nosniff");
+
       // 逐位元全等（Buffer.equals，非字串比對——PDF 為二進位內容）。
       expect(Buffer.compare(first.rawPayload, second.rawPayload)).toBe(0);
 
