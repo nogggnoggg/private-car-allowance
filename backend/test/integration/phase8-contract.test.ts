@@ -912,6 +912,28 @@ describeWithDb("PHASE-008-T11 — AC-29 logStream 七類敏感值掃描 + 反向
 
     logLines.length = 0; // 只看以下觸發之日誌行
 
+    // (0) RENDER 失敗正例（AC-29「渲染失敗之日誌含可追查識別但不含上述任
+    // 一」子句之唯一覆蓋——先前僅成功路徑進入 logLines）：必須在下方 (1)
+    // 之成功產生**之前**執行——depApp 此刻尚無 Report 列，不會命中冪等短
+    // 路（`existingPre` 直接回傳既有列、不呼叫 renderReportHtml，見
+    // report-service.ts:691-693），故仍會真正走到渲染。注入一次
+    // renderReportHtml 拋錯，觸發 routes.ts 之 `request.log.error({
+    // stage, applicationId }, ...)`，使該失敗日誌行進入掃描窗；誘餌訊息
+    // 含 storage key 前綴字面與 Windows 絕對路徑樣式，證明失敗路徑本身
+    // 不會把攔截到的錯誤內容原樣寫入日誌（routes.ts 刻意不記錄
+    // err.message，見檔頭第 67 行）——下方七類掃描自然涵蓋。
+    vi.mocked(renderReportHtml).mockImplementationOnce(() => {
+      throw new Error("誘餌：含 rpt/fake-key 與 C:\\fake\\abs\\path 之訊息");
+    });
+    const renderFailResp = await logApp.inject({
+      method: "POST",
+      url: `/applications/${depApp.id}/report`,
+      headers: { cookie: ownerCookie },
+    });
+    expect(renderFailResp.statusCode).toBe(500);
+    const renderFailBody = JSON.parse(renderFailResp.body) as { error?: { code?: string } };
+    expect(renderFailBody.error?.code).toBe("REPORT_GENERATION_FAILED");
+
     // (1) 產生報表（成功路徑；附件 missing 分支必觸發；配得 rpt storageKey）。
     const genResp = await logApp.inject({
       method: "POST",
@@ -1044,7 +1066,7 @@ describeWithDb("PHASE-008-T11 — AC-29 logStream 七類敏感值掃描 + 反向
     }
   });
 
-  it("requestId 在場可供追查（渲染失敗/一般錯誤路徑之日誌含可追查識別，但不含上述任一敏感類別）", () => {
+  it("requestId 在場可供追查（渲染失敗之日誌行含可追查識別 requestId 與 stage；一般錯誤路徑之日誌行亦含 requestId）", () => {
     const parsedLines = logLines
       .map((l) => {
         try {
@@ -1055,6 +1077,16 @@ describeWithDb("PHASE-008-T11 — AC-29 logStream 七類敏感值掃描 + 反向
       })
       .filter((o): o is Record<string, unknown> => o !== null);
     expect(parsedLines.length).toBeGreaterThan(0);
+
+    // RENDER 失敗正例（beforeAll 步驟 (0) 之注入）：該行本身須含可追查識
+    // 別（requestId）與 stage——AC-29「渲染失敗之日誌含可追查識別」子句
+    // 之直接斷言對象（先前僅以「任一行含 requestId」之寬鬆斷言覆蓋，未
+    // 曾真的有 RENDER 失敗行進入掃描窗，見 beforeAll 步驟 (0) 註解）。
+    const renderFailureLine = parsedLines.find((o) => o.stage === "RENDER");
+    expect(renderFailureLine, "RENDER 失敗之日誌行未進入 logStream 掃描窗").toBeTruthy();
+    expect(typeof renderFailureLine?.requestId).toBe("string");
+    expect((renderFailureLine?.requestId as string).length).toBeGreaterThan(0);
+
     const withRequestId = parsedLines.filter((o) => typeof o.requestId === "string");
     expect(withRequestId.length).toBeGreaterThan(0);
   });
