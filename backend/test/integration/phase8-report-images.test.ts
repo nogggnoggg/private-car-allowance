@@ -166,6 +166,24 @@ async function makeIndexColorMapPng(width: number, height: number): Promise<Buff
     .toBuffer();
 }
 
+// T6R2 AR-12（期中複審 #2 reviewer 指定釘住 fixture）：索引色地圖型 PNG ＋
+// EXIF orientation 6 ── T6R 曾對「需轉正」路徑豁免取小者閘門，reviewer 實測
+// 此組合之轉正重編碼膨脹 2.1～2.4×（見下方測試內實測值），證明豁免使不變式
+// 不成立。sharp 對 PNG 之 `withMetadata({ orientation })` 寫入 eXIf chunk，
+// `metadata().orientation` 可讀回，與 JPEG EXIF 標籤同一語意。
+async function makeIndexColorOrientedMapPng(
+  width: number,
+  height: number,
+  orientation: number
+): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+  const raw = makeGridMapRaw(width, height, 3);
+  return sharp(raw, { raw: { width, height, channels: 3 } })
+    .withMetadata({ orientation })
+    .png({ palette: true })
+    .toBuffer();
+}
+
 // ---------------------------------------------------------------------------
 // EXIF orientation fixture（T6R SF-3；sharp `withMetadata({orientation})`
 // 合成——原始像素以橫向排列儲存，`orientation` 標記實際應轉正之方向）
@@ -645,6 +663,40 @@ describe("PHASE-008-T6 — embedImages", () => {
     const dims = await dimsOf(embeddedBytes);
     expect(dims.width).toBe(2400);
     expect(dims.height).toBe(2400);
+  });
+
+  // -------------------------------------------------------------------------
+  // T6R2（2026-08-06 期中複審 #2 AR-11／AR-12；reviewer 指定釘住測試）：取小
+  // 者閘門一律適用於「需轉正」路徑——T6R 曾豁免此路徑（`!needsRotation` 條
+  // 件），reviewer 實測索引色 PNG＋orientation 6 之轉正重編碼膨脹 2.29×
+  // （2400x1800，見下方 Task Handoff 實測輸出），豁免使 AC-13(a)「嵌入位元
+  // 組 ≤ 原圖」不變式在此路徑不成立。本測試在「加回 `!needsRotation` 條件」
+  // 之 mutant 下必紅（見 Task Handoff 之 mutant 自證輸出）。
+  // -------------------------------------------------------------------------
+
+  it("AC-13(a) 取小者一律化(T6R2 AR-12 釘住): 索引色 PNG＋orientation 6（需轉正且重編碼必膨脹）改用原圖，位元組相等且像素尺寸保留", async () => {
+    freshStorage();
+    const original = await makeIndexColorOrientedMapPng(2400, 1800, 6);
+    const key = await putAtt("map-oriented", original, "image/png");
+    const data = maintenanceData([makeImage("map-oriented", key, { mimeType: "image/png" })]);
+    const { log } = makeLoggerSpy();
+
+    const result = await embedImages(storage, data, 1600, log);
+    if (result.kind !== "MAINTENANCE") throw new Error("unreachable");
+    const img = result.maintenance.attachments[0];
+    expect(img.missing).toBe(false);
+    const embeddedBytes = Buffer.from((img.dataUri as string).split(",")[1], "base64");
+
+    // 不變式（AC-13(a)；T6R2 一律化後對「需轉正」路徑亦成立）
+    expect(embeddedBytes.length).toBeLessThanOrEqual(original.length);
+    // 取小者：重編碼膨脹 ⇒ 回退原圖，位元組逐位元組相等
+    expect(embeddedBytes.equals(original)).toBe(true);
+    // 像素尺寸保留原始儲存尺寸（未被降尺寸，EXIF 標籤原樣隨原圖位元組保留，
+    // 顯示轉正交由 Chromium `image-orientation: from-image` 處理，見檔頭
+    // T6R2 節）
+    const dims = await dimsOf(embeddedBytes);
+    expect(dims.width).toBe(2400);
+    expect(dims.height).toBe(1800);
   });
 
   // -------------------------------------------------------------------------

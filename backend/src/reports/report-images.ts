@@ -8,7 +8,17 @@
  * **T6R（2026-08-06 期中複審 #2 SF-1 人類裁定；§16 D16 修訂後定案；AC-13(a)
  * 修訂註）**：①**取小者**——降尺寸重編碼結果大於原圖位元組時改用原圖（像
  * 素尺寸保留）；②**EXIF 轉正（SF-3）**——`resize` 之前 `.rotate()`，長邊
- * 上限與不放大以轉正後幾何為準。詳見 {@link resizeForEmbed}。
+ * 上限與不放大以轉正後幾何為準。
+ *
+ * **T6R2（2026-08-06 期中複審 #2 AR-11 人類裁定；程式回歸 Spec 逐字）**：取
+ * 小者閘門於 T6R 曾對「需轉正」路徑豁免（回退會使圖片維持側躺）；reviewer
+ * 實測索引色 PNG＋orientation 6 之轉正重編碼仍膨脹 2.1～2.4×，證明該豁免使
+ * 「嵌入位元組 ≤ 原圖」在此路徑不成立，牴觸 Spec 逐字（該不變式已由「約
+ * 定」轉為「恆成立」）。閘門改為**對三個重編碼路徑一律適用**：取原圖時
+ * EXIF 標籤原樣保留（未被本函式移除），Chromium 對 `data:` URI 之預設
+ * `image-orientation: from-image` 會依標籤自動轉正顯示——與既有原樣直通分
+ * 支（分支 1，同樣嵌未經處理之原始位元組）為同一機制。詳見
+ * {@link resizeForEmbed}。
  *
  * ---------------------------------------------------------------------------
  * 分工（與 T4 `report-data.ts`、T5 `report-html.ts` 之邊界）
@@ -130,13 +140,16 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
  *    前**；`orientation` 為 1 時為 no-op）後
  *    `.resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true })`
  *    （沿 `upload-service.ts produceThumbnail` 既有慣例之同一組 sharp 參
- *    數）降尺寸。**取小者閘門（SF-1；§16 D16 修訂後定案）**：僅當「無需轉
- *    正」時才可能回退——重編碼結果之位元組數大於原圖時改用原圖位元組（像
- *    素尺寸保留原尺寸，版面由 AC-13(b) 之 `max-width:100%` 承擔）；需轉正
- *    時不得回退（回退會使圖片維持側躺，喪失轉正義務——orientation 6／8 之
- *    fixture 之「兩分支輸出方向一致」即驗證此點）。
+ *    數）降尺寸。
  * 3. 長邊未超過上限但需轉正 → 僅 `.rotate()`（無需降尺寸）；此分支之輸出
  *    寬高已依 EXIF 互換。
+ *
+ * **取小者閘門（T6R2；一律適用，無例外）**：分支 2、3 之重編碼結果，其位元
+ * 組數大於原圖時一律改用原圖位元組（像素尺寸保留原尺寸，版面由 AC-13(b) 之
+ * `max-width:100%` 承擔）——不因「是否需轉正」而有差別待遇。取原圖時圖片顯
+ * 示側躺與否交由 EXIF 標籤（原樣保留於回退之原圖位元組內）＋ Chromium 之
+ * `image-orientation: from-image` 預設值處理，非本函式之義務（見檔頭
+ * T6R2 節）。
  */
 async function resizeForEmbed(bytes: Buffer, maxPx: number): Promise<Buffer> {
   const sharp = (await import("sharp")).default;
@@ -149,18 +162,15 @@ async function resizeForEmbed(bytes: Buffer, maxPx: number): Promise<Buffer> {
     return bytes;
   }
 
-  if (longEdge > maxPx) {
-    const resized = await sharp(bytes)
-      .rotate()
-      .resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true })
-      .toBuffer();
-    if (!needsRotation && resized.length > bytes.length) {
-      return bytes;
-    }
-    return resized;
-  }
+  const recoded =
+    longEdge > maxPx
+      ? await sharp(bytes)
+          .rotate()
+          .resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true })
+          .toBuffer()
+      : await sharp(bytes).rotate().toBuffer();
 
-  return sharp(bytes).rotate().toBuffer();
+  return recoded.length > bytes.length ? bytes : recoded;
 }
 
 // ---------------------------------------------------------------------------
