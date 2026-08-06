@@ -139,7 +139,7 @@ Phase 結束時，人類可對**任一類已完成申請**（差旅／保養／�
 
 - **(a)** 同一月份、同一型別連續產生 5 份 → 序號為 `0001`~`0005`，五個編號互異。
 - **(b)** 不同型別同月份互不干涉（`TRV-202608-0001` 與 `MNT-202608-0001` 可並存）。
-- **(c)** **併發 ≥ 12 輪**（12 筆不同的已完成申請同時產生）→ 全部成功、12 個編號**互異**且集合恰為 `0001`~`0012`（無跳號、無重複）。
+- **(c)** **併發 ≥ 12 輪**（12 筆不同的已完成申請同時產生）→ 全部成功、12 個編號**互異**且集合恰為 `0001`~`0012`（無跳號、無重複）。**【重驗義務（2026-08-06 D3 修訂後）】**：渲染移入交易後交易窗口延長、序列化衝突率上升，本子項**須於方案 (d) 之新結構下重新驗證**（不得沿用舊結構之通過紀錄）；重試上限 5 次仍須足以讓 12 併發全數成功，**若實測不足須回報而非調高上限或弱化併發數**（走 Spec 修訂）。併發輪之 PDF 產生得以合成替身替代真實 Chromium（真 Chromium 保留於 AC-06／AC-09），替身不得繞過配號、`put`、讀回校驗與 `INSERT` 之任一步。
 - **(d)** **DB 唯一約束為最後防線**：移除應用層序號重試之 mutant → 必出現唯一鍵衝突而測試變紅（不得以 500 外洩 DB 錯誤原文；轉為可行動之錯誤碼並重試，沿 PHASE-003a D4 先例）。
 
 **AC-05 冪等：同一申請不重產編號**
@@ -161,7 +161,7 @@ Phase 結束時，人類可對**任一類已完成申請**（差旅／保養／�
 - **(b)** 渲染逾時（`REPORT_PDF_TIMEOUT_MS`，預設 30 000）觸發時，以 `REPORT_GENERATION_FAILED` 收斂並滿足 AC-07 之零殘留（不得懸掛、不得 200）。
 - **(c)** **（容器）** 於後端容器映像內產生之 PDF，**中文字元不得為缺字方框**（字型在場）；以容器內渲染之量測斷言（見 §11.2）＋ Gate 走查腳本之目視確認。
 
-**AC-10 同一申請併發產生**——同一申請之 2 個併發 `POST` → 最終**恰一份 `Report`**、兩個回應皆為成功且**編號相同**（敗方以冪等路徑回既有），storage **無孤兒檔**（敗方已產生之位元組須被清理，以前綴列舉斷言恰一個 key）。
+**AC-10 同一申請併發產生**——同一申請之 2 個併發 `POST` → 最終**恰一份 `Report`**、兩個回應皆為成功且**編號相同**（敗方以冪等路徑回既有），storage **無孤兒檔**（敗方已產生之位元組須被清理，以前綴列舉斷言恰一個 key）。**【重驗義務（2026-08-06 D3 修訂後）】**：敗方之 `put` 現發生於**交易內**（(4)e），其補償刪檔須於**回滾之後**執行；本子項須於新結構下重新驗證，且「恰一個 key」之前綴列舉斷言須涵蓋**重試輪所產生之每一個 key**（每輪 key 皆為新 `randomUUID()`，故重試 N 輪即有 N 個待補償 key）。
 
 ### D. 列印版版型與內容（FE-US-23）
 
@@ -184,6 +184,8 @@ Phase 結束時，人類可對**任一類已完成申請**（差旅／保養／�
 **AC-14 多頁不重疊**（FE-US-23④）——以「足以產生 ≥ 2 頁」之 fixture，於列印媒體模擬下量測：每個標記為不可分割之區塊（段落卡片、表格列、圖片容器）之 `top` 與 `bottom-1` 落於**同一頁索引**（`floor(y / 頁面內容高度)` 相等）；且任兩區塊之矩形**互不重疊**。**移除 `break-inside: avoid` 之 mutant 必紅。**
 
 **AC-15 列印版與 PDF 同一版型**（PRD :459 逐字）——列印端點回傳之 HTML 與產生 PDF 時所使用之 HTML **由同一函式、同一輸入產生且字串全等**（同一 `ReportData` 輸入之兩次呼叫結果 `toEqual`；服務層以 spy 斷言 PDF 路徑呼叫的就是該函式）。**「PDF 走另一份模板／另一組樣式」之 mutant 必紅。**
+
+> **【可落地性加註（2026-08-06 D3 修訂後）】**：方案 (d) 使**配號早於渲染**，故持久化 PDF 與列印端點得以**同一組編號／產生時間**為輸入——本 AC 之 **wire 層字串全等**因而可如字面落地（**T10 斷言基礎**）：對**已產生報表**之申請，列印端點與產生當時之 PDF 皆以 `report: { reportNumber, generatedAt, ... }` 已填值之同一 `ReportData` 形狀輸入同一版型函式，兩者位元組層之 HTML 全等。修訂前之結構（配號在最後）使持久化 PDF 之該二欄恆為「尚未產生」佔位，wire 全等在字面上不可能成立——此為本次修訂之直接動因（§16 D3 修訂後定案）。**未產生報表之申請**其列印版該二欄仍為未產生之呈現（AC-11「報表編號（已產生時）」之既有字面不變）。
 
 **AC-16 自足文件與跳脫（安全）**
 
@@ -261,23 +263,26 @@ Phase 結束時，人類可對**任一類已完成申請**（差旅／保養／�
 
 ## 3. 正常流程
 
-### 3.1 產生正式報表（FE-US-22、BE-US-26／27）
+### 3.1 產生正式報表（FE-US-22、BE-US-26／27）　**【步驟順序已修訂 → §16 D3 修訂後定案、§9.1（2026-08-06 人類裁定方案 (d)）】**
 
 ```
 使用者（或管理員）於已完成申請詳情頁 → 點「產生正式報表」
   → POST /applications/:id/report
   → 【授權】requireAuth + requirePasswordChanged + assertOwnershipOrAdmin(DB.ownerId)
   → 【狀態】status 必須為 COMPLETED（DRAFT → 拒絕，D11）
-  → 【冪等】已有 Report → 直接回既有（200，零渲染、零寫入）
+  → 【冪等・交易外前置】已有 Report → 直接回既有（200，零渲染、零寫入）
   → 組裝 ReportData（讀快照，零重算；封閉白名單）
   → 讀取證明附件位元組 → sharp 降尺寸 → data URI 內嵌
-  → renderReportHtml(ReportData) → HTML 字串（與列印端點同一份）
-  → Playwright(Chromium) page.setContent(html) → page.pdf() → Buffer
-  → 校驗（%PDF- 開頭、%%EOF 結尾、長度 > 0）
-  → storage.put("rpt/<token>/pdf") → 讀回校驗（位元組數 + SHA-256）
-  → SERIALIZABLE tx：再查一次冪等 → 配號（max(sequence)+1）→ INSERT Report
-       唯一鍵衝突 → 重試（上限 5 次，指數退避）
-  → 任一步失敗 → 清理已寫入之 storage 檔 → 500 REPORT_GENERATION_FAILED（零殘留）
+  → 【SERIALIZABLE tx 開始】（重試上限 5 次，指數退避）
+       → 交易內再查一次冪等 → 已有 Report → 敗方，回既有（200）
+       → 配號（max(sequence)+1）→ 決定 reportNumber／generatedAt（尚未提交）
+       → renderReportHtml(ReportData ＋ 編號／產生時間) → HTML 字串（與列印端點同一份）
+       → Playwright(Chromium) page.setContent(html) → page.pdf() → Buffer
+       → 校驗（%PDF- 開頭、%%EOF 結尾、長度 > 0）
+       → storage.put("rpt/<token>/pdf") → 讀回校驗（位元組數 + SHA-256）
+       → INSERT Report → 【提交】
+       唯一鍵衝突／序列化失敗 → 回滾（**序號未落庫＝不燒號**）→ 補償刪檔 → 重試
+  → 任一步失敗 → 交易回滾 ＋ 清理本輪已寫入之 storage 檔 → 500 REPORT_GENERATION_FAILED（零殘留）
   → 201 { report: ReportDto }
 ```
 
@@ -588,7 +593,7 @@ model Report {
 
 ## 9. Data Flow（本 Phase 影響部分）
 
-### 9.1 產生報表（唯一之寫入路徑）
+### 9.1 產生報表（唯一之寫入路徑）　**【流程已修訂（2026-08-06 人類裁定方案 (d)）→ §16 D3 修訂後定案；§18 同日末列為批准依據】**
 
 ```
 POST /applications/:id/report
@@ -596,31 +601,37 @@ POST /applications/:id/report
   -> application = findUnique(id)                          null -> 404
   -> assertOwnershipOrAdmin(actor, application.ownerId)         -> 403
   -> status !== COMPLETED                                       -> 409 CONFLICT + details.status（D11）
-  -> (1) 冪等前置查詢：Report.findUnique({ applicationId })
+  -> (1) 冪等前置查詢（**交易外**）：Report.findUnique({ applicationId })
            存在 -> 200 回既有（**零渲染、零寫入**）
   -> (2) buildReportData(prisma, application)   讀快照 + 附件列（零重算，封閉白名單）
   -> (3) embedImages(storage, sharp)            讀位元組 -> 降尺寸 -> data URI
            單張讀取失敗 -> 佔位說明，**不中止**（B-10）
-  -> (4) html = renderReportHtml(data)          純函式（與列印端點同一份）
-  -> (5) pdf = renderPdf(html, { timeoutMs })   Playwright；逾時 -> 失敗路徑
-           校驗：%PDF- 開頭、%%EOF 結尾、length > 0
-  -> (6) storageKey = `rpt/${randomUUID()}/pdf`
-         storage.put(key, pdf, "application/pdf")
-         讀回校驗：exists + byteSize 相等 + SHA-256 相等    不符 -> 失敗路徑
-  -> (7) SERIALIZABLE tx（重試 <=5）：
+  -> (4) SERIALIZABLE tx（重試 <=5，指數退避）；**每輪依序**：
            a. Report.findUnique({ applicationId })  存在 -> 標記「敗方」，跳出
            b. next = max(sequence) + 1 where (prefix, period)
-           c. INSERT Report(...)      唯一鍵衝突 -> 重試 b
-  -> (8) 敗方 or 任一步失敗 -> storage.delete(key)（補償）-> 200 冪等 or 500
+              reportNumber / generatedAt 於此決定（**交易內、尚未提交**）
+           c. html = renderReportHtml({ ...data, reportNumber, generatedAt })
+                    純函式（與列印端點**同一函式、同一輸入形狀**）
+           d. pdf = renderPdf(html, { timeoutMs })   Playwright；逾時 -> 失敗路徑
+              校驗：%PDF- 開頭、%%EOF 結尾、length > 0
+           e. storageKey = `rpt/${randomUUID()}/pdf`
+              storage.put(key, pdf, "application/pdf")
+              讀回校驗：exists + byteSize 相等 + SHA-256 相等   不符 -> 失敗路徑
+           f. INSERT Report(...)      唯一鍵衝突／序列化失敗 -> 回滾 -> 重試 a
+           g. 提交
+  -> (5) 任一輪回滾或最終失敗 -> **該輪已 put 之 key 一律 storage.delete（補償）**
+         （交易回滾只還原 DB；storage 為交易外資源，補償刪檔為其唯一還原手段）
+  -> (6) 敗方 -> 200 冪等；不可恢復失敗 -> 500 REPORT_GENERATION_FAILED
   -> 201 { report }
 ```
 
 **不變式（以測試守護）**
 
-- **零殘留**：`Report` 列與 storage 檔**同生共死**——不存在「有列無檔」或「有檔無列」之持久狀態（失敗路徑一律補償刪檔；AC-07、AC-10）。
-- **配號在最後**：序號僅於**交易提交**時被消耗；渲染或寫檔失敗**絕不**消耗編號（避免編號出現無對應報表之洞）。
-- **(2)(3)(4) 之順序不可對調**：狀態與授權未過時**不讀附件位元組、不啟動 Chromium**（省成本、錯誤語意單一）。
-- **(5) 之前零 DB 寫入**：任何 DB 寫入只發生於 (7)。
+- **零殘留**：`Report` 列與 storage 檔**同生共死**——不存在「有列無檔」或「有檔無列」之持久狀態（失敗路徑一律補償刪檔；AC-07、AC-10）。**「任一步失敗 → 清理」涵蓋交易內 (4)e 之 `put`**：交易回滾不會回收已寫入之檔案，故**每一次 `put` 皆須有對應之補償刪檔路徑（含重試輪之每一輪、含最終成功前之所有失敗輪）**。
+- **不燒號**（原「配號在最後」之目的，**字面已修訂、目的不變**）：序號來源為 `max(sequence)+1` 之**即時查詢**（非計數器物件、非 DB `SEQUENCE`），未提交之交易對 `Report` 表零可見列；渲染或寫檔失敗**回滾後下一次 `max(sequence)+1` 取得同一值**，故**絕不**消耗編號（不出現無對應報表之編號洞）。
+- **(2)(3) 之順序不可對調且皆在交易外**：狀態與授權未過時**不讀附件位元組**；昂貴且無 DB 寫入之快照組裝與圖片嵌入置於交易外，以**縮短交易窗口**。
+- **交易外零 DB 寫入**：任何 DB 寫入只發生於 (4)f。
+- **(4) 內之順序不可對調**：配號（b）必須早於渲染（c），否則 PDF 無法帶編號（AC-11／AC-15 之結構前提）。
 
 ### 9.2 列印版（唯讀路徑）
 
@@ -750,20 +761,20 @@ server.ts
 | AC-01(h) | integration | `infra002-schema-drift.test.ts` | `常設 drift guard：schema.prisma 與 prisma/migrations 逐一套用後之狀態完全一致（migrate diff --exit-code = 0）` | T1b | PENDING |
 | AC-02 | unit | `backend/test/unit/report-number.test.ts` | `AC-02: 三型前綴窮舉 TRAVEL→TRV / MAINTENANCE→MNT / DEPRECIATION→DEP（映射對調 mutant 必紅）` | T2 | PENDING |
 | AC-03 | unit | `report-number.test.ts` | `AC-03(a): 編號格式為 {PREFIX}-{YYYYMM}-{NNNN} 且逐段值精確`；`AC-03(b): 月份依 Asia/Taipei 換算 — 四點邊界（UTC mutant 必紅）`；`AC-03(c): sequence 補零與 10000 之五位延伸`；`AC-03(d): 編號字元集恆為 [A-Z0-9-]` | T2 | PENDING |
-| AC-04 | integration | `phase8-report-generate.test.ts` | `AC-04(a): 同月同型連續 5 份序號 0001~0005 且互異`；`AC-04(b): 不同型別同月份互不干涉`；`AC-04(c): 12 筆併發產生之編號集合恰為 0001~0012（無跳號、無重複）`；`AC-04(d): 移除序號重試之 mutant 觸發唯一鍵衝突且不外洩 DB 錯誤原文` | T8 | PENDING |
+| AC-04 | integration | `phase8-report-generate.test.ts` | `AC-04(a): 同月同型連續 5 份序號 0001~0005 且互異`；`AC-04(b): 不同型別同月份互不干涉`；`AC-04(c): 12 筆併發產生之編號集合恰為 0001~0012（無跳號、無重複）`（**方案 (d) 結構下重驗；併發輪以合成 PDF 替身，替身不繞過配號/put/讀回校驗/INSERT**）；`AC-04(d): 移除序號重試之 mutant 觸發唯一鍵衝突且不外洩 DB 錯誤原文` | T8 ＋ **T8R** | PENDING |
 | AC-05 | integration | `phase8-report-generate.test.ts` | `AC-05(a): 同一申請重複 POST 不新增列與檔，首次 201 其後 200 且編號/時間/檔名/雜湊全不變`；`AC-05(b): 下載不觸發產生（渲染器 spy 零呼叫）` | T8 | PENDING |
 | AC-06 | integration | `phase8-report-generate.test.ts` | `AC-06: 首次產生成功之七項完整保存（DB 列 + storage 檔 + 雜湊 + PDF magic bytes）` | T8 | PENDING |
-| AC-07 | integration | `phase8-report-generate.test.ts` | `AC-07: 四種失敗注入（RENDER/STORE/VERIFY/PERSIST）各自零殘留 — 零 Report 列、零 storage 檔、500 REPORT_GENERATION_FAILED、申請快照逐欄不變` | T8 | PENDING |
+| AC-07 | integration | `phase8-report-generate.test.ts` | `AC-07: 四種失敗注入（RENDER/STORE/VERIFY/PERSIST）各自零殘留 — 零 Report 列、零 storage 檔、500 REPORT_GENERATION_FAILED、申請快照逐欄不變`（**STORE 情境須斷言交易內 put 之補償刪檔確有執行，非僅「無殘留」之恆真式**） | T8 ＋ **T8R** | PENDING |
 | AC-08 | integration | `phase8-report-download.test.ts` | `AC-08: 兩次下載位元組逐位元全等且等於保存值；渲染器 spy 零呼叫（下載時重新渲染之 mutant 必紅）` | T9 | PENDING |
 | AC-09(a)(b) | integration | `phase8-pdf-render.test.ts` | `AC-09(a): 標準 fixture 之產生端到端 <= 10000 ms（量測值記入 Handoff）`；`AC-09(b): 渲染逾時以 REPORT_GENERATION_FAILED 收斂且零殘留、不懸掛` | T7 ＋ T8 | PENDING |
 | AC-09(c) | integration | `phase8-pdf-render.test.ts` | `AC-09(c): 中文字型在場 — 渲染中文字串之字寬量測與 document.fonts.check 雙層斷言` | T7b | PENDING |
-| AC-10 | integration | `phase8-report-generate.test.ts` | `AC-10: 同一申請 2 併發產生恰一份 Report、兩回應編號相同、storage 恰一個 key（零孤兒）` | T8 | PENDING |
+| AC-10 | integration | `phase8-report-generate.test.ts` | `AC-10: 同一申請 2 併發產生恰一份 Report、兩回應編號相同、storage 恰一個 key（零孤兒）`（**方案 (d) 結構下重驗；敗方之交易內 put 於回滾後補償**） | T8 ＋ **T8R** | PENDING |
 | AC-11 | unit | `backend/test/unit/report-html.test.ts` | `AC-11: 三型列印版必含項目逐字在場（共通 8 項 + 差旅 / 保養 / 折舊各自清單）` | T5 | PENDING |
 | AC-12 | unit | `report-html.test.ts` | `AC-12: 行程段以 sortOrder 升冪呈現且每段截圖恰為該段附件（反序與取首段圖兩個 mutant 各必紅）` | T5 | PENDING |
 | AC-13(a) | integration | `phase8-report-images.test.ts` | `AC-13(a): 圖片以 data URI 內嵌、長邊上限 1600 且不放大小圖；來源遺失以佔位取代且整份報表仍成功` | T6 | PENDING |
 | AC-13(b) | e2e | `e2e/report-print-layout.spec.ts` | `AC-13(b): 列印媒體下每張圖寬度與右緣不超出內容區、文件無水平溢位（移除 max-width:100% 之 mutant 必紅）` | T14 | PENDING |
 | AC-14 | e2e | `e2e/report-print-layout.spec.ts` | `AC-14: 多頁 fixture 下每個不可分割區塊之頁索引一致且任兩區塊矩形不重疊（移除 break-inside: avoid 之 mutant 必紅）` | T14 | PENDING |
-| AC-15 | unit ＋ integration | `report-html.test.ts`；`phase8-report-print.test.ts` | `AC-15: 同輸入兩次呼叫 renderReportHtml 結果全等（純函式、不讀時鐘）`；`AC-15: 列印端點回傳之 HTML 與產生 PDF 所用之 HTML 字串全等（PDF 走另一份模板之 mutant 必紅）` | T5 ＋ T10 | PENDING |
+| AC-15 | unit ＋ integration | `report-html.test.ts`；`phase8-report-print.test.ts` | `AC-15: 同輸入兩次呼叫 renderReportHtml 結果全等（純函式、不讀時鐘）`；`AC-15: 列印端點回傳之 HTML 與產生 PDF 所用之 HTML 字串全等（已產生報表之申請，兩者同以含編號/產生時間之 report 欄位為輸入；PDF 走另一份模板之 mutant 必紅）` | T5 ＋ T10 | PENDING |
 | AC-16 | unit ＋ integration | `report-html.test.ts`；`phase8-report-print.test.ts` | `AC-16(a): 列印版零 <script、零 on* 屬性、零外部資源參照`；`AC-16(b): 三種 XSS payload × 五個插值點皆跳脫且於 Chromium 載入後零副作用（移除跳脫之 mutant 必紅）`；`AC-16(c): 列印端點四個安全標頭在場` | T5 ＋ T10 | PENDING |
 | AC-17 | integration | `phase8-report-data.test.ts` | `AC-17(a): LEGACY 差旅呈現舊模型單價、新三欄以「—」呈現且不顯示 null/NaN`；`AC-17(b): LEGACY 折舊呈現每公里單價原值、新三欄以「—」`；`AC-17(c): 零重算 — 計算引擎 spy 全數零呼叫且金額路徑零算式（結構性掃描）` | T4 | PENDING |
 | AC-18 | integration | `phase8-report-data.test.ts` | `AC-18(a): 折舊呈現五值（每年折舊費用/年度公務里程/年度總里程/公務比例/金額）`；`AC-18(b): 車價、折舊年限、預估年里程、參數版本 id 於本人與管理員兩身分皆不出現（鍵集封閉 + 字面負向斷言）`；`AC-18(c): 對帳列以三來源值呈現且 4dp rawAmount 不出現` | T4 | PENDING |
@@ -795,14 +806,14 @@ server.ts
 | # | 目標檔／節 | 同步內容 |
 |---|---|---|
 | 1 | `ARCHITECTURE.md` §3 模組表 `reports` 列 | 補記落點與檔案分工：`backend/src/reports/`——`report-number.ts`（編號純函式）／`report-filename.ts`（安全檔名純函式）／`report-data.ts`（快照讀取與封閉白名單組裝）／`report-html.ts`（列印版版型純函式）／`report-images.ts`（附件位元組 → 降尺寸 → data URI）／`pdf-renderer.ts`（Playwright 封裝）／`report-service.ts`（編排、交易、冪等、補償）／`routes.ts`（四端點） |
-| 2 | `ARCHITECTURE.md` §4.7（報表與 PDF） | 補記：編號格式 `{PREFIX}-{YYYYMM}-{NNNN}`（月份依 Asia/Taipei）；冪等鍵為 `Report.applicationId` 唯一；併發以「SERIALIZABLE ＋ `max(sequence)+1` ＋ 三欄唯一約束 ＋ 重試」保證；**配號在交易提交時才被消耗**；PDF 產生失敗一律零殘留（列與檔同生共死） |
+| 2 | `ARCHITECTURE.md` §4.7（報表與 PDF） | 補記：編號格式 `{PREFIX}-{YYYYMM}-{NNNN}`（月份依 Asia/Taipei）；冪等鍵為 `Report.applicationId` 唯一；併發以「SERIALIZABLE ＋ `max(sequence)+1` ＋ 三欄唯一約束 ＋ 重試」保證；**配號與帶編號渲染同在一個交易內，序號僅於提交時落庫（回滾天然不燒號）**；PDF 產生失敗一律零殘留（列與檔同生共死） |
 | 3 | `ARCHITECTURE.md` §4.5／新增一條 | 補記 storage 抽象之**封閉前綴白名單**（`att`／`rpt` 雙實例、跨實例互拒）；PDF 一律經授權端點回傳，volume 不得靜態直出（既有紀律之延伸） |
 | 4 | `ARCHITECTURE.md` §6 開放問題 | **結案兩條**：①「Playwright/Chromium 於後端容器的封裝方式」→ 依 D4 裁定；②「報表編號月內唯一的併發安全實作」→ 依 D3 裁定。**兩條移出開放問題並改寫為定案條目** |
 | 5 | `ARCHITECTURE.md` §1 技術棧表 PDF 列 | 「隨後端（同容器或伴生 worker，Phase Spec 定案）」→ 依 D4 之裁定改為定值 |
 | 6 | `DATA_FLOW.md` §1.1 實體摘要 | `Report` 列改為本 Spec §8.1 之落地形狀；**刪除 `PdfFile` 列**並註明其三欄併入 `Report`（D1） |
 | 7 | `DATA_FLOW.md` §1 概念圖 | `Report 1───1 PdfFile` 改為 `Application 0..1───1 Report（含 PDF 檔案參照）` |
 | 8 | `DATA_FLOW.md` §1.2 關鍵不變式 | 新增：「已完成申請至多一份 `Report`；`Report` 列與其 PDF 檔案同生共死；本 Phase 不存在更新或刪除 `Report` 之程式路徑」 |
-| 9 | `DATA_FLOW.md` §2.4（報表產生與下載） | 以本 Spec §9.1~§9.3 之落地流程取代概要流程（含冪等前置、配號在最後、讀回校驗、補償刪檔、404 語意） |
+| 9 | `DATA_FLOW.md` §2.4（報表產生與下載） | 以本 Spec §9.1~§9.3 之落地流程取代概要流程（含交易外冪等前置、**單一交易內「配號 → 帶編號渲染 → put → 讀回校驗 → INSERT」**、回滾不燒號、補償刪檔、404 語意） |
 | 10 | `DATA_FLOW.md` §3 敏感資料彙整「正式 PDF」列 | 補記 storage key 系統產生與封閉前綴；補記折舊揭露面於報表之延續（車價／年限不外露） |
 | 11 | `PROJECT_STATE.md` 跨 Phase 追蹤（**大總管白名單**） | ①**AR-1（`RATIO_DISPLAY_SCALE` 對照）已於本 Phase 結案**，可自追蹤清單移除；②**drift guard 已升常設**，可自追蹤清單移除；③新增「FE-US-05 報表編號關鍵字查詢」之處置結果（依 D13）；④新增「PHASE-009 須複用本 Phase 之編號產生器與 PDF 引擎，並補齊 FE-US-23⑤／BE-US-27④⑤」 |
 
@@ -838,7 +849,7 @@ server.ts
 | **T7** | PDF 渲染器（Playwright 封裝、逾時、校驗）＋ env 擴充 ＋ 相依宣告 | BE | AC-09(a)(b) | `backend/src/reports/pdf-renderer.ts`、`backend/src/config/env.ts`、`backend/package.json`、`backend/test/integration/phase8-pdf-render.test.ts`、`backend/test/unit/env.test.ts` | **High**（新增外部相依 ＋ 執行環境） | T5 | ~700 行／~160-200k | 真實 Chromium 產生合法 PDF；逾時明確錯誤且不懸掛；三個新 env 之 zod 驗證與生產 fail-fast 測試綠；效能量測值記入 Handoff |
 | **T7b** | 容器化：Dockerfile 安裝 Chromium ＋ CJK 字型、entrypoint 建立 PDF 目錄、compose env | infra | AC-09(c) | `backend/Dockerfile`、`backend/docker-entrypoint.sh`、`docker-compose.yml` | **High**（部署 ＋ 容器安全 `--no-sandbox`） | T7 | ~120 行／~95-130k | 映像可建置；容器內產生之 PDF **中文非缺字方框**（量測 ＋ 目視雙軌）；`REPORT_STORAGE_ROOT` 目錄由 entrypoint 建立並 `chown appuser`；映像大小增量記入 Handoff |
 | **T8a** | storage 金鑰前綴白名單參數化（`att`／`rpt` 封閉集合） | BE | AC-26 | `backend/src/storage/local-volume-storage.ts`、`backend/test/unit/report-storage.test.ts` | **High**（路徑安全守門） | — | ~400 行／~130-140k（重 Lite） | 既有 `storage.test.ts` **零 diff 且全綠**；`rpt` 前綴穿越矩陣全數拒絕；跨實例互拒；預設參數維持 `["att"]` |
-| **T8** | 產生端點 ＋ 配號交易 ＋ 冪等 ＋ 失敗補償 ＋ 併發 | BE ＋ DB（寫入） | AC-04, AC-05, AC-06, AC-07, AC-10 | `backend/src/reports/report-service.ts`、`backend/src/reports/routes.ts`、`backend/src/server.ts`、`backend/test/integration/phase8-report-generate.test.ts` | **High**（不可逆產物 ＋ 併發 ＋ 失敗語意） | T2, T4, T5, T6, T7, T8a | ~1250 行／~210-310k | 四種失敗注入零殘留（DB ＋ storage 雙層）；12 輪併發編號集合全等；同申請 2 併發恰一列零孤兒；序號重試 mutant 必紅；「無更新／刪除 `Report` 路徑」結構性斷言綠 |
+| **T8** | 產生端點 ＋ 配號交易 ＋ 冪等 ＋ 失敗補償 ＋ 併發 | BE ＋ DB（寫入） | AC-04, AC-05, AC-06, AC-07, AC-10 | `backend/src/reports/report-service.ts`、`backend/src/reports/routes.ts`、`backend/src/server.ts`、`backend/test/integration/phase8-report-generate.test.ts` | **High**（不可逆產物 ＋ 併發 ＋ 失敗語意） | T2, T4, T5, T6, T7, T8a | ~1250 行／~210-310k | 四種失敗注入零殘留（DB ＋ storage 雙層）；12 輪併發編號集合全等；同申請 2 併發恰一列零孤兒；序號重試 mutant 必紅；「無更新／刪除 `Report` 路徑」結構性斷言綠　**【T8R 承接（2026-08-06 D3 修訂裁定；T8 於 T8R 複審通過前不結案）】**：①**方案 (d) 重構**——`report-service.ts` 改為單一 SERIALIZABLE 交易內「查冪等 → 配號 → 帶編號渲染 → `put` → 讀回校驗 → `INSERT` → 提交」（§9.1），持久化 PDF 內含報表編號與產生時間（AC-11／AC-15 之結構前提）；②**SF-1 治具 `beforeEach` 化**（治具於方案 (d) 重構後失效之修復）；③**SF-2 12 併發以合成 PDF 替身**（不繞過配號／`put`／讀回校驗／`INSERT`；真 Chromium 保留於 AC-06）；④**SF-3 STORE 情境之補償刪檔**須有正向斷言（交易內 `put` 於回滾後確被刪除，非恆真式）；⑤**SF-4 SERIALIZABLE 結構斷言**（交易隔離級別與「渲染位於交易內、配號早於渲染」之結構性守門，防後續重構默默退回舊順序）；⑥AC-04(c)／AC-10 於新結構下**重驗**（12 併發須全數成功於重試上限 5 內）。SF-1~SF-4 之逐項細節以 reviewer `PHASE-008-T8-REVIEW` Handoff 為準 |
 | **T9** | 查詢與下載端點 ＋ 檔名標頭 ＋ 重下一致 | BE | AC-08, AC-22, AC-23, AC-24（下載／查詢兩列）, AC-27（DTO 側） | `backend/src/reports/routes.ts`、`backend/src/reports/report-service.ts`、`backend/test/integration/phase8-report-download.test.ts` | **High**（授權 ＋ 檔案內容回傳） | T8 | ~900 行／~160-200k | 兩次下載位元組全等且渲染器 spy 零呼叫；`Content-Disposition` 雙形式 wire-level；`\r\n` 注入封閉；改名後檔名不變；檔案遺失 404 不 500 |
 | **T10** | 列印端點 ＋ 同一版型斷言 ＋ 授權矩陣 ＋ 狀態守門 ＋ 安全標頭 | BE | AC-15（端點側）, AC-16(c), AC-24（產生／列印兩列）, AC-25 | `backend/src/reports/routes.ts`、`backend/test/integration/phase8-report-print.test.ts` | **High**（授權矩陣 ＋ 側信道） | T8 | ~900 行／~160-200k | 20 格授權矩陣逐格綠；他人草稿 vs 他人已完成回應逐字相同；列印 HTML 與 PDF 用 HTML 全等（另一份模板 mutant 必紅）；四個安全標頭在場 |
 | **T11** | 錯誤合約 ＋ `ErrorCode` 結構性斷言 ＋ 日誌安全 | BE | AC-28, AC-29 | `backend/src/platform/errors.ts`、`backend/test/integration/phase8-contract.test.ts` | Medium | T9, T10 | ~850 行／~105-175k | `ErrorCode` 聯集全等（BOGUS mutant 必紅）；四端點錯誤表逐格；七類日誌掃描 ＋ 反向探針 |
@@ -968,7 +979,7 @@ T8a ─────────────────────────�
 
 ---
 
-### D3 — 月內唯一之併發保證與冪等機制　**【High：正確性 ＋ 不可逆產物】**
+### D3 — 月內唯一之併發保證與冪等機制　**【High：正確性 ＋ 不可逆產物】**　**【定案語句已修訂（2026-08-06 人類裁定方案 (d)）；下列原文一律保留供追溯，實作義務以本節末「修訂後定案」為準】**
 
 **為什麼要決定**：兩個使用者同時產生同月同型報表時，序號可能重複；同一使用者連點兩次也不得產生兩份。ARCHITECTURE §6 明列此為 PHASE-008 待定案項。
 
@@ -984,7 +995,17 @@ T8a ─────────────────────────�
 - (c)：advisory lock 為本專案未曾使用之機制，且鎖粒度與逾時語意需另行定義。
 - (d)：**不可接受**——無唯一約束時併發下必然出現重複編號，且測試不易穩定重現。
 
-**推薦**：**(a)**。另定案：**配號一律在最後一步（交易內）**，PDF 渲染與寫檔失敗**絕不消耗編號**；冪等鍵為 `Report.applicationId` 唯一（PHASE-009 修正版為新 `Application`，天然取得新編號）。
+**推薦**：**(a)**。另定案：**配號一律在最後一步（交易內）**，PDF 渲染與寫檔失敗**絕不消耗編號**；冪等鍵為 `Report.applicationId` 唯一（PHASE-009 修正版為新 `Application`，天然取得新編號）。　**【上一句之「配號一律在最後一步」已修訂 → 見下「修訂後定案」】**
+
+**修訂後定案（2026-08-06；人類 leonchih 經 AskUserQuestion 裁定方案 (d)，批准紀錄＝§18 同日末列）**
+
+- **機制零變更**：仍為 (a) ——SERIALIZABLE 交易 ＋ `max(sequence)+1` ＋ `(numberPrefix, numberPeriod, sequence)` 唯一約束 ＋ 應用層重試（≤5）；冪等鍵仍為 `Report.applicationId` 唯一。**選項評比、(b)(c)(d) 之否決理由一律不變。**
+- **字面修訂**：原「**配號一律在最後一步（交易內）**」改為——**單一 SERIALIZABLE 交易內依序「查冪等 → 配號 → 帶編號渲染 → `put` → 讀回校驗 → `INSERT` → 提交」**；失敗即回滾並補償刪檔（落地流程以 **§9.1** 為準，§3.1 同步）。
+- **目的（不燒號）不變，且機制依據明確**：序號並非計數器物件或 DB `SEQUENCE`，而是**配號當下之 `max(sequence)+1` 即時查詢**。未提交之交易對 `Report` 表零可見列，**回滾後下一次查詢取得同一序號**——「渲染或寫檔失敗絕不消耗編號」由**交易回滾天然達成**，與原字面**等效**。此即人類裁定所依據之關鍵事實：**D3 之字面（配號最後）與目的（不燒號）可分離**。
+- **修訂理由（三難）**：原字面之結構性後果為——持久化 PDF 之報表編號／產生時間欄**永久為「尚未產生」佔位**（T8 以 27/27 探針實證），與 **AC-11**（列印版含報表編號）、**AC-15**（列印版與 PDF 由同一函式、同一輸入產生且字串全等）不可兼得。方案 (d) 同時滿足三者。
+- **已明示接受之成本**（人類裁定時已揭露）：交易窗口延長約 **+0.5 s**（渲染移入交易）；序列化衝突之重試**須重新渲染**；於 ~20 人規模已接受。**AC-09(a) 之端到端 ≤ 10 000 ms 上限不變**（延長之窗口計入同一量測）。
+- **一律不變**：D5 之 `REPORT_GENERATION_FAILED`（500）＋ `details.stage ∈ {RENDER, STORE, VERIFY, PERSIST}` 封閉值域；零殘留不變式；AC-04／AC-05／AC-06／AC-07／AC-10 之驗收字面；`Report` 資料模型（§8.1）；PHASE-009 修正版天然取得新編號之推論。
+- **本次修訂不改變任何使用者可見行為之批准範圍**：PDF 內容含編號係**恢復** AC-11／AC-15 已批准之字面義務，非新增行為。
 
 ---
 
@@ -1026,6 +1047,8 @@ T8a ─────────────────────────�
 - (c)：前端無法區分「PDF 引擎問題（可重試）」與「未預期程式錯誤」，UX 較差；且 `INTERNAL_ERROR` 依既有慣例是「未處理例外」，用它表達已知失敗會弱化該碼之語意。
 
 **推薦**：**(a)**，並新增 `REPORT_GENERATION_FAILED`（500）＋ `details.stage ∈ {RENDER, STORE, VERIFY, PERSIST}`（封閉值域，不含任何路徑或堆疊）。
+
+> **【步驟順序已隨 D3 修訂（2026-08-06 人類裁定方案 (d)）】**：(a) 之字面順序「先渲染 → 寫檔 → 讀回校驗 → 交易內配號並寫列」改為 D3 修訂後之**單一交易內順序**（查冪等 → 配號 → 帶編號渲染 → `put` → 讀回校驗 → `INSERT` → 提交；§9.1 為準）。**本決策之其餘內容一律不變**：新增錯誤碼、`details.stage` 封閉值域（四個 stage 名稱與語意不變）、補償刪檔策略，以及「`Report` 列存在 ⇔ PDF 完整保存」之單一不變式（(b) 之 `PENDING` 狀態機仍為否決項——修訂後仍**不引入**報表狀態機）。
 
 ---
 
@@ -1258,6 +1281,7 @@ T8a ─────────────────────────�
 | 2026-08-06 | —（大總管白名單） | **T7 即審 REQUEST_CHANGES 之三項裁定（固化＋勘誤）**：①**MF-2 裁定＝啟動參數改封閉集合斷言**——§11.1「（`--no-sandbox` 等）」之「等」不作開放集合解讀；人類逐項批准之安全參數集合上界必須有機械守門（T7R 落地）。②**SF-1 裁定＝`page.pdf({ preferCSSPageSize: true })`**——實測 bare pdf() 出 US Letter（MediaBox 612×792）與 report-html `@page A4+16mm` 幾何分歧；依據＝PRD :459「列印版與 PDF 同一版型」為人類已批准承諾，現狀違反其意圖；採 CSS 為唯一紙張事實來源（T7R 落地＋MediaBox A4 斷言）；**列 Mock Gate 揭露項（A4+16mm 邊界之版面現場目視確認）**。③**SF-2 勘誤＝T7 Done When「生產 fail-fast 測試綠」與其 Files Allowed 內部不一致**（server.ts 屬 T8）——該子句對 T7 視為「zod 驗證綠」；**`REPORT_STORAGE_ROOT` 生產 fail-fast（沿 server.ts :101-117 ATTACHMENT 形狀）轉為 T8 Packet 必辦逐字項**，§12 載體與 Done When 文字修正併下次 Spec 修訂批次。**§9.1 技術勘誤**：`page.pdf({ timeout })` 選項不存在（playwright-core types :4009 與底層 kNoTimeout 實查）——逾時以外部 race＋setContent timeout＋launch timeout 三層實作（T7/T7R）。 | reviewer PHASE-008-T7-REVIEW（REQUEST_CHANGES）；大總管三裁定 2026-08-06 |
 | 2026-08-06 | —（大總管白名單） | **T7b 即審與 T7bR 之裁定（固化）**：①**MF-1 裁定＝方案甲 fontconfig local.conf**——批准安裝之 fonts-noto-cjk 於渲染路徑實證零貢獻（實選 WenQuanYi＝install-deps 未宣告傳遞相依；根因「Noto Sans TC」非 Debian family 名），local.conf 對 sans-serif prepend `Noto Sans CJK TC` 後 CDP 實選與 PDF 內嵌字型均轉 Noto（D4① 控制項恢復實效）。②**SF-2 裁定＝`--only-shell`**——D4「安裝 Chromium」收窄為 headless shell（renderPdf 唯一載入 binary 之 /proc 實證；pdf-renderer 無 headed 路徑）；**列 Gate 揭露**。③映像 3.68GB→**2.08GB**（T7b 首建 +2.61GB 為 D4 估 6 倍之成本發現＋T7bR 回收 1.60GB）——**Zeabur 方案決策必呈數據**（含 5 併發 RSS +1.69GB）。④SF-3 `.env.example` 三變數轉 **T8 必辦**（與 REPORT_STORAGE_ROOT 生產 fail-fast 同批）。⑤**Gate 目視義務更新：AC-09(c) 目視必須用容器產 PDF（開發機字型遮蔽）且項目含「繁體字形正確」非僅「無方框」**。 | reviewer PHASE-008-T7b-REVIEW（REQUEST_CHANGES）；大總管裁定 2026-08-06；T7bR `25c8872` |
 | 2026-08-06 | —（大總管白名單） | **T8 即審 MF-1 三難之人類裁定＝方案 (d)（固化）**：T8 忠實落地 D3「配號在最後一步」之結構性後果＝持久化 PDF 之報表編號/產生時間欄永久為「尚未產生」佔位（27/27 探針實證），與 AC-15（列印/PDF 同 HTML 字串全等）、AC-11（列印版含編號）構成三難。reviewer 關鍵新事實：序號為 `max(sequence)+1` 非計數器物件，**交易回滾天然不燒號**——D3 字面（配號最後）與目的（不燒號）可分離。**人類 leonchih 2026-08-06 經 AskUserQuestion 裁定方案 (d)**：**單一 SERIALIZABLE 交易內「查冪等→配號→帶編號渲染→put→讀回校驗→INSERT→提交」，失敗即回滾（不燒號）＋補償刪檔**；PDF 含編號、AC-11/AC-15 全滿足；成本＝交易窗口 +~0.5s、併發重試須重渲染（~20 人規模已接受）。**D3 字面修訂據此批准（目的不變）**；§9.1 流程重排、AC-04(c)/AC-10 於新結構下重驗、AC-15 wire 斷言於 T10 可如字面落地。Spec 本體修訂派 spec-writer（SPEC-REV-T8）；T8R 同批修復即審 SF-1~SF-4（治具失效/STORE 補償/SERIALIZABLE 守門）。**T8 於 T8R 複審通過前不結案；T10 AC-15 於此後開工。** | 人類 leonchih 2026-08-06（AskUserQuestion 方案 d）；reviewer PHASE-008-T8-REVIEW 選項矩陣 |
+| 2026-08-06 | `PHASE-008-SPEC-REV-T8` | **D3 字面修訂之 Spec 本體落地（方案 (d)）**：依上列同日末列之人類裁定（批准 commit `31bef19`）修訂本 Spec 六處落點——①**§16 D3** 加註標題【已修訂】並於節末新增「修訂後定案」（機制零變更、字面改為單一 SERIALIZABLE 交易內「查冪等 → 配號 → 帶編號渲染 → `put` → 讀回校驗 → `INSERT` → 提交」、**目的（不燒號）不變並明記機制依據＝序號為 `max(sequence)+1` 即時查詢故回滾天然不燒號**、三難修訂理由、已接受成本、不變清單）；**D3 原文（含推薦段「配號一律在最後一步」）逐字保留**。②**§9.1** 流程重排（渲染移入交易、配號提前於渲染、補償刪檔涵蓋交易內 `put` 與每一重試輪）＋不變式改寫（「配號在最後」→「不燒號」；新增「(4) 內順序不可對調」）；**§3.1** 同步重排並加註修訂標記。③**AC-15** 加註方案 (d) 下 wire 全等之可落地性（T10 斷言基礎；未產生報表之列印版呈現不變）。④**AC-04(c)／AC-10** 加註新結構下之重驗義務（交易窗口延長之衝突率、敗方交易內 `put` 之回滾後補償）。⑤**§15 T8 列** Done When 增補【T8R 承接】六項（方案 (d) 重構＋SF-1~SF-4＋AC-04(c)/AC-10 重驗）——依本 Spec §15 慣例（T3R／T4R／T7R／T8aR 皆未另立列）**不另立 T8R 列**。⑥**§12** AC-04／AC-07／AC-10／AC-15 四列之預定名與 Task 欄連動（狀態欄一律不動，回填仍併結案 DOC-SYNC）；**§13** 同步項 #2／#9 措辭連動。**Spec-writer 裁量一項（已揭露）**：§16 **D5(a)** 之字面步驟順序與修訂後之 §9.1 直接衝突，於 D5 推薦段下加註「步驟順序已隨 D3 修訂」之引註（**錯誤碼、`details.stage` 四值封閉值域、補償策略、否決 (b) 狀態機一律不變**）——屬同一裁定之內部一致性連動，非新決策。**歷史零改寫**：§16 D3／D5 原文、§15 T8 列既有 Done When 文字、§12 全部既有測試名與狀態、§18 既有各列一律保留。**本次修訂不改變任何已批准 US 原意、不縮減任何 AC、不擴大 Scope、不新增使用者可見行為**（PDF 內含編號係恢復 AC-11／AC-15 已批准之字面義務）；**未修改 `userstory.md`／`docs/PRD.md`／任何程式或測試**。Spec 狀態維持 `ACTIVE`。**未處理之既有承諾（移交大總管）**：2026-08-06 T7 裁定③所述「T7 Done When『生產 fail-fast 測試綠』文字修正與 §12 載體」不在本次 Packet 範圍，仍待下一批 Spec 修訂。 | 人類 leonchih 2026-08-06 AskUserQuestion 裁定方案 (d)（固化於 §18 同日末列、commit `31bef19`）；reviewer `PHASE-008-T8-REVIEW` 選項矩陣與 27/27 探針實證；T8 `f440a61` 現況 |
 
 ---
 
