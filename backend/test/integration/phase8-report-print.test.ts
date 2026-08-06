@@ -718,6 +718,90 @@ describeWithDb(
         // 列印端點確實再次呼叫 renderReportHtml（非快取重用產生時之輸出）。
         expect(vi.mocked(renderReportHtml).mock.calls.length).toBe(renderHtmlCallsBeforePrint + 1);
       });
+
+      // T10R SF-1（附件排序 tiebreaker）：同段 ≥2 張附件、linkedAt 刻意相同
+      // （DB 直寫同值）→ orderBy 僅 { linkedAt: "asc" } 時次序無結構保證。
+      //
+      // 決定性紅燈設計說明（誠實揭露）：單純「重複列印彼此比對」在本機單一
+      // 微型資料表上，Postgres 對同一組未變更資料重複執行同一查詢時，即使
+      // 缺 tiebreaker，其內部排序演算法對相同輸入仍是確定性的（同一輸入
+      // ctid 序列 → 同一輸出），故「多次列印互相全等」在本機**不足以**可靠
+      // 轉紅（已實測驗證：暫 revert 後以此手法連續 8 輪皆綠，見 Handoff）。
+      // 改採「插入序刻意與 id 遞增序反向」之解耦手法：以顯式 `id` 覆寫
+      // cuid 預設值，令三筆附件之**寫入順序**（c→a→b，對應實體堆積掃描
+      // 序）與**id 遞增序**（a→b→c，修復後 tiebreaker 之保證輸出序）相反
+      // ——缺 tiebreaker 時查詢落於 `{ linkedAt: asc }` 單鍵、tie 不解析，
+      // 依 Postgres 對小表之預設循序掃描行為實際回傳的即為實體寫入序
+      // （c,a,b），與規格要求之 id 遞增序（a,b,c）不符，於單次執行即可決定
+      // 性驗證，不依賴任何跨次讀取之隨機性。
+      it("同段 3 張附件 linkedAt 完全相同、寫入序與 id 遞增序刻意相反：輸出恆依 id 遞增序（附件排序含 id tiebreaker）", async () => {
+        const id = await createTravelApp(ownerId, "ac15-wire-tiebreak");
+        const [segment] = await prisma.tripSegment.findMany({
+          where: { travelApplicationId: id },
+        });
+
+        const sameLinkedAt = new Date("2026-03-20T08:00:00.000Z");
+        // 顯式 id：字面遞增序為 a→b→c；下方以 c→a→b 之寫入順序建立，令實體
+        // 堆積（寫入）序與 id 遞增序刻意相反。
+        const attachmentIds = {
+          a: `p8t10tiea${RUN_ID}`,
+          b: `p8t10tieb${RUN_ID}`,
+          c: `p8t10tiec${RUN_ID}`,
+        } as const;
+        for (const label of ["c", "a", "b"] as const) {
+          await prisma.attachment.create({
+            data: {
+              id: attachmentIds[label],
+              status: "LINKED",
+              storageKey: `att/p8t10-tiebreak-${RUN_ID}-${label}`,
+              mimeType: "image/jpeg",
+              byteSize: 1,
+              originalFilename: `tiebreak-${label}.jpg`,
+              uploaderId: ownerId,
+              ownerId,
+              refType: "TRIP_SEGMENT",
+              refId: segment.id,
+              linkedAt: sameLinkedAt,
+            },
+          });
+        }
+
+        const gen = await generateReportViaHttp(id, ownerCookie);
+        expect(gen.statusCode).toBe(201);
+
+        const renderPdfCalls = vi.mocked(renderPdf).mock.calls;
+        const htmlUsedForPdf = renderPdfCalls[renderPdfCalls.length - 1]?.[0] as string;
+        expect(typeof htmlUsedForPdf).toBe("string");
+
+        const print1 = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/print`,
+          headers: { cookie: ownerCookie },
+        });
+        const print2 = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/print`,
+          headers: { cookie: ownerCookie },
+        });
+        expect(print1.statusCode).toBe(200);
+        expect(print2.statusCode).toBe(200);
+
+        // 兩次列印彼此 wire 全等，且與產生時餵 renderPdf 之 HTML 全等。
+        expect(print1.body).toBe(htmlUsedForPdf);
+        expect(print2.body).toBe(htmlUsedForPdf);
+
+        // 決定性核心斷言：輸出中三張附件之 caption 恆依 id 遞增序（a,b,c）
+        // 排列——與刻意相反之寫入序（c,a,b）無關。缺 id tiebreaker 時，本斷
+        // 言於 revert 後之單次執行即確定性轉紅（見 Handoff 紅燈實錄）。
+        const idxA = htmlUsedForPdf.indexOf("tiebreak-a.jpg");
+        const idxB = htmlUsedForPdf.indexOf("tiebreak-b.jpg");
+        const idxC = htmlUsedForPdf.indexOf("tiebreak-c.jpg");
+        expect(idxA).toBeGreaterThan(-1);
+        expect(idxB).toBeGreaterThan(-1);
+        expect(idxC).toBeGreaterThan(-1);
+        expect(idxA).toBeLessThan(idxB);
+        expect(idxB).toBeLessThan(idxC);
+      });
     });
 
     // -------------------------------------------------------------------------

@@ -231,7 +231,7 @@ async function fetchSegmentAttachments(
   const rows = await db.attachment.findMany({
     where: { refType: "TRIP_SEGMENT", refId: { in: segmentIds }, status: "LINKED" },
     select: { id: true, storageKey: true, mimeType: true, originalFilename: true, refId: true },
-    orderBy: { linkedAt: "asc" },
+    orderBy: [{ linkedAt: "asc" }, { id: "asc" }],
   });
   for (const row of rows) {
     if (!row.refId) continue;
@@ -250,7 +250,7 @@ async function fetchApplicationAttachments(
   const rows = await db.attachment.findMany({
     where: { refType, refId: applicationId, status: "LINKED" },
     select: { id: true, storageKey: true, mimeType: true, originalFilename: true },
-    orderBy: { linkedAt: "asc" },
+    orderBy: [{ linkedAt: "asc" }, { id: "asc" }],
   });
   return rows.map(toReportImage);
 }
