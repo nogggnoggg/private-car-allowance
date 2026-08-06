@@ -282,7 +282,10 @@ describe("ReportSection", () => {
     // GET 直接帶回已產生報表」路徑另補於下方，兩者不可互相取代。
     it("Success（經 GET 進入，非點擊產生）：mount 時 GET 直接回傳已產生報表，逐字顯示編號與產生時間、兩入口在場、產生鈕不在場，且零 POST", async () => {
       const router = installFetchRouter();
-      const report = reportFixture();
+      // MOCK-R2b-LITE（複審 MF-1）：generatedAt 刻意與另一 Success 測試
+      // （POST 進入路徑）取相異值＋跨日邊界，防止「寫死字串」mutant 因兩測試
+      // 恆同一 fixture 值而雙雙存活。
+      const report = reportFixture({ generatedAt: "2026-08-06T16:32:33.910Z" });
       router.on("GET", isGetReport, () => jsonRes({ report }));
 
       render(<ReportSection applicationId="app-1" status="COMPLETED" />);
