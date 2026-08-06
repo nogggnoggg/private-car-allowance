@@ -45,12 +45,32 @@
  *    `.print-hint { display: none; }`、螢幕內容含 `.print-hint` 文字。
  * 8. B-09（零附件）：折舊 fixture 之 `attachments: []` 不 crash 且顯示
  *    「無證明圖片」而非空白。
- * 9. 防禦性補充（非本 Task AC 範圍——AC-17 資料側已由 T4
- *    `phase8-report-data.test.ts` 覆蓋；此處僅驗證本檔對 LEGACY 型別合法
- *    輸入不 crash、不洩漏 `null`／`NaN` 字面值，因 `report-html.ts` 之型別
- *    簽章接受 LEGACY 形狀，理應優雅處理）。
+ * 9. MF-1（PHASE-008-T5R；AC-17(a)(b) 逐字）：LEGACY 六欄（差旅油種／每公升
+ *    油價／車輛油耗；折舊每年折舊費用／年度總里程／公務比例）恆常渲染、值
+ *    以「—」呈現——正向斷言三標籤在場＋值恰為「—」（逐字比對整個 field 區
+ *    塊，鑑別 `dash()`→`String()` 之 mutant）。AC-17 資料側之完整覆蓋仍屬
+ *    T4 `phase8-report-data.test.ts`。
+ * 10. MF-2（T5R）：折舊／差旅 `.reconciliation avoid-break` 區塊以
+ *    `extractReconciliationBlock` 擷取內容後逐字比對完整算式子字串（fixture
+ *    刻意令 `totalAmount` 與三來源值之真實運算結果不同，鑑別「真算術」
+ *    mutant；區塊不存在即失敗，鑑別「清空」mutant）；另補
+ *    `blankCommentsAndStrings` 結構性掃描（零 `.times(`／`.div(`／`.plus(`／
+ *    `.minus(`）。
+ * 11. SF-2（T5R；AC-11「取整前總額之對帳列」）：差旅取整前總額改以
+ *    `.reconciliation avoid-break` 區塊呈現（比照折舊同一結構），純字串串接
+ *    零算術。
+ * 12. SF-3（T5R）：`renderImage()` 之 `dataUri` 屬性上下文——惡意 dataUri
+ *    （`" onerror="alert(1)`）不得產生可執行 `on*=` 屬性、引號已跳脫（鑑別
+ *    M11）。
+ * 13. SF-4（T5R；§7.4 純函式零時鐘零隨機）：`blankCommentsAndStrings` 結構
+ *    性掃描零 `Date.now(`／`new Date(`／`Math.random(`（鑑別 M14「同毫秒繞
+ *    過」——AC-15 之 `toEqual` 測試因兩次呼叫時間差過小而無鑑別力，須由本結
+ *    構性掃描補強）。
  */
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ApplicationType } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import type {
@@ -302,7 +322,7 @@ describe("AC-11 — 三型列印版必含逐字標題與值", () => {
     expect(html).toContain(travel.totalKm);
     expect(html).toContain("油資每公里單價");
     expect(html).toContain(travel.fuelUnitPrice);
-    expect(html).toContain("ETC每公里單價");
+    expect(html).toContain("ETC 每公里單價");
     expect(html).toContain(travel.etcUnitPrice);
     expect(html).toContain("油種");
     expect(html).toContain(travel.fuelType as string);
@@ -411,6 +431,48 @@ describe("AC-11 — 三型列印版必含逐字標題與值", () => {
     expect(html).toContain(data.depreciation.annualDepreciation as string);
     expect(html).toContain(data.depreciation.annualTotalKm as string);
     expect(html).toContain(String(data.common.totalAmount));
+  });
+
+  // -------------------------------------------------------------------------
+  // MF-2① — .reconciliation 區塊內完整算式子字串逐字（鑑別「真算術」與「清空」
+  // 兩種 mutant；沿用 `.reconciliation avoid-break` 為唯一 marker 之區塊擷取
+  // 手法，同 AC-12 之 `splitByMarker`）。
+  // -------------------------------------------------------------------------
+
+  /** 擷取文件中第一個 `.reconciliation avoid-break` 區塊之內容（不含外層 div）。 */
+  function extractReconciliationBlock(html: string): string | null {
+    const match = html.match(/<div class="reconciliation avoid-break">([\s\S]*?)<\/div>/);
+    return match ? (match[1] ?? "") : null;
+  }
+
+  it("折舊 CURRENT 對帳列（MF-2①）：.reconciliation 區塊內完整算式子字串逐字（M4 真算術／M21 清空皆須紅）", () => {
+    // 刻意令 totalAmount 與三來源值之真實除法結果（12000.00×10000.00÷20000.0
+    // ＝6000）不同——若 mutant 改為「真的算一次」而非原樣顯示 totalAmount，
+    // 輸出會變成 6000 而非 9999，逐字比對即可鑑別；同一 mutant 若只是巧合地
+    // 使兩者相等，將無法被舊版（僅檢查各值個別出現）之測試鑑別。
+    const data = depreciationData({
+      common: { totalAmount: 9999 },
+      depreciation: {
+        annualDepreciation: "12000.00",
+        annualTotalKm: "20000.0",
+        officialKm: "10000.00",
+      },
+    });
+    const html = renderReportHtml(data);
+    const block = extractReconciliationBlock(html);
+    expect(block).not.toBeNull();
+    expect(block).toContain("12000.00 × 10000.00 ÷ 20000.0 = 9999");
+  });
+
+  it("差旅取整前總額對帳列（SF-2；AC-11「取整前總額之對帳列」）：.reconciliation 區塊內完整算式子字串逐字", () => {
+    const data = travelData({
+      common: { totalAmount: 9999 },
+      travel: { preRoundingTotal: "1234.5678" },
+    });
+    const html = renderReportHtml(data);
+    const block = extractReconciliationBlock(html);
+    expect(block).not.toBeNull();
+    expect(block).toContain("取整前總額 1234.5678 → 四捨五入 → 最終金額 9999");
   });
 });
 
@@ -593,7 +655,43 @@ describe("AC-16(b) — 3 payload × 5 插值點逐格跳脫", () => {
 });
 
 // ---------------------------------------------------------------------------
-// FW-1 — 輸出零 storageKey／attachmentId 值、零 rpt/、att/ 字樣
+// SF-3 — 屬性上下文跳脫：惡意 dataUri（`<img src>` 屬性逃逸 payload）
+// ---------------------------------------------------------------------------
+
+describe("SF-3 — dataUri 屬性上下文跳脫（M11 鑑別：屬性逃逸 payload 不得產生真實屬性逃逸）", () => {
+  it('惡意 dataUri（data:image/png;base64,AAA" onerror="alert(1)）之 src 屬性值恰為完整跳脫結果（引號未逃逸）', () => {
+    const maliciousDataUri = 'data:image/png;base64,AAA" onerror="alert(1)';
+    const html = renderReportHtml(
+      travelData({
+        travel: {
+          segments: [makeSegment({ attachments: [makeImage("x2", maliciousDataUri)] })],
+        },
+      })
+    );
+    // 原始危險子字串（含未跳脫之 "）不得逐字出現。
+    expect(html).not.toContain(maliciousDataUri);
+    // 以樸素之「至第一個真實 " 為止」正則擷取 src 屬性值：若 escapeHtml 遭
+    // 移除（mutant M11），payload 中間的原始 `"` 會提前截斷擷取結果（僅得
+    // `data:image/png;base64,AAA`），與完整跳脫結果不相等，藉此鑑別。
+    const match = html.match(/src="([^"]*)"/);
+    expect(match).not.toBeNull();
+    expect(match?.[1]).toBe(escapeHtml(maliciousDataUri));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FW-1（大總管授權順帶；T14 AC-34／AC-36 前提）— <head> viewport meta
+// ---------------------------------------------------------------------------
+
+describe("FW-1（大總管授權順帶）— <head> 含 viewport meta（T14 前提）", () => {
+  it('<meta name="viewport" content="width=device-width, initial-scale=1"> 在場', () => {
+    const html = renderReportHtml(travelData({}));
+    expect(html).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FW-1（T4 移交）— 輸出零 storageKey／attachmentId 值、零 rpt/、att/ 字樣
 // ---------------------------------------------------------------------------
 
 describe("FW-1（T4 移交）— 輸出零 storageKey／attachmentId 值、零 rpt/、att/ 字樣", () => {
@@ -691,12 +789,16 @@ describe("B-09 — 零附件之已完成申請：證明區顯示說明文字而�
 });
 
 // ---------------------------------------------------------------------------
-// 防禦性補充（非本 Task AC 範圍；型別契約允許之 LEGACY 合法輸入不得 crash／
-// 不得洩漏 null／NaN 字面值。AC-17 之完整覆蓋屬 T4 phase8-report-data.test.ts）
+// MF-1／SF-5 — LEGACY 六欄恆常渲染，值以「—」呈現（AC-17(a)(b) 逐字；B-19
+// :352／B-20 :353／§8.4 :560；即審裁定：整列省略為 Spec 誤讀，正解為「—」
+// 呈現，省略會使 LEGACY 折舊／差旅違反 AC-11 逐字必含）。測試名據實反映本檔
+// 之正向斷言（取代原「不出現」之反向斷言——原測試鎖住的是誤讀後之錯誤行
+// 為）。AC-17 資料側之完整覆蓋仍屬 T4 `phase8-report-data.test.ts`；本檔僅
+// 驗證版型層之呈現正確。
 // ---------------------------------------------------------------------------
 
-describe("防禦性補充 — LEGACY 型別輸入不 crash、零 null／NaN 字面值", () => {
-  it("差旅 LEGACY：新三欄為 null 時不顯示 null／NaN，且新三欄標籤不出現", () => {
+describe("MF-1 — LEGACY 六欄（差旅新三欄／折舊 CURRENT 專屬三欄）恆常渲染，值以「—」呈現", () => {
+  it("差旅 LEGACY：油種／每公升油價／車輛油耗三欄標籤恆在場，值恰為「—」（非省略、非 null／NaN／undefined）", () => {
     const html = renderReportHtml(
       travelData({
         travel: {
@@ -707,12 +809,28 @@ describe("防禦性補充 — LEGACY 型別輸入不 crash、零 null／NaN 字�
         },
       })
     );
+    // 正向：三標籤在場（AC-11 逐字必含，不因 LEGACY 而省略）
+    expect(html).toContain("油種");
+    expect(html).toContain("每公升油價");
+    expect(html).toContain("車輛油耗");
+    // 正向：三欄之 field-value 恰為「—」（逐字比對整個 field 區塊——防
+    // `dash()` 被替換為 `String()` 之 mutant：`String(null)` 會產生 "null"
+    // 而非 "—"，逐字比對可鑑別）。
+    expect(html).toContain(
+      '<span class="field-label">油種</span><span class="field-value">—</span>'
+    );
+    expect(html).toContain(
+      '<span class="field-label">每公升油價</span><span class="field-value">—</span>'
+    );
+    expect(html).toContain(
+      '<span class="field-label">車輛油耗</span><span class="field-value">—</span>'
+    );
     expect(html).not.toContain(">null<");
     expect(html).not.toContain("NaN");
     expect(html).not.toContain("undefined");
   });
 
-  it("折舊 LEGACY：CURRENT 三值為 null 時逐字省略（AC-17(b) 同一紀律），零 null／NaN 字面值", () => {
+  it("折舊 LEGACY：每年折舊費用／年度總里程／公務比例三欄標籤恆在場，值恰為「—」（AC-17(b) 同一紀律）", () => {
     const html = renderReportHtml(
       depreciationData({
         depreciation: {
@@ -728,15 +846,175 @@ describe("防禦性補充 — LEGACY 型別輸入不 crash、零 null／NaN 字�
     expect(html).not.toContain("NaN");
     expect(html).toContain("折舊每公里單價");
     expect(html).toContain("5.4321");
-    // LEGACY：CURRENT 專屬三欄之標籤逐字省略（不呈現，非以「—」佔位）
-    expect(html).not.toContain("每年折舊費用");
-    expect(html).not.toContain("年度總里程");
-    expect(html).not.toContain("公務比例");
+    // 正向：CURRENT 專屬三欄標籤恆在場（不因 LEGACY 而省略）
+    expect(html).toContain("每年折舊費用");
+    expect(html).toContain("年度總里程");
+    expect(html).toContain("公務比例");
+    // 正向：三欄之 field-value 恰為「—」（同上 dash()→String() mutant 守門）
+    expect(html).toContain(
+      '<span class="field-label">每年折舊費用</span><span class="field-value">—</span>'
+    );
+    expect(html).toContain(
+      '<span class="field-label">年度總里程</span><span class="field-value">—</span>'
+    );
+    expect(html).toContain(
+      '<span class="field-label">公務比例</span><span class="field-value">—</span>'
+    );
     // CURRENT 專屬對帳列不應出現（LEGACY 無三來源值可用）
     expect(html).not.toContain("計算依據");
     // 兩模型共有欄位仍在場
     expect(html).toContain("年度公務里程");
     expect(html).toContain("補貼金額");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MF-2②／SF-4 — report-html.ts 結構性掃描（AC-17(c) 版型檔零算術；§7.4 純
+// 函式零時鐘零隨機——鑑別 M14 之「時鐘繞過」mutant）
+// ---------------------------------------------------------------------------
+
+/**
+ * 沿用 `phase8-report-data.test.ts`（T4）之 `blankCommentsAndStrings` 手法
+ * ——逐字元掃描原始碼，將註解與字串／模板字面值內容替換為空白（僅保留程式
+ * 碼結構本身），避免檔案自身 JSDoc 註解中出現的說明性文字（例如本檔
+ * `report-html.ts` 檔頭之 AC-16(a) 段落逐字寫出 `` `Date.now()` ``／
+ * `` `new Date()` `` 作為「不得呼叫」之說明）造成掃描假陽性。
+ *
+ * 未直接 `import` `phase8-report-data.test.ts` 之 `blankCommentsAndStrings`
+ * ——本專案 `vitest.config.ts` 未設定 `test.isolate: false`（維持 Vitest
+ * 預設 `isolate: true`）：每個測試檔各自取得全新模組登錄表，`import` 另一個
+ * `*.test.ts` 檔會使其模組頂層程式碼（含全部 `describe`／`it`）在**本檔**
+ * 的模組登錄表內重新執行一次——`phase8-report-data.test.ts` 之
+ * `describeWithDb` 依真實 `DATABASE_URL` 決定是否為 `describe.skip`，而本
+ * 專案 `test/setup/setup-file.ts` 會在測試檔模組 import **之前**改寫
+ * `process.env.DATABASE_URL` 指向真實已供裝之 worker schema（見該檔檔頭說
+ * 明），故該掛檔案之整個 T4 DB 整合套件會被巢狀掛進本檔執行一次——這既與本
+ * 檔 docblock 明文宣告之「zero DB、zero IO」矛盾，也會使「全套」測試計數失
+ * 真（重複計入）。Packet 之「或抽共用」路徑因 Files Allowed 未涵蓋新增檔案
+ * 而不可行，故採本地複本作為此技術限制下的務實解法，已於 Task Handoff 向
+ * 複審揭露。
+ *
+ * 與來源版本之**唯一**差異（非逐字複本，故據實揭露）：新增正則字面值辨識
+ * （`REGEX_CANNOT_PRECEDE` 與對應分支）。本檔 `escapeHtml()` 內含
+ * `.replace(/"/g, ...)`／`.replace(/'/g, ...)` 等正則字面值，其內部之
+ * `"`／`'` 字元會被原版（僅辨識字串／模板字面值、不辨識正則字面值）之樸素
+ * 逐字元掃描誤判為字串起點，導致自該點起、直到檔案結尾之大量真實程式碼被
+ * 誤判為「字串內容」而整段清空——**此時掃描結果雖仍不含 `Date.now(` 等目標
+ * 子字串，但那是因為整段程式碼被誤清空、不是因為原始碼真的乾淨**，等同不
+ * 具鑑別力的偽陽性安全感（已用暫改 `report-html.ts` 加入
+ * `const _now = Date.now();` 之獨立實驗證實：原版對此檔案會誤判整段清空、
+ * 完全偵測不到新增的 `Date.now(`；修法後之版本能正確偵測，見 Task
+ * Handoff）。修法為標準「正則字面值 vs 除法運算子」消歧法：`/` 前一個非空白
+ * 實際程式字元若為英數字／`)`／`]`／`_`／`$`／引號，判定為除法（跳過）；否
+ * 則判定為正則字面值起點，比照字串處理（掃到下一個未跳脫 `/` 為止，並吞掉
+ * 其後之旗標字母）。
+ */
+const REGEX_CANNOT_PRECEDE = /[A-Za-z0-9_$)\]"'`]/;
+
+function blankCommentsAndStrings(src: string): string {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  let lastCode = "";
+  const blank = (ch: string) => (ch === "\n" ? "\n" : " ");
+  while (i < n) {
+    const c = src[i];
+    const next = src[i + 1];
+    if (c === "/" && next === "/") {
+      while (i < n && src[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      out += "  ";
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        out += blank(src[i]);
+        i++;
+      }
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    if (c === "/" && !REGEX_CANNOT_PRECEDE.test(lastCode)) {
+      out += " ";
+      i++;
+      while (i < n && src[i] !== "/" && src[i] !== "\n") {
+        if (src[i] === "\\") {
+          out += "  ";
+          i += 2;
+          continue;
+        }
+        out += blank(src[i]);
+        i++;
+      }
+      out += " ";
+      i++;
+      while (i < n && /[a-z]/i.test(src[i])) {
+        out += " ";
+        i++;
+      }
+      lastCode = "/";
+      continue;
+    }
+    if (c === "`") {
+      out += " ";
+      i++;
+      while (i < n && src[i] !== "`") {
+        out += blank(src[i]);
+        i++;
+      }
+      out += " ";
+      i++;
+      lastCode = "`";
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const quote = c;
+      out += " ";
+      i++;
+      while (i < n && src[i] !== quote) {
+        if (src[i] === "\\") {
+          out += "  ";
+          i += 2;
+          continue;
+        }
+        out += blank(src[i]);
+        i++;
+      }
+      out += " ";
+      i++;
+      lastCode = quote;
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) lastCode = c;
+    i++;
+  }
+  return out;
+}
+
+const REPORT_HTML_SRC_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../src/reports/report-html.ts"
+);
+
+describe("MF-2②／SF-4 — report-html.ts 結構性掃描", () => {
+  const src = blankCommentsAndStrings(fs.readFileSync(REPORT_HTML_SRC_PATH, "utf8"));
+
+  it("AC-17(c)：零 .times(/.div(/.plus(/.minus(（版型檔零算術）", () => {
+    expect(src).not.toMatch(/\.times\(/);
+    expect(src).not.toMatch(/\.div\(/);
+    expect(src).not.toMatch(/\.plus\(/);
+    expect(src).not.toMatch(/\.minus\(/);
+  });
+
+  it("SF-4／§7.4：零 Date.now(/new Date(/Math.random(（純函式零時鐘零隨機；鑑別 M14）", () => {
+    expect(src).not.toMatch(/Date\.now\(/);
+    expect(src).not.toMatch(/new Date\(/);
+    expect(src).not.toMatch(/Math\.random\(/);
   });
 });
 

@@ -18,10 +18,27 @@
  *     `storageKey`）；零 `@import`、零外部字型參照（CJK 字型由容器安裝，
  *     T7b；本檔僅使用 `font-family` 通用字型堆疊，不引用任何 `@font-face`
  *     或外部 URL）。
- * (b) **所有**來自資料之插值（申請人姓名、出差目的、出發地、到達地、附件原
- *     始檔名等）一律經**單一** {@link escapeHtml} 處理——`field()`／
- *     `renderImage()` 為僅有的兩個插值輸出點，皆呼叫 `escapeHtml`，故移除
- *     任一處呼叫即為可鑑別之 mutant。
+ * (b) **所有**來自資料之插值一律經**單一** {@link escapeHtml} 處理。實際插值
+ *     呼叫點（PHASE-008-T5R SF-3 更正——原註解「僅兩個插值輸出點」為誤述，
+ *     下列為本檔真實 7 處）：
+ *     1. `field()` `rawValue`（開放值——申請人姓名、出差目的、出發地、到達
+ *        地等 AC-16(b) 之 4/5 payload 標靶皆經此路徑，移除即可鑑別）。
+ *     2. `renderImage()` `img.originalFilename`（圖說；開放值，AC-16(b) 第
+ *        5 個 payload 標靶）。
+ *     3. `renderImage()` `dataUri`（`<img src>` 屬性上下文；開放值——T5R
+ *        SF-3 新增屬性逃逸 payload 測試專門鑑別此點，移除即可紅）。
+ *     4. `common.typeLabel`（`<h1>`／`<title>` 共用同一值，計一點；閉集，僅
+ *        「差旅」／「保養」／「折舊」三個字面值，移除**無**鑑別力）。
+ *     5. 折舊對帳列（`annualDepreciation`／`officialKm`／`annualTotalKm`／
+ *        `totalAmount` 四次呼叫共組單一算式輸出，計一點；閉集——皆為定精度
+ *        數字字面字串，非任意字串，移除亦**無**鑑別力，惟 T5R MF-2 已補結
+ *        構性掃描與清空／真算術 mutant 測試守住此列存在與內容）。
+ *     6. 差旅對帳列（`preRoundingTotal`／`totalAmount`，T5R SF-2 新增；閉
+ *        集，理由同上）。
+ *     7. `titleSuffix` 之 `common.reportNumber`（`<title>`；開放值——伺服器
+ *        產生但非固定字面集合，移除有鑑別力）。
+ *     `PRINT_HINT_TEXT`（`.print-hint`）不計入——其為硬編碼 UI 常數，非
+ *     `ReportData` 之資料插值。
  *
  * ---------------------------------------------------------------------------
  * FW-1（T4 移交，本檔延續）：輸出零 storageKey／attachmentId 值、零 `rpt/`／
@@ -169,15 +186,25 @@ ${renderImages(segment.attachments, "無截圖")}
 </div>`;
 }
 
-function renderTravelBody(body: TravelReportBody): string {
+function renderTravelBody(body: TravelReportBody, totalAmount: number): string {
   // AC-12：升冪排序，不假設輸入已排序。
   const orderedSegments = [...body.segments].sort((a, b) => a.sortOrder - b.sortOrder);
-  const currentFields =
-    body.model === "CURRENT"
-      ? `${field("油種", body.fuelType ?? "—")}
+  // MF-1（Spec AC-17(a)／B-19 :352／§8.4 :560）：LEGACY 列亦恆常渲染新三欄，
+  // 值以「—」呈現（`dash()`），而非整列省略——省略會使 LEGACY 差旅違反
+  // AC-11 逐字必含（該三欄本就是「差旅」必含項目清單的一部分，不因模型而
+  // 消失）。
+  const currentFields = `${field("油種", dash(body.fuelType))}
 ${field("每公升油價", dash(body.fuelPricePerLiter))}
-${field("車輛油耗", dash(body.fuelConsumption))}`
-      : "";
+${field("車輛油耗", dash(body.fuelConsumption))}`;
+  // SF-2（AC-11「取整前總額之對帳列」；比照下方折舊 `.reconciliation
+  // avoid-break` 區塊同一結構）：純字串串接（零算術）呈現取整前總額→最終
+  // 金額，取代先前降級為普通欄位的呈現。
+  const reconciliation = `<div class="reconciliation avoid-break">
+<span class="field-label">計算依據</span>
+<span class="field-value">取整前總額 ${escapeHtml(body.preRoundingTotal)} → 四捨五入 → 最終金額 ${escapeHtml(
+    String(totalAmount)
+  )}</span>
+</div>`;
 
   return `<section class="section travel-section">
 ${field("出差日期", body.tripDate ?? "—")}
@@ -186,9 +213,9 @@ ${field("出差目的", body.purpose ?? "—")}
 ${orderedSegments.map(renderSegmentField).join("\n")}
 ${field("總里程", body.totalKm)}
 ${field("油資每公里單價", body.fuelUnitPrice)}
-${field("ETC每公里單價", body.etcUnitPrice)}
+${field("ETC 每公里單價", body.etcUnitPrice)}
 ${currentFields}
-${field("取整前總額", body.preRoundingTotal)}
+${reconciliation}
 <h2>各段證明截圖</h2>
 ${orderedSegments.map(renderSegmentImages).join("\n")}
 </section>`;
@@ -231,14 +258,14 @@ function renderDepreciationBody(body: DepreciationReportBody, totalAmount: numbe
       : "";
   const legacyField =
     body.model === "LEGACY" ? field("折舊每公里單價", dash(body.perKmUnitPrice)) : "";
-  // AC-17(b)：LEGACY「不呈現」每年折舊費用／年度總里程／公務比例三欄——與 AC-17(a)
-  // 差旅之新三欄同一紀律，逐字省略而非以「—」佔位（該三欄之值本就為 null）。
-  const currentOnlyFields =
-    body.model === "CURRENT"
-      ? `${field("每年折舊費用", body.annualDepreciation as string)}
-${field("年度總里程", body.annualTotalKm as string)}
-${field("公務比例", body.ratioPercent as string)}`
-      : "";
+  // MF-1（Spec AC-17(b)／B-20 :353／§8.4 :560）：LEGACY 列亦恆常渲染 CURRENT
+  // 專屬三欄，值以「—」呈現（`dash()`），而非整列省略——與差旅 AC-17(a) 同
+  // 一紀律，省略會使 LEGACY 折舊違反 AC-11 逐字必含。移除 `as string` cast
+  // （`dash()` 接受 `string | null`，順帶封住 CURRENT 側若異常為 null 時
+  // `escapeHtml(null)` 之潛在 500 面）。
+  const currentOnlyFields = `${field("每年折舊費用", dash(body.annualDepreciation))}
+${field("年度總里程", dash(body.annualTotalKm))}
+${field("公務比例", dash(body.ratioPercent))}`;
 
   return `<section class="section depreciation-section">
 ${field("申請年度", body.applicationYear !== null ? String(body.applicationYear) : "—")}
@@ -289,7 +316,7 @@ h2 { font-size: 16px; margin-top: 20px; }
 export function renderReportHtml(data: ReportData): string {
   const bodyHtml =
     data.kind === "TRAVEL"
-      ? renderTravelBody(data.travel)
+      ? renderTravelBody(data.travel, data.common.totalAmount)
       : data.kind === "MAINTENANCE"
         ? renderMaintenanceBody(data.maintenance)
         : renderDepreciationBody(data.depreciation, data.common.totalAmount);
@@ -300,6 +327,7 @@ export function renderReportHtml(data: ReportData): string {
 <html lang="zh-TW">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(data.common.typeLabel)}報表${titleSuffix}</title>
 <style>${STYLE}</style>
 </head>
