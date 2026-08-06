@@ -302,19 +302,20 @@ describe("AC-28 結構性 — ErrorCode 聯集全等 + PHASE-008 reports/ src �
 // ===========================================================================
 
 describe("PHASE_008_SRC_FILES 結構清單自證（T4 即審 FW-5）", () => {
-  /** 固定八檔清單（相對 `backend/src/reports/` 之檔名，不含路徑前綴）。 */
+  /** 固定九檔清單（相對 `backend/src/reports/` 之檔名，不含路徑前綴）。 */
   const PHASE_008_SRC_FILES = [
     "report-number.ts",
     "report-filename.ts",
     "report-data.ts",
     "report-html.ts",
     "report-images.ts",
+    "report-labels.ts",
     "pdf-renderer.ts",
     "report-service.ts",
     "routes.ts",
   ];
 
-  it("固定八檔清單與 backend/src/reports/ 目錄之實際 .ts 檔案清單逐一相符（新增/刪除 src 檔而未同步更新本清單即紅）", () => {
+  it("固定九檔清單與 backend/src/reports/ 目錄之實際 .ts 檔案清單逐一相符（新增/刪除 src 檔而未同步更新本清單即紅）", () => {
     const reportsDir = path.join(BACKEND_ROOT, "src/reports");
     const actualFiles = fs
       .readdirSync(reportsDir)
@@ -322,7 +323,7 @@ describe("PHASE_008_SRC_FILES 結構清單自證（T4 即審 FW-5）", () => {
       .sort();
     expect([...PHASE_008_SRC_FILES].sort()).toEqual(actualFiles);
     // 正向對照：清單非空（非因目錄不存在而恆真通過）。
-    expect(actualFiles.length).toBe(8);
+    expect(actualFiles.length).toBe(9);
   });
 });
 

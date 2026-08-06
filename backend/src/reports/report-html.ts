@@ -49,12 +49,15 @@
  * HTML 結構性地不含這兩個內部識別值。
  *
  * ---------------------------------------------------------------------------
- * FW-6（期中複審 AR-2 移交）：日期格式化不寫第五份
+ * FW-6（期中複審 AR-2 移交；【修訂（PHASE-008-MOCK-R1；Mock Gate 裁-1）】限縮範圍）
  * ---------------------------------------------------------------------------
  * `ReportData` 內之日期／時間欄位（`tripDate`／`createdAt`／`generatedAt`／
  * 各保養日期等）在 `report-data.ts`（T4）已組裝為定格式字串（`YYYY-MM-DD`
- * 或 ISO8601），本檔**一律原樣呈現、零重新解析、零重新格式化**——不新增任
- * 何 `Date` 格式化函式。
+ * 或 ISO8601），本檔原則上**原樣呈現、零重新解析**——**僅**共通區塊之
+ * `common.generatedAt`／`common.createdAt` 兩欄依 Mock Gate 裁-1 經
+ * {@link formatTaipeiDateTime}（`report-labels.ts`，唯一格式化來源）轉為
+ * 台北時區中文在地化字串；**其餘全部日期／時間欄位**（`tripDate`、各保養日
+ * 期等）**零重新格式化**之紀律不變，不新增第二個格式化函式。
  *
  * ---------------------------------------------------------------------------
  * T2 FW-4（不重算／不重組報表編號）
@@ -95,6 +98,7 @@ import type {
   TravelReportBody,
   TravelSegmentReport,
 } from "./report-data.js";
+import { formatTaipeiDateTime, getFuelTypeLabel } from "./report-labels.js";
 
 // ---------------------------------------------------------------------------
 // AC-16(b)：唯一跳脫函式（先跳脫 `&`，避免破壞後續跳脫實體）
@@ -147,19 +151,18 @@ function renderImages(images: ReportImage[], emptyLabel: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 共通區塊（AC-11 共通 8 項）
+// 共通區塊（AC-11 修訂後：共通 7 個欄位列 ＋ 1 個類型大標題〔裁-2〕）
 // ---------------------------------------------------------------------------
 
 function renderCommonHeader(common: ReportCommon): string {
   return `<header class="report-header">
-${field("報表標題", `${common.typeLabel}報表`)}
 <h1>${escapeHtml(common.typeLabel)}報表</h1>
 ${field("報表編號", common.reportNumber ?? "尚未產生")}
-${field("產生時間", common.generatedAt ?? "尚未產生")}
+${field("產生時間", common.generatedAt ? formatTaipeiDateTime(common.generatedAt) : "尚未產生")}
 ${field("申請人姓名", common.ownerDisplayName)}
 ${field("申請類型", common.typeLabel)}
 ${field("申請狀態", common.statusLabel)}
-${field("申請建立時間", common.createdAt)}
+${field("申請建立時間", formatTaipeiDateTime(common.createdAt))}
 ${field("最終金額（新臺幣整數）", String(common.totalAmount))}
 </header>`;
 }
@@ -193,7 +196,9 @@ function renderTravelBody(body: TravelReportBody, totalAmount: number): string {
   // 值以「—」呈現（`dash()`），而非整列省略——省略會使 LEGACY 差旅違反
   // AC-11 逐字必含（該三欄本就是「差旅」必含項目清單的一部分，不因模型而
   // 消失）。
-  const currentFields = `${field("油種", dash(body.fuelType))}
+  // 裁-3：油種以中文名稱呈現（`FuelType` 列舉代碼不得外流）；LEGACY 之「—」
+  // 呈現優先於翻譯（`dash()` 語意不變，`null` 恆不進入 `getFuelTypeLabel`）。
+  const currentFields = `${field("油種", body.fuelType === null ? "—" : getFuelTypeLabel(body.fuelType))}
 ${field("每公升油價", dash(body.fuelPricePerLiter))}
 ${field("車輛油耗", dash(body.fuelConsumption))}`;
   // SF-2（AC-11「取整前總額之對帳列」；比照下方折舊 `.reconciliation

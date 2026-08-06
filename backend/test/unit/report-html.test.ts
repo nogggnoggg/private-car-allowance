@@ -66,12 +66,23 @@
  *    性掃描零 `Date.now(`／`new Date(`／`Math.random(`（鑑別 M14「同毫秒繞
  *    過」——AC-15 之 `toEqual` 測試因兩次呼叫時間差過小而無鑑別力，須由本結
  *    構性掃描補強）。
+ * 14. PHASE-008-MOCK-R1（Mock Gate 三裁定之呈現面落地；Spec AC-11 修訂引註）：
+ *    ⒜【裁-2】共通項計數由「8 個欄位列」改為「7 個欄位列 ＋ 1 個類型大標
+ *    題」——「報表標題」欄位列之負向斷言（`not.toContain`）＋ `<h1>` 大標題
+ *    正向斷言。⒝【裁-1】「產生時間」／「申請建立時間」改台北時區中文在地化
+ *    （`report-labels.ts` `formatTaipeiDateTime`）——`report-labels.ts` 直接
+ *    單元測試（含跨日邊界、上午／下午兩側）＋ `renderReportHtml` 整合層之格
+ *    式化值正向斷言＋原始 ISO 字面值負向斷言。⒞【裁-3】差旅油種改中文名稱
+ *    （`getFuelTypeLabel`）——四值逐字對照＋列舉代碼（`GASOLINE_92` 等）不
+ *    在場之負向斷言；LEGACY「—」呈現不變（正向斷言沿用既有 MF-1 套件）。三
+ *    類 mutant（還原報表標題欄位列／移除時間格式化／油種顯示列舉代碼）之紅
+ *    燈實證見 Task Handoff。
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ApplicationType } from "@prisma/client";
+import type { ApplicationType, FuelType } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import type {
   DepreciationReportBody,
@@ -83,6 +94,7 @@ import type {
   TravelSegmentReport,
 } from "../../src/reports/report-data.js";
 import { escapeHtml, renderReportHtml } from "../../src/reports/report-html.js";
+import { formatTaipeiDateTime, getFuelTypeLabel } from "../../src/reports/report-labels.js";
 
 // ---------------------------------------------------------------------------
 // Fixture 建構器（合成資料，零 DB）
@@ -282,20 +294,71 @@ describe("escapeHtml — 唯一跳脫函式", () => {
 });
 
 // ---------------------------------------------------------------------------
+// report-labels.ts — 直接單元測試（PHASE-008-MOCK-R1；裁-1／裁-3）
+// ---------------------------------------------------------------------------
+
+describe("getFuelTypeLabel（裁-3）— 四值逐字對照", () => {
+  it("GASOLINE_92 → 「92 無鉛汽油」", () => {
+    expect(getFuelTypeLabel("GASOLINE_92")).toBe("92 無鉛汽油");
+  });
+
+  it("GASOLINE_95 → 「95 無鉛汽油」", () => {
+    expect(getFuelTypeLabel("GASOLINE_95")).toBe("95 無鉛汽油");
+  });
+
+  it("GASOLINE_98 → 「98 無鉛汽油」", () => {
+    expect(getFuelTypeLabel("GASOLINE_98")).toBe("98 無鉛汽油");
+  });
+
+  it("DIESEL → 「柴油」", () => {
+    expect(getFuelTypeLabel("DIESEL")).toBe("柴油");
+  });
+});
+
+describe("formatTaipeiDateTime（裁-1）— DTO 給定 ISO 值 → 期望顯示字串", () => {
+  it("上午側：2026-08-06T03:00:00.000Z（+8h＝台北 11:00）→ 「2026/8/6 上午11:00」", () => {
+    expect(formatTaipeiDateTime("2026-08-06T03:00:00.000Z")).toBe("2026/8/6 上午11:00");
+  });
+
+  it("與前端「計算時間」同一長相之範例：2026-08-06T01:23:00.000Z（+8h＝台北 9:23）→ 「2026/8/6 上午9:23」", () => {
+    expect(formatTaipeiDateTime("2026-08-06T01:23:00.000Z")).toBe("2026/8/6 上午9:23");
+  });
+
+  it("下午側：2026-08-06T09:05:00.000Z（+8h＝台北 17:05）→ 「2026/8/6 下午5:05」", () => {
+    expect(formatTaipeiDateTime("2026-08-06T09:05:00.000Z")).toBe("2026/8/6 下午5:05");
+  });
+
+  it("跨日邊界：2026-08-06T16:00:00.000Z（+8h＝台北隔日 00:00）→ 「2026/8/7 上午12:00」", () => {
+    expect(formatTaipeiDateTime("2026-08-06T16:00:00.000Z")).toBe("2026/8/7 上午12:00");
+  });
+
+  it("正午邊界：2026-08-06T04:00:00.000Z（+8h＝台北 12:00）→ 「2026/8/6 下午12:00」", () => {
+    expect(formatTaipeiDateTime("2026-08-06T04:00:00.000Z")).toBe("2026/8/6 下午12:00");
+  });
+
+  it("分鐘補零：2026-08-06T03:05:00.000Z（+8h＝台北 11:05）→ 分鐘固定 2 位「05」", () => {
+    expect(formatTaipeiDateTime("2026-08-06T03:05:00.000Z")).toBe("2026/8/6 上午11:05");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC-11 — 三型必含項目逐字標題與值
 // ---------------------------------------------------------------------------
 
 describe("AC-11 — 三型列印版必含逐字標題與值", () => {
-  it("差旅：共通 8 項 ＋ 差旅專屬全數在場", () => {
+  it("差旅：共通 7 欄位列 ＋ 1 類型大標題〔裁-2〕＋ 差旅專屬全數在場", () => {
     const data = travelData({});
     const html = renderReportHtml(data);
 
-    // 共通
-    expect(html).toContain("報表標題");
+    // 共通（裁-2：「報表標題」欄位列不再以標籤＋值呈現，資訊改由 <h1> 承載）
+    expect(html).not.toContain("報表標題");
+    expect(html).toContain("<h1>差旅報表</h1>");
     expect(html).toContain("報表編號");
     expect(html).toContain(data.common.reportNumber as string);
     expect(html).toContain("產生時間");
-    expect(html).toContain(data.common.generatedAt as string);
+    // 裁-1：「產生時間」以台北時區中文在地化格式呈現，原始 ISO 字面值不出現。
+    expect(html).toContain(formatTaipeiDateTime(data.common.generatedAt as string));
+    expect(html).not.toContain(data.common.generatedAt as string);
     expect(html).toContain("申請人姓名");
     expect(html).toContain(data.common.ownerDisplayName);
     expect(html).toContain("申請類型");
@@ -303,7 +366,9 @@ describe("AC-11 — 三型列印版必含逐字標題與值", () => {
     expect(html).toContain("申請狀態");
     expect(html).toContain(data.common.statusLabel);
     expect(html).toContain("申請建立時間");
-    expect(html).toContain(data.common.createdAt);
+    // 裁-1：「申請建立時間」同批同一格式化，原始 ISO 字面值不出現。
+    expect(html).toContain(formatTaipeiDateTime(data.common.createdAt));
+    expect(html).not.toContain(data.common.createdAt);
     expect(html).toContain("最終金額");
     expect(html).toContain(String(data.common.totalAmount));
 
@@ -325,7 +390,9 @@ describe("AC-11 — 三型列印版必含逐字標題與值", () => {
     expect(html).toContain("ETC 每公里單價");
     expect(html).toContain(travel.etcUnitPrice);
     expect(html).toContain("油種");
-    expect(html).toContain(travel.fuelType as string);
+    // 裁-3：油種以中文名稱呈現，列舉代碼字面值不出現。
+    expect(html).toContain(getFuelTypeLabel(travel.fuelType as FuelType));
+    expect(html).not.toContain(travel.fuelType as string);
     expect(html).toContain("每公升油價");
     expect(html).toContain(travel.fuelPricePerLiter as string);
     expect(html).toContain("車輛油耗");
@@ -340,12 +407,13 @@ describe("AC-11 — 三型列印版必含逐字標題與值", () => {
     }
   });
 
-  it("保養：共通 8 項 ＋ 保養專屬全數在場", () => {
+  it("保養：共通 7 欄位列 ＋ 1 類型大標題〔裁-2〕＋ 保養專屬全數在場", () => {
     const data = maintenanceData({});
     const html = renderReportHtml(data);
     const maintenance = data.maintenance;
 
-    expect(html).toContain("報表標題");
+    expect(html).not.toContain("報表標題");
+    expect(html).toContain("<h1>保養報表</h1>");
     expect(html).toContain("報表編號");
     expect(html).toContain(data.common.reportNumber as string);
     expect(html).toContain("產生時間");
@@ -382,12 +450,13 @@ describe("AC-11 — 三型列印版必含逐字標題與值", () => {
     }
   });
 
-  it("折舊（CURRENT）：共通 8 項 ＋ 折舊專屬五值全數在場", () => {
+  it("折舊（CURRENT）：共通 7 欄位列 ＋ 1 類型大標題〔裁-2〕＋ 折舊專屬五值全數在場", () => {
     const data = depreciationData({});
     const html = renderReportHtml(data);
     const depreciation = data.depreciation;
 
-    expect(html).toContain("報表標題");
+    expect(html).not.toContain("報表標題");
+    expect(html).toContain("<h1>折舊報表</h1>");
     expect(html).toContain("報表編號");
     expect(html).toContain(data.common.reportNumber as string);
     expect(html).toContain("產生時間");
