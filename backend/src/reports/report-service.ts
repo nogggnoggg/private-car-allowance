@@ -214,7 +214,7 @@ export interface GenerateReportOutcome {
 // 內部工具
 // ---------------------------------------------------------------------------
 
-async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+export async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -731,4 +731,72 @@ export async function generateReport(
     // D3 修訂，錯誤碼與 stage 語意不變）。
     throw new ReportGenerationError("PERSIST");
   }
+}
+
+// ---------------------------------------------------------------------------
+// §9.3／§3.4：查詢與下載支援（PHASE-008-T9；AC-08／AC-22／AC-23／AC-24／
+// AC-27）——唯讀，零渲染、零 DB 寫入。`routes.ts` 之 GET 兩端點於授權與（下
+// 載端點之）存在性守門後呼叫本節函式。
+// ---------------------------------------------------------------------------
+
+/** {@link findReportByApplicationId} 之回傳形狀——`GeneratedReportRow` 四鍵
+ * ＋ `storageKey`（下載端點讀取 PDF 位元組之唯一依據；`ReportDto` 恆不含此
+ * 欄，見 §7.2）。 */
+export interface StoredReportRow extends GeneratedReportRow {
+  storageKey: string;
+}
+
+/**
+ * §9.3／§3.4：依 `applicationId` 查詢既有報表列（唯讀）。呼叫端
+ * （`routes.ts`）須已完成授權判定；本函式不做任何授權或狀態守門。查詢端點
+ * （`GET .../report`）與下載端點（`GET .../report/pdf`）共用本函式——前者
+ * 僅取 `GeneratedReportRow` 之四鍵（經 `toReportDto` 過濾，AC-27），後者另
+ * 需 `storageKey` 讀取位元組。
+ */
+export async function findReportByApplicationId(
+  prisma: PrismaClient,
+  applicationId: string
+): Promise<StoredReportRow | null> {
+  return prisma.report.findUnique({ where: { applicationId } });
+}
+
+/**
+ * AC-22：`Content-Disposition` 之 RFC 5987 `filename*=UTF-8''` 值——對
+ * `encodeURIComponent` 之輸出補完 attr-char 定義下仍不允許之四個字元
+ * （`'`／`(`／`)`／`*`）。`encodeURIComponent` 本身已將任何控制字元（含
+ * `\r`／`\n`）跳脫為 `%0D`／`%0A` 等百分比序列，故裸 CR/LF 不可能經由本函
+ * 式流出（AC-22 header injection 封閉之第一層防線）。
+ */
+export function encodeRfc5987ValueChars(value: string): string {
+  return encodeURIComponent(value).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+
+/**
+ * AC-22：`Content-Disposition` 雙形式——ASCII fallback（`filename="{報表編
+ * 號}.pdf"`，僅 `[A-Za-z0-9.-]`）＋ RFC 5987（`filename*=UTF-8''{百分比編碼
+ * 完整檔名}`）。
+ *
+ * `reportNumber` 之字元集由 AC-03(d) 結構性保證僅含 `[A-Z0-9-]`（見
+ * `report-number.ts` 檔頭），故 ASCII fallback 恆安全；此處仍以顯式正則覆
+ * 核作為結構性防線（沿本檔一貫「不因『理論上不需要』而省略」慣例，見
+ * `safeDelete` 之同型說明）——若上游守門失效（未來重構誤傳未經
+ * `buildReportNumber` 產生的字串），本函式會直接拋錯而非默默產出不安全標
+ * 頭。`fileName` 一律經 {@link encodeRfc5987ValueChars} 百分比編碼，故理論
+ * 上不會殘留裸 CR/LF；最終組出的標頭字串仍額外覆核零裸 CR/LF 作為第二層結
+ * 構性斷言（AC-22「標頭值不含裸 CR/LF」之直接自證）。
+ */
+export function buildReportContentDisposition(reportNumber: string, fileName: string): string {
+  if (!/^[A-Za-z0-9-]+$/.test(reportNumber)) {
+    throw new Error("reportNumber contains characters unsafe for ASCII fallback filename");
+  }
+  const asciiFileName = `${reportNumber}.pdf`;
+  const encodedFileName = encodeRfc5987ValueChars(fileName);
+  const header = `attachment; filename="${asciiFileName}"; filename*=UTF-8''${encodedFileName}`;
+  if (/[\r\n]/.test(header)) {
+    throw new Error("content-disposition header value contains raw CR/LF");
+  }
+  return header;
 }
