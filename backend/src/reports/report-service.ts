@@ -1,11 +1,28 @@
 /**
- * 報表產生服務 — PHASE-008-T8／T8R（BE-US-26／27）
+ * 報表產生服務 — PHASE-008-T8／T8R／T8R2／T8R3／T8R4（BE-US-26／27）
  *
  * Spec `docs/specs/PHASE-008.md` §2.B/C AC-04／AC-05／AC-06／AC-07／AC-10、
- * §3.1、§9.1（唯一之寫入路徑，**方案 (d)**，2026-08-06 人類裁定）、§16 D3
- * 修訂後定案（併發保證與冪等）、D5（失敗語意與錯誤碼；步驟順序已隨 D3 修
- * 訂）。
+ * §3.1、§9.1（唯一之寫入路徑，**方案 (d)**，2026-08-06 人類裁定；
+ * **T8R4／SF-5 再裁定＝顧問鎖 ＋ `READ COMMITTED`**已落地於 (4)a/(4)b，
+ * 見下）、§16 D3 修訂後定案（併發保證與冪等；末段「隔離等級修訂」）、D5
+ * （失敗語意與錯誤碼；步驟順序已隨 D3／SF-5／T8R4 修訂）。
  *
+ * ---------------------------------------------------------------------------
+ * T8R4／隔離等級沿革（一次性揭露；避免重讀者誤以為 SERIALIZABLE 仍是唯一
+ * 選項——後續各節之「本交易」一律指本報表產生交易，非全域設定）
+ * ---------------------------------------------------------------------------
+ * T8R3 依 Spec 原字面（顧問鎖疊加於 SERIALIZABLE 交易之上）落地後，經**三
+ * 層獨立複現**（①原始 `psql` 雙 session，完全繞過 Prisma；②Prisma 層等效
+ * 重現；③真實 12 併發、400ms 真實延遲之 AC-04(c) 全譜追蹤，attempt 0~5
+ * 皆為 P2034）證明該機制**不成立**：PostgreSQL 之 SERIALIZABLE 快照於
+ * **首語句即凍結、早於顧問鎖等待完成**，故排隊醒來之交易仍讀到舊
+ * `max(sequence)`、照樣撞號（12 併發總耗更從 ~2.9s 惡化至 ~23-28s）。人類
+ * 依此三層證據再裁定：**本報表產生交易之隔離等級改為 `READ COMMITTED`**
+ * （**僅此交易**，其餘交易不受影響），並保留顧問鎖排隊——RC 之快照**每語
+ * 句重新擷取**，故排隊醒來者之冪等再查與 `max(sequence)+1` 讀取皆能看見
+ * 前位剛提交之列，鎖機制才真正達成「零撞號、每請求恰渲染一次」之設計目
+ * 的。顧問鎖因而由 (4)b 前移為 **(4)a**（交易首語句），冪等再查隨之移入鎖
+ * 內成為 **(4)b**（見下）。
  * ---------------------------------------------------------------------------
  * §9.1 流程對照（方案 (d)；本檔為該流程之編排層；routes.ts 只負責授權／狀
  * 態守門與錯誤碼轉譯，見該檔）
@@ -15,18 +32,30 @@
  * (2)(3) 交易外：`buildReportData`（讀快照＋附件列，`report: null`，零重
  *     算）→ `embedImages`（附件位元組降尺寸內嵌）。此二步只讀、無 DB 寫
  *     入，一律只呼叫一次（不隨重試輪重跑，§9.1「零重算」）。
- * (4) 單一 SERIALIZABLE 交易（重試 ≤5，指數退避）；**每輪依序**：
- *     a. 交易內再查一次冪等（TOCTOU 收斂點）→ 命中即「敗方」，回既有。
- *     b. `max(sequence)+1` 配號；`reportNumber`／`generatedAt`
+ * (4) `READ COMMITTED` 交易（**本報表產生交易限定**；重試 ≤5，指數退
+ *     避）；**每輪依序**：
+ *     a. `pg_advisory_xact_lock(hashtext(numberPrefix || numberPeriod))`
+ *        ——交易級顧問鎖（T8R4／SF-5 再裁定：顧問鎖 ＋ `READ COMMITTED`，
+ *        §16 D3 修訂後定案末段「隔離等級修訂」）：鎖鍵為
+ *        `(numberPrefix, numberPeriod)` 之穩定雜湊，同組請求於此排隊逐一
+ *        進入，提交或回滾時自動釋放（無手動解鎖路徑）；**必須早於 b 冪
+ *        等再查與 c 配號**（見下）——鎖必須是交易之**第一個陳述式**，
+ *        `numberPrefix`／`numberPeriod`（進而 `generatedAt`）之計算故置
+ *        於本步之前（純 JS 運算，非 DB 陳述式，不影響快照時序）。
+ *     b. 交易內再查一次冪等（TOCTOU 收斂點）→ 命中即「敗方」，回既有。
+ *        **鎖內查詢**：`READ COMMITTED` 之每語句重新擷取快照，使排隊醒
+ *        來之交易能看見前位剛提交之列（見下方「同組排隊」）。
+ *     c. `max(sequence)+1` 配號；`reportNumber`／`generatedAt`
  *        於此刻決定（交易內、尚未提交）——**配號必須早於渲染**（見下）。
- *     c. `renderReportHtml`——以 (2)(3) 之 `baseData` 覆寫
+ *     d. `renderReportHtml`——以 (2)(3) 之 `baseData` 覆寫
  *        `common.reportNumber`／`common.generatedAt` 後呼叫（純函式、與
  *        列印端點 T10 同一份實作；見 {@link withReportMeta}，不重新查詢
  *        DB，僅覆寫兩個純量欄位，仍屬「零重算」）。
- *     d. `renderPdf`（Playwright；逾時／渲染失敗）。
- *     e. `storage.put` → 讀回校驗（位元組數 ＋ SHA-256）。
- *     f. `tx.report.create`——唯一鍵衝突／序列化失敗交由外層重試迴圈分
- *        類；命中則交易提交（g）。
+ *     e. `renderPdf`（Playwright；逾時／渲染失敗）。
+ *     f. `storage.put` → 讀回校驗（位元組數 ＋ SHA-256）。
+ *     g. `tx.report.create`——**唯一鍵衝突（P2002；最後防線）**交由外層
+ *        重試迴圈分類；命中則交易提交（h，顧問鎖於此自動釋放，下一個排
+ *        隊者進入 a）。
  * (5) 任一輪回滾或最終失敗 → 該輪已 `put` 之 key 一律 `storage.delete`
  *     補償（交易回滾只還原 DB，storage 為交易外資源，補償刪檔為其唯一還
  *     原手段；**每一重試輪皆須補償，於該輪交易回滾之後執行**——見
@@ -35,31 +64,61 @@
  *     （stage ∈ RENDER／STORE／VERIFY／PERSIST）。
  *
  * ---------------------------------------------------------------------------
- * 重試範圍（僅 (4)f 之唯一鍵／序列化衝突可重試；(4)c／d／e 之失敗一律終
+ * 重試範圍（僅 (4)g 之 `P2002` 唯一鍵衝突可重試；(4)d／e／f 之失敗一律終
  * 止，不重試）
  * ---------------------------------------------------------------------------
  * `renderReportHtml`／`renderPdf`／`storage.put`／讀回校驗四者之失敗屬確
  * 定性失敗（模板錯誤、引擎崩潰、磁碟問題……），重試不會改變結果，故直接
  * 以 {@link ReportGenerationError} 終止本次呼叫（見 §9.1 pseudocode 之
- * 「不符→失敗路徑」，與 (4)f「唯一鍵衝突／序列化失敗→回滾→重試 a」的
- * 「重試」用語有意區分）。只有 (4)f 之 `tx.report.create` 遭遇可重試之
- * DB 衝突時，才會開新交易重跑整輪 (4)a~g（含重新渲染——D3 修訂已明示接受
- * 之成本）。
+ * 「不符→失敗路徑」，與 (4)g「唯一鍵衝突→回滾→重試 a」的「重試」用語有
+ * 意區分）。只有 (4)g 之 `tx.report.create` 遭遇可重試之 DB 衝突時，才會
+ * 開新交易重跑整輪 (4)a~h（含重新渲染——D3 修訂已明示接受之成本）。
+ * **T8R4**：`READ COMMITTED` 下 Postgres 之序列化失敗（SQLSTATE 40001，
+ * 僅 SERIALIZABLE／REPEATABLE READ 才會觸發）**結構上不可能發生於本交
+ * 易**，故本檔不再將 `P2034`／`40001` 列為預期之重試分類（見下方
+ * {@link isRetryableTransactionConflict} 之清理說明，避免留下暗示「序列
+ * 化衝突仍是常態」之誤導性死碼）。唯一性之**主防線**是 (4)a 顧問鎖排
+ * 隊，**最後防線**是三欄唯一約束 ＋ `applicationId` 唯一約束觸發之
+ * `P2002`（≤5 次重試）；連線池相關之 `P2024`／`P2028`（MF-3，與隔離等
+ * 級無關）仍循既有重試路徑。
  *
  * ---------------------------------------------------------------------------
  * 不燒號（D3 修訂後定案；不變式，字面已改、目的不變）
  * ---------------------------------------------------------------------------
  * 序號並非計數器物件或 DB `SEQUENCE`，而是配號當下之 `max(sequence)+1`
  * 即時查詢；未提交之交易對 `Report` 表零可見列。任一輪失敗都會使該輪交
- * 易回滾（不論是 (4)c~e 之終止性失敗、抑或 (4)f 之衝突重試），回滾後下
+ * 易回滾（不論是 (4)d~f 之終止性失敗、抑或 (4)g 之衝突重試），回滾後下
  * 一次查詢取得同一序號——渲染或寫檔失敗絕不消耗編號，由**交易回滾天然達
  * 成**，不需額外機制。
+ *
+ * ---------------------------------------------------------------------------
+ * 同組排隊為唯一性之主防線（顧問鎖 ＋ `READ COMMITTED`；T8R4／2026-08-06
+ * 人類再裁定 SF-5，§16 D3 修訂後定案末段「隔離等級修訂」；§9.1 (4) 不變
+ * 式）
+ * ---------------------------------------------------------------------------
+ * 方案 (d) 將渲染移入交易，使 `max(sequence)+1` 之讀取窗口涵蓋整段渲
+ * 染——同月同型高併發下若無收斂機制，衝突會於重試上限（5）內耗盡
+ * （T8R2 以真實耗時替身 400ms 實測：12 併發約 6 筆失敗，三輪穩定）。
+ * (4)a 之交易級顧問鎖使**同一 `(numberPrefix, numberPeriod)` 之請求排隊
+ * 逐一執行**——組內任一時刻至多一個交易處於 b~h，**每個請求恰渲染一次**
+ * （不再有「重試即重渲染」之放大）；**不同組（不同前綴或不同月份）互不
+ * 阻擋**，並行度不受影響。鎖鍵為該二欄以 Postgres 內建 `hashtext()` 計算
+ * 之穩定雜湊（同一組恆得同一鍵、跨程序一致；不同組偶發雜湊碰撞僅造成無
+ * 害之額外排隊，不影響正確性）。**排隊之所以有效，前提是本交易為
+ * `READ COMMITTED`**：其快照每語句重新擷取，排隊醒來者之 (4)b 冪等再查
+ * 與 (4)c `max(sequence)+1` 皆能看見前位剛提交之列；**若為
+ * `SERIALIZABLE`，快照於首語句即凍結、早於鎖等待完成，醒來仍讀舊值照樣
+ * 撞號**——T8R3 已以三層獨立複現證明此點（見檔頭「隔離等級沿革」），此
+ * 為本交易改採 `READ COMMITTED` 之直接理由。`AC-04(c)` 之字面（12 併發
+ * 全成、編號集合恰為 `0001`~`0012`）不動；重試上限仍為 5（顧問鎖排隊為
+ * 主防線後，三欄唯一約束 ＋ `P2002` 重試作為最後防線，理論上不應被觸
+ * 及，但保留防禦——見上方「重試範圍」）。
  *
  * ---------------------------------------------------------------------------
  * PDF 內容含報表編號／產生時間（方案 (d) 之直接結果；恢復 AC-11／AC-15
  * 已批准之字面義務，非新增行為）
  * ---------------------------------------------------------------------------
- * (4)b 配號早於 (4)c 渲染，故 `renderReportHtml` 呼叫時 `common.reportNumber`
+ * (4)c 配號早於 (4)d 渲染，故 `renderReportHtml` 呼叫時 `common.reportNumber`
  * ／`common.generatedAt` 已非 `null`——持久化 PDF 與列印端點（T10，已產生
  * 報表之申請）呈現同一組編號／產生時間，AC-15 之「同一函式、同一輸入產
  * 生且字串全等」得以在 wire 層成立（純函式性質本身之 `toEqual` 恆成立，
@@ -191,7 +250,7 @@ function deriveDateOrYearSource(application: ReportApplicationRecord): Date | nu
 }
 
 /**
- * §9.1 (4)c：以本輪配得之 `reportNumber`／`generatedAt` 覆寫 (2)(3) 已組裝
+ * §9.1 (4)d：以本輪配得之 `reportNumber`／`generatedAt` 覆寫 (2)(3) 已組裝
  * 之 `baseData.common` 兩個純量欄位——**不重新查詢 DB**（`common` 之其餘
  * 欄位、`travel`／`maintenance`／`depreciation` 主體皆不受影響），故仍屬
  * §9.1「零重算」；輸出與呼叫端以 `buildReportData(prisma, application,
@@ -224,6 +283,42 @@ const REPORT_INSERT_MAX_RETRIES = 5;
 const RETRY_BACKOFF_BASE_MS = 15;
 const RETRY_BACKOFF_CAP_MS = 200;
 
+/**
+ * T8R2 MF-2：Prisma 互動式交易若不明寫 `timeout`／`maxWait`，套用套件預設值
+ * （`timeout` 5000ms、`maxWait` 2000ms）——遠低於 `REPORT_PDF_TIMEOUT_MS`
+ * （預設 30000ms）與 AC-09(a) 之 10 秒效能目標，使交易在 (4)e 渲染仍進行中
+ * 就被 Prisma 自身之交易逾時機制搶先中止（而非 `renderPdf` 自身
+ * {@link import("./pdf-renderer.js").renderPdf} 之 `withTimeout` 機制）。
+ * 此時拋出的是通用 `PrismaClientKnownRequestError`（P2028「Transaction
+ * already closed」），並非 `ReportGenerationError`，被本檔外層
+ * （{@link generateReport} 之 catch）誤標為 `PERSIST`——實際上失敗發生在
+ * 交易本體執行期間，與 (4)g「持久化」步驟無關（reviewer 探針①實測：預設
+ * 選項下交易內 sleep 6000ms → ~5000ms 即以此誤標收斂；本模組驗證腳本另
+ * 實測 P2028 亦為 MF-3 連線池競爭下之相同錯誤碼，見下）。
+ *
+ * 修復：`timeout`／`maxWait` 兩值皆以 `deps.pdfTimeoutMs`（渲染逾時之唯一
+ * 事實來源，來自 `REPORT_PDF_TIMEOUT_MS`）為基準加上裕度計算——不新增
+ * env 變數（T8R2 Packet「Files Forbidden」明示：env.ts 若需新增交易裕度
+ * 變數須 BLOCKED 回報，優先以既有 `REPORT_PDF_TIMEOUT_MS` 推導），亦不在
+ * 呼叫處寫死最終毫秒數，避免未來調整 `REPORT_PDF_TIMEOUT_MS` 時交易逾時
+ * 無聲維持在舊裕度而再度漂移。
+ *
+ * `REPORT_TX_TIMEOUT_MARGIN_MS`：涵蓋 (4)a 顧問鎖、(4)b 冪等查詢、(4)c
+ * 配號聚合查詢、(4)f `put`／讀回校驗、(4)g `INSERT` 之額外耗時（皆為毫秒
+ * 級 DB 操作，顧問鎖本身之取得亦僅毫秒級，除非同組已有請求排隊中——T8R4
+ * 之 `READ COMMITTED` 下，排隊等待時間本身不再造成快照過期問題，見上方
+ * 「同組排隊」）。
+ * `REPORT_TX_MAX_WAIT_MARGIN_MS`：MF-3 高併發（連線池競爭）下，交易於
+ * 「取得連線、正式開始執行前」之等待時間亦須有對應裕度，否則會在渲染都還
+ * 沒開始前就先被 P2028（`maxWait` 逾時，reviewer 探針②之根因——實測訊息
+ * 為「Unable to start a transaction in the given time」，見下方
+ * `isRetryableTransactionConflict` P2028 分支）中止。兩裕度取同一基準，
+ * 皆代表「單一嘗試」可額外容忍之等待，供 §9.1 (4) 重試迴圈每一輪皆有充足
+ * 視窗完成一次嘗試。
+ */
+const REPORT_TX_TIMEOUT_MARGIN_MS = 10_000;
+const REPORT_TX_MAX_WAIT_MARGIN_MS = 10_000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -234,21 +329,49 @@ function retryBackoffMs(attempt: number): number {
 }
 
 /**
- * 沿 `travel-service.ts` 之 `isRetryableTransactionConflict`（PHASE-004-R4）
- * 同型判斷：Postgres SERIALIZABLE 序列化失敗（40001）或死鎖（40P01），經
- * P2034（一般 Prisma 操作）或 P2010（raw query）兩種型態回報。
+ * T8R4／SF-5 清理（Packet 明文「40001／P2034 重試路徑於本交易失效之後不
+ * 得留下誤導性敘述或死碼」）：本函式**原本**沿 `travel-service.ts` 之
+ * `isRetryableTransactionConflict`（PHASE-004-R4）同型判斷 Postgres
+ * SERIALIZABLE 序列化失敗（SQLSTATE 40001）或死鎖（40P01），經 P2034
+ * （一般 Prisma 操作）或 P2010（raw query）兩種型態回報。**T8R4 之
+ * `READ COMMITTED`（本交易限定）使 40001 序列化失敗結構上不可能發生於本
+ * 交易**（40001 僅 SERIALIZABLE／REPEATABLE READ 隔離下才會被 Postgres
+ * 觸發）——保留該分類會誤導未來讀者「序列化衝突仍是本交易之常態重試路
+ * 徑」，故移除 `P2034` 頂層分類與 `P2010` 分支之 `40001` 檢查。
+ *
+ * **未移除 `P2010` 之 `40P01`（死鎖）檢查**：死鎖偵測**不限**
+ * SERIALIZABLE，`READ COMMITTED` 下仍可能因鎖取得順序不同而觸發（例如顧
+ * 問鎖與列鎖交錯），Spec 未將其列入本輪清理範圍（僅明列
+ * 「P2034／40001」），且移除一個**仍可能發生**之防線與「不得留死碼」之
+ * 精神相悖，故 `P2010` 函式與 `40P01` 檢查予以保留（`P2034` 之頂層分類
+ * 雖同樣可能承載死鎖，但 Prisma 對 P2034 不暴露底層 SQLSTATE 無法區分死
+ * 鎖與序列化失敗，Spec 明示歸類為整體移除——若未來偵測到本交易確實遭遇
+ * P2034 型死鎖，屬新事實，須另行提交複審而非本輪默默保留半套分類）。
+ *
+ * T8R2 MF-3：`P2024`（連線池取得逾時）／`P2028`（Prisma 交易 API 錯誤，
+ * 含 `maxWait` 逾時「Unable to start a transaction in the given time」與
+ * `timeout` 逾時「Transaction already closed」兩種訊息）——與隔離等級無
+ * 關（連線池／逾時層級之暫時性失敗，非資料衝突），**Spec 明示保留**。
+ * reviewer 探針②實測（connection_limit=3＋交易內 1500ms＋12 併發）現況
+ * 6/12 落於 P2028（maxWait 逾時）。**防禦縱深**：本檔已將 `timeout`／
+ * `maxWait` 綁定 `deps.pdfTimeoutMs`＋裕度（見上）從根本降低觸發機率，此
+ * 處之重試分類是第二道防線——即使裕度在更極端負載下仍被打穿，應用層重試
+ * （≤5 次、指數退避）仍能收斂，而非直接以生硬的 500 終止（沿本檔一貫「結
+ * 構性防線，不因『理論上不需要』而省略」慣例，見 `safeDelete` 之同型說
+ * 明）。
  */
 function isRetryableTransactionConflict(err: unknown): boolean {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
-    if (err.code === "P2034") return true;
+    if (err.code === "P2024") return true;
+    if (err.code === "P2028") return true;
     if (err.code === "P2010") {
       const meta = err.meta as { code?: string } | undefined;
-      return meta?.code === "40001" || meta?.code === "40P01";
+      return meta?.code === "40P01";
     }
     return false;
   }
   if (err instanceof Prisma.PrismaClientUnknownRequestError) {
-    return /deadlock detected|could not serialize access/i.test(err.message);
+    return /deadlock detected/i.test(err.message);
   }
   return false;
 }
@@ -283,7 +406,7 @@ function classifyReportP2002(err: unknown): ReportConflictKind | null {
     return "SEQUENCE";
   }
   // meta 缺失或無法辨識——保守視為可重試：下一輪交易之冪等前置查詢
-  // （§9.1 (4)a）會在「其實是 applicationId 碰撞」時自然收斂為敗方；若並
+  // （§9.1 (4)b）會在「其實是 applicationId 碰撞」時自然收斂為敗方；若並
   // 非如此，重試上限（5 次）確保不會無限重試。
   return "UNKNOWN";
 }
@@ -305,16 +428,33 @@ interface AttemptOutcome {
 }
 
 /**
- * §9.1 (4)：單一 SERIALIZABLE 交易（重試 ≤5，指數退避）。每次嘗試皆是全新
- * 交易——Postgres 於交易內拋出任何錯誤後即中止該交易，不可在同一交易內恢
- * 復重試，故「重試」必然是「開新交易再跑一次」（沿 `travel-service.ts` 既
- * 有 for 迴圈外層 `prisma.$transaction` 慣例）。
+ * §9.1 (4)：`READ COMMITTED` 交易（**本報表產生交易限定**；重試 ≤5，指數
+ * 退避）。每次嘗試皆是全新交易——Postgres 於交易內拋出任何錯誤後即中止該
+ * 交易，不可在同一交易內恢復重試，故「重試」必然是「開新交易再跑一次」
+ * （沿 `travel-service.ts` 既有 for 迴圈外層 `prisma.$transaction` 慣
+ * 例）。
  *
- * **SF-4／結構性守門**：`renderReportHtml` 之呼叫（(4)c）位於本函式傳給
- * `$transaction(...)` 的回呼**內部**（非另立函式後於外部呼叫），且文字上
- * 位於配號（(4)b，`buildReportNumber(...)`）之後——此二事實由
- * `phase8-report-generate.test.ts` 之結構性測試以原始碼字串位置直接鑑別，
- * 任何把渲染移出交易或搬到配號之前的重構皆會使該測試轉紅。
+ * **SF-4／結構性守門（T8R4 更新：雙守門）**：
+ *   ① 交易隔離等級恆為 `ReadCommitted`（改回 `Serializable` 之 mutant 必
+ *      紅——T8R3 三層獨立複現已證明 `SERIALIZABLE` 下顧問鎖排隊機制不成
+ *      立，見檔頭「隔離等級沿革」，故此斷言之方向與 T8~T8R3 時期恰好相
+ *      反）。
+ *   ② `renderReportHtml` 之呼叫（(4)d）位於本函式傳給 `$transaction(...)`
+ *      的回呼**內部**（非另立函式後於外部呼叫），且文字上位於配號（(4)c，
+ *      `buildReportNumber(...)`）之後——此事實由
+ *      `phase8-report-generate.test.ts` 之結構性測試以原始碼字串位置直
+ *      接鑑別，任何把渲染移出交易或搬到配號之前的重構皆會使該測試轉紅。
+ *
+ * **T8R4／結構性守門**（比照 SF-4，§9.1 (4)a／(4)b 不變式）：交易級顧問
+ * 鎖呼叫（`pg_advisory_xact_lock`）位於**交易之第一個陳述式**——早於冪
+ * 等再查（(4)b，`tx.report.findUnique(`）與配號（(4)c，
+ * `buildReportNumber(...)`）——此事實亦由
+ * `phase8-report-generate.test.ts` 之結構性測試以原始碼字串位置鑑別，防
+ * 後續重構默默移除鎖、或把鎖搬到冪等再查／配號之後（使顧問鎖排隊失去意
+ * 義，序列化衝突風暴重現）。**鎖必須早於冪等再查**——鎖外之查詢在
+ * `READ COMMITTED` 下雖然本身不會讀到過期快照，但若冪等再查於鎖之前執
+ * 行，多個排隊者會同時通過冪等檢查（皆見「尚未存在」），使冪等收斂點失
+ * 去「TOCTOU 收斂」之意義，須靠鎖排隊後才逐一重新確認。
  *
  * **每一輪之補償刪檔於「該輪交易已回滾之後」執行**（§9.1 (5)）：`put` 是
  * storage（交易外資源）之副作用，DB 回滾不會回收已寫入之檔案；`attemptState`
@@ -332,9 +472,36 @@ async function generateOnceWithRetry(
     try {
       return await deps.prisma.$transaction(
         async (tx) => {
-          // §9.1 (4)a：交易內冪等前置查詢（TOCTOU 收斂點）——不論上一輪因
-          // 何種原因失敗，只要現在已經有人贏得了這個 applicationId，本輪
-          // 會在此處自然發現並以「敗方」收斂。
+          // §9.1 (4)a 之鎖鍵（numberPrefix／numberPeriod）須先決定；
+          // generatedAt 一併於此取得（本輪一次性決定，交易內、尚未提
+          // 交）。純 JS 運算（非 DB 陳述式），置於鎖之前不影響快照時序。
+          const generatedAt = new Date();
+          const prefix = getReportNumberPrefix(input.type);
+          // T2-FW1：同月序號查詢一律以 getReportNumberPeriod() 之字串比對
+          // numberPeriod，禁 date_trunc('month', ...) 或任何 UTC 月區間換算。
+          const period = getReportNumberPeriod(generatedAt);
+
+          // §9.1 (4)a：交易級顧問鎖（T8R4／SF-5 再裁定：顧問鎖 ＋
+          // `READ COMMITTED`，§16 D3 修訂後定案末段「隔離等級修訂」）——
+          // 鎖鍵為 `(numberPrefix, numberPeriod)` 以 Postgres 內建
+          // `hashtext()` 計算之穩定雜湊；同一組請求於此排隊逐一進入，交
+          // 易提交或回滾時自動釋放（無手動解鎖路徑、無洩漏鎖之可能）；
+          // **必須是交易之第一個陳述式**（早於 (4)b 冪等再查與 (4)c 配
+          // 號，見上方 SF-4／T8R4 結構性守門說明）——T8R3 三層獨立複現已
+          // 證明：若本交易為 SERIALIZABLE，快照於首語句即凍結、早於鎖等
+          // 待完成，排隊醒來仍讀舊值照樣撞號；本交易改為 `READ COMMITTED`
+          // 後，鎖之位置才真正決定「排隊醒來者何時開始能看見新資料」。
+          // `$executeRaw`（非 `$queryRaw`）：`pg_advisory_xact_lock` 回傳
+          // 型別為 SQL `void`，`$queryRaw` 無法反序列化該型別（實測確
+          // 認，見 Task Handoff），`$executeRaw` 僅回傳受影響列數、不嘗
+          // 試反序列化回傳值，故為正確選擇。
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${prefix} || ${period}))`;
+
+          // §9.1 (4)b：交易內冪等前置查詢（TOCTOU 收斂點）——**鎖內查
+          // 詢**：`READ COMMITTED` 之每語句重新擷取快照，使本查詢能看見
+          // 排隊期間前位已提交之列；不論上一輪因何種原因失敗，只要現在
+          // 已經有人贏得了這個 applicationId，本輪會在此處自然發現並以
+          // 「敗方」收斂。
           const existing = await tx.report.findUnique({
             where: { applicationId: input.applicationId },
           });
@@ -342,13 +509,10 @@ async function generateOnceWithRetry(
             return { created: false, row: existing };
           }
 
-          // §9.1 (4)b：配號 ＋ generatedAt——本輪一次性決定，交易內、尚未
-          // 提交（**必須早於 (4)c 渲染**，見下）。
-          const generatedAt = new Date();
-          const prefix = getReportNumberPrefix(input.type);
-          // T2-FW1：同月序號查詢一律以 getReportNumberPeriod() 之字串比對
-          // numberPeriod，禁 date_trunc('month', ...) 或任何 UTC 月區間換算。
-          const period = getReportNumberPeriod(generatedAt);
+          // §9.1 (4)c：配號——本輪一次性決定（交易內、尚未提交）——**必須
+          // 早於 (4)d 渲染**（見下）。(4)a 之顧問鎖已排除同組併發、
+          // `READ COMMITTED` 之每語句新快照使本查詢能看見前位已提交之
+          // 序號，本查詢於正常情況下不再與同組其他請求競爭出重複序號。
           const agg = await tx.report.aggregate({
             where: { numberPrefix: prefix, numberPeriod: period },
             _max: { sequence: true },
@@ -384,7 +548,7 @@ async function generateOnceWithRetry(
             reportNumber,
           });
 
-          // §9.1 (4)c：帶編號渲染——純函式，與列印端點（T10）同一份實作、
+          // §9.1 (4)d：帶編號渲染——純函式，與列印端點（T10）同一份實作、
           // 同一輸入形狀（AC-11／AC-15 之結構前提：配號（上）早於渲染
           // （下））。
           const dataWithMeta = withReportMeta(input.baseData, { reportNumber, generatedAt });
@@ -395,7 +559,7 @@ async function generateOnceWithRetry(
             throw new ReportGenerationError("RENDER");
           }
 
-          // §9.1 (4)d：PDF 渲染（Playwright；逾時／崩潰視為 RENDER）。
+          // §9.1 (4)e：PDF 渲染（Playwright；逾時／崩潰視為 RENDER）。
           let pdfBytes: Buffer;
           try {
             pdfBytes = await renderPdf(html, { timeoutMs: deps.pdfTimeoutMs });
@@ -403,7 +567,7 @@ async function generateOnceWithRetry(
             throw new ReportGenerationError("RENDER");
           }
 
-          // §9.1 (4)e：put——自此刻起將 key 記入 attemptState，供交易外
+          // §9.1 (4)f：put——自此刻起將 key 記入 attemptState，供交易外
           // （回滾之後）補償；SF-3：即使 put 本身失敗，亦以 safeDelete
           // best-effort 收尾（理論上無殘留，但不因「理論上不需要」而省略
           // 這條防線）。
@@ -416,7 +580,7 @@ async function generateOnceWithRetry(
             throw new ReportGenerationError("STORE");
           }
 
-          // §9.1 (4)e：讀回校驗（位元組數 ＋ SHA-256）。
+          // §9.1 (4)f：讀回校驗（位元組數 ＋ SHA-256）。
           let contentHash: string;
           try {
             const readBack = await deps.reportStorage.get(storageKey);
@@ -436,8 +600,9 @@ async function generateOnceWithRetry(
             throw new ReportGenerationError("VERIFY");
           }
 
-          // §9.1 (4)f：INSERT——唯一鍵衝突／序列化失敗交由外層重試迴圈分
-          // 類（見下方 catch）；成功則交易提交（(4)g）。
+          // §9.1 (4)g：INSERT——唯一鍵衝突（P2002；最後防線）交由外層重
+          // 試迴圈分類（見下方 catch）；成功則交易提交（(4)h，顧問鎖於
+          // 此自動釋放，下一個排隊者進入 a）。
           const created = await tx.report.create({
             data: {
               applicationId: input.applicationId,
@@ -455,7 +620,17 @@ async function generateOnceWithRetry(
           });
           return { created: true, row: created };
         },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        {
+          // T8R4／SF-5 再裁定：本報表產生交易（僅此交易）改為
+          // `ReadCommitted`——見檔頭「隔離等級沿革」與「同組排隊」之機制
+          // 說明；SF-4 結構斷言已同步改為斷言 `ReadCommitted`（改回
+          // `Serializable` 之 mutant 必紅）。
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+          // T8R2 MF-2／MF-3：兩值皆自 deps.pdfTimeoutMs 推導＋裕度，見上方
+          // REPORT_TX_TIMEOUT_MARGIN_MS／REPORT_TX_MAX_WAIT_MARGIN_MS 之說明。
+          timeout: deps.pdfTimeoutMs + REPORT_TX_TIMEOUT_MARGIN_MS,
+          maxWait: deps.pdfTimeoutMs + REPORT_TX_MAX_WAIT_MARGIN_MS,
+        }
       );
     } catch (err) {
       // §9.1 (5)：本輪交易已回滾（Prisma 於回呼拋錯後自動 ROLLBACK）；若
@@ -466,7 +641,7 @@ async function generateOnceWithRetry(
       }
 
       if (err instanceof ReportGenerationError) {
-        // (4)c／d／e 之終止性失敗——不重試（見檔頭「重試範圍」）。
+        // (4)d／e／f 之終止性失敗——不重試（見檔頭「重試範圍」）。
         throw err;
       }
 
@@ -527,7 +702,7 @@ export async function generateReport(
 
   // §9.1 (2)(3)：交易外——快照組裝與圖片嵌入（零重算、零 DB 寫入）；只呼
   // 叫一次，不隨 (4) 之重試輪重跑（§9.1「(2)(3) 之順序不可對調且皆在交易
-  // 外」）。此刻尚無報表編號／產生時間（report: null），(4)b 配號後由
+  // 外」）。此刻尚無報表編號／產生時間（report: null），(4)c 配號後由
   // {@link withReportMeta} 覆寫兩個純量欄位，不重新查詢 DB。
   let baseData: ReportData;
   try {
@@ -552,7 +727,7 @@ export async function generateReport(
     if (err instanceof ReportGenerationError) {
       throw err;
     }
-    // (4)f 重試耗盡或不可重試之 DB 衝突——PERSIST（§16 D5，字面順序已隨
+    // (4)g 重試耗盡或不可重試之 DB 衝突——PERSIST（§16 D5，字面順序已隨
     // D3 修訂，錯誤碼與 stage 語意不變）。
     throw new ReportGenerationError("PERSIST");
   }

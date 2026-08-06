@@ -12,8 +12,12 @@
  *   VERIFY）。
  * AC-10：同一申請併發產生——恰一份 Report、storage 零孤兒。
  * §9.1：唯一之寫入路徑（冪等前置 → 組裝 → 渲染 → 保存 → 讀回校驗 →
- *   SERIALIZABLE 配號交易 → 失敗補償）；配號在最後一步。
- * §16 D3：SERIALIZABLE + max(sequence)+1 + 三欄唯一約束 + 應用層重試（≤5）。
+ *   READ COMMITTED 配號交易 → 失敗補償）；配號在最後一步。**T8R4**：本報
+ *   表產生交易之隔離等級由 SERIALIZABLE 改為 READ COMMITTED（僅此交
+ *   易），疊加交易級顧問鎖排隊為唯一性之主防線（見下方 T8R2~T8R4 相關
+ *   describe 區塊）。
+ * §16 D3：READ COMMITTED（本交易限定）+ 顧問鎖排隊（主防線）+
+ *   max(sequence)+1 + 三欄唯一約束 + P2002 應用層重試（≤5，最後防線）。
  * §7.6-2：本 Phase 不提供任何更新或刪除 `Report` 之程式路徑（結構性斷言）。
  *
  * ---------------------------------------------------------------------------
@@ -72,7 +76,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
@@ -95,6 +99,10 @@ vi.mock("../../src/reports/pdf-renderer.js", async (importOriginal) => {
 
 import { renderPdf } from "../../src/reports/pdf-renderer.js";
 import { renderReportHtml } from "../../src/reports/report-html.js";
+// T8R2 — MF-2／MF-3 探針：直接呼叫 generateReport（繞過 HTTP 層），以便注入
+// 自訂 pdfTimeoutMs／自訂連線池上限之 PrismaClient，同一份 vi.mock 亦攔截此
+// import site之 renderPdf（見上方 vi.mock 工廠，模組快取單一份）。
+import { type ReportServiceDeps, generateReport } from "../../src/reports/report-service.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -200,27 +208,31 @@ describe("PHASE-008-T8 — 結構性斷言：無更新／刪除 Report 之程式
   });
 
   // ---------------------------------------------------------------------------
-  // T8R SF-4：SERIALIZABLE 隔離等級 ＋「渲染在交易內、配號早於渲染」之結構
-  // 性守門（§9.1 (4)b/(4)c；防後續重構默默退回舊順序）
+  // T8R4／SF-4：交易隔離等級（ReadCommitted）＋「渲染在交易內、配號早於渲
+  // 染」之結構性守門（§9.1 (4)c/(4)d；防後續重構默默退回舊順序或改回
+  // Serializable）
   // ---------------------------------------------------------------------------
 
-  it("T8R SF-4：交易隔離等級恆為 Serializable（隔離等級降級 mutant 必紅）", () => {
+  it("T8R4／SF-4：交易隔離等級恆為 ReadCommitted（改回 Serializable 之 mutant 必紅——T8R3 三層獨立複現已證明 Serializable 下顧問鎖排隊機制不成立）", () => {
     const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
     const src = fs.readFileSync(serviceSrcPath, "utf8");
-    expect(src).toMatch(/isolationLevel:\s*Prisma\.TransactionIsolationLevel\.Serializable/);
+    expect(src).toMatch(/isolationLevel:\s*Prisma\.TransactionIsolationLevel\.ReadCommitted/);
+    // 正向對照：Serializable 字面不應再出現於真實呼叫處（僅容許出現於檔頭
+    // 文件說明散文中，故此處僅檢查「呼叫形式」不存在，不檢查全檔零出現）。
+    expect(src).not.toMatch(/isolationLevel:\s*Prisma\.TransactionIsolationLevel\.Serializable/);
   });
 
-  it("T8R SF-4：renderReportHtml 之呼叫位於 $transaction(...) 回呼內部，且配號（buildReportNumber）早於渲染（順序對調 mutant 必紅；渲染搬出交易 mutant 必紅）", () => {
+  it("T8R4／SF-4：renderReportHtml 之呼叫位於 $transaction(...) 回呼內部，且配號（buildReportNumber）早於渲染（順序對調 mutant 必紅；渲染搬出交易 mutant 必紅）", () => {
     const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
     const src = fs.readFileSync(serviceSrcPath, "utf8");
 
     const txCallIdx = src.indexOf("$transaction(");
-    const serializableIdx = src.indexOf("Prisma.TransactionIsolationLevel.Serializable");
+    const readCommittedIdx = src.indexOf("Prisma.TransactionIsolationLevel.ReadCommitted");
     const numberAssignIdx = src.indexOf("buildReportNumber(prefix, period, nextSequence)");
     const renderCallIdx = src.indexOf("renderReportHtml(");
 
     expect(txCallIdx).toBeGreaterThan(-1);
-    expect(serializableIdx).toBeGreaterThan(-1);
+    expect(readCommittedIdx).toBeGreaterThan(-1);
     expect(numberAssignIdx).toBeGreaterThan(-1);
     expect(renderCallIdx).toBeGreaterThan(-1);
 
@@ -230,7 +242,51 @@ describe("PHASE-008-T8 — 結構性斷言：無更新／刪除 Report 之程式
     // 之前——即巢狀於同一個交易回呼內部，而非另一個獨立、於交易外執行的
     // 函式。
     expect(txCallIdx).toBeLessThan(renderCallIdx);
-    expect(renderCallIdx).toBeLessThan(serializableIdx);
+    expect(renderCallIdx).toBeLessThan(readCommittedIdx);
+  });
+
+  // ---------------------------------------------------------------------------
+  // T8R4／SF-5：交易級顧問鎖之結構性守門（§9.1 (4)a／(4)b 不變式；比照
+  // SF-4——移除或後移之 mutant 必紅）。T8R4 更新：鎖前移為交易首語句，須早
+  // 於冪等再查（不只早於配號）。
+  // ---------------------------------------------------------------------------
+
+  it("T8R4：交易內呼叫 pg_advisory_xact_lock（顧問鎖移除 mutant 必紅）", () => {
+    const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
+    const src = fs.readFileSync(serviceSrcPath, "utf8");
+    expect(src).toMatch(/pg_advisory_xact_lock\(hashtext\(/);
+  });
+
+  it("T8R4：顧問鎖呼叫為交易首語句——早於冪等再查（tx.report.findUnique）與配號（buildReportNumber／tx.report.aggregate），且位於 $transaction(...) 回呼內部（鎖後移 mutant 必紅；鎖搬出交易 mutant 必紅）", () => {
+    const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
+    const src = fs.readFileSync(serviceSrcPath, "utf8");
+
+    const txCallIdx = src.indexOf("$transaction(");
+    // 以逐字完整片語比對真實呼叫（非檔頭文件說明散文之同名片語——單獨比
+    // 對關鍵詞會誤命中 §9.1 流程對照註解，見檔頭）。
+    const lockCallIdx = src.indexOf("await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(");
+    const idempotencyCallIdx = src.indexOf("const existing = await tx.report.findUnique(");
+    const aggregateIdx = src.indexOf("tx.report.aggregate(");
+    const numberAssignIdx = src.indexOf("buildReportNumber(prefix, period, nextSequence)");
+    const readCommittedIdx = src.indexOf("Prisma.TransactionIsolationLevel.ReadCommitted");
+
+    expect(txCallIdx).toBeGreaterThan(-1);
+    expect(lockCallIdx).toBeGreaterThan(-1);
+    expect(idempotencyCallIdx).toBeGreaterThan(-1);
+    expect(aggregateIdx).toBeGreaterThan(-1);
+    expect(numberAssignIdx).toBeGreaterThan(-1);
+
+    // 顧問鎖位於 $transaction(...) 回呼內部（交易內，非交易外之獨立呼叫）。
+    expect(txCallIdx).toBeLessThan(lockCallIdx);
+    expect(lockCallIdx).toBeLessThan(readCommittedIdx);
+    // T8R4：顧問鎖為交易首語句——早於冪等再查（(4)a 早於 (4)b）。
+    expect(lockCallIdx).toBeLessThan(idempotencyCallIdx);
+    // 顧問鎖早於配號（(4)a 早於 (4)c）——早於序號聚合查詢、亦早於
+    // reportNumber 之組裝。
+    expect(lockCallIdx).toBeLessThan(aggregateIdx);
+    expect(lockCallIdx).toBeLessThan(numberAssignIdx);
+    // 冪等再查早於配號（(4)b 早於 (4)c）——既有順序未變。
+    expect(idempotencyCallIdx).toBeLessThan(aggregateIdx);
   });
 
   // ---------------------------------------------------------------------------
@@ -527,15 +583,21 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
         // 含報表編號字串——證明 §9.1 (4)b 配號早於 (4)c 渲染確實生效，PDF
         // 不再永久呈現「尚未產生」佔位（D3 修訂前之三難已由方案 (d) 解
         // 決）。
-        // T8R 誠實揭露：實測（本機真實 Chromium）發現持久化 PDF 之內容串流
-        // 以 Type3 字型 glyph 描述（`d1` 運算子＋向量路徑）呈現文字，而非
-        // 逐字元 `Tj` 文字運算子——對原始位元組（含 zlib 解壓縮後）做子字
-        // 串比對**恆不命中**任何 ASCII 文字，此為 Chromium/Skia PDF 後端
-        // 之既有行為，非本檔或 pdf-renderer.ts／report-html.ts 之缺陷，亦
-        // 非本 Task 可調整（pdf-renderer.ts 屬 Files Forbidden，僅可
-        // import）。故「PDF 位元組逐位元組含 reportNumber 字串」在此渲染
-        // 管線下技術上不可行（等同要求 OCR／字型輪廓辨識，超出零新增套件
-        // 之 Spec 邊界）。改採 AC-15 自身定義之同一層次（HTML 字串）作為
+        // T8R2 SF-7 更正（原「Skia Type3 向量化」敘述經 reviewer 覆核為誤
+        // 判，已更正如下，供未來 Phase 勿被錯誤結論擋住）：實測（本機真實
+        // Chromium）之持久化 PDF 內容串流實為**子集字型（subset font）之
+        // glyph 編碼**——PDF 內嵌 `/FontFile`＋`/ToUnicode` CMap 皆在場、
+        // 文字操作子為一般 `Tj`（實測 5 個），並非先前誤判之 Type3 `d1`
+        // 向量路徑描述；文字在原則上**可還原**（`/ToUnicode` 提供字型內部
+        // glyph index 對應之 Unicode 反查表）。唯獨對**原始位元組**（含
+        // zlib 解壓縮後）直接做子字串比對仍**不可命中**——子集字型之
+        // glyph 索引非 ASCII 碼點，須先經 `/ToUnicode` CMap 反查（等同輕
+        // 量級文字擷取，而非 OCR／字型輪廓辨識），此非本檔或
+        // pdf-renderer.ts／report-html.ts 之缺陷，亦非本 Task 可調整
+        // （pdf-renderer.ts 屬 Files Forbidden，僅可 import）。故「PDF 位
+        // 元組逐位元組含 reportNumber 字串」在不引入 CMap 反查邏輯之前提
+        // 下技術上不可行，超出零新增套件之 Spec 邊界。改採 AC-15 自身定義
+        // 之同一層次（HTML 字串）作為
         // 前置自證：直接斷言「餵給 renderPdf 之 HTML」（即 renderReportHtml
         // 之回傳值，亦即 PDF 之產生輸入）逐字含 reportNumber——這正是 §9.1
         // (4)b 配號早於 (4)c 渲染之結構性結果，也是 AC-15「同一函式、同一
@@ -701,14 +763,33 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
       });
 
       it(
-        "(c) 12 筆不同申請同時產生（同月同型）→ 全部成功、12 個編號互異、序號集合恰為 base+1..base+12（無跳號、無重複）；T8R AC-04(c) 方案 (d) 結構下重驗（渲染移入交易，重試須重新渲染）",
+        "(c) 12 筆不同申請同時產生（同月同型）→ 全部成功、12 個編號互異、序號集合恰為 base+1..base+12（無跳號、無重複）；T8R AC-04(c) 方案 (d) 結構下重驗（渲染移入交易，重試須重新渲染）；T8R2 SF-5：改用具真實耗時之替身（sleep ≈400ms）重驗，使交易窗口延長效應真正進入量測；T8R4：顧問鎖＋ReadCommitted 落地後轉綠（併發數與替身耗時皆未調降）",
         async () => {
           const base = await baseSequence("TRV", TRAVEL_PERIOD);
           const ids = await Promise.all(
             Array.from({ length: 12 }, (_, i) => createTravelApp(`ac04c-${i}`))
           );
 
-          // T8R：耗時量測（12 併發、重試上限 5）——記入 Handoff。
+          // T8R2 SF-5：AC-04(c) 之重驗義務（Spec :142「不得沿用舊結構之通過
+          // 紀錄」）——原本 §快速固定裝置區塊之 renderPdf 替身零耗時立即回
+          // 傳，交易窗口幾乎瞬間結束，無法反映方案 (d)「渲染移入交易」後真
+          // 正的窗口延長效應（Spec :1006 已明示接受之 +0.5s 成本）。改為具
+          // 真實耗時之替身（sleep ≈400ms，量級貼近 T7 `phase8-pdf-render.
+          // test.ts` 對標準 fixture 之實測 Chromium 渲染耗時，不需要在此啟
+          // 動真 Chromium）——12 輪交易同時各自持有連線 ≈400ms＋DB 額外操
+          // 作，序列化衝突率／連線池競爭才會如同真實負載般被量測到。
+          // T8R4：本測試在 T8R2/T8R3 皆為紅燈（T8R2 據實 BLOCKED；T8R3 三層
+          // 複現證明「顧問鎖疊加於 SERIALIZABLE」機制不成立，紅燈依舊）；
+          // 顧問鎖前移＋本交易改 ReadCommitted 後，12 併發應全數成功——**併
+          // 發數（12）與替身耗時（400ms）皆未調降**，紅燈轉綠純粹來自
+          // report-service.ts 之機制修正。
+          vi.mocked(renderPdf).mockImplementation(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            return Buffer.from(FAKE_PDF_BYTES);
+          });
+
+          // T8R／T8R4：耗時量測（12 併發、重試上限 5）——記入 Handoff（T8R4
+          // 預期 ~5.5s 級：顧問鎖排隊 12×~0.4-0.45s 串行）。
           const startedAt = Date.now();
           const responses = await Promise.all(
             ids.map((id) =>
@@ -720,7 +801,7 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
             )
           );
           const elapsedMs = Date.now() - startedAt;
-          console.info(`[T8R][AC-04(c)] 12 併發（方案 d 結構）耗時 ${elapsedMs}ms`);
+          console.info(`[T8R4][AC-04(c)] 12 併發（顧問鎖＋ReadCommitted）耗時 ${elapsedMs}ms`);
 
           for (const resp of responses) {
             expect(resp.statusCode).toBe(201);
@@ -804,18 +885,21 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
     // -----------------------------------------------------------------------
 
     describe("AC-10：同一申請併發產生", () => {
-      it("2 個併發 POST → 恰一份 Report、兩回應皆成功且編號相同、storage 恰一個 key（零孤兒）；T8R SF-3：敗方之交易內 put 於回滾後補償——以 put/delete spy 逐 key 正向斷言（非僅『無殘留』之恆真式）", async () => {
+      it("2 個併發 POST → 恰一份 Report、兩回應皆成功且編號相同、storage 恰一個 key（零孤兒）；T8R4 更新：顧問鎖使敗方於 (4)b 冪等再查即收斂，結構上不再有機會抵達 (4)f put（零浪費，非『先浪費後補償』）——以 put/delete spy 正向斷言鑑別新機制", async () => {
         const id = await createTravelApp("ac10");
         const keysBefore = listReportStorageKeys(reportStorageRoot);
 
-        // T8R SF-3：正向斷言之基礎——spy 呼叫穿透（不覆寫實作），逐一記錄
-        // 實際 put／delete 呼叫之 key。兩個併發請求對同一 applicationId 分
-        // 屬各自的 SERIALIZABLE 交易快照，§9.1 (4)a 之交易內冪等檢查對真
-        // 正併發之兩者皆會通過（互不可見對方尚未提交之列），故結構上必然
-        // 有一方於 (4)f INSERT 撞上 applicationId 唯一鍵——此為關聯式資料
-        // 庫之保證，非計時巧合；「敗方」在撞鍵之前已完整跑過 (4)c~e（渲染
-        // ＋put＋讀回校驗），故必有一個「已 put 但未保留」之 key 可供本測
-        // 試鑑別。
+        // T8R4 誠實揭露（原 T8R SF-3 之機制已被取代，非本測試弱化）：兩個
+        // 併發請求之 applicationId 相同 → numberPrefix／numberPeriod 亦相
+        // 同（同一組）→ (4)a 顧問鎖使兩者排隊，不再是各自獨立之
+        // SERIALIZABLE 快照競賽。先進入者於 (4)b 冪等再查見「不存在」，
+        // 完整跑完 (4)c~g 並提交（釋放鎖）；後進入者於鎖釋放後才進入
+        // (4)b，`READ COMMITTED` 之新快照使其**看見前位已提交之列**，於
+        // 冪等再查當場收斂為「敗方」——**結構上不會抵達 (4)d~f（渲染／
+        // put／讀回校驗）**，故不再有「先 put 後補償刪除」之浪費，而是
+        //「根本不 put」。零孤兒之達成方式因而由「事後補償」升級為「事前
+        // 避免」；AC-10 之逐字驗收（恰一份 Report、storage 零孤兒）不
+        // 變，僅鑑別機制隨之更新（見下方 putSpy 恰一次呼叫之斷言）。
         const putSpy = vi.spyOn(LocalVolumeStorage.prototype, "put");
         const deleteSpy = vi.spyOn(LocalVolumeStorage.prototype, "delete");
 
@@ -845,22 +929,22 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
         const finalKey = rows[0].storageKey;
 
         const keysAfter = listReportStorageKeys(reportStorageRoot);
-        // 恰新增一個 key（零孤兒——敗方已寫入之 PDF 檔須被清理）。
+        // 恰新增一個 key（零孤兒）。
         expect(keysAfter.length).toBe(keysBefore.length + 1);
         expect(keysAfter).toContain(finalKey);
 
-        // T8R SF-3 正向斷言：每一個曾經 put 過、但非最終保留之 key，皆須
-        // 有對應的 delete 呼叫——逐一比對呼叫參數，而非僅比對檔案數量。
+        // T8R4 正向斷言：`put` 對本申請恰呼叫一次（敗方結構上不會抵達
+        // put），故無需任何補償刪除——非「零呼叫恆真通過」，而是明確斷言
+        // 「僅一次」，若顧問鎖失效導致敗方仍搶跑至 put（回退至 T8R 前之
+        // 競態），本斷言必紅（呼叫次數 > 1）。
         const putKeys = putSpy.mock.calls
           .map((call) => call[0] as string)
           .filter((key) => key.startsWith("rpt/"));
-        const deletedKeys = deleteSpy.mock.calls.map((call) => call[0] as string);
-        const orphanKeys = putKeys.filter((key) => key !== finalKey);
-        // 本測試須確實命中至少一次補償情境（非零呼叫恆真通過）。
-        expect(orphanKeys.length).toBeGreaterThan(0);
-        for (const key of orphanKeys) {
-          expect(deletedKeys).toContain(key);
-        }
+        expect(putKeys).toEqual([finalKey]);
+        const deletedKeys = deleteSpy.mock.calls
+          .map((call) => call[0] as string)
+          .filter((key) => key.startsWith("rpt/"));
+        expect(deletedKeys).toEqual([]);
       });
     });
 
@@ -1030,6 +1114,184 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
         expect(body.error.details).toEqual({ stage: "VERIFY" });
 
         await assertZeroResidual(id, keysBefore);
+      });
+    });
+
+    // -------------------------------------------------------------------------
+    // T8R2 — MF-2／MF-3：交易 timeout／maxWait 裕度 ＋ P2024/P2028 重試分類
+    // （reviewer 探針①②之直接規避測試；繞過 HTTP 層，直接呼叫 generateReport
+    // 以便注入自訂 pdfTimeoutMs／自訂連線池上限之 PrismaClient，見上方
+    // import 註解）。修復前現況（獨立腳本實測，見 Task Handoff 附證）：
+    // 探針① 6000ms 交易內渲染 → ~5000ms 即以 Prisma 套件預設交易 timeout
+    // 中止（P2028「Transaction already closed」，本檔外層誤標 PERSIST）；
+    // 探針② connection_limit=3＋12 併發＋交易內 1500ms → 6/12 落於 P2028
+    // 「Unable to start a transaction in the given time」（maxWait 逾時，套
+    // 件預設 2000ms）。本區塊之測試針對**修復後**程式碼，兩探針皆須轉綠。
+    // -------------------------------------------------------------------------
+
+    describe("T8R2／T8R3／T8R4 — MF-2／MF-3：交易 timeout／maxWait 裕度＋P2024/P2028 重試分類；顧問鎖＋ReadCommitted 行為", () => {
+      function buildDirectDeps(
+        prismaClient: PrismaClient,
+        pdfTimeoutMs: number
+      ): ReportServiceDeps {
+        return {
+          prisma: prismaClient,
+          attachmentStorage: new LocalVolumeStorage(attachmentStorageRoot, { prefixes: ["att"] }),
+          reportStorage: new LocalVolumeStorage(reportStorageRoot, { prefixes: ["rpt"] }),
+          imageMaxPx: 1600,
+          pdfTimeoutMs,
+          log: { error: () => {} },
+        };
+      }
+
+      it(
+        "MF-2 reviewer 探針①：交易內渲染耗時 6000ms（逼近 Prisma 套件預設 5000ms 交易 timeout）→ 修復後於 pdfTimeoutMs 覆蓋範圍內正常完成（201／created:true，非誤標 PERSIST）；耗時量測記入 Handoff",
+        async () => {
+          const id = await createTravelApp("t8r2-mf2");
+          vi.mocked(renderPdf).mockImplementationOnce(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 6000));
+            return Buffer.from(FAKE_PDF_BYTES);
+          });
+
+          const deps = buildDirectDeps(prisma, 8000);
+          const startedAt = Date.now();
+          const outcome = await generateReport(deps, id, ownerId);
+          const elapsedMs = Date.now() - startedAt;
+          console.info(`[T8R2][MF-2] 交易內 6000ms 渲染 → 修復後實際完成耗時 ${elapsedMs}ms`);
+
+          expect(outcome.created).toBe(true);
+          // 交易確實完整跑過 6000ms 之渲染（非被交易逾時提早中止）。
+          expect(elapsedMs).toBeGreaterThanOrEqual(6000);
+
+          const row = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+          expect(row.reportNumber).toMatch(/^TRV-\d{6}-\d{4,}$/);
+        },
+        { timeout: 15000 }
+      );
+
+      it(
+        "MF-3 reviewer 探針②：connection_limit=3 ＋ 交易內 1500ms ＋ 12 併發（跨兩組：6×TRV／6×MNT，避開 T8R3 顧問鎖之同組排隊，維持本探針對連線池行為之原始鑑別力）→ 修復前現況 6/12 失敗（P2028 maxWait 逾時，獨立腳本實測見 Handoff）；修復後大幅改善（三輪實測皆 11/12，見 Handoff），且任何殘餘失敗皆為結構正確之 ReportGenerationError{stage:PERSIST}（非未捕捉例外／非誤標／非資料毀損）——connection_limit=3 為 reviewer 刻意構造之極端合成參數（三連線應付 12 併發），非 Spec AC 之逐字併發保證（該保證見 AC-04(c)，已於本檔另行以真實連線池重驗，見 T8R2 SF-5）",
+        async () => {
+          if (!DB_URL) throw new Error("unreachable — describeWithDb 已守門 DB_URL 存在");
+          const probeUrl = DB_URL.includes("?")
+            ? `${DB_URL}&connection_limit=3`
+            : `${DB_URL}?connection_limit=3`;
+          const probePrisma = new PrismaClient({ datasources: { db: { url: probeUrl } } });
+          try {
+            await probePrisma.$connect();
+            // T8R3：兩組（TRV／MNT）各 6 筆——12 筆若全同組，會被 (4)b 顧問
+            // 鎖序列化，使本探針退化成純粹測「顧問鎖排隊」而非其原始目的
+            // （連線池 P2024/P2028 處置）；兩組互不阻擋（見下方跨組不阻擋
+            // 測試），故連線池競爭仍然真實發生於兩組之間。
+            const travelIds = await Promise.all(
+              Array.from({ length: 6 }, (_, i) => createTravelApp(`t8r2-mf3-trv-${i}`))
+            );
+            const maintenanceIds = await Promise.all(
+              Array.from({ length: 6 }, (_, i) => createMaintenanceApp(`t8r2-mf3-mnt-${i}`))
+            );
+            const ids = [...travelIds, ...maintenanceIds];
+
+            vi.mocked(renderPdf).mockImplementation(async () => {
+              await new Promise((resolve) => setTimeout(resolve, 1500));
+              return Buffer.from(FAKE_PDF_BYTES);
+            });
+
+            const deps = buildDirectDeps(probePrisma, 8000);
+            const startedAt = Date.now();
+            const results = await Promise.allSettled(
+              ids.map((id) => generateReport(deps, id, ownerId))
+            );
+            const elapsedMs = Date.now() - startedAt;
+            const okCount = results.filter((r) => r.status === "fulfilled").length;
+            console.info(
+              `[T8R2][MF-3] connection_limit=3／12 併發／交易內 1500ms → 修復後 ${okCount}/12 成功，耗時 ${elapsedMs}ms`
+            );
+
+            // T8R2：任何殘餘失敗（reviewer 之極端合成參數下，修復前 6/12、
+            // 修復後三輪實測皆穩定收斂於 11/12）皆須是結構完整之
+            // ReportGenerationError（正確之 stage:PERSIST 語意——「(4)f 重
+            // 試耗盡」本就屬 PERSIST，非誤標），而非未捕捉例外或其他不可行
+            // 動之失敗形態。
+            for (const r of results) {
+              if (r.status === "rejected") {
+                const reason = r.reason as { name?: string; stage?: string; message?: string };
+                console.info(`[T8R2][MF-3] 失敗個案：${String(reason?.message ?? reason)}`);
+                expect(reason?.name).toBe("ReportGenerationError");
+                expect(reason?.stage).toBe("PERSIST");
+              }
+            }
+
+            // 修復前基準 6/12；修復後三輪獨立實測皆為 11/12（見 Task
+            // Handoff）——本斷言以「較修復前顯著改善」為準（連線池 3 應付
+            // 12 併發屬 reviewer 刻意構造之極端合成場景，非逐字 Spec AC）。
+            expect(okCount).toBeGreaterThanOrEqual(11);
+          } finally {
+            await probePrisma.$disconnect();
+          }
+        },
+        { timeout: 30000 }
+      );
+
+      // -----------------------------------------------------------------------
+      // T8R4 行為守門②：不同 (numberPrefix, numberPeriod) 組互不阻擋（§9.1
+      // (4) 不變式「同組排隊為唯一性之主防線」之後半句）
+      //
+      // 誠實揭露（T8R3，沿用）：以完整 `generateReport()` E2E 路徑量測跨組
+      // 耗時曾誤導——即使停用顧問鎖，兩個不同群組（不同 applicationId／不
+      // 同 numberPrefix）之併發呼叫仍實測穩定耗時 ~1250ms（非預期之
+      // ~600ms），與顧問鎖無關；根因為 `Report` 表在測試環境近乎全空時，
+      // 「SERIALIZABLE 之 SIREAD 述詞鎖於稀疏／小表下之已知粗粒度現象」
+      // ——此為 T8R3 時期（本交易仍為 SERIALIZABLE）之既有觀察，與顧問鎖
+      // 之跨組行為無關，故不能用於鑑別顧問鎖本身，改以下方隔離探針。
+      // **T8R4 更新**：本交易改 `ReadCommitted` 後，此類 SIREAD 粗粒度衝突
+      // 已結構上不可能發生（`READ COMMITTED` 無 SSI 述詞鎖機制）——下方探
+      // 針之隔離等級同步改為 `ReadCommitted`，與 report-service.ts 之真實
+      // 呼叫逐字同構（含隔離等級），非僅鎖呼叫本身同構。
+      // -----------------------------------------------------------------------
+
+      async function acquireLockAndHold(
+        prismaClient: PrismaClient,
+        prefix: string,
+        period: string,
+        holdMs: number
+      ): Promise<void> {
+        await prismaClient.$transaction(
+          async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${prefix} || ${period}))`;
+            await new Promise((resolve) => setTimeout(resolve, holdMs));
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+            timeout: 15000,
+            maxWait: 15000,
+          }
+        );
+      }
+
+      it("T8R4：同組（相同 numberPrefix／numberPeriod）併發 2 筆、各 500ms → 顧問鎖排隊使總耗時貼近序列化下限（~1000ms，正向對照——證明鎖確實在同組生效，ReadCommitted 下亦然）", async () => {
+        const startedAt = Date.now();
+        await Promise.all([
+          acquireLockAndHold(prisma, "TRV", "202699", 500),
+          acquireLockAndHold(prisma, "TRV", "202699", 500),
+        ]);
+        const elapsedMs = Date.now() - startedAt;
+        console.info(
+          `[T8R4] 同組顧問鎖直接量測（隔離噪訊，ReadCommitted）→ 耗時 ${elapsedMs}ms（預期 >= ~900ms）`
+        );
+        expect(elapsedMs).toBeGreaterThanOrEqual(900);
+      });
+
+      it("T8R4：不同組（不同 numberPrefix，同一 numberPeriod）併發 2 筆、各 500ms → 顧問鎖不阻擋，總耗時貼近單筆耗時（若鎖鍵誤用共用常數而非逐組雜湊，本測試必紅）", async () => {
+        const startedAt = Date.now();
+        await Promise.all([
+          acquireLockAndHold(prisma, "TRV", "202699", 500),
+          acquireLockAndHold(prisma, "MNT", "202699", 500),
+        ]);
+        const elapsedMs = Date.now() - startedAt;
+        console.info(
+          `[T8R4] 跨組顧問鎖直接量測（隔離噪訊，ReadCommitted）→ 耗時 ${elapsedMs}ms（預期 < ~900ms，遠低於同組之序列化下限）`
+        );
+        expect(elapsedMs).toBeLessThan(900);
       });
     });
   });
