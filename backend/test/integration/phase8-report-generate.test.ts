@@ -33,8 +33,9 @@
  * 正確測試設計，而非弱化。
  *
  * ---------------------------------------------------------------------------
- * 實作決策揭露 #2：多數測試使用 `renderPdf` 之快速合成替身，僅 AC-06 完整
- * 性測試使用真實 Chromium
+ * 實作決策揭露 #2（T8R SF-1／SF-2 更正）：多數測試使用 `renderPdf` 之快速
+ * 合成替身（`beforeEach` 逐測試重新套用），僅 AC-06 完整性測試使用真實
+ * Chromium
  * ---------------------------------------------------------------------------
  * AC-09（PDF 引擎正確性、效能、逾時、殭屍瀏覽器防禦）已由
  * `phase8-pdf-render.test.ts`（T7）真實 Chromium 全覆蓋，本檔之 AC-04／
@@ -51,6 +52,14 @@
  * `renderReportHtml` 亦以 `vi.fn(actual.renderReportHtml)`（呼叫穿透）包
  * 裹，供 T5-複審-FW-A 前置義務之 spy 斷言（PDF 路徑呼叫的正是該函式）與
  * AC-07①（RENDER：HTML 渲染拋錯）失敗注入共用。
+ * **T8R SF-1 根因與修復**：外層 `afterEach` 之 `vi.restoreAllMocks()`
+ * （見下）在**每一則測試之後**都會把 `vi.fn(actual.fn)` 建立之 mock（含
+ * `beforeAll` 設定之 `mockImplementation`）還原為初始狀態——若覆寫本身只
+ * 在 `beforeAll` 設定一次，則僅第一則測試享有合成 PDF 替身，其後每一則測
+ * 試實際上都在無聲呼叫真實 `renderPdf`（真實 Chromium），既拖慢整檔執行
+ * 時間、也使「12 併發改合成 PDF 替身」（SF-2）之設計意圖名存實亡。修復：
+ * 覆寫改置於 `beforeEach`（見下方區塊），確保每一則測試開始前都重新套用
+ * 合成實作，與 `afterEach` 之逐測試還原相互配合，而非僅套用一次。
  *
  * ---------------------------------------------------------------------------
  * 範圍邊界（誠實揭露；治理 §10「單 Task ≤5 AC」）
@@ -65,7 +74,7 @@ import os from "node:os";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import { getReportNumberPeriod } from "../../src/reports/report-number.js";
 import { buildServer } from "../../src/server.js";
@@ -188,6 +197,54 @@ describe("PHASE-008-T8 — 結構性斷言：無更新／刪除 Report 之程式
     const src = fs.readFileSync(serverSrcPath, "utf8");
     expect(src).toMatch(/new LocalVolumeStorage\(storageRoot, \{ prefixes: \["att"\] \}\)/);
     expect(src).toMatch(/new LocalVolumeStorage\(reportStorageRoot, \{ prefixes: \["rpt"\] \}\)/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // T8R SF-4：SERIALIZABLE 隔離等級 ＋「渲染在交易內、配號早於渲染」之結構
+  // 性守門（§9.1 (4)b/(4)c；防後續重構默默退回舊順序）
+  // ---------------------------------------------------------------------------
+
+  it("T8R SF-4：交易隔離等級恆為 Serializable（隔離等級降級 mutant 必紅）", () => {
+    const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
+    const src = fs.readFileSync(serviceSrcPath, "utf8");
+    expect(src).toMatch(/isolationLevel:\s*Prisma\.TransactionIsolationLevel\.Serializable/);
+  });
+
+  it("T8R SF-4：renderReportHtml 之呼叫位於 $transaction(...) 回呼內部，且配號（buildReportNumber）早於渲染（順序對調 mutant 必紅；渲染搬出交易 mutant 必紅）", () => {
+    const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
+    const src = fs.readFileSync(serviceSrcPath, "utf8");
+
+    const txCallIdx = src.indexOf("$transaction(");
+    const serializableIdx = src.indexOf("Prisma.TransactionIsolationLevel.Serializable");
+    const numberAssignIdx = src.indexOf("buildReportNumber(prefix, period, nextSequence)");
+    const renderCallIdx = src.indexOf("renderReportHtml(");
+
+    expect(txCallIdx).toBeGreaterThan(-1);
+    expect(serializableIdx).toBeGreaterThan(-1);
+    expect(numberAssignIdx).toBeGreaterThan(-1);
+    expect(renderCallIdx).toBeGreaterThan(-1);
+
+    // 配號早於渲染（§9.1「(4) 內之順序不可對調」）。
+    expect(numberAssignIdx).toBeLessThan(renderCallIdx);
+    // 渲染呼叫位於 $transaction(...) 開始之後、其 isolationLevel 選項物件
+    // 之前——即巢狀於同一個交易回呼內部，而非另一個獨立、於交易外執行的
+    // 函式。
+    expect(txCallIdx).toBeLessThan(renderCallIdx);
+    expect(renderCallIdx).toBeLessThan(serializableIdx);
+  });
+
+  // ---------------------------------------------------------------------------
+  // AR-1（generatedAt 顯式性；T8-REVIEW 移交，低成本補列）：本輪 generatedAt
+  // 恆為顯式變數（單一 `new Date()` 賦值），落庫時明寫該變數而非仰賴 DB 欄
+  // 位預設值 `@default(now())`（schema.prisma :533）——mutant「移除
+  // generatedAt: generatedAt 欄位」（改仰賴 DB now()）以此結構斷言必紅。
+  // ---------------------------------------------------------------------------
+
+  it("AR-1：INSERT 明寫 generatedAt（不仰賴 DB @default(now()) 之隱式時間）", () => {
+    const serviceSrcPath = new URL("../../src/reports/report-service.ts", import.meta.url);
+    const src = fs.readFileSync(serviceSrcPath, "utf8");
+    expect(src).toMatch(/const generatedAt = new Date\(\);/);
+    expect(src).toMatch(/generatedAt,\s*\n\s*\},/);
   });
 });
 
@@ -466,6 +523,32 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
         expect(vi.mocked(renderReportHtml)).toHaveBeenCalled();
         expect(vi.mocked(renderPdf)).toHaveBeenCalled();
 
+        // T8R AC-15 前置自證（方案 (d) 之直接結果）：持久化 PDF 位元組實際
+        // 含報表編號字串——證明 §9.1 (4)b 配號早於 (4)c 渲染確實生效，PDF
+        // 不再永久呈現「尚未產生」佔位（D3 修訂前之三難已由方案 (d) 解
+        // 決）。
+        // T8R 誠實揭露：實測（本機真實 Chromium）發現持久化 PDF 之內容串流
+        // 以 Type3 字型 glyph 描述（`d1` 運算子＋向量路徑）呈現文字，而非
+        // 逐字元 `Tj` 文字運算子——對原始位元組（含 zlib 解壓縮後）做子字
+        // 串比對**恆不命中**任何 ASCII 文字，此為 Chromium/Skia PDF 後端
+        // 之既有行為，非本檔或 pdf-renderer.ts／report-html.ts 之缺陷，亦
+        // 非本 Task 可調整（pdf-renderer.ts 屬 Files Forbidden，僅可
+        // import）。故「PDF 位元組逐位元組含 reportNumber 字串」在此渲染
+        // 管線下技術上不可行（等同要求 OCR／字型輪廓辨識，超出零新增套件
+        // 之 Spec 邊界）。改採 AC-15 自身定義之同一層次（HTML 字串）作為
+        // 前置自證：直接斷言「餵給 renderPdf 之 HTML」（即 renderReportHtml
+        // 之回傳值，亦即 PDF 之產生輸入）逐字含 reportNumber——這正是 §9.1
+        // (4)b 配號早於 (4)c 渲染之結構性結果，也是 AC-15「同一函式、同一
+        // 輸入」得以成立之前提（AC-15 本身比較的是 HTML 字串而非 PDF 位元
+        // 組，見 Spec :186）。
+        if (!row?.reportNumber) throw new Error("unreachable — reportNumber asserted above");
+        const renderHtmlCall = vi.mocked(renderReportHtml).mock.calls.at(-1);
+        const renderHtmlResult = vi.mocked(renderReportHtml).mock.results.at(-1);
+        expect(renderHtmlCall?.[0].common.reportNumber).toBe(row.reportNumber);
+        expect(renderHtmlCall?.[0].common.generatedAt).toBe(row.generatedAt.toISOString());
+        expect(renderHtmlResult?.type).toBe("return");
+        expect(String(renderHtmlResult?.value)).toContain(row.reportNumber);
+
         // §7.2：ReportDto 之鍵集恰為六鍵（AC-27 之產生端點側，寬鬆對照）。
         expect(Object.keys(body.report).sort()).toEqual(
           ["reportNumber", "generatedAt", "fileName", "byteSize", "downloadUrl", "printUrl"].sort()
@@ -481,7 +564,10 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
   // -------------------------------------------------------------------------
 
   describe("§快速固定裝置（renderPdf 覆寫為合成位元組）", () => {
-    beforeAll(() => {
+    // T8R SF-1：改為 beforeEach（原 beforeAll 僅套用一次，會被外層
+    // afterEach 之 vi.restoreAllMocks() 於首測後還原，見檔頭「實作決策揭
+    // 露 #2」根因說明）——確保每一則測試開始前都重新套用合成實作。
+    beforeEach(() => {
       vi.mocked(renderPdf).mockImplementation(async () => Buffer.from(FAKE_PDF_BYTES));
     });
 
@@ -615,13 +701,15 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
       });
 
       it(
-        "(c) 12 筆不同申請同時產生（同月同型）→ 全部成功、12 個編號互異、序號集合恰為 base+1..base+12（無跳號、無重複）",
+        "(c) 12 筆不同申請同時產生（同月同型）→ 全部成功、12 個編號互異、序號集合恰為 base+1..base+12（無跳號、無重複）；T8R AC-04(c) 方案 (d) 結構下重驗（渲染移入交易，重試須重新渲染）",
         async () => {
           const base = await baseSequence("TRV", TRAVEL_PERIOD);
           const ids = await Promise.all(
             Array.from({ length: 12 }, (_, i) => createTravelApp(`ac04c-${i}`))
           );
 
+          // T8R：耗時量測（12 併發、重試上限 5）——記入 Handoff。
+          const startedAt = Date.now();
           const responses = await Promise.all(
             ids.map((id) =>
               app.inject({
@@ -631,6 +719,8 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
               })
             )
           );
+          const elapsedMs = Date.now() - startedAt;
+          console.info(`[T8R][AC-04(c)] 12 併發（方案 d 結構）耗時 ${elapsedMs}ms`);
 
           for (const resp of responses) {
             expect(resp.statusCode).toBe(201);
@@ -714,9 +804,20 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
     // -----------------------------------------------------------------------
 
     describe("AC-10：同一申請併發產生", () => {
-      it("2 個併發 POST → 恰一份 Report、兩回應皆成功且編號相同、storage 恰一個 key（零孤兒）", async () => {
+      it("2 個併發 POST → 恰一份 Report、兩回應皆成功且編號相同、storage 恰一個 key（零孤兒）；T8R SF-3：敗方之交易內 put 於回滾後補償——以 put/delete spy 逐 key 正向斷言（非僅『無殘留』之恆真式）", async () => {
         const id = await createTravelApp("ac10");
         const keysBefore = listReportStorageKeys(reportStorageRoot);
+
+        // T8R SF-3：正向斷言之基礎——spy 呼叫穿透（不覆寫實作），逐一記錄
+        // 實際 put／delete 呼叫之 key。兩個併發請求對同一 applicationId 分
+        // 屬各自的 SERIALIZABLE 交易快照，§9.1 (4)a 之交易內冪等檢查對真
+        // 正併發之兩者皆會通過（互不可見對方尚未提交之列），故結構上必然
+        // 有一方於 (4)f INSERT 撞上 applicationId 唯一鍵——此為關聯式資料
+        // 庫之保證，非計時巧合；「敗方」在撞鍵之前已完整跑過 (4)c~e（渲染
+        // ＋put＋讀回校驗），故必有一個「已 put 但未保留」之 key 可供本測
+        // 試鑑別。
+        const putSpy = vi.spyOn(LocalVolumeStorage.prototype, "put");
+        const deleteSpy = vi.spyOn(LocalVolumeStorage.prototype, "delete");
 
         const [respA, respB] = await Promise.all([
           app.inject({
@@ -741,10 +842,25 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
 
         const rows = await prisma.report.findMany({ where: { applicationId: id } });
         expect(rows).toHaveLength(1);
+        const finalKey = rows[0].storageKey;
 
         const keysAfter = listReportStorageKeys(reportStorageRoot);
         // 恰新增一個 key（零孤兒——敗方已寫入之 PDF 檔須被清理）。
         expect(keysAfter.length).toBe(keysBefore.length + 1);
+        expect(keysAfter).toContain(finalKey);
+
+        // T8R SF-3 正向斷言：每一個曾經 put 過、但非最終保留之 key，皆須
+        // 有對應的 delete 呼叫——逐一比對呼叫參數，而非僅比對檔案數量。
+        const putKeys = putSpy.mock.calls
+          .map((call) => call[0] as string)
+          .filter((key) => key.startsWith("rpt/"));
+        const deletedKeys = deleteSpy.mock.calls.map((call) => call[0] as string);
+        const orphanKeys = putKeys.filter((key) => key !== finalKey);
+        // 本測試須確實命中至少一次補償情境（非零呼叫恆真通過）。
+        expect(orphanKeys.length).toBeGreaterThan(0);
+        for (const key of orphanKeys) {
+          expect(deletedKeys).toContain(key);
+        }
       });
     });
 
@@ -881,13 +997,24 @@ describeWithDb("PHASE-008-T8 — POST /applications/:id/report", () => {
         await assertZeroResidual(id, keysBefore);
       });
 
-      it("④'（雜湊不符變體）：讀回位元組數相同但內容不同（雜湊不符）→ 500 REPORT_GENERATION_FAILED { stage: VERIFY }，零殘留", async () => {
+      it("④'（雜湊不符變體，T8R 更正——corrupted buffer 改由當次實際 pdfBytes 長度構造）：讀回位元組數相同但內容不同（雜湊不符）→ 500 REPORT_GENERATION_FAILED { stage: VERIFY }，零殘留；雜湊臂 mutant（移除 SHA-256 比對）必紅", async () => {
         const id = await createTravelApp("ac07-4b");
         const keysBefore = listReportStorageKeys(reportStorageRoot);
 
+        // T8R 修正：原版本直接複製模組層級常數 FAKE_PDF_BYTES 構造等長毀損
+        // 位元組——一旦本次呼叫實際寫入的 pdfBytes 因任何原因（mock 失
+        // 效、未來替身內容改變……）與 FAKE_PDF_BYTES 不同長度，毀損位元組
+        // 會先撞上「位元組數不符」分支而非「雜湊不符」分支，使本測試名不
+        // 符實，且移除 SHA-256 比對之 mutant 未必能被本測試鑑別（視執行順
+        // 序而定，見 SF-1 根因說明）。改為：以 spy 穿透記錄本次呼叫實際
+        // put 之位元組，讀回時以「該次實際位元組之同長度、單一位元翻轉」
+        // 構造毀損版本——確保位元組數必定相符，唯一差異只在雜湊，故本測
+        // 試恆為雜湊臂之鑑別測試，不受何處提供 PDF 位元組之細節影響。
+        const putSpy = vi.spyOn(LocalVolumeStorage.prototype, "put");
         vi.spyOn(LocalVolumeStorage.prototype, "get").mockImplementationOnce(async () => {
-          // 與 FAKE_PDF_BYTES 等長但內容不同 → 位元組數相符但雜湊不符。
-          const corrupted = Buffer.from(FAKE_PDF_BYTES);
+          const lastPutCall = putSpy.mock.calls.at(-1);
+          const writtenBytes = lastPutCall?.[1] as Buffer;
+          const corrupted = Buffer.from(writtenBytes);
           corrupted[10] = corrupted[10] ^ 0xff;
           return corrupted;
         });
