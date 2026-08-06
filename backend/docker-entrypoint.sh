@@ -12,8 +12,9 @@ set -e
 # (which Docker creates with root:root 755 ownership on first mount).
 #
 # ATTACHMENT_STORAGE_ROOT defaults to /data/storage/attachments in compose
-# (see docker-compose.yml). The PDF prefix (/data/storage/pdf) is reserved for
-# PHASE-008 and does NOT need to be created here.
+# (see docker-compose.yml). REPORT_STORAGE_ROOT (PHASE-008-T7b, Spec §16 D6)
+# defaults to /data/storage/pdf — the two roots are prefix-isolated sub-paths of
+# the same storage volume, mirroring the att/rpt storage-key prefix isolation.
 # ---------------------------------------------------------------------------
 if [ -n "$ATTACHMENT_STORAGE_ROOT" ]; then
   mkdir -p "$ATTACHMENT_STORAGE_ROOT"
@@ -21,6 +22,14 @@ if [ -n "$ATTACHMENT_STORAGE_ROOT" ]; then
   echo "Storage directory initialised: $ATTACHMENT_STORAGE_ROOT"
 else
   echo "Warning: ATTACHMENT_STORAGE_ROOT not set; storage directory not pre-initialised."
+fi
+
+if [ -n "$REPORT_STORAGE_ROOT" ]; then
+  mkdir -p "$REPORT_STORAGE_ROOT"
+  chown -R appuser:appgroup "$REPORT_STORAGE_ROOT"
+  echo "Storage directory initialised: $REPORT_STORAGE_ROOT"
+else
+  echo "Warning: REPORT_STORAGE_ROOT not set; storage directory not pre-initialised."
 fi
 
 echo "Running prisma migrate deploy..."
