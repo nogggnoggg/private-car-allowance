@@ -50,14 +50,15 @@
  * `REPORT_GENERATION_FAILED`（500）——不經 `AppError`（見 report-service.ts
  * 檔頭「錯誤碼與日誌安全」）
  * ---------------------------------------------------------------------------
- * `platform/errors.ts` 之 `ErrorCode` 聯集尚未收錄此碼（T11 之 Files
- * Allowed，非本 Task 範圍）。本檔改為捕捉 `report-service.ts` 之
- * `ReportGenerationError`，以既有 `buildErrorBody`（`code` 參數型別為
- * `string`）手動組出與其餘端點同形狀之錯誤回應——wire 格式（`{ error: {
- * code, message, requestId, details } }`）與經由 `AppError` 產生者完全一
- * 致，僅是繞過 `ErrorCode` 之編譯期收斂檢查（該檢查於 T11 落地後即涵蓋此
- * 碼，屆時本檔可原樣沿用不需修改）。回應 `details` 僅含 `{ stage }`，日誌
- * 僅含 `{ stage, applicationId }`——皆不含原始錯誤訊息（T7-FW2①）。
+ * 【歷史沿革】撰寫本節時 `platform/errors.ts` 之 `ErrorCode` 聯集尚未收錄此
+ * 碼（T11 之 Files Allowed，非當時 Task 範圍）；T11（51cc459）已落地收錄。
+ * 本檔改為捕捉 `report-service.ts` 之 `ReportGenerationError`，以既有
+ * `buildErrorBody`（`code` 參數型別為 `string`）手動組出與其餘端點同形狀之
+ * 錯誤回應——wire 格式（`{ error: { code, message, requestId, details } }`）
+ * 與經由 `AppError` 產生者完全一致，僅是繞過 `ErrorCode` 之編譯期收斂檢查
+ * （該檢查現已涵蓋此碼，本檔原樣沿用不需修改）。回應 `details` 僅含
+ * `{ stage }`，日誌僅含 `{ stage, applicationId }`——皆不含原始錯誤訊息
+ * （T7-FW2①）。
  *
  * ---------------------------------------------------------------------------
  * B-28：storage 檔案遺失 → 404 不 500，錯誤日誌不含 storage key

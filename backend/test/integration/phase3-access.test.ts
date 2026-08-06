@@ -24,11 +24,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  getAttachmentContent,
+  getAttachmentThumbnail,
+} from "../../src/attachment/access-service.js";
 import { buildMinimalHeader } from "../../src/attachment/detect-mime.js";
+import type { CurrentUser } from "../../src/auth/middleware.js";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
+import type { Storage } from "../../src/storage/storage.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -562,5 +568,142 @@ describeWithDb("PHASE-003-T5 — GET /attachments/:id/content and /thumbnail", (
     expect(res.statusCode).toBe(403);
     const json = JSON.parse(res.body);
     expect(json.error.code).toBe("FORBIDDEN");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AR-4 (PHASE-006 T6 附帶發現；PHASE-008-REPAIR)：
+//   getAttachmentContent/getAttachmentThumbnail 之 catch 區塊記錄 err.message，
+//   而 LocalVolumeStorage 之錯誤訊息逐字內嵌 storageKey；sanitizeForLog 僅清除
+//   憑證樣式字串（見 log-sanitize.ts 檔頭），不清除路徑或 key，不足以防止洩漏。
+//   本節在服務層直接呼叫 getAttachmentContent/getAttachmentThumbnail（stub
+//   prisma + stub storage），不需要 DB，故獨立於 describeWithDb 之外恆跑。
+// ---------------------------------------------------------------------------
+
+describe("AR-4 — access-service 錯誤日誌不得洩漏 storageKey 或 volume 絕對路徑", () => {
+  const FAKE_STORAGE_KEY = "att/leak-probe-fake-key-abc123/original";
+  const FAKE_THUMB_KEY = "att/leak-probe-fake-key-abc123/thumb";
+  const FAKE_ABS_PATH = "C:\\fake\\storage\\root\\att\\leak-probe-fake-key-abc123\\original";
+
+  const OWNER_USER: CurrentUser = {
+    id: "ar4-owner-user-id",
+    role: "REGULAR",
+    mustChangePassword: false,
+    isActive: true,
+  };
+
+  /**
+   * Mirrors the shape of LocalVolumeStorage.get()'s real "not found" message
+   * (`Storage key not found: "<key>"` — see local-volume-storage.ts) plus an
+   * ENOENT-style absolute path, so the fixture also covers any fs-level error
+   * that might carry a path.
+   */
+  function makeStorageNotFoundError(key: string): Error {
+    return new Error(
+      `Storage key not found: ${JSON.stringify(key)}; resolved path: ${FAKE_ABS_PATH}`
+    );
+  }
+
+  function makeStubPrisma(attachment: Record<string, unknown>) {
+    return {
+      attachment: {
+        findUnique: vi.fn().mockResolvedValue(attachment),
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal stub for test injection
+    } as any;
+  }
+
+  function makeStubStorage(getImpl: () => Promise<Buffer>): Storage {
+    return {
+      put: vi.fn(),
+      delete: vi.fn(),
+      exists: vi.fn(),
+      get: vi.fn(getImpl),
+    } as unknown as Storage;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 反向探針：先證明 fixture 本身確實內嵌敏感字串，證明下方的「不含」斷言
+  // 並非恆真（若 fixture 本身不含該字串，any-string 的 not.toContain 永遠通
+  // 過，斷言便失去意義）。
+  // ---------------------------------------------------------------------------
+  it("反向探針：fixture 錯誤訊息確實逐字內嵌 storageKey 與絕對路徑（證明下方斷言非恆真）", () => {
+    const err = makeStorageNotFoundError(FAKE_STORAGE_KEY);
+    expect(err.message).toContain(FAKE_STORAGE_KEY);
+    expect(err.message).toContain(FAKE_ABS_PATH);
+    expect(err.message).toContain("att/");
+  });
+
+  it("getAttachmentContent: storage.get 失敗仍回 404 NOT_FOUND（契約不變），但日誌不含 storageKey 或絕對路徑", async () => {
+    const prisma = makeStubPrisma({
+      id: "ar4-att-1",
+      storageKey: FAKE_STORAGE_KEY,
+      thumbnailKey: null,
+      mimeType: "image/jpeg",
+      ownerId: OWNER_USER.id,
+    });
+    const storage = makeStubStorage(() =>
+      Promise.reject(makeStorageNotFoundError(FAKE_STORAGE_KEY))
+    );
+    const log = { error: vi.fn() };
+
+    await expect(
+      getAttachmentContent(prisma, storage, "ar4-att-1", OWNER_USER, log)
+    ).rejects.toMatchObject({ code: "NOT_FOUND", httpStatus: 404 });
+
+    // 對外錯誤契約不變：仍是 404 NOT_FOUND（斷言已在上方 rejects.toMatchObject 完成）。
+    expect(log.error).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain(FAKE_STORAGE_KEY);
+    expect(serialized).not.toContain("leak-probe-fake-key-abc123");
+    expect(serialized).not.toContain(FAKE_ABS_PATH);
+    expect(serialized).not.toContain("att/");
+  });
+
+  it("getAttachmentThumbnail: thumbnailKey 存在時 storage.get 失敗仍回 404，日誌不含 thumbnailKey 或絕對路徑", async () => {
+    const prisma = makeStubPrisma({
+      id: "ar4-att-2",
+      storageKey: FAKE_STORAGE_KEY,
+      thumbnailKey: FAKE_THUMB_KEY,
+      mimeType: "image/jpeg",
+      ownerId: OWNER_USER.id,
+    });
+    const storage = makeStubStorage(() => Promise.reject(makeStorageNotFoundError(FAKE_THUMB_KEY)));
+    const log = { error: vi.fn() };
+
+    await expect(
+      getAttachmentThumbnail(prisma, storage, "ar4-att-2", OWNER_USER, log)
+    ).rejects.toMatchObject({ code: "NOT_FOUND", httpStatus: 404 });
+
+    expect(log.error).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain(FAKE_THUMB_KEY);
+    expect(serialized).not.toContain("leak-probe-fake-key-abc123");
+    expect(serialized).not.toContain(FAKE_ABS_PATH);
+    expect(serialized).not.toContain("att/");
+  });
+
+  it("getAttachmentThumbnail: D5 fallback（thumbnailKey=null 落回 storageKey）時 storage.get 失敗仍回 404，日誌不含 storageKey", async () => {
+    const prisma = makeStubPrisma({
+      id: "ar4-att-3",
+      storageKey: FAKE_STORAGE_KEY,
+      thumbnailKey: null,
+      mimeType: "image/png",
+      ownerId: OWNER_USER.id,
+    });
+    const storage = makeStubStorage(() =>
+      Promise.reject(makeStorageNotFoundError(FAKE_STORAGE_KEY))
+    );
+    const log = { error: vi.fn() };
+
+    await expect(
+      getAttachmentThumbnail(prisma, storage, "ar4-att-3", OWNER_USER, log)
+    ).rejects.toMatchObject({ code: "NOT_FOUND", httpStatus: 404 });
+
+    expect(log.error).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(log.error.mock.calls);
+    expect(serialized).not.toContain(FAKE_STORAGE_KEY);
+    expect(serialized).not.toContain(FAKE_ABS_PATH);
+    expect(serialized).not.toContain("att/");
   });
 });

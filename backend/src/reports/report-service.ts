@@ -127,16 +127,16 @@
  * ---------------------------------------------------------------------------
  * 錯誤碼與日誌安全（T7-FW2①、§7.5 D5）
  * ---------------------------------------------------------------------------
- * `platform/errors.ts` 之 `ErrorCode` 聯集尚未收錄 `REPORT_GENERATION_FAILED`
- * ——該檔案屬 T11（錯誤合約與日誌）之 Files Allowed，非本 Task 範圍（治理
- * 2026-08-01.2：不得修改 Packet 標記為 Forbidden 的檔案）。本檔因而**不**
- * 經由 `AppError` 表達此失敗，改以本檔自有之 `ReportGenerationError`（僅含
- * `stage`，不含任何原始錯誤訊息、路徑或 storage key）向上拋出；
- * `routes.ts` 之 catch 區塊直接以 `buildErrorBody("REPORT_GENERATION_FAILED",
- * ...)` 組出 wire 格式（`buildErrorBody` 之 `code` 參數型別為 `string`，非
- * 收斂之 `ErrorCode`，故不需修改 `errors.ts` 即可組出正確、與其餘端點形狀
- * 一致的錯誤回應）。T11 落地 `ErrorCode` 聯集後，此處與 routes.ts 之呼叫端
- * 皆可原樣沿用（`buildErrorBody` 的 `code` 參數本就接受 union 的任何成員）。
+ * 【歷史沿革】撰寫本節時 `platform/errors.ts` 之 `ErrorCode` 聯集尚未收錄
+ * `REPORT_GENERATION_FAILED`（該檔案屬 T11 之 Files Allowed，非當時 Task
+ * 範圍）；T11（51cc459）已落地收錄此碼。本檔因而**不**經由 `AppError` 表達
+ * 此失敗，改以本檔自有之 `ReportGenerationError`（僅含 `stage`，不含任何原
+ * 始錯誤訊息、路徑或 storage key）向上拋出；`routes.ts` 之 catch 區塊直接以
+ * `buildErrorBody("REPORT_GENERATION_FAILED", ...)` 組出 wire 格式
+ * （`buildErrorBody` 之 `code` 參數型別為 `string`，非收斂之 `ErrorCode`，
+ * 故不需修改 `errors.ts` 即可組出正確、與其餘端點形狀一致的錯誤回應）。
+ * `ErrorCode` 聯集現已收錄此碼，此處與 routes.ts 之呼叫端原樣沿用
+ * （`buildErrorBody` 的 `code` 參數本就接受 union 的任何成員），不需修改。
  * 各階段之 catch 區塊刻意**不**保留原始 `err`（連內部欄位也不留）——
  * `LocalVolumeStorage` 之錯誤訊息逐字含 storage key（T8a `report-storage.ts`
  * 檔頭同型說明），`chromium.launch()` 失敗訊息逐字含 `executablePath`（T7-
