@@ -371,10 +371,12 @@ describe("§11.1 pdf-renderer 選項組裝之結構性斷言", () => {
 
 describe("PDF 校驗（§9.1 步驟 5：%PDF- 開頭／%%EOF 結尾／非零長度）", () => {
   it("page.pdf() 回傳非合法 PDF 位元組（無 %PDF- 開頭）時，renderPdf 拋出明確錯誤（mutant「PDF 校驗跳過」自證點）", async () => {
-    installChromiumSpy(() => Buffer.from("not a pdf at all, just garbage bytes"));
+    const handle = installChromiumSpy(() => Buffer.from("not a pdf at all, just garbage bytes"));
     const html = makeTinyHtml();
 
     await expect(renderPdf(html, { timeoutMs: 30000 })).rejects.toThrow(/%PDF-/);
+    // T7-AR7：PDF 校驗失敗路徑仍須確實關閉瀏覽器（不留殭屍瀏覽器）。
+    expect(handle.closeCallCount).toBe(1);
   });
 
   it("page.pdf() 回傳零長度位元組時，renderPdf 拋出明確錯誤", async () => {

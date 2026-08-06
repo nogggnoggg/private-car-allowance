@@ -20,6 +20,7 @@ import { parametersPlugin } from "./parameters/routes.js";
 import { registerErrorHandlers } from "./platform/error-handler.js";
 import { healthPlugin, makeDefaultDbProbe } from "./platform/health.js";
 import type { DbProbe } from "./platform/health.js";
+import { reportsPlugin } from "./reports/routes.js";
 import { LocalVolumeStorage } from "./storage/index.js";
 import { fuelConsumptionPlugin } from "./users/fuel-consumption-routes.js";
 
@@ -40,6 +41,12 @@ export interface BuildServerOptions {
    * When provided, LocalVolumeStorage uses this path instead of ATTACHMENT_STORAGE_ROOT.
    */
   storageRoot?: string;
+  /**
+   * Override the report storage root path (for integration tests; PHASE-008-T8).
+   * When provided, the report LocalVolumeStorage instance uses this path instead
+   * of env REPORT_STORAGE_ROOT.
+   */
+  reportStorageRoot?: string;
 }
 
 export async function buildServer(
@@ -116,7 +123,10 @@ export async function buildServer(
     );
   }
 
-  const storage = new LocalVolumeStorage(storageRoot);
+  // PHASE-008-T8a-FW①：附件實例明寫 { prefixes: ["att"] }（與省略時之預設值
+  // 完全相同——零行為變動，僅使白名單前綴在此處可見、不必回頭查
+  // LocalVolumeStorage 的預設值定義）。
+  const storage = new LocalVolumeStorage(storageRoot, { prefixes: ["att"] });
   await fastify.register(attachmentPlugin, { prisma, storage });
 
   // Register applications routes (差旅草稿 CRUD — PHASE-004-T3)
@@ -124,6 +134,40 @@ export async function buildServer(
 
   // Register mileage statistics route (GET /statistics/mileage — PHASE-005-T4)
   await fastify.register(mileagePlugin, { prisma });
+
+  // Register reports routes (POST /applications/:id/report — PHASE-008-T8)
+  // Report storage root resolution mirrors ATTACHMENT_STORAGE_ROOT above
+  // (Spec §10-2, §16 D6; T7-FW2④ — fail-fast shape must mirror
+  // ATTACHMENT_STORAGE_ROOT's production fail-fast exactly):
+  //   Priority: options.reportStorageRoot (test injection) > env REPORT_STORAGE_ROOT
+  //   (compose/Zeabur mount) > production fail-fast > non-production dynamic temp fallback.
+  const resolvedReportStorageRoot = options.reportStorageRoot ?? appEnv.REPORT_STORAGE_ROOT;
+
+  let reportStorageRoot: string;
+  if (resolvedReportStorageRoot) {
+    reportStorageRoot = resolvedReportStorageRoot;
+  } else if (appEnv.NODE_ENV === "production") {
+    throw new Error(
+      "Server startup failed — REPORT_STORAGE_ROOT is not set. " +
+        "Provide the environment variable (volume mount path) for the persistent PDF storage volume."
+    );
+  } else {
+    reportStorageRoot = path.join(os.tmpdir(), `rpt-storage-dev-${process.pid}`);
+    fastify.log.warn(
+      `REPORT_STORAGE_ROOT not set; using dynamic temp path for non-production: ${reportStorageRoot.replace(os.tmpdir(), "<tmpdir>")}`
+    );
+  }
+
+  // T8a-FW①：報表實例明寫 { prefixes: ["rpt"] }（封閉前綴集合，與附件實例
+  // 互不接受對方之 key，AC-26）。
+  const reportStorage = new LocalVolumeStorage(reportStorageRoot, { prefixes: ["rpt"] });
+  await fastify.register(reportsPlugin, {
+    prisma,
+    attachmentStorage: storage,
+    reportStorage,
+    imageMaxPx: appEnv.REPORT_IMAGE_MAX_PX,
+    pdfTimeoutMs: appEnv.REPORT_PDF_TIMEOUT_MS,
+  });
 
   // Graceful shutdown: disconnect Prisma
   fastify.addHook("onClose", async () => {
