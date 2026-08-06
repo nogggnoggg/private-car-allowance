@@ -115,7 +115,12 @@ describe("ReportSection", () => {
     await waitFor(() => {
       expect(screen.getByText(report.reportNumber)).toBeInTheDocument();
     });
-    expect(screen.getByText(report.generatedAt)).toBeInTheDocument();
+    // Mock Gate 裁-1（AC-30 修訂）：產生時間以台北時區中文在地化格式顯示，
+    // 原始 ISO 字串不得在場（負向鎖）。
+    expect(
+      screen.getByText(new Date(report.generatedAt).toLocaleString("zh-TW"))
+    ).toBeInTheDocument();
+    expect(screen.queryByText(report.generatedAt)).not.toBeInTheDocument();
 
     const printLink = screen.getByRole("link", { name: "檢視列印版" });
     expect(printLink).toHaveAttribute("href", "/api/applications/app-1/report/print");
@@ -283,7 +288,12 @@ describe("ReportSection", () => {
       render(<ReportSection applicationId="app-1" status="COMPLETED" />);
 
       expect(await screen.findByText(report.reportNumber)).toBeInTheDocument();
-      expect(screen.getByText(report.generatedAt)).toBeInTheDocument();
+      // Mock Gate 裁-1（AC-30 修訂）：產生時間以台北時區中文在地化格式顯示，
+      // 原始 ISO 字串不得在場（負向鎖）。
+      expect(
+        screen.getByText(new Date(report.generatedAt).toLocaleString("zh-TW"))
+      ).toBeInTheDocument();
+      expect(screen.queryByText(report.generatedAt)).not.toBeInTheDocument();
 
       expect(screen.getByRole("link", { name: "檢視列印版" })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "下載 PDF" })).toBeInTheDocument();

@@ -138,7 +138,7 @@ export default function ReportSection({ applicationId, status }: Props): React.R
           <dt>報表編號</dt>
           <dd>{loadState.report.reportNumber}</dd>
           <dt>產生時間</dt>
-          <dd>{loadState.report.generatedAt}</dd>
+          <dd>{new Date(loadState.report.generatedAt).toLocaleString("zh-TW")}</dd>
           <dt>檔案</dt>
           <dd>
             <a
