@@ -186,6 +186,7 @@ const isPreview = (p: string) => p === "/api/applications/maintenance/preview";
 const isComplete = (p: string) => p === "/api/applications/app-1/complete";
 const isDelete = (p: string) => p === "/api/applications/app-1";
 const isAttachmentsPost = (p: string) => p === "/api/attachments";
+const isGetReport = (p: string) => p === "/api/applications/app-1/report";
 
 // Helper: create a synthetic File with given size and type (比照
 // AttachmentUploader.test.tsx 既有 makeFile 慣例)
@@ -583,6 +584,54 @@ describe("MaintenanceApplicationPage", () => {
     expect(screen.queryByRole("button", { name: "儲存草稿" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "完成申請" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "刪除草稿" })).not.toBeInTheDocument();
+  });
+
+  // PHASE-008-T13：三型詳情頁皆掛載報表區塊（AC-30 三型面）。
+  it("AC-30: 三型詳情頁皆掛載報表區塊", async () => {
+    const router = installFetchRouter();
+    router.on("GET", isGetDraft, () =>
+      jsonRes({
+        application: draftFixture({
+          status: "COMPLETED",
+          completionBlockers: null,
+          computed: null,
+          snapshot: {
+            intervalKm: "100.00",
+            officialKm: "50.00",
+            ratio: "0.500000",
+            ratioPercent: "50.0000",
+            actualCost: "2000.00",
+            rawAmount: "1000.0000",
+            totalAmount: 1000,
+            calculatedAt: "2026-02-01T00:00:00.000Z",
+          },
+        }),
+      })
+    );
+    router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "保養費用申請（已完成）" })).toBeInTheDocument();
+    });
+    expect(await screen.findByRole("heading", { name: "報表" })).toBeInTheDocument();
+  });
+
+  // AC-30 負向：草稿頁不渲染報表區塊（保養頁僅於 COMPLETED 分支掛載
+  // ReportSection，元件本身亦內建同一守門——見 ReportSection.test.tsx）。
+  it("AC-30: 草稿頁不渲染報表區塊（負向斷言）", async () => {
+    const router = installFetchRouter();
+    router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+    router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("上次保養日期")).toHaveValue("");
+    });
+    expect(screen.queryByText("產生正式報表")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "報表" })).not.toBeInTheDocument();
   });
 
   // ===========================================================================

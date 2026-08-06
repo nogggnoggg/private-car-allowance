@@ -206,6 +206,7 @@ const isPreview = (p: string) => p === "/api/applications/depreciation/preview";
 const isComplete = (p: string) => p === "/api/applications/app-1/complete";
 const isDelete = (p: string) => p === "/api/applications/app-1";
 const isAttachmentsPost = (p: string) => p === "/api/attachments";
+const isGetReport = (p: string) => p === "/api/applications/app-1/report";
 
 // Helper: create a synthetic File with given size and type (比照
 // AttachmentUploader.test.tsx／006 T12 既有 makeFile 慣例)
@@ -441,6 +442,47 @@ describe("DepreciationApplicationPage", () => {
     expect(screen.queryByText(/車價/)).not.toBeInTheDocument();
     expect(screen.queryByText(/折舊年限/)).not.toBeInTheDocument();
     expect(screen.queryByText(/每公里補助單價/)).not.toBeInTheDocument();
+  });
+
+  // PHASE-008-T13：三型詳情頁皆掛載報表區塊（AC-30 三型面）。
+  it("AC-30: 三型詳情頁皆掛載報表區塊", async () => {
+    const router = installFetchRouter();
+    router.on("GET", isGetDraft, () =>
+      jsonRes({
+        application: draftFixture({
+          status: "COMPLETED",
+          applicationYear: 2025,
+          annualTotalKm: "12345.6",
+          completionBlockers: null,
+          computed: null,
+          snapshot: snapshotFixture(),
+        }),
+      })
+    );
+    router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+    renderPage();
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { name: "年度折舊補貼申請（已完成）" })
+      ).toBeInTheDocument();
+    });
+    expect(await screen.findByRole("heading", { name: "報表" })).toBeInTheDocument();
+  });
+
+  // AC-30 負向：草稿頁不渲染報表區塊（折舊頁僅於 COMPLETED 分支掛載
+  // ReportSection，元件本身亦內建同一守門——見 ReportSection.test.tsx）。
+  it("AC-30: 草稿頁不渲染報表區塊（負向斷言）", async () => {
+    const router = installFetchRouter();
+    router.on("GET", isGetDraft, () => jsonRes({ application: draftFixture() }));
+    router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText("尚未完成項目：")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("產生正式報表")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "報表" })).not.toBeInTheDocument();
   });
 
   // ===========================================================================

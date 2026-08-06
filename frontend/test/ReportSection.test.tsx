@@ -162,4 +162,118 @@ describe("ReportSection", () => {
       expect(router.countCalls("POST", isPostReport)).toBe(2);
     });
   });
+
+  // ---- AC-32 列印與下載入口 ----
+  it("AC-32: 檢視列印版以 target=_blank + rel=noopener 開啟 /api/.../report/print；下載導向 /api/.../report/pdf 且點擊時零 POST", async () => {
+    const router = installFetchRouter();
+    router.on("GET", isGetReport, () => jsonRes({ report: null }));
+    const report = reportFixture();
+    router.on("POST", isPostReport, () => jsonRes({ report }, 201));
+
+    render(<ReportSection applicationId="app-1" status="COMPLETED" />);
+
+    const genBtn = await screen.findByRole("button", { name: "產生正式報表" });
+    fireEvent.click(genBtn);
+
+    const printLink = await screen.findByRole("link", { name: "檢視列印版" });
+    expect(printLink).toHaveAttribute("href", "/api/applications/app-1/report/print");
+    expect(printLink).toHaveAttribute("target", "_blank");
+    expect(printLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
+
+    const downloadLink = screen.getByRole("link", { name: "下載 PDF" });
+    expect(downloadLink).toHaveAttribute("href", "/api/applications/app-1/report/pdf");
+
+    expect(router.countCalls("POST", isPostReport)).toBe(1);
+
+    // 前端不自組檔名、不自行渲染 PDF、不重複呼叫產生端點：點擊下載入口
+    // （純 <a href> 導覽，非 fetch 呼叫）不得觸發任何額外 POST。
+    // preventDefault 僅為抑制 jsdom「Not implemented: navigation」雜訊
+    // （jsdom 不支援真實頁面導覽），不影響本斷言之鑑別力——POST 計數的
+    // 唯一來源是 handleGenerate，與是否實際導覽無關。
+    downloadLink.addEventListener("click", (e) => e.preventDefault());
+    fireEvent.click(downloadLink);
+    expect(router.countCalls("POST", isPostReport)).toBe(1);
+  });
+
+  // ---- AC-33 五態 ----
+  describe("AC-33: 五態", () => {
+    it("Loading：產生中按鈕停用並顯示「產生中…」", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      const resolveRef: { current: (() => void) | null } = { current: null };
+      router.on(
+        "POST",
+        isPostReport,
+        () =>
+          new Promise((resolve) => {
+            resolveRef.current = () => resolve(jsonRes({ report: reportFixture() }, 201));
+          })
+      );
+
+      render(<ReportSection applicationId="app-1" status="COMPLETED" />);
+
+      const genBtn = await screen.findByRole("button", { name: "產生正式報表" });
+      fireEvent.click(genBtn);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "產生中…" })).toBeDisabled();
+      });
+
+      resolveRef.current?.();
+      await waitFor(() => {
+        expect(screen.getByText(/TRV-/)).toBeInTheDocument();
+      });
+    });
+
+    it("Error：讀取報表資訊失敗顯示錯誤與重試（與 AC-31 產生失敗分開）", async () => {
+      const router = installFetchRouter();
+      let getCount = 0;
+      router.on("GET", isGetReport, () => {
+        getCount += 1;
+        if (getCount === 1) {
+          return jsonRes(
+            { error: { code: "UNKNOWN", message: "讀取報表資訊失敗，請稍後再試。" } },
+            500
+          );
+        }
+        return jsonRes({ report: null });
+      });
+
+      render(<ReportSection applicationId="app-1" status="COMPLETED" />);
+
+      expect(await screen.findByText("讀取報表資訊失敗，請稍後再試。")).toBeInTheDocument();
+      expect(router.countCalls("GET", isGetReport)).toBe(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "重試" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("尚未產生正式報表")).toBeInTheDocument();
+      });
+      expect(router.countCalls("GET", isGetReport)).toBe(2);
+    });
+
+    it("Permission denied：403 FORBIDDEN → 顯示無權限訊息，且零後續請求（無重試鈕）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetReport, () =>
+        jsonRes({ error: { code: "FORBIDDEN", message: "無權存取此資源" } }, 403)
+      );
+
+      render(<ReportSection applicationId="app-1" status="COMPLETED" />);
+
+      expect(await screen.findByText("無權存取此申請之報表。")).toBeInTheDocument();
+
+      // 無重試鈕（重試即後續請求，牴觸「零後續請求」）；亦無任何產生/下載
+      // 入口。
+      expect(screen.queryByRole("button", { name: "重試" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "產生正式報表" })).not.toBeInTheDocument();
+      expect(screen.queryByText("檢視列印版")).not.toBeInTheDocument();
+
+      expect(router.countCalls("GET", isGetReport)).toBe(1);
+      expect(router.countCalls("POST", isPostReport)).toBe(0);
+    });
+
+    // Empty／Success 兩態已由本檔 AC-30 之既有測試涵蓋（Packet 裁定「既有可
+    // 沿用」，不重複新增）：見「AC-30: 已完成但尚未產生報表時顯示 Empty 態
+    // 文案與「產生正式報表」按鈕」與「AC-30: 點擊產生後成功…」兩則。
+  });
 });

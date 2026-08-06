@@ -1,12 +1,14 @@
 /**
  * ReportSection — PHASE-008-T12（AC-30／AC-31；元件形狀一次到位含 AC-32）
+ * T13 補：AC-33 Permission denied 態（`permission-denied` LoadState，403
+ * FORBIDDEN → 無權限訊息，刻意不提供重試鈕，見 load 內註解）＋保養／折舊頁
+ * 接線（pages/MaintenanceApplicationPage.tsx、pages/DepreciationApplicationPage.tsx）。
  *
- * 供三型申請詳情頁掛載的共用報表區塊（本 Task 僅接線差旅頁；保養／折舊頁歸
- * T13，接線方式相同——見 pages/TravelApplicationPage.tsx 的用法）。
+ * 供三型申請詳情頁掛載的共用報表區塊。
  *
  * `status !== "COMPLETED"` 時**整個區塊不渲染**（回傳 `null`，非 disabled 按
  * 鈕）——guard 內建於元件本身而非交由每個呼叫端各自判斷，理由：
- *   (a) 避免 T13 三頁各自重寫一次同樣的條件判斷（DRY，三型共用同一元件）；
+ *   (a) 避免三頁各自重寫一次同樣的條件判斷（DRY，三型共用同一元件）；
  *   (b) 「前端不渲染從不是授權或狀態依據」（Spec §4 註）——後端仍獨立守門
  *       （AC-25），本檢查僅為 UX 呈現層。
  * 掛載即觸發 `GET /applications/:id/report`（§3.4）決定 Empty／Success；
@@ -28,6 +30,7 @@ interface Props {
 type LoadState =
   | { kind: "loading" }
   | { kind: "load-error"; message: string }
+  | { kind: "permission-denied"; message: string }
   | { kind: "loaded"; report: ReportDto | null };
 
 export default function ReportSection({ applicationId, status }: Props): React.ReactElement | null {
@@ -42,6 +45,13 @@ export default function ReportSection({ applicationId, status }: Props): React.R
       setLoadState({ kind: "loaded", report });
     } catch (err) {
       const apiErr = err as ApiError;
+      // AC-33 Permission denied：403 FORBIDDEN 顯示無權限訊息且不提供重試
+      // （重試即後續請求，牴觸「零後續請求」——見 load-error 態之通用重試
+      // 鈕，此態刻意不沿用）。
+      if (apiErr.code === "FORBIDDEN") {
+        setLoadState({ kind: "permission-denied", message: "無權存取此申請之報表。" });
+        return;
+      }
       setLoadState({
         kind: "load-error",
         message: apiErr.message ?? "讀取報表資訊失敗，請稍後再試。",
@@ -86,6 +96,12 @@ export default function ReportSection({ applicationId, status }: Props): React.R
           <button type="button" className="btn btn-secondary" onClick={load}>
             重試
           </button>
+        </div>
+      )}
+
+      {loadState.kind === "permission-denied" && (
+        <div className="permission-denied-block" role="alert">
+          <p>{loadState.message}</p>
         </div>
       )}
 

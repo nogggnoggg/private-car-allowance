@@ -126,6 +126,7 @@ const isGetDraft = (p: string) => p === "/api/applications/travel/app-1";
 const isPutDraft = (p: string) => p === "/api/applications/travel/app-1";
 const isComplete = (p: string) => p === "/api/applications/app-1/complete";
 const isDelete = (p: string) => p === "/api/applications/app-1";
+const isGetReport = (p: string) => p === "/api/applications/app-1/report";
 
 describe("TravelApplicationPage", () => {
   beforeEach(() => {
@@ -773,6 +774,46 @@ describe("TravelApplicationPage", () => {
     expect(screen.queryByRole("button", { name: "儲存草稿" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "刪除草稿" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("出差日期")).not.toBeInTheDocument();
+  });
+
+  // PHASE-008-T13：三型詳情頁皆掛載報表區塊（AC-30 三型面；差旅頁 T12 已
+  // 接線，本測試補齊「掛載」斷言以與保養／折舊頁對稱）。
+  it("AC-30: 三型詳情頁皆掛載報表區塊", async () => {
+    const router = installFetchRouter();
+    router.on("GET", isGetDraft, () =>
+      jsonRes({
+        application: draftFixture({
+          status: "COMPLETED",
+          tripDate: "2026-03-01",
+          purpose: "台中出差",
+          completionBlockers: [],
+          computed: null,
+          completedAt: "2026-03-02T00:00:00.000Z",
+          snapshot: {
+            fuelUnitPrice: "5.0000",
+            etcUnitPrice: "3.0000",
+            fuelParameterVersionId: "fv-1",
+            etcParameterVersionId: "ev-1",
+            fuelPriceVersionId: null,
+            fuelConsumptionVersionId: null,
+            totalKm: "0.00",
+            totalRawAmount: "0.0000",
+            totalAmount: 0,
+            calculatedAt: "2026-03-02T00:00:00.000Z",
+          },
+        }),
+      })
+    );
+    router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { level: 1, name: "差旅補助申請（已完成）" })
+      ).toBeInTheDocument();
+    });
+    expect(await screen.findByRole("heading", { name: "報表" })).toBeInTheDocument();
   });
 
   // ---- Delete: confirm required (C4), navigates away ----

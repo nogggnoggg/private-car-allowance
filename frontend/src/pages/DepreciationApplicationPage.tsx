@@ -65,6 +65,7 @@ import {
   apiUpdateDepreciationDraft,
 } from "../api/depreciation.js";
 import AttachmentUploader from "../components/AttachmentUploader.js";
+import ReportSection from "../components/ReportSection.js";
 import type { ApiError } from "../types/api.js";
 
 const PREVIEW_DEBOUNCE_MS = 300; // D8
@@ -525,6 +526,10 @@ export default function DepreciationApplicationPage(): React.ReactElement {
               <p>尚無證明</p>
             )}
           </section>
+
+          {/* AC-30（PHASE-008-T13）：已完成申請顯示報表區塊；元件內建
+              status !== "COMPLETED" 不渲染之守門，此處恆為 COMPLETED。 */}
+          <ReportSection applicationId={application.id} status={application.status} />
         </main>
       </div>
     );
