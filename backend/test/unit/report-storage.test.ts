@@ -241,8 +241,11 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
 
   function parseLocations(confText: string): LocationBlock[] {
     // 本檔 location 區塊皆無巢狀大括號，單層配對即足夠。
+    // PHASE-008-T14R MF-1：放寬修飾子（~ ~* ^~ =），避免 `location ~ ^/files/
+    // { alias ...; }` 之類的正則/前綴修飾寫法逃脫本正則、整個 location 未被
+    // 解析（reviewer N2）。
     const blocks: LocationBlock[] = [];
-    const startRe = /location\s+([^\s{]+)\s*\{/g;
+    const startRe = /location\s+(?:[~^=*]+\s*)?([^\s{]+)\s*\{/g;
     let match: RegExpExecArray | null;
     // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex.exec 迴圈慣用寫法
     while ((match = startRe.exec(confText)) !== null) {
@@ -277,6 +280,28 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     }
   }
 
+  // PHASE-008-T14R MF-1：全檔字面兜底 —— 逐 location 之結構解析（root/alias）
+  // 對「不在任何 location 內的裸露 root」（reviewer N1，server 層）與「巢狀大
+  // 括號截斷 location body」（reviewer N3，如 `if (...) { }` 使 `indexOf("}")`
+  // 提前收尾）兩類天生無法涵蓋——這兩類的共同點是 volume 路徑字面本身仍原樣
+  // 出現在檔案文字中，故以「全文字面掃描」作為結構法之補強，兩法互補、缺一
+  // 不可（結構法仍保留，用以定位「哪個 location」；字面法純粹作為兜底防線）。
+  function assertNoVolumeLiteral(confText: string, source: string): void {
+    for (const literal of VOLUME_LITERALS) {
+      if (confText.includes(literal)) {
+        throw new Error(
+          `${source}: 檔案全文出現疑似 volume 路徑字面 "${literal}"（結構解析盲點之全檔字面兜底 —— 常見於 server 層裸 root 或 location 內巢狀括號截斷 body）`
+        );
+      }
+    }
+  }
+
+  /** 結構法（root/alias）＋ 全檔字面兜底，兩者皆須通過。 */
+  function assertNoVolumeExposure(confText: string, source: string): void {
+    assertNoVolumeLocation(confText, source);
+    assertNoVolumeLiteral(confText, source);
+  }
+
   it("正向對照：nginx.conf 存在 /api proxy 之 location 區塊（證明解析器確實讀到並解析了 location，非恆真）", () => {
     const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
     const blocks = parseLocations(confText);
@@ -290,6 +315,11 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     expect(() => assertNoVolumeLocation(confText, "frontend/nginx.conf")).not.toThrow();
   });
 
+  it("AC-26: nginx.conf 現況全文字面零命中 volume 路徑（全檔字面兜底之正向對照）", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    expect(() => assertNoVolumeLiteral(confText, "frontend/nginx.conf")).not.toThrow();
+  });
+
   it("鑑別力自證（mutant）：加入直出 volume 路徑的 location 後，斷言邏輯必須偵測並拋錯", () => {
     const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
     const lastBraceIdx = confText.lastIndexOf("}"); // server 區塊的收尾 '}'
@@ -298,5 +328,43 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     const mutated = confText.slice(0, lastBraceIdx) + mutantLocation + confText.slice(lastBraceIdx);
     expect(mutated).not.toBe(confText); // 確保真的插入成功，不是空替換
     expect(() => assertNoVolumeLocation(mutated, "mutant")).toThrow(/疑似直出 volume 路徑/);
+  });
+
+  // 鑑別力自證（PHASE-008-T14R MF-1｜N1/N2/N3）：reviewer 合併複審記載之三類
+  // 繞過，各以 assertNoVolumeExposure（結構法＋全檔字面兜底）重放，逐一必
+  // 紅（即 mutant 必被偵測、拋錯）。落地前以「當前」assertNoVolumeLocation
+  // 單獨重放時，三者皆為 not.toThrow（mutant 存活，已於本回合開發階段實測
+  // 確認並作為 TDD 紅燈證據，見 Task Handoff）。
+  it("鑑別力自證（N1｜MF-1）：server 層裸 root 指向 volume 路徑（不在任何 location 內）之繞過必被偵測", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    const mutated = confText.replace("server_name _;", "server_name _;\n    root /data/storage;");
+    expect(mutated).not.toBe(confText);
+    expect(() => assertNoVolumeExposure(mutated, "mutant-N1")).toThrow(
+      /疑似直出 volume 路徑|檔案全文出現疑似 volume 路徑字面/
+    );
+  });
+
+  it("鑑別力自證（N2｜MF-1）：帶正則／前綴修飾子（如 ~ ^/files/）之 location alias 繞過必被偵測", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    const lastBraceIdx = confText.lastIndexOf("}");
+    const mutantLocation =
+      "\n    location ~ ^/files/ {\n        alias /data/storage/pdf/;\n    }\n";
+    const mutated = confText.slice(0, lastBraceIdx) + mutantLocation + confText.slice(lastBraceIdx);
+    expect(mutated).not.toBe(confText);
+    expect(() => assertNoVolumeExposure(mutated, "mutant-N2")).toThrow(
+      /疑似直出 volume 路徑|檔案全文出現疑似 volume 路徑字面/
+    );
+  });
+
+  it("鑑別力自證（N3｜MF-1）：location 內巢狀大括號（如 if 區塊）截斷 body 之繞過必被偵測", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    const lastBraceIdx = confText.lastIndexOf("}");
+    const mutantLocation =
+      "\n    location /files/ {\n        if ($request_method = GET) { }\n        alias /data/storage/pdf/;\n    }\n";
+    const mutated = confText.slice(0, lastBraceIdx) + mutantLocation + confText.slice(lastBraceIdx);
+    expect(mutated).not.toBe(confText);
+    expect(() => assertNoVolumeExposure(mutated, "mutant-N3")).toThrow(
+      /疑似直出 volume 路徑|檔案全文出現疑似 volume 路徑字面/
+    );
   });
 });

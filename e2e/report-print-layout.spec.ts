@@ -106,7 +106,6 @@
  * `depreciation-allowance.spec.ts` 既有慣例），不經 UI 表單。
  */
 
-import * as fs from "node:fs";
 import { inflateSync } from "node:zlib";
 import { type Page, expect, test } from "@playwright/test";
 
@@ -692,11 +691,28 @@ function isBorderColor(rgb: [number, number, number] | null): boolean {
   return rgb.every((v, i) => Math.abs(v - BORDER_RG[i]) < 0.01);
 }
 
+/**
+ * PHASE-008-T14R SF-1：`.print-hint` 邊框顏色（`report-html.ts` :301
+ * `border: 1px solid #f59e0b`）之 PDF `RG` 三元值 ≈ `0.961 0.620 0.043`。
+ * AC-34 之既有 ToUnicode 文字擷取斷言對此提示文字之鑑別力恆真（reviewer
+ * 合併複審實測：提示渲染進 PDF 時 `HINT_FOUND` 仍為 false，見該提示所在
+ * `Type3` 字型子集 `ToUnicode` CMap 覆蓋不完整，同 T14b 檔頭說明之限制）；
+ * 本值改採字型無關之幾何訊號——`.print-hint` 為 `display:none`（列印媒
+ * 體）時，其邊框描邊色理應**完全不出現**於任何頁面內容流。
+ */
+const HINT_BORDER_RG: [number, number, number] = [0xf5 / 255, 0x9e / 255, 0x0b / 255];
+function isHintBorderColor(rgb: [number, number, number] | null): boolean {
+  if (!rgb) return false;
+  return rgb.every((v, i) => Math.abs(v - HINT_BORDER_RG[i]) < 0.01);
+}
+
 interface PageGeometry {
   /** `.segment` 邊框之封閉子路徑矩形（僅計入起訖點重合者，見檔頭說明）。 */
   segmentRects: GeomRect[];
   /** `.image-block` 內 `<img>` 之 `Do` 置放矩形。 */
   imageRects: GeomRect[];
+  /** SF-1：本頁內容流是否曾以 `.print-hint` 邊框色描邊（正常 PDF 應恆 false）。 */
+  hintBorderStrokeSeen: boolean;
 }
 
 /**
@@ -740,8 +756,9 @@ function extractPageGeometry(pdfBytes: Buffer): PageGeometry[] {
     const obj = objs.get(pageNum);
     const segmentRects: GeomRect[] = [];
     const imageRects: GeomRect[] = [];
+    let hintBorderStrokeSeen = false;
     if (!obj) {
-      result.push({ segmentRects, imageRects });
+      result.push({ segmentRects, imageRects, hintBorderStrokeSeen });
       continue;
     }
     const contentsMatch = obj.dict.match(/\/Contents\s+(\d+)\s+0\s+R|\/Contents\s*\[([^\]]*)\]/);
@@ -808,6 +825,10 @@ function extractPageGeometry(pdfBytes: Buffer): PageGeometry[] {
           ctm = ctmStack.pop() ?? ctm;
         } else if (tm[22] !== undefined) {
           flush(true);
+          // SF-1：與 segmentRects 之子路徑機制無關——只要「當前描邊色」曾
+          // 於任一繪製運算子觸發時等於 .print-hint 邊框色，即代表該元素
+          // 曾實際生成內容流（列印媒體隱藏規則失效）。
+          if (isHintBorderColor(currentRG)) hintBorderStrokeSeen = true;
         }
       }
       flush(false);
@@ -839,7 +860,7 @@ function extractPageGeometry(pdfBytes: Buffer): PageGeometry[] {
         }
       }
     }
-    result.push({ segmentRects, imageRects });
+    result.push({ segmentRects, imageRects, hintBorderStrokeSeen });
   }
   return result;
 }
@@ -855,6 +876,7 @@ let travelAppId: string;
 let maintAppId: string;
 let travelPdfPagesText: string[];
 let travelPdfGeometry: PageGeometry[];
+let maintPdfGeometry: PageGeometry[];
 
 test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () => {
   test.describe.configure({ mode: "serial" });
@@ -891,6 +913,13 @@ test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () =>
     travelPdfGeometry = extractPageGeometry(travelPdf);
     // AC-14 fixture 前提：足以產生 ≥ 2 頁。
     expect(travelPdfPagesText.length).toBeGreaterThanOrEqual(2);
+
+    // SF-2：保養 PDF（B-11：5 圖單一 .images 區段，avoid-break 最高密度情
+    // 境）——僅差下載解析，此處補下載＋幾何擷取，供 AC-14 測試內之影像置放
+    // 矩形斷言使用。
+    const maintPdf = await downloadReportPdf(staffPage, maintAppId);
+    expect(maintPdf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    maintPdfGeometry = extractPageGeometry(maintPdf);
 
     await staffContext.close();
   });
@@ -1006,10 +1035,21 @@ test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () =>
 
     await context.close();
 
-    // --- PDF 文字擷取：提示文字不出現於任何一頁 ---
+    // --- PDF 文字擷取：提示文字不出現於任何一頁（輔助斷言——見下方 SF-1
+    //     說明，本層對此提示文字之鑑別力有限，不可單獨作為 AC-34 之唯一
+    //     防線） ---
     for (const pageText of travelPdfPagesText) {
       expect(pageText).not.toContain(PRINT_HINT_TEXT);
     }
+
+    // --- PHASE-008-T14R SF-1：PDF 幾何層（字型無關，主防線）——正常 PDF
+    //     全文件不應出現 .print-hint 邊框色之描邊路徑。上方 ToUnicode 文
+    //     字擷取斷言經 reviewer 合併複審實測為恆真（提示渲染進 PDF 時
+    //     HINT_FOUND 仍為 false，見 extractPdfTextPerPage 之 Type3 字型子
+    //     集 ToUnicode CMap 覆蓋不完整限制，同 T14b 檔頭說明），故以此幾何
+    //     訊號補上真正之鑑別力（`@media print { .print-hint { display:
+    //     none } }` 失效之 mutant 必紅，見 Task Handoff）。 ---
+    expect(travelPdfGeometry.some((g) => g.hintBorderStrokeSeen)).toBe(false);
   });
 
   // ---------------------------------------------------------------------------
@@ -1049,6 +1089,26 @@ test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () =>
           expect(geomOverlap(rects[i], rects[j]), `第 ${page} 頁區塊 #${i} 與 #${j} 不得重疊`).toBe(
             false
           );
+        }
+      }
+    }
+
+    // --- PHASE-008-T14R SF-2（B-11 保養報表：5 圖單一 .images 區段，每張
+    //     ≈468×374pt 一頁僅容 2 張，avoid-break 最高密度情境）---
+    const maintByPage = new Map<number, GeomRect[]>();
+    let maintTotalImageRects = 0;
+    maintPdfGeometry.forEach((g, page) => {
+      maintTotalImageRects += g.imageRects.length;
+      if (g.imageRects.length > 0) maintByPage.set(page, g.imageRects);
+    });
+    expect(maintTotalImageRects).toBe(5);
+    for (const [page, rects] of maintByPage) {
+      for (let i = 0; i < rects.length; i++) {
+        for (let j = i + 1; j < rects.length; j++) {
+          expect(
+            geomOverlap(rects[i], rects[j]),
+            `保養報表第 ${page} 頁圖片 #${i} 與 #${j} 不得重疊`
+          ).toBe(false);
         }
       }
     }
