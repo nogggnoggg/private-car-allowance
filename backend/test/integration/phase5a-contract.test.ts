@@ -135,6 +135,7 @@ describe("AC-35 不新增 ErrorCode", () => {
     "PARAMETER_NOT_AVAILABLE",
     "INTERNAL_ERROR",
     "SERVICE_UNAVAILABLE",
+    "REPORT_GENERATION_FAILED",
   ].sort();
 
   it("errors.ts ErrorCode union equals the known baseline", () => {

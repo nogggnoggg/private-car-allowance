@@ -20,7 +20,8 @@ export type ErrorCode =
   | "PARAMETER_PERIOD_OVERLAP" // 409 — new parameter version overlaps with an existing version (PHASE-003a §4.8 D5); body includes details.conflictVersion
   | "PARAMETER_NOT_AVAILABLE" // 409 — trip date has no effective fuel/ETC parameter version, cannot complete (PHASE-004 §8.5, AC-47); body includes details.missing (("FUEL"|"ETC")[]) and details.tripDate
   | "INTERNAL_ERROR" // 500 — unhandled/unexpected exception
-  | "SERVICE_UNAVAILABLE"; // 503 — dependency unavailable (e.g. DB down)
+  | "SERVICE_UNAVAILABLE" // 503 — dependency unavailable (e.g. DB down)
+  | "REPORT_GENERATION_FAILED"; // 500 — PHASE-008 §7.5/D5: PDF render/store/verify/persist failure; body includes details.stage ("RENDER"|"STORE"|"VERIFY"|"PERSIST"), never a path/key/stack
 
 /** Per-field validation failure entry (AC-10) */
 export interface FieldError {

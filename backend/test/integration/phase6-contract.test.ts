@@ -142,6 +142,7 @@ describe("AC-39 ErrorCode 聯集全等 + 本 Phase src 僅用基線字面值", (
     "PARAMETER_NOT_AVAILABLE",
     "INTERNAL_ERROR",
     "SERVICE_UNAVAILABLE",
+    "REPORT_GENERATION_FAILED",
   ].sort();
 
   it("errors.ts ErrorCode union equals the known baseline", () => {
