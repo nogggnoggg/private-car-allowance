@@ -241,6 +241,22 @@ describeWithDb("PHASE-008-T9 — GET /applications/:id/report ／ GET .../report
     return created.id;
   }
 
+  /** T9R SF-1／AC-25：DRAFT 申請（結構性恆無 Report 列；沿 phase8-report-
+   *  generate.test.ts `createDraftTravelApp` 之既有慣例）。 */
+  async function createDraftTravelApp(ownerIdForApp: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "DRAFT",
+        ownerId: ownerIdForApp,
+        createdById: ownerIdForApp,
+        primaryDate: new Date("2026-03-15T00:00:00.000Z"),
+      },
+    });
+    createdApplicationIds.push(created.id);
+    return created.id;
+  }
+
   /** 產生報表（HTTP，等同使用者操作），回傳 `{ id, body }`。 */
   async function generateReportViaHttp(
     id: string,
@@ -439,6 +455,118 @@ describeWithDb("PHASE-008-T9 — GET /applications/:id/report ／ GET .../report
       const body = JSON.parse(resp.body);
       expect(body.error.code).toBe("NOT_FOUND");
       expect(body.error.message).toBe("尚未產生正式報表");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // T9R SF-1：授權順序零測試鎖定（他人 × 未產生報表；含 DRAFT）
+  //
+  // 根因：既有「他人 403」測試（AC-24）皆建立在已產生報表之申請上，故 mutant
+  // M8（查詢端點授權移到報表查詢後）／M9（下載端點授權移到存在性判定後）在
+  // 該情境下行為與原碼無法區分而存活。本區塊補「他人 × 未產生報表」情境，
+  // 使授權判定順序（判定紀律②：授權先於報表存在性）具備測試鑑別力。
+  // -------------------------------------------------------------------------
+
+  describe("T9R SF-1：授權順序（他人 × 未產生報表）", () => {
+    it("他人 × 未產生報表之 COMPLETED 申請 → 查詢 403 FORBIDDEN（非 200 null）", async () => {
+      const id = await createTravelApp(ownerId, "sf1-completed-query");
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/${id}/report`,
+        headers: { cookie: strangerCookie },
+      });
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+    });
+
+    it("他人 × 未產生報表之 COMPLETED 申請 → 下載 403 FORBIDDEN（非 404）", async () => {
+      const id = await createTravelApp(ownerId, "sf1-completed-dl");
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/${id}/report/pdf`,
+        headers: { cookie: strangerCookie },
+      });
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+    });
+
+    it("他人 × DRAFT 申請 → 查詢 403 FORBIDDEN", async () => {
+      const id = await createDraftTravelApp(ownerId);
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/${id}/report`,
+        headers: { cookie: strangerCookie },
+      });
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+    });
+
+    it("他人 × DRAFT 申請 → 下載 403 FORBIDDEN（非 404）", async () => {
+      const id = await createDraftTravelApp(ownerId);
+      const resp = await app.inject({
+        method: "GET",
+        url: `/applications/${id}/report/pdf`,
+        headers: { cookie: strangerCookie },
+      });
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // AC-25（SPEC-REV-T9，`docs/specs/PHASE-008.md` §505／§800）：下載與查詢兩
+  // 端點不做狀態守門——DRAFT 與「已完成但未產生」之回應逐字一致。
+  // -------------------------------------------------------------------------
+
+  describe("AC-25（SPEC-REV-T9）：DRAFT 與已完成未產生之回應逐字一致", () => {
+    it("下載端點：DRAFT vs 已完成未產生 → 404「尚未產生正式報表」逐字相同，皆不帶 details", async () => {
+      const draftId = await createDraftTravelApp(ownerId);
+      const completedId = await createTravelApp(ownerId, "ac25-dl-completed");
+
+      const draftResp = await app.inject({
+        method: "GET",
+        url: `/applications/${draftId}/report/pdf`,
+        headers: { cookie: ownerCookie },
+      });
+      const completedResp = await app.inject({
+        method: "GET",
+        url: `/applications/${completedId}/report/pdf`,
+        headers: { cookie: ownerCookie },
+      });
+
+      expect(draftResp.statusCode).toBe(404);
+      expect(completedResp.statusCode).toBe(404);
+      const draftBody = JSON.parse(draftResp.body);
+      const completedBody = JSON.parse(completedResp.body);
+      expect(draftBody.error.code).toBe("NOT_FOUND");
+      expect(draftBody.error.message).toBe("尚未產生正式報表");
+      expect(draftBody.error.code).toBe(completedBody.error.code);
+      expect(draftBody.error.message).toBe(completedBody.error.message);
+      expect(draftBody.error.details).toBeUndefined();
+      expect(completedBody.error.details).toBeUndefined();
+    });
+
+    it("查詢端點：DRAFT vs 已完成未產生 → 200 { report: null } 逐字相同", async () => {
+      const draftId = await createDraftTravelApp(ownerId);
+      const completedId = await createTravelApp(ownerId, "ac25-q-completed");
+
+      const draftResp = await app.inject({
+        method: "GET",
+        url: `/applications/${draftId}/report`,
+        headers: { cookie: ownerCookie },
+      });
+      const completedResp = await app.inject({
+        method: "GET",
+        url: `/applications/${completedId}/report`,
+        headers: { cookie: ownerCookie },
+      });
+
+      expect(draftResp.statusCode).toBe(200);
+      expect(completedResp.statusCode).toBe(200);
+      expect(JSON.parse(draftResp.body)).toEqual({ report: null });
+      expect(JSON.parse(completedResp.body)).toEqual({ report: null });
+      // 逐字一致（wire-level 字串全等，非僅結構相等）。
+      expect(draftResp.body).toBe(completedResp.body);
     });
   });
 
