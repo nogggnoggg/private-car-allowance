@@ -18,6 +18,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LocalVolumeStorage } from "../../src/storage/local-volume-storage.js";
 
@@ -221,5 +222,81 @@ describe('LocalVolumeStorage — default prefixes parameter stays ["att"]', () =
     await expect(storage.exists("rpt/abc123/pdf")).rejects.toThrow(
       /invalid.*key|key.*invalid|reject|not allowed|illegal/i
     );
+  });
+});
+
+// AC-26 末句（Spec §229 逐字）: PDF 位元組一律經後端授權端點回傳，volume 不得由
+// nginx 靜態直出（結構性斷言：nginx.conf 無 volume 路徑之 location）。掃描字面取
+// 自 docker-compose.yml（STORAGE_PATH 預設 /data/storage）與 .env.example（D4/D6
+// 之 att/ rpt/ 金鑰前綴）。取捨見 Handoff：解析 location 區塊逐一查 root/alias，
+// 優於裸字面 grep（可精確定位命中位置、不誤判 proxy_pass／註解文字）。
+
+describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 nginx location 靜態直出", () => {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const NGINX_CONF_PATH = path.resolve(__dirname, "..", "..", "..", "frontend", "nginx.conf");
+
+  const VOLUME_LITERALS = ["/data/storage", "att/", "rpt/"];
+
+  type LocationBlock = { pattern: string; body: string };
+
+  function parseLocations(confText: string): LocationBlock[] {
+    // 本檔 location 區塊皆無巢狀大括號，單層配對即足夠。
+    const blocks: LocationBlock[] = [];
+    const startRe = /location\s+([^\s{]+)\s*\{/g;
+    let match: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex.exec 迴圈慣用寫法
+    while ((match = startRe.exec(confText)) !== null) {
+      const pattern = match[1];
+      const bodyStart = match.index + match[0].length;
+      const closeIdx = confText.indexOf("}", bodyStart);
+      if (closeIdx === -1) {
+        throw new Error(`nginx.conf: location ${pattern} 缺少對應的 '}'`);
+      }
+      blocks.push({ pattern, body: confText.slice(bodyStart, closeIdx) });
+    }
+    return blocks;
+  }
+
+  function assertNoVolumeLocation(confText: string, source: string): void {
+    const blocks = parseLocations(confText);
+    if (blocks.length === 0) {
+      throw new Error(`${source}: 未解析到任何 location 區塊 — 解析器可能失效`);
+    }
+    for (const block of blocks) {
+      // 只查 root/alias（會靜態直出檔案）；proxy_pass 轉發給後端，不在本斷言範圍。
+      const rootOrAliasMatches = block.body.match(/\b(root|alias)\s+([^;]+);/g) ?? [];
+      for (const directive of rootOrAliasMatches) {
+        for (const literal of VOLUME_LITERALS) {
+          if (directive.includes(literal)) {
+            throw new Error(
+              `${source}: location ${block.pattern} 之 "${directive.trim()}" 疑似直出 volume 路徑（命中字面: "${literal}"）`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  it("正向對照：nginx.conf 存在 /api proxy 之 location 區塊（證明解析器確實讀到並解析了 location，非恆真）", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    const blocks = parseLocations(confText);
+    const apiBlock = blocks.find((b) => b.pattern === "/api/");
+    expect(apiBlock).toBeDefined();
+    expect(apiBlock?.body).toMatch(/proxy_pass\s+http:\/\/backend:3000\//);
+  });
+
+  it("AC-26: nginx.conf 現況零 location 之 root/alias 指向 storage/report volume 路徑", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    expect(() => assertNoVolumeLocation(confText, "frontend/nginx.conf")).not.toThrow();
+  });
+
+  it("鑑別力自證（mutant）：加入直出 volume 路徑的 location 後，斷言邏輯必須偵測並拋錯", () => {
+    const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
+    const lastBraceIdx = confText.lastIndexOf("}"); // server 區塊的收尾 '}'
+    expect(lastBraceIdx).toBeGreaterThan(-1);
+    const mutantLocation = "\n    location /files/ {\n        alias /data/storage/pdf/;\n    }\n";
+    const mutated = confText.slice(0, lastBraceIdx) + mutantLocation + confText.slice(lastBraceIdx);
+    expect(mutated).not.toBe(confText); // 確保真的插入成功，不是空替換
+    expect(() => assertNoVolumeLocation(mutated, "mutant")).toThrow(/疑似直出 volume 路徑/);
   });
 });
