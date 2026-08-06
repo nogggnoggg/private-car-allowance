@@ -46,6 +46,9 @@ const TRAVERSAL_MATRIX_RPT: Array<[string, string]> = [
   ["newline in key", "rpt/id/p\ndf"],
   ["carriage return in key", "rpt/id/p\rdf"],
   ["tab in key", "rpt/id/p\tdf"],
+  ["prefix embedded, not leading", "zzz/rpt/id/pdf"],
+  ["prefix as substring (no separator)", "rptXYZ"],
+  ["extra leading segment", "a/b/rpt/id/pdf"],
 ];
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -64,10 +67,17 @@ describe("LocalVolumeStorage — rpt prefix (key validation, no fs)", () => {
     await expect(storage.exists(key)).resolves.toBe(false); // key valid, file doesn't exist
   });
 
-  it.each(TRAVERSAL_MATRIX_RPT)("rejects malicious key: %s", async (_label, key) => {
-    await expect(storage.exists(key)).rejects.toThrow(
-      /invalid.*key|key.*invalid|reject|not allowed|illegal/i
-    );
+  it.each(TRAVERSAL_MATRIX_RPT)(
+    "AC-26: rpt 前綴之路徑穿越矩陣全數拒絕: %s",
+    async (_label, key) => {
+      await expect(storage.exists(key)).rejects.toThrow(
+        /invalid.*key|key.*invalid|reject|not allowed|illegal/i
+      );
+    }
+  );
+
+  it("AR-3: TRAVERSAL_MATRIX_RPT covers the full 21-row matrix (18 original + 3 anchor/boundary rows)", () => {
+    expect(TRAVERSAL_MATRIX_RPT).toHaveLength(21);
   });
 });
 
@@ -105,7 +115,7 @@ describe("LocalVolumeStorage — rpt prefix (functional, real tmpdir)", () => {
 // Cross-instance rejection: closed prefix set, not open / shared
 // ──────────────────────────────────────────────────────────────────────────
 
-describe("LocalVolumeStorage — cross-instance rejection (closed prefix set)", () => {
+describe("AC-26: 附件實例拒 rpt 金鑰、報表實例拒 att 金鑰（跨實例互拒）", () => {
   it("an att-only instance rejects rpt/ keys", async () => {
     const attStorage = new LocalVolumeStorage("/non-existent-root-cross-1", {
       prefixes: ["att"],
@@ -154,6 +164,37 @@ describe("LocalVolumeStorage — multi-prefix instance accepts every configured 
     await expect(storage.exists("xyz/abc123/other")).rejects.toThrow(
       /invalid.*key|key.*invalid|reject|not allowed|illegal/i
     );
+  });
+
+  it.each([
+    ["prefix embedded, not leading", "zzz/rpt/id/pdf"],
+    ["prefix as substring (no separator)", "attXYZ"],
+    ["extra leading segment", "a/b/rpt/id/pdf"],
+  ])("rejects malformed multi-prefix key: %s", async (_label, key) => {
+    await expect(storage.exists(key)).rejects.toThrow(
+      /invalid.*key|key.*invalid|reject|not allowed|illegal/i
+    );
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// AR-1: escapeRegExp correctness — a prefix containing a regex special char
+// (".") must be matched literally, not as a regex wildcard.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("LocalVolumeStorage — prefix regex-escaping (AR-1: escapeRegExp correctness)", () => {
+  const storage = new LocalVolumeStorage("/non-existent-root-for-escape-test", {
+    prefixes: ["a.t"],
+  });
+
+  it("rejects abt/x/y (literal '.' must not act as a regex wildcard)", async () => {
+    await expect(storage.exists("abt/x/y")).rejects.toThrow(
+      /invalid.*key|key.*invalid|reject|not allowed|illegal/i
+    );
+  });
+
+  it("accepts a.t/x/y (literal dot prefix matches exactly)", async () => {
+    await expect(storage.exists("a.t/x/y")).resolves.toBe(false);
   });
 });
 
