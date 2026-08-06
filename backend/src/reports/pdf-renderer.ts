@@ -82,7 +82,10 @@ export interface RenderPdfOptions {
  *   不殘留殭屍瀏覽器。
  */
 export async function renderPdf(html: string, options: RenderPdfOptions): Promise<Buffer> {
-  const browser: Browser = await chromium.launch({ args: [...LAUNCH_ARGS] });
+  const browser: Browser = await chromium.launch({
+    args: [...LAUNCH_ARGS],
+    timeout: options.timeoutMs,
+  });
   try {
     const pdfBytes = await withTimeout(
       renderOnce(browser, html, options.timeoutMs),
@@ -99,7 +102,7 @@ export async function renderPdf(html: string, options: RenderPdfOptions): Promis
 async function renderOnce(browser: Browser, html: string, timeoutMs: number): Promise<Buffer> {
   const page = await browser.newPage();
   await page.setContent(html, { waitUntil: "load", timeout: timeoutMs });
-  return page.pdf();
+  return page.pdf({ preferCSSPageSize: true });
 }
 
 /**

@@ -159,13 +159,17 @@ function makeTinyHtml(): string {
 
 interface ChromiumSpyHandle {
   launchArgsCalls: string[][];
+  launchTimeouts: (number | undefined)[];
   setContentTimeouts: (number | undefined)[];
   closeCallCount: number;
 }
 
-function installChromiumSpy(pdfOverride?: (realBytes: Buffer) => Buffer): ChromiumSpyHandle {
+function installChromiumSpy(
+  pdfOverride?: (realBytes: Buffer) => Buffer | Promise<Buffer>
+): ChromiumSpyHandle {
   const handle: ChromiumSpyHandle = {
     launchArgsCalls: [],
+    launchTimeouts: [],
     setContentTimeouts: [],
     closeCallCount: 0,
   };
@@ -174,6 +178,7 @@ function installChromiumSpy(pdfOverride?: (realBytes: Buffer) => Buffer): Chromi
 
   vi.spyOn(chromium, "launch").mockImplementation(async (launchOptions) => {
     handle.launchArgsCalls.push([...(launchOptions?.args ?? [])]);
+    handle.launchTimeouts.push(launchOptions?.timeout);
     const browser = await realLaunch(launchOptions);
 
     const realNewPage = browser.newPage.bind(browser);
@@ -192,7 +197,7 @@ function installChromiumSpy(pdfOverride?: (realBytes: Buffer) => Buffer): Chromi
         const realPdf = page.pdf.bind(page);
         vi.spyOn(page, "pdf").mockImplementation(async (pdfOptions?: Record<string, unknown>) => {
           const realBytes = await realPdf(pdfOptions as never);
-          return pdfOverride ? pdfOverride(realBytes) : realBytes;
+          return pdfOverride ? await pdfOverride(realBytes) : realBytes;
         });
 
         return page;
@@ -264,10 +269,23 @@ describe("AC-09(b) 逾時守門", () => {
   it(
     "AC-09(b) 殭屍瀏覽器防禦：逾時路徑 browser.close() 仍確實被呼叫恰一次（mutant「逾時不關瀏覽器」自證點）",
     async () => {
-      const handle = installChromiumSpy();
+      // 註：SF-3（launch 亦納入 timeoutMs 覆蓋）之後，timeoutMs 必須大於實際
+      // launch 耗時（實測 ~65~80ms）browser 才會被成功取得，finally 之
+      // browser.close() 才有機會被本測試鎖定的 mutant 影響；改用 pdf() 卡住
+      // 之確定性 hang-probe（同 MF-1 機制）取代原本裸 timeoutMs:1（SF-3 加入
+      // launch 逾時覆蓋前，launch 未受 options.timeoutMs 節制，1ms 恰可迫使
+      // render 階段逾時；SF-3 之後 1ms 會使 launch 本身先逾時，browser 從未
+      // 取得，finally 未執行，本測試斷言必然恆假——與是否存在該 mutant 無
+      // 關，測試因而喪失鑑別力，故調整輸入以維持原測試意圖與斷言不變）。
+      const handle = installChromiumSpy(
+        (realBytes) =>
+          new Promise<Buffer>((resolve) => {
+            setTimeout(() => resolve(realBytes), 5000);
+          })
+      );
       const html = makeTinyHtml();
 
-      await expect(renderPdf(html, { timeoutMs: 1 })).rejects.toThrow(/timeout/i);
+      await expect(renderPdf(html, { timeoutMs: 300 })).rejects.toThrow(/timeout/i);
 
       expect(handle.closeCallCount).toBe(1);
     },
@@ -282,6 +300,35 @@ describe("AC-09(b) 逾時守門", () => {
 
     expect(handle.closeCallCount).toBe(1);
   });
+
+  it(
+    "MF-1 hang-probe：page.pdf() 卡住遠超 timeoutMs 才 resolve 時，外部 withTimeout 仍使 renderPdf 在 " +
+      "timeoutMs 附近以逾時錯誤 reject（不等待 page.pdf() 完成）——殺死「移除 withTimeout」mutant " +
+      "（該 mutant 下本測試會等滿卡住延遲且不 reject，逾時斷言必紅）",
+    async () => {
+      const HANG_DELAY_MS = 5000;
+      const TIMEOUT_MS = 300;
+      const handle = installChromiumSpy(
+        (realBytes) =>
+          new Promise<Buffer>((resolve) => {
+            setTimeout(() => resolve(realBytes), HANG_DELAY_MS);
+          })
+      );
+      const html = makeTinyHtml();
+
+      const start = Date.now();
+      await expect(renderPdf(html, { timeoutMs: TIMEOUT_MS })).rejects.toThrow(
+        /exceeded .* timeout/
+      );
+      const elapsedMs = Date.now() - start;
+
+      // wall time 需遠低於卡住延遲（5000ms），且落在 timeoutMs + 合理緩衝內——
+      // 證明 reject 是由外部 withTimeout 觸發，而非等待 page.pdf() 本身完成。
+      expect(elapsedMs).toBeLessThan(TIMEOUT_MS + 2000);
+      expect(handle.closeCallCount).toBe(1);
+    },
+    { timeout: 10000 }
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -296,9 +343,7 @@ describe("§11.1 pdf-renderer 選項組裝之結構性斷言", () => {
     await renderPdf(html, { timeoutMs: 30000 });
 
     expect(handle.launchArgsCalls).toHaveLength(1);
-    expect(handle.launchArgsCalls[0]).toEqual(
-      expect.arrayContaining(["--no-sandbox", "--disable-dev-shm-usage"])
-    );
+    expect(handle.launchArgsCalls[0]).toEqual(["--no-sandbox", "--disable-dev-shm-usage"]);
   });
 
   it("逾時參數（options.timeoutMs）逐字傳遞至 page.setContent 之 timeout 選項", async () => {
@@ -308,6 +353,15 @@ describe("§11.1 pdf-renderer 選項組裝之結構性斷言", () => {
     await renderPdf(html, { timeoutMs: 12345 });
 
     expect(handle.setContentTimeouts).toEqual([12345]);
+  });
+
+  it("SF-3：逾時參數（options.timeoutMs）逐字傳遞至 chromium.launch() 之 timeout 選項", async () => {
+    const handle = installChromiumSpy();
+    const html = makeTinyHtml();
+
+    await renderPdf(html, { timeoutMs: 12345 });
+
+    expect(handle.launchTimeouts).toEqual([12345]);
   });
 });
 
@@ -352,5 +406,31 @@ describe("PDF 校驗（§9.1 步驟 5：%PDF- 開頭／%%EOF 結尾／非零長�
         .toString("latin1")
         .trimEnd()
     ).toMatch(/%%EOF$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SF-1（大總管裁定：採 preferCSSPageSize）：PDF 版面幾何須為 A4（依 PRD §459
+// 「列印版與 PDF 同一版型」；report-html.ts @page A4 + 16mm margin），
+// 而非 Chromium page.pdf() 預設之 US Letter（612×792）。
+// ---------------------------------------------------------------------------
+
+describe("SF-1：PDF 輸出版面幾何為 A4（preferCSSPageSize，非預設 US Letter）", () => {
+  it("輸出 PDF 之 /MediaBox 為 A4 幾何（約 594~596 × 841~843 pt），而非 US Letter（612×792）", async () => {
+    const html = makeTinyHtml();
+
+    const pdf = await renderPdf(html, { timeoutMs: 30000 });
+
+    const match = pdf
+      .toString("latin1")
+      .match(/\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/);
+    expect(match).not.toBeNull();
+    const [, x0, y0, width, height] = match as RegExpMatchArray;
+    expect(Number(x0)).toBe(0);
+    expect(Number(y0)).toBe(0);
+    expect(Number(width)).toBeGreaterThanOrEqual(594);
+    expect(Number(width)).toBeLessThanOrEqual(596);
+    expect(Number(height)).toBeGreaterThanOrEqual(841);
+    expect(Number(height)).toBeLessThanOrEqual(843);
   });
 });
