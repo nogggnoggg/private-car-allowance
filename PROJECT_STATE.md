@@ -2,6 +2,12 @@
 
 State: ACTIVE
 
+> **PHASE-009（作廢與修正版）開工記錄（2026-08-07，依使用者夜間授權「復盤做完直接進入下一個 phase 開工」）**
+> - §15 重錨定（Phase 開工第一步）：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令；治理變更權責歸管理協作 agent。模型/effort 確認提醒：session 應為 best+high（使用者晨間可確認）。
+> - **PHASE-008 殘留晨間批次（本 Phase 開工不豁免）**：①git push 放行（分類器擋）→Draft PR #17＋CI②整合 Gate 目視（WALKTHROUGH-PHASE-008-INTEGRATION.md）③PR 合併批准④Phase 邊界 DB 重置＋E2E 自舉（常設——合併後執行）。PHASE-008 分支未合併前，phase-009 branch 自 phase-008 尖端切出、待 008 合併後 rebase 至 main（記錄為環境安排）。
+> - 流程：spec-writer 產 SPEC-009（DRAFT）→ **人類 Spec Gate（停等）** → TDD → Review 照 §19 → Gate → Draft PR＋CI。
+> - 基準線起點：後端 2952/前端 254/E2E 44（008 終審實測）。usage 預算帶：`docs/retrospective/PHASE-008-usage.md` §2.3（22 型態表）。
+> - Packet 必讀（跨 Phase 核銷）：①**D8(a) 硬約束**（:672——作廢以 status=VOIDED 取代 COMPLETED、mileage-engine 過濾條件連動、真實作廢流程回歸 PHASE-005 AC-04）②**T10 FW 人類裁定項**（VOIDED 後 COMPLETED 過濾器使引用保護失效——VOIDED 是否算引用須列 Spec 決策點）③§17.2 複用義務三項（作廢標示欄＋版型段/修正版零程式變更之位元組不變實證/折舊修正版複製 applicationYear·annualTotalKm 重算）④**機械連動預授權**（ReportData 擴欄→AC-27 鍵集封閉＋PHASE_008_SRC_FILES 九檔清單必紅——Task 拆分時預授權同批修改，沿 T11b/R1b 先例）⑤AR-7（upload-service :298/:309 同型洩漏——比照 AR-4 修法納入本 Phase Task）⑥report-data.ts :253 tiebreaker 守門（觸檔必補）⑦Type0/CID 敘述更正（print-layout 檔頭＋§11.4——記載型微更正）⑧buildErrorBody 繞道回歸 AppError 候選⑨D15 稽核 enum 議題（009/010 再議）⑩D14 延後三條 US（FE-US-23⑤/BE-US-27④⑤）折入本 Phase。
 > **PHASE-008（報表列印與正式 PDF）開工記錄（2026-08-06，使用者指令「繼續開工」）**
 > - §15 重錨定：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令。治理變更權責：管理協作 agent 專屬（2026-08-06 裁定），本 session 只執行既有規則。模型/effort 確認提醒已出。
 > - branch：`phase-008`（自 main `e597810` 切出）。流程：spec-writer 產 SPEC-008（DRAFT）→ 人類 Spec Gate（含 High Task 事前批准）→ TDD → Review 節奏照 §19 → Mock UI/整合 Gate（含走查腳本固化）→ Draft PR＋CI。
