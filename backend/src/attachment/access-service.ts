@@ -20,15 +20,22 @@
  *   This matches the Spec decision: "sharp 失敗→前端拿原圖" — the endpoint returns
  *   original bytes rather than 404 so the frontend always gets something useful.
  *
- * Log safety (§9.4):
- *   Errors are logged via sanitizeForLog; storageKey and volume paths are NOT
- *   included in error response bodies or log messages.
+ * Log safety (§9.4; AR-4 修復 2026-08-07):
+ *   storage.get() 失敗時的 catch 區塊**結構性地不持有** err（不讀取
+ *   err.message，也不轉呼叫 sanitizeForLog）——`LocalVolumeStorage.get()` 之
+ *   「not found」錯誤訊息逐字內嵌 storageKey（見 local-volume-storage.ts），
+ *   而 `sanitizeForLog` 僅清除憑證樣式字串（`password=`／連線字串），不清除
+ *   路徑或 key（見 log-sanitize.ts 檔頭），故「持有 err.message 後嘗試清
+ *   洗」不足以防止洩漏。防線改為「持有後清洗」之對照做法——日誌僅含
+ *   `{ attachmentId }` 與固定訊息，不含 err 之任何欄位（比照
+ *   `report-service.ts`／`routes.ts` 之 B-28 同型先例）。錯誤回應本身自始
+ *   即不含 storageKey 或路徑（僅 404 + 固定中文訊息），本次修復僅變更日誌內
+ *   容，不變更對外錯誤契約。
  */
 
 import type { PrismaClient } from "@prisma/client";
 import { type CurrentUser, assertOwnershipOrAdmin } from "../auth/middleware.js";
 import { AppError } from "../platform/errors.js";
-import { sanitizeForLog } from "../platform/log-sanitize.js";
 import type { Storage } from "../storage/index.js";
 
 // ---------------------------------------------------------------------------
@@ -109,12 +116,10 @@ export async function getAttachmentContent(
   let rawResult: Buffer | NodeJS.ReadableStream;
   try {
     rawResult = await storage.get(attachment.storageKey);
-  } catch (err) {
-    const errMsg = err instanceof Error ? sanitizeForLog(err.message) : "unknown error";
-    log.error(
-      { attachmentId, errMsg },
-      "Attachment file missing from storage despite DB record existing"
-    );
+  } catch {
+    // AR-4 修復：不讀取 err/err.message（逐字含 storageKey，見檔頭「Log
+    // safety」）。日誌僅含 attachmentId，結構性地不持有原始錯誤。
+    log.error({ attachmentId }, "Attachment file missing from storage despite DB record existing");
     throw new AppError("NOT_FOUND", 404, "附件檔案不存在");
   }
 
@@ -153,12 +158,9 @@ export async function getAttachmentThumbnail(
   let rawResult: Buffer | NodeJS.ReadableStream;
   try {
     rawResult = await storage.get(keyToFetch);
-  } catch (err) {
-    const errMsg = err instanceof Error ? sanitizeForLog(err.message) : "unknown error";
-    log.error(
-      { attachmentId, errMsg },
-      "Attachment file missing from storage despite DB record existing"
-    );
+  } catch {
+    // AR-4 修復：見 getAttachmentContent 同型說明。
+    log.error({ attachmentId }, "Attachment file missing from storage despite DB record existing");
     throw new AppError("NOT_FOUND", 404, "附件檔案不存在");
   }
 

@@ -15,7 +15,7 @@
 | 前端 | React 18 + TypeScript + Vite | nginx（靜態資產 + 反向代理至後端） |
 | 後端 | Node.js + Fastify + Prisma ORM + TypeScript | node |
 | 資料庫 | PostgreSQL 16 | 獨立容器／受管服務 |
-| PDF | Playwright (Chromium) 渲染列印版 HTML | 隨後端（同 node 容器或伴生 worker，Phase Spec 定案） |
+| PDF | Playwright (Chromium **Headless Shell**) 渲染列印版 HTML | **同 node 容器**（PHASE-008 §16 D4(a) 定案，人類已批准）：每次請求啟動、用畢即關，無常駐實例；映像以 `npx playwright install --only-shell chromium` 只裝 headless shell（`renderPdf` 從不啟動完整 Chrome），**映像實測 2.08 GB**（初版含完整 chromium 為 +2.61 GB，T7bR SF-2 收斂）；併裝 `fonts-noto-cjk` ＋ `/etc/fonts/local.conf` 強制 `sans-serif` 解析為 **Noto Sans CJK TC**（T7bR MF-1：僅安裝字型不足以使 Chromium 選中它）；啟動參數 `--no-sandbox --disable-dev-shm-usage`（D4 附帶批准②之安全取捨） |
 | 儲存 | storage 抽象層 + env 指定路徑之持久化 volume（MVP 不做 S3） | 掛載至後端 |
 | 測試 | Vitest（unit/integration）+ Playwright（E2E） | CI |
 
@@ -71,7 +71,7 @@
 | `depreciation` | 折舊專屬：年度公務里程（引擎複用）、**使用者申報之年度總里程**、參數套用、補貼計算、折舊完成流程。**PHASE-007 落地，落點 `backend/src/applications/`**，四檔各司其職：`depreciation-calculation.ts`（補貼計算與容量判定純函式，無 DB／無 IO）、`depreciation-blockers.ts`（完成阻擋碼純函式，結構性／計算性兩段式）、`depreciation-parameters.ts`（依申請年度 1/1 選版 ＋ 呼叫 PHASE-003a `deriveAnnualDepreciation` 推導每年折舊費用；**修訂段起不再 import `deriveDepreciation`**）、`depreciation-service.ts`（草稿 CRUD／預覽／完成流程編排與快照寫入） | FE-US-17..20, BE-US-15, 16, 17 |
 | `mileage`（統計） | 區間/年度公務里程統計引擎（共用給差旅統計、保養、折舊）。**PHASE-005 落地，落點 `backend/src/mileage/`**，三檔各司其職：`mileage-range.ts`（純函式：區間驗證 `parseMileageRange`、過濾條件建構 `buildOfficialMileageWhere`，不碰 DB、不知道「今天」）、`mileage-engine.ts`（唯讀 DB 聚合 `sumOfficialMileage`，簽章接受 `PrismaClient \| Prisma.TransactionClient`）、`routes.ts`（薄層編排：授權 → 結構收斂 → 驗證 → 引擎 → DTO，本身不含任何業務判定）。對外**僅一個唯讀端點**；對內提供 `sumOfficialMileage(db, params)` 供 `maintenance`／`depreciation` **於交易內複用**（不重算、不繞道 HTTP） | FE-US-06, BE-US-30 |
 | `attachments` | storage 抽象、上傳/格式大小/內容檢測、數量限制、生命週期（暫存→關聯→鎖定→清理）、授權存取 | FE-US-21, BE-US-23, 24, 25, NFR-US-07, 10 |
-| `reports` | 報表編號產生、列印版 HTML 組裝、Playwright PDF 產生/保存、安全檔名、授權下載 | FE-US-22..24, BE-US-26, 27, 28 |
+| `reports` | 報表編號產生、列印版 HTML 組裝、Playwright PDF 產生/保存、安全檔名、授權下載。**PHASE-008 落地，落點 `backend/src/reports/`**，**九檔**各司其職：`report-number.ts`（編號純函式：三型前綴 ＋ Asia/Taipei `YYYYMM` ＋ 序號補零）／`report-filename.ts`（安全檔名純函式：不安全字元清理、姓名段 30／整體 120 上限、`Content-Disposition` 雙形式）／`report-data.ts`（**只讀快照**之封閉白名單組裝，零重算、零計算引擎呼叫）／`report-html.ts`（列印版版型**純函式**：零時鐘、零隨機、零外部資源）／`report-labels.ts`（**顯示標籤之單一來源**：油種中文名稱窮舉 `Record<FuelType, string>`、台北時區中文時間格式化——PHASE-008 Mock Gate 裁-1／裁-3）／`report-images.ts`（附件位元組 → 降尺寸／EXIF 轉正／**取小者** → data URI）／`pdf-renderer.ts`（Playwright 封裝：啟動參數、逾時、`%PDF-`／`%%EOF` 校驗、`preferCSSPageSize` A4）／`report-service.ts`（編排、交易、冪等、補償刪檔）／`routes.ts`（四端點：產生／列印／下載／查詢）。**九檔清單有結構性測試釘住**（新增或刪除 `.ts` 而未同步清單即紅） | FE-US-22..24, BE-US-26, 27, 28 |
 | `audit` | 稽核事件寫入與查詢（操作者/擁有人/時間/類型/前後摘要；密碼不入） | AD-US-14, BE-US-31 |
 | `calculation engine` | 金額計算純函式：單段/整筆差旅、保養分攤、折舊補貼、統一四捨五入取整 | BE-US-06, 07, 12, 14, 17 |
 | `platform` | 健康檢查、結構化錯誤處理、設定/env 載入、DB 連線 | NFR-US-15, 16, 05 |
@@ -123,6 +123,8 @@
 - **附件內容一律經後端授權端點回傳；持久化 volume 不得由 nginx 靜態直出對外（否則繞過授權，違反 NFR-US-10）**。storage key 由系統產生、不含使用者輸入，杜絕路徑穿越與列舉取檔。（修訂 2026-08-01，SPEC-003 決策點 D7；PHASE-003 拓撲約束，待人類批准 Spec 後生效。）
 - 附件對申請容器於 PHASE-003 採**弱關聯**（refType+refId，避免提前建立申請表）；「完成鎖定」語意權威在申請狀態機，附件不冗餘持久化 locked。（修訂 2026-08-01，SPEC-003 決策點 D1/D2。）
 - **`deriveContainerState` 支援 `refType=MAINTENANCE`（PHASE-006 D2(a)，已落地）**：自 PHASE-006 起，保養附件之容器狀態經 `MaintenanceApplication → Application.status` 推導（`refId` ＝ `Application.id` ＝ `MaintenanceApplication.applicationId`），已完成保養之證明附件即受鎖定保護（BE-US-25 第 4 條）；`deleteApplication` 於刪除保養草稿時一併 detach 其 `MAINTENANCE` 附件，避免孤兒 `LINKED` 附件。維持上列「弱關聯 ＋ 不冗餘持久化 locked」之既有定案（未改為強 FK、未新增 locked 旗標）。
+- **storage 抽象之封閉前綴白名單（PHASE-008 D6(a)，已落地）**：`LocalVolumeStorage` 改為**可設定之封閉前綴集合**，全案僅有**兩個實例**——附件實例（`att`）與報表實例（`rpt`），各自掛載獨立 volume。**跨實例互拒**：附件實例拒 `rpt/` 金鑰、報表實例拒 `att/` 金鑰（`server.ts` 對兩實例皆明寫 `{ prefixes: [...] }`，有結構性斷言釘住）；未指定選項時預設仍為 `["att"]`，**既有附件行為零改動**。前綴比對之字面 `.` 不得被當作正則萬用字元（`escapeRegExp` 守門）。路徑穿越矩陣（21 列）對 `rpt` 前綴重跑全數拒絕。
+- **正式 PDF 沿用附件之同一紀律（PHASE-008）**：PDF **一律經授權端點回傳**，volume **不得由 nginx 靜態直出**——此為上一條既有紀律之延伸，並新增**結構性守門**：以解析 `nginx.conf` 之 `location`／`server` 區塊斷言無任何 `root`／`alias` 指向 storage／report volume 路徑（含裸 `root`、帶正則或前綴修飾子之 `location`、`if` 巢狀大括號三種繞過型態之鑑別力自證）。`storageKey` 由系統產生、不含使用者輸入。
 - **`deriveContainerState` 支援 `refType=DEPRECIATION`（PHASE-007 D10(a)，已落地）**：折舊證明附件之容器狀態直接經 `Application.status` 推導（`refId` ＝ `Application.id` ＝ `DepreciationApplication.applicationId`），已完成折舊之證明附件即受鎖定保護（BE-US-25 第 4 條）；容器不存在（孤兒）時視為 `'draft'` 並記警告日誌。`deleteApplication`（generic 端點）於刪除折舊草稿時一併 detach 其 `DEPRECIATION` 附件，避免永遠停在 `LINKED`、清理排程掃不到的孤兒。同樣維持弱關聯定案，未新增 locked 旗標。**PHASE-007 修訂段（已落地）：折舊證明改為「選填」**——零附件之草稿可完成（完成端點不再計數附件、`DEPRECIATION_ATTACHMENT_REQUIRED` 已退場），但**上限 5 張、完成鎖定與 detach 語意一律不變**（本列其餘敘述零變更）。
 
 ### 4.6 綜合查詢與資料隔離
@@ -135,6 +137,11 @@
 
 - 報表編號：TRV/MNT/DEP 前綴 + 月內唯一 + 對同一版本冪等（BE-US-26）。
 - 列印版 HTML 與正式 PDF **同一版型**；Playwright 以該 HTML 產生 PDF 並保存；產生/保存失敗不得標示成功（BE-US-27）。安全檔名移除不安全字元（BE-US-28）。
+- **編號格式（PHASE-008 D2(a) 定案，已落地）**：`{PREFIX}-{YYYYMM}-{NNNN}`，**月份依 Asia/Taipei**（固定 +08:00，無日光節約；以固定偏移換算後一律 `getUTC*` 讀出，不受執行主機時區影響）；序號補零 4 位，`≥10000` 自然延伸為 5 位（不截斷、不歸零）。
+- **冪等與併發（PHASE-008 D3 修訂後定案，已落地）**：冪等鍵為 **`Report.applicationId` 唯一**；併發以「**`READ COMMITTED`（本交易限定）＋ `(numberPrefix, numberPeriod)` 交易級顧問鎖排隊（主防線）** ＋ `max(sequence)+1` ＋ 三欄唯一約束 ＋ `P2002` 重試（最後防線）」保證。**顧問鎖為交易首語句**——早於冪等再查與配號（`READ COMMITTED` 下鎖外查詢讀不到前位剛提交之列，順序不可對調）；不同 `(prefix, period)` 組互不阻擋（鎖鍵為該二欄之穩定雜湊，非共用常數）。**隔離等級之變更僅限本交易**，不改全域設定或連線層預設。
+- **交易形狀（D3 修訂後）**：**配號與帶編號渲染同在一個交易內，序號僅於提交時落庫（回滾天然不燒號）**——單一交易內依序為「顧問鎖 → 冪等再查 → 配號 → **帶編號渲染** → `put` → 讀回校驗 → `INSERT`」；**配號早於渲染**是列印版與 PDF 得以 wire 層字串全等（BE-US-27／同一版型）之結構前提。
+- **PDF 產生失敗一律零殘留（列與檔同生共死）**：四個失敗階段（`RENDER`／`STORE`／`VERIFY`／`PERSIST`）皆回 `500 REPORT_GENERATION_FAILED` 並攜 `details.stage`，交易回滾 ＋ 已寫入之檔案補償刪除，**零 `Report` 列、零 storage 檔、申請快照逐欄不變**。
+- **報表為不可變產物**：本 Phase **不存在**更新或刪除 `Report` 之程式路徑（以結構性掃描斷言 `report.update`／`delete`／`upsert`／`updateMany`／`deleteMany` 於 `reports/` 零出現）；內容有誤只能走 PHASE-009 之修正版（新 `Application` → 新編號、新 PDF，原報表位元組不被觸碰）。
 
 ### 4.8 稽核
 
@@ -173,6 +180,11 @@
 
 ## 6. 開放問題（待 Phase Spec 或人類決策）
 
-- Playwright/Chromium 於後端容器的封裝方式（同容器 vs 伴生 worker）— PHASE-008 Spec 定案。
 - Session 儲存後端（DB session vs 記憶體/外部 store）— PHASE-002 Spec 定案，須滿足「停用/重設密碼即失效既有 session」。
-- 報表編號月內唯一的併發安全實作（序列/交易）— PHASE-008 Spec 定案。
+
+### 6.1 已結案（歷史條目保留，標註結案依據）
+
+| 原開放問題（原文保留） | 結案依據 | 落點 |
+|---|---|---|
+| 「Playwright/Chromium 於後端容器的封裝方式（同容器 vs 伴生 worker）— PHASE-008 Spec 定案。」 | **PHASE-008 §16 D4(a)**（人類 2026-08-06 Spec Gate 批准，含三項附帶批准：CJK 字型必裝、`--no-sandbox` 安全取捨明示接受、`playwright` 列 runtime 依賴之映像成本已明示） | **同容器、每次請求啟動用畢即關**；見 §1 技術棧 PDF 列與 §4.7 |
+| 「報表編號月內唯一的併發安全實作（序列/交易）— PHASE-008 Spec 定案。」 | **PHASE-008 §16 D3 修訂後定案**（人類 2026-08-06 兩次裁定：方案 (d) 交易形狀 ＋ 顧問鎖；再裁定 `READ COMMITTED`，經 T8R3 三層獨立複現證明 `SERIALIZABLE` 下顧問鎖排隊機制不成立） | **`READ COMMITTED`（本交易限定）＋ 交易級顧問鎖排隊（主防線）＋ `max(sequence)+1` ＋ 三欄唯一約束 ＋ `P2002` 重試（最後防線）**；見 §4.7 |

@@ -319,15 +319,21 @@ export function buildApplicationWhere(
   if (filters.status !== null) {
     where.status = filters.status;
   }
-  // AC-64/D10: 本 Phase 僅比對 TravelApplication.purpose（不分大小寫、部分比對）。
-  // MAINTENANCE/DEPRECIATION 尚無子表可比對——帶 keyword 時這兩型天然查無結果，
-  // 與 AC-71「相容行為」不衝突（AC-71 本身不涉及 keyword 組合）。
+  // AC-64/D10: 比對 TravelApplication.purpose（不分大小寫、部分比對）。
+  // MAINTENANCE/DEPRECIATION 型仍無出差目的可比對，但 PHASE-008-T17／AC-38
+  // 起三型皆可額外由 Report.reportNumber（若已產生報表）比對命中——OR 條件
+  // 對「未產生報表之申請」自然不命中第二支（`report` 為 null 關聯天然
+  // 不符），不縮減既有純出差目的比對之結果集，亦不影響 AC-71「相容行為」
+  // （AC-71 本身不涉及 keyword 組合）。
   // B-23: keyword 先跳脫 LIKE 萬用字元（`%`/`_`/`\`），使其在 ILIKE pattern
-  // 中成為字面字元，見 `escapeLikePattern` 文件註解。
+  // 中成為字面字元，見 `escapeLikePattern` 文件註解——兩支 OR 分支共用同一
+  // 跳脫值（比對使用者輸入原樣，不重算/重組編號，T2 FW-4）。
   if (filters.keyword !== null) {
-    where.travel = {
-      purpose: { contains: escapeLikePattern(filters.keyword), mode: "insensitive" },
-    };
+    const escapedKeyword = escapeLikePattern(filters.keyword);
+    where.OR = [
+      { travel: { purpose: { contains: escapedKeyword, mode: "insensitive" } } },
+      { report: { reportNumber: { contains: escapedKeyword, mode: "insensitive" } } },
+    ];
   }
   return where;
 }

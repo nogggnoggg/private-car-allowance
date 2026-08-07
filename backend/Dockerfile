@@ -17,7 +17,27 @@ COPY backend/prisma/ ./backend/prisma/
 # Install all workspace dependencies (npm workspaces)
 # NOTE: prisma/@prisma/client are NOT hoisted to root node_modules by npm workspaces;
 # they stay in backend/node_modules. Root node_modules gets shared/hoisted deps only.
+# `playwright` (backend runtime dependency, Spec §16 D4) IS hoisted to root
+# node_modules (verified: no version conflict with root's @playwright/test devDependency).
 RUN npm ci
+
+# Download Playwright's pinned Chromium Headless Shell binary (PHASE-008-T7b; Spec
+# §16 D4; --only-shell scope narrowed by PHASE-008-T7bR SF-2 — renderPdf only ever
+# launches chromium_headless_shell, never full Chrome; full chromium (~389MB) is
+# downloaded and shipped unused otherwise).
+# T7b FW-1 (即審): package-lock's playwright/@playwright/test/playwright-core entries
+# have NO postinstall script (`hasInstallScript` absent) — `npm ci` alone does NOT
+# fetch the browser. This explicit step is required. Revision is derived from the
+# installed `playwright` package version (1.62.1 → chromium-1234) — do not hardcode a
+# revision number; two revisions (1228/1234) can coexist in local dev caches, and only
+# the version resolved by `npm ci` here is authoritative for this image.
+# PLAYWRIGHT_BROWSERS_PATH must be set identically in BOTH stages (see runtime stage
+# below) so the browser lands at a path the runtime stage can COPY --from=builder and
+# the running app can find — the installer's default path (installing user's home
+# directory) would otherwise mismatch between builder root and runtime appuser
+# (T7b FW-1 "下載路徑地雷").
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install --only-shell chromium
 
 # Copy backend source
 COPY backend/src/ ./backend/src/
@@ -35,8 +55,39 @@ WORKDIR /app
 # Install gosu — used by docker-entrypoint.sh to drop root to appuser after
 #   initialising the storage volume directory (D4, Spec §8; volume mounted after
 #   image layers so mkdir must run at startup as root, not in a RUN layer).
+# Install fonts-noto-cjk — CJK glyph coverage for report PDFs (PHASE-008-T7b, Spec
+#   §16 D4 附帶批准①／AC-09(c)). Without SOME CJK-capable font present, Chinese
+#   characters in a container-rendered PDF render as .notdef "tofu" boxes — a
+#   failure that does NOT reproduce on Windows dev machines (which already have
+#   system CJK fonts), so it is a high-probability escaped defect if omitted (see
+#   T7b Handoff for measurement evidence).
+# CORRECTED (PHASE-008-T7bR MF-1, was wrong in T7b): installing fonts-noto-cjk does
+#   NOT by itself make Chromium select it. report-html.ts's CSS font-family stack
+#   never names "Noto Sans CJK TC" (Debian's actual family name), so it always falls
+#   through to the generic "sans-serif" alias — and fontconfig's per-glyph fallback
+#   resolved that alias to WenQuanYi Zen Hei (fonts-wqy-zenhei), an undeclared
+#   transitive dependency pulled in by `playwright install-deps chromium` below, not
+#   to Noto. fonts-noto-cjk was inert for glyph selection even though it incidentally
+#   fixed the tofu symptom (WenQuanYi also covers CJK). The /etc/fonts/local.conf
+#   rule added below is what actually forces Noto Sans CJK TC to win.
 # node:20-slim is Debian-based (bookworm); openssl satisfies libssl dependency
-RUN apt-get update -y && apt-get install -y openssl gosu --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y openssl gosu fonts-noto-cjk --no-install-recommends && rm -rf /var/lib/apt/lists/*
+
+# Force fontconfig's generic "sans-serif" fallback to resolve to Noto Sans CJK TC
+# ahead of any other installed CJK-capable font (PHASE-008-T7bR MF-1 fix, reviewer-
+# tested). Prepend (not replace) so non-CJK glyph fallback is unaffected.
+RUN printf '%s\n' \
+      '<?xml version="1.0"?>' \
+      '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+      '<fontconfig>' \
+      '  <match target="pattern">' \
+      '    <test qual="any" name="family"><string>sans-serif</string></test>' \
+      '    <edit name="family" mode="prepend" binding="strong">' \
+      '      <string>Noto Sans CJK TC</string>' \
+      '    </edit>' \
+      '  </match>' \
+      '</fontconfig>' \
+      > /etc/fonts/local.conf
 
 # Create non-root group and user for security, with a proper home directory
 RUN groupadd -r appgroup && useradd -r -g appgroup -d /home/appuser -m appuser
@@ -57,11 +108,28 @@ COPY --from=builder /app/backend/prisma ./backend/prisma
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/backend/package.json ./backend/package.json
 
+# Playwright Chromium runtime (PHASE-008-T7b, Spec §16 D4).
+# Browser binary: copied from the builder stage's download (see builder stage above)
+# at the identical PLAYWRIGHT_BROWSERS_PATH — avoids the installer-home-directory
+# path mismatch between builder (root) and runtime (appuser) (T7b FW-1).
+# OS-level shared libraries (libnss3, libgbm1, libatk*, libasound2, etc.) are NOT
+# present in node:20-slim by default and are NOT carried over by COPY --from=builder
+# (they belong to the builder image's OS package database, not to node_modules).
+# `install-deps` resolves the correct package list for the detected OS (Debian
+# bookworm) and the installed `playwright` version, avoiding a hand-maintained
+# package list that drifts across Playwright releases (T7b FW-1).
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# --chown here (rather than the blanket `chown -R` below) avoids overlayfs
+# copy-up duplicating this ~267MB directory into a second layer (T7bR SF-1).
+COPY --from=builder --chown=appuser:appgroup /ms-playwright /ms-playwright
+RUN npx playwright install-deps chromium && rm -rf /var/lib/apt/lists/*
+
 # Copy entrypoint script
 COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-# Set ownership to non-root user for application files
+# Set ownership to non-root user for application files (/ms-playwright is already
+# owned by appuser via COPY --chown above; excluded here, see T7bR SF-1)
 RUN chown -R appuser:appgroup /app /home/appuser
 
 # NOTE: USER appuser is intentionally NOT set here.

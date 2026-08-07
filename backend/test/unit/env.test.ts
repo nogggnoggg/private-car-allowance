@@ -110,4 +110,60 @@ describe("parseEnv()", () => {
       );
     });
   });
+
+  // ── PHASE-008-T7: Report generation env vars (Spec §8, §10-2) ───────────
+  //
+  // REPORT_STORAGE_ROOT mirrors ATTACHMENT_STORAGE_ROOT's shape exactly
+  // (optional string, no schema-level default) — the NODE_ENV=production
+  // fail-fast check itself lives in server.ts (see ATTACHMENT_STORAGE_ROOT's
+  // precedent at server.ts :101-117), which is T8 scope (Files Forbidden for
+  // T7); this file only covers the zod-schema parse/coercion layer.
+  describe("PHASE-008-T7 report generation env vars", () => {
+    const baseEnv = {
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/test_db",
+      NODE_ENV: "test",
+    };
+
+    it("REPORT_STORAGE_ROOT is optional and parsed as string when provided", () => {
+      const config = parseEnv({ ...baseEnv, REPORT_STORAGE_ROOT: "/data/storage/pdf" });
+      expect(config.REPORT_STORAGE_ROOT).toBe("/data/storage/pdf");
+    });
+
+    it("REPORT_STORAGE_ROOT is undefined when not provided", () => {
+      const config = parseEnv({ ...baseEnv });
+      expect(config.REPORT_STORAGE_ROOT).toBeUndefined();
+    });
+
+    it("REPORT_PDF_TIMEOUT_MS defaults to 30000", () => {
+      const config = parseEnv({ ...baseEnv });
+      expect(config.REPORT_PDF_TIMEOUT_MS).toBe(30000);
+    });
+
+    it("REPORT_PDF_TIMEOUT_MS is coerced from string to number", () => {
+      const config = parseEnv({ ...baseEnv, REPORT_PDF_TIMEOUT_MS: "45000" });
+      expect(config.REPORT_PDF_TIMEOUT_MS).toBe(45000);
+    });
+
+    it("REPORT_PDF_TIMEOUT_MS rejects zero (must be positive)", () => {
+      expect(() => parseEnv({ ...baseEnv, REPORT_PDF_TIMEOUT_MS: "0" })).toThrowError(
+        /REPORT_PDF_TIMEOUT_MS/
+      );
+    });
+
+    it("REPORT_IMAGE_MAX_PX defaults to 1600", () => {
+      const config = parseEnv({ ...baseEnv });
+      expect(config.REPORT_IMAGE_MAX_PX).toBe(1600);
+    });
+
+    it("REPORT_IMAGE_MAX_PX is coerced from string to number", () => {
+      const config = parseEnv({ ...baseEnv, REPORT_IMAGE_MAX_PX: "800" });
+      expect(config.REPORT_IMAGE_MAX_PX).toBe(800);
+    });
+
+    it("REPORT_IMAGE_MAX_PX rejects zero (must be positive)", () => {
+      expect(() => parseEnv({ ...baseEnv, REPORT_IMAGE_MAX_PX: "0" })).toThrowError(
+        /REPORT_IMAGE_MAX_PX/
+      );
+    });
+  });
 });

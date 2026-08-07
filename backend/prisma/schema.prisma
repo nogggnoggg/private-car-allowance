@@ -291,6 +291,7 @@ model Application {
   travel       TravelApplication?
   maintenance  MaintenanceApplication?
   depreciation DepreciationApplication?
+  report       Report?
 
   @@index([ownerId, status, primaryDate])
   @@index([ownerId, primaryDate])
@@ -412,4 +413,32 @@ model DepreciationApplication {
 
   @@index([applicationYear])
   @@index([depreciationParameterVersionId])
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-008 models（§8.1；D1 單表裁定——applicationId 唯一為冪等鍵，
+// FK onDelete: Restrict）
+// ---------------------------------------------------------------------------
+
+/// PHASE-008：正式報表（每個 Application 至多一份；修正版為新 Application → 新 Report）。
+model Report {
+  id            String      @id @default(cuid())
+  applicationId String      @unique                       // 冪等鍵（D3）
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Restrict)
+
+  reportNumber  String      @unique                       // "TRV-202608-0001"
+  numberPrefix  String                                    // "TRV" | "MNT" | "DEP"
+  numberPeriod  String                                    // "YYYYMM"（Asia/Taipei）
+  sequence      Int                                       // 該 (prefix, period) 之序號，自 1
+
+  storageKey    String      @unique                       // "rpt/<uuid>/pdf"（系統產生）
+  fileName      String                                    // 產生時凍結之安全檔名（AC-23）
+  byteSize      Int
+  contentHash   String                                    // SHA-256 hex（重下一致性驗證）
+
+  generatedById String                                    // 操作者（無 FK，沿 003a/005a 慣例）
+  generatedAt   DateTime    @default(now())
+
+  @@unique([numberPrefix, numberPeriod, sequence])        // 併發最後防線（D3）
+  @@index([numberPrefix, numberPeriod])                   // max(sequence) 查詢
 }

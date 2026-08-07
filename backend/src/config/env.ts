@@ -13,6 +13,13 @@
  *   ATTACHMENT_MAX_BYTES       — Single-file size limit in bytes (default 10 MiB)
  *   ATTACHMENT_TEMP_TTL_HOURS  — Temp attachment cleanup threshold in hours (default 24)
  *   ATTACHMENT_THUMBNAIL_MAX_PX — Thumbnail long-side pixel limit if sharp is used (default 512)
+ *
+ * PHASE-008-T7 additions (Spec §8, §10-2, §16 D6):
+ *   REPORT_STORAGE_ROOT     — Local volume root path for generated PDF reports (no default;
+ *                             production fail-fast mirrors ATTACHMENT_STORAGE_ROOT, wired in T8
+ *                             server.ts — out of this file's scope, schema only accepts/parses it here)
+ *   REPORT_PDF_TIMEOUT_MS   — Playwright PDF render timeout in ms, passed to pdf-renderer.ts (default 30000)
+ *   REPORT_IMAGE_MAX_PX     — Report image embed long-edge pixel cap, passed to report-images.ts (default 1600)
  */
 import { z } from "zod";
 
@@ -35,6 +42,12 @@ const envSchema = z.object({
   ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(10485760), // 10 MiB
   ATTACHMENT_TEMP_TTL_HOURS: z.coerce.number().int().positive().default(24),
   ATTACHMENT_THUMBNAIL_MAX_PX: z.coerce.number().int().positive().default(512),
+  // PHASE-008-T7: Report generation configuration (Spec §8, §10-2)
+  // Optional with no default, same shape as ATTACHMENT_STORAGE_ROOT — production
+  // fail-fast enforcement is server.ts's responsibility (wired in T8, out of this file's scope).
+  REPORT_STORAGE_ROOT: z.string().optional(),
+  REPORT_PDF_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  REPORT_IMAGE_MAX_PX: z.coerce.number().int().positive().default(1600),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
@@ -77,6 +90,9 @@ export function getEnvOrTestDefaults(
       ATTACHMENT_MAX_BYTES: 10485760,
       ATTACHMENT_TEMP_TTL_HOURS: 24,
       ATTACHMENT_THUMBNAIL_MAX_PX: 512,
+      REPORT_STORAGE_ROOT: env.REPORT_STORAGE_ROOT,
+      REPORT_PDF_TIMEOUT_MS: 30000,
+      REPORT_IMAGE_MAX_PX: 1600,
     };
   }
 }

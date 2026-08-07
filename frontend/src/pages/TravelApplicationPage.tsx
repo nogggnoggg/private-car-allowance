@@ -37,6 +37,7 @@ import {
   apiUpdateTravelDraft,
 } from "../api/applications.js";
 import { type AttachmentDto, toFrontendUrl } from "../api/attachments.js";
+import ReportSection from "../components/ReportSection.js";
 import SegmentAttachmentPanel from "../components/SegmentAttachmentPanel.js";
 import type { ApiError } from "../types/api.js";
 
@@ -583,6 +584,10 @@ export default function TravelApplicationPage(): React.ReactElement {
               </dl>
             </section>
           )}
+
+          {/* AC-30（PHASE-008-T12）：已完成申請顯示報表區塊；元件內建
+              status !== "COMPLETED" 不渲染之守門，此處恆為 COMPLETED。 */}
+          <ReportSection applicationId={application.id} status={application.status} />
         </main>
       </div>
     );

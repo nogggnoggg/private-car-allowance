@@ -33,6 +33,14 @@ services:
       ATTACHMENT_MAX_BYTES: ${ATTACHMENT_MAX_BYTES:-10485760}
       ATTACHMENT_TEMP_TTL_HOURS: ${ATTACHMENT_TEMP_TTL_HOURS:-24}
       ATTACHMENT_THUMBNAIL_MAX_PX: ${ATTACHMENT_THUMBNAIL_MAX_PX:-512}
+      # Report PDF storage root (PHASE-008-T7b, Spec §16 D6 prefix isolation).
+      # Sub-path of the same storage volume as ATTACHMENT_STORAGE_ROOT; directory
+      # created and chowned to appuser at container startup by docker-entrypoint.sh.
+      REPORT_STORAGE_ROOT: ${REPORT_STORAGE_ROOT:-/data/storage/pdf}
+      # Playwright PDF render timeout in ms (Spec §16 D4, AC-09(b); default 30000).
+      REPORT_PDF_TIMEOUT_MS: ${REPORT_PDF_TIMEOUT_MS:-30000}
+      # Report image embed long-edge pixel cap (Spec AC-13(a); default 1600).
+      REPORT_IMAGE_MAX_PX: ${REPORT_IMAGE_MAX_PX:-1600}
     volumes:
       - storage:${STORAGE_PATH:-/data/storage}
     depends_on:

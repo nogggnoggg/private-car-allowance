@@ -538,16 +538,17 @@ describeWithDb("PHASE-006-T1 migration safety net — clean DB", () => {
   });
 
   // PHASE-007-T1R-LITE: the business-table total moved 14→15 when PHASE-007's
-  // `DepreciationApplication` was created. The count is a moving number, so it
-  // is updated here rather than weakened — the discriminating part of this
-  // test (MaintenanceApplication is present, i.e. PHASE-006's table survives
-  // later Phases' migrations) is unchanged.
-  it("Done When: MaintenanceApplication 仍在 15 張業務表中", async () => {
+  // `DepreciationApplication` was created. PHASE-008-T1: moved 15→16 when
+  // `Report` was created. The count is a moving number, so it is updated here
+  // rather than weakened — the discriminating part of this test
+  // (MaintenanceApplication is present, i.e. PHASE-006's table survives later
+  // Phases' migrations) is unchanged.
+  it("Done When: MaintenanceApplication 仍在 16 張業務表中", async () => {
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(15);
+    expect(tableRows.length).toBe(16);
     expect(tableRows.map((r) => r.table_name)).toContain("MaintenanceApplication");
   });
 

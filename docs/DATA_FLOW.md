@@ -21,8 +21,7 @@ User 1───* AuditLog (as owner)              Admin(User) 1───* AuditL
 
 Application 1───* Attachment (關聯，草稿階段可解除；完成後鎖定)
 TripSegment 1───* Attachment
-Application 0..1───1 Report (已完成才有；修正版各自新 Report)
-Report 1───1 PdfFile (保存於 volume)
+Application 0..1───1 Report (含 PDF 檔案參照；已完成才有；修正版各自新 Report)
 Application 0..1 ──self── Application (原申請 ─supersededBy→ 修正版)
 
 FuelPriceVersion      (每公升油價；依油種各自一條時間軸，含生效日期，不重疊)   ← PHASE-005a 落地
@@ -50,8 +49,8 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 | MaintenanceApplication | **業務 5 欄**：上次/本次保養日期（`@db.Date`，日粒度）、上次/本次里程表、實際費用；**快照 5 欄**：`snapshotIntervalKm`（區間里程）／`snapshotOfficialKm`（期間公務里程）／`snapshotRatio`（比例，6 位小數）／`snapshotRawAmount`（取整前分攤金額）／`calculatedAt` | **PHASE-006 已落地之實體**：`MaintenanceApplication` 子表，1:1 於 `Application`（PK ＝ `applicationId`，`onDelete: Cascade`），與既有 `TravelApplication` 對稱（D1(a)）；本次保養日期為 `Application.primaryDate` 之來源；**最終金額落於既有 `Application.totalAmount`（`Int`）不重複持久化**；**實際費用之快照即 `actualCost` 欄位本身**（完成後凍結，D11(a)，不另存冗餘副本） |
 | DepreciationApplication | **業務 2 欄**：申請年度 `applicationYear`（`Int?`，西元年，值域 [1900, 2999]，草稿可為 `null`）／**該車年度總里程 `annualTotalKm`（`Decimal(9,1)?`，使用者申報之申請資料，小數 1 位，草稿可為 `null`）**；**快照 9 欄**：`snapshotVehiclePrice`（`Decimal(12,2)`，車價）／`snapshotUsefulLifeYears`（`Int`）／**`snapshotAnnualDepreciation`（`Decimal(12,2)`，每年折舊費用 2 位小數）**／`snapshotOfficialKm`（`Decimal(12,2)`，年度公務里程）／**`snapshotAnnualTotalKm`（`Decimal(9,1)`，年度總里程）**／**`snapshotRatio`（`Decimal(9,6)`，公務比例，比照保養）**／`snapshotRawAmount`（`Decimal(14,4)`，取整前補貼金額）／`calculatedAt`／`depreciationParameterVersionId`（所引用之折舊參數版本）；**凍結唯讀 2 欄**（舊模型；新申請恆為 `null`）：`snapshotEstimatedAnnualKm`（`Int?`）／`snapshotPerKmUnitPrice`（`Decimal(14,4)?`，折舊每公里單價之 4 位小數） | **PHASE-007 已落地之實體（欄位形狀為折舊模型修訂段之現況）**：`DepreciationApplication` 子表，1:1 於 `Application`（PK ＝ `applicationId`，`onDelete: Cascade`），與既有 `TravelApplication`／`MaintenanceApplication` 對稱（D1(a)）；`Application.primaryDate` ＝ 該年 `12-31`（`applicationYear` 為 `null` 時 ＝ 建立日，D2(a)），**不受 `annualTotalKm` 影響**，為列表排序與期間篩選之權威；**最終金額落於既有 `Application.totalAmount`（`Int`）不重複持久化**；`annualTotalKm`／`snapshotAnnualTotalKm` 之 `Decimal(9,1)` 整數位 8 位恰與既有里程容量慣例（`1e8`）逐字一致，`snapshotRatio` 與 `MaintenanceApplication.snapshotRatio` 逐字一致；凍結二欄之單價欄刻意用 `Decimal(14,4)` 而非沿差旅之 `(10,4)`，以容納舊引擎全部合法輸出（D3(a)）；**車價／年限／預估年里程與版本 id 持久化但不出現於任何折舊 DTO**（每年折舊費用／年度總里程／公務比例則對外呈現，見 ARCHITECTURE §4.11）；自身兩索引：`applicationYear`、`depreciationParameterVersionId`（皆零異動） |
 | Attachment | 檔案參照(volume 路徑)、格式、大小、暫存/關聯狀態、所屬申請/項目、上傳時間 | 生命週期核心 |
-| Report | 報表編號(TRV/MNT/DEP+月內唯一)、產生時間、所屬申請版本 | 已完成才有；冪等 |
-| PdfFile | volume 檔案參照、安全檔名 | 保存不可變內容 |
+| Report | **編號 4 欄**：`reportNumber`（`TRV/MNT/DEP-YYYYMM-NNNN`，全域唯一）／`numberPrefix`／`numberPeriod`（`YYYYMM`，Asia/Taipei）／`sequence`（該 `(prefix, period)` 之序號，自 1）；**檔案 4 欄**：`storageKey`（`rpt/<uuid>/pdf`，系統產生、唯一）／`fileName`（**產生時凍結**之安全檔名）／`byteSize`／`contentHash`（SHA-256 hex）；**產生者 2 欄**：`generatedById`（操作者，無 FK，沿 003a/005a 慣例）／`generatedAt`；**冪等鍵** `applicationId`（`@unique`，對 `Application` 為 `onDelete: Restrict`） | **PHASE-008 已落地之實體**：每個 `Application` **至多一份**（修正版為新 `Application` → 新 `Report`）；`Application` 端為**零 DDL 之虛擬關聯欄** `report Report?`；四個唯一約束（`applicationId`／`reportNumber`／`storageKey`／`(numberPrefix, numberPeriod, sequence)`）＋ 一個一般索引 `(numberPrefix, numberPeriod)`（供 `max(sequence)` 查詢）；**併發之最後防線**即上述三欄唯一約束（主防線為顧問鎖，見 ARCHITECTURE §4.7） |
+| ~~PdfFile~~（**已併入 `Report`，PHASE-008 D1(a)**） | —（原「volume 檔案參照、安全檔名」三項屬性） | **本實體不存在**：原規劃之 `PdfFile` 三欄（`storageKey`／`fileName`／`byteSize`＋`contentHash`）**併入 `Report` 同一列**——PDF 與報表列**同生共死**、無獨立生命週期，分表只會製造「有列無檔／有檔無列」之不一致窗口（D1(a) 人類已批准）。歷史條目保留於此以利追溯 |
 | Fuel/Etc/DepreciationParameterVersion | 參數值、生效日期 `effectiveFrom`（日粒度，含當日；有效期間不重疊，結束由下一版隱含界定，PHASE-003a D2 方案 A）。**`DepreciationParameterVersion` 自 PHASE-007 修訂段起**：新版本只需車價 ＋ 折舊年限；`estimatedAnnualKm` 為 **nullable 之凍結欄**（建立端點不解析／不驗證／不持久化，夾帶不採用；新版本恆 `NULL`，歷史列原值保留） | 版本化、被引用不可覆寫；折舊每年費用/每公里單價為 derived 不持久化（D7），即算即回；**每公里單價僅對歷史版本推導（唯讀），新版本一律 `null`**。**`FuelParameterVersion` 之油資角色自 PHASE-005a 起由 `FuelPriceVersion` ＋ `UserFuelConsumptionVersion` 取代**（D1(a)：表與既有列保留、寫入端點凍結、`GET` 唯讀），量綱不同（元／km vs 元／L）**不做任何資料換算** |
 | FuelPriceVersion | 油種 `fuelType`（GASOLINE_92／95／98／DIESEL 固定四項）、每公升油價 `pricePerLiter`（元／L，≥0）、生效日期 `effectiveFrom`（日粒度，含當日）、建立者、建立時間 | **PHASE-005a 落地**：每油種各自一條時間軸（`@@unique(fuelType, effectiveFrom)`）；僅管理員可寫；被已完成申請快照引用後不可覆寫 |
 | UserFuelConsumptionVersion | 使用者 `userId`、油種 `fuelType`、油耗 `kmPerLiter`（km/L，>0）、生效日期 `effectiveFrom`（日粒度，含當日）、核對依據 `basisNote`（必填）、操作管理員、建立時間 | **PHASE-005a 落地**：使用者屬性但**僅管理員可寫**（本人亦不可寫，僅唯讀檢視）；同使用者 `effectiveFrom` 唯一、跨使用者互不干涉；append-only；對 `User` 為 `onDelete: Restrict`（屬該帳號歷史資料，納入刪除守門） |
@@ -65,6 +64,9 @@ CalculationSnapshot (內嵌於已完成 Application：參數值 + 取整前後�
 - **折舊快照引用之參數版本不可覆寫**（PHASE-007 D12(a)，已落地）：已完成折舊申請之 `depreciationParameterVersionId` 即為 `DepreciationParameterVersion` 之真實引用來源，`parameterHasReferences("DEPRECIATION", versionId)` 據此判定（引用 ＝ 存在指向該版本且 `Application.status = COMPLETED` 之折舊申請）；歷史補貼金額由快照保證不變（BE-US-19／AD-US-13）。
 - 修正版為新 Application（草稿），透過版本關聯指向原申請；原申請與其 PDF 不被改動。
 - 統計/計算僅納入「已完成且未作廢」的差旅。
+- **已完成申請至多一份 `Report`**（冪等鍵 ＝ `Report.applicationId` 唯一；重複產生回既有列，不新增列、不新增檔、編號／時間／檔名／雜湊全不變）。
+- **`Report` 列與其 PDF 檔案同生共死**：產生失敗（`RENDER`／`STORE`／`VERIFY`／`PERSIST` 任一階段）一律零殘留——交易回滾 ＋ 已寫入之檔補償刪除，不存在「有列無檔」或「有檔無列」之成功態。
+- **本 Phase 不存在更新或刪除 `Report` 之程式路徑**（結構性掃描守門）；報表內容有誤只能走修正版（PHASE-009），原 `Report` 與其 PDF 位元組不被觸碰。`Report` 對 `Application` 為 `onDelete: Restrict`——有報表之申請無法被刪除，連帶使「有報表之使用者刪除仍為 `409 CONFLICT`」之既有守門成立。
 
 ---
 
@@ -251,18 +253,49 @@ POST /applications/:id/complete（依 type 分派 → DEPRECIATION）
 ### 2.4 報表產生與下載
 
 ```
-使用者 →產生正式報表→ reports
-  【授權】僅擁有人/管理員；申請須為已完成(草稿拒絕)
-  → 若該版本已有報表 → 回既有編號(冪等，不重產)
-  → 否則 → 產生唯一編號(TRV/MNT/DEP+月內唯一)
-  → 以列印版 HTML(與 PDF 同版型) 經 Playwright 產生 PDF
-  → 保存 PDF 至 volume + 記錄編號/產生時間
-  → 【失敗處理】PDF 未完整保存 → 不標示成功、不回報已產生
-使用者 →預覽/列印→ 顯示完整內容/計算明細/證明圖片(多段依序、圖片不溢出、多頁不重疊)
-使用者 →下載 PDF→ reports
+使用者 →產生正式報表 POST /applications/:id/report→ reports
+  【授權】僅擁有人/管理員(管理員得代行)；判定順序：授權 403 早於狀態判定
+  【狀態】申請須為已完成；草稿 → 409 CONFLICT + details.status='DRAFT'(零寫入、零渲染)
+  ── 交易外前置(唯讀) ──
+  → 冪等前查：該申請已有 Report → 200 回既有 ReportDto(不重產、不重渲染)
+  → 讀取快照組裝 ReportData(封閉白名單；零重算、零計算引擎呼叫)
+  → 嵌入證明圖片(降尺寸/EXIF 轉正/取小者 → data URI)
+  ── 單一交易(READ COMMITTED，本交易限定) ──
+  → (a) pg_advisory_xact_lock(hash(numberPrefix, numberPeriod))  ← 交易首語句
+  → (b) 冪等再查(鎖內；RC 下鎖外查詢讀不到前位剛提交之列，故順序不可對調)
+  → (c) 配號 max(sequence)+1 → reportNumber
+  → (d) 帶編號渲染：以同一版型函式產生列印版 HTML → Playwright 產生 PDF
+        ★ 配號早於渲染，故持久化 PDF 與列印端點得以同一組編號/產生時間為輸入
+  → (e) 校驗 PDF(%PDF- 開頭 / %%EOF 結尾 / 非零長度)
+  → (f) storage.put(rpt/<uuid>/pdf)  ← 交易內唯一之檔案寫入
+  → (g) 讀回校驗(位元組數 + SHA-256 雜湊)
+  → (h) INSERT Report(編號 4 欄 + 檔案 4 欄 + 產生者 2 欄)  ← 唯一之 DB 寫入
+  → 提交；序號僅於提交時落庫 → 回滾天然不燒號
+  【失敗處理】任一階段失敗 → 500 REPORT_GENERATION_FAILED + details.stage
+        (RENDER/STORE/VERIFY/PERSIST)；交易回滾 + 已寫入之檔補償刪除
+        → 零 Report 列、零 storage 檔、申請快照逐欄不變、不標示成功
+  【併發】同組排隊(顧問鎖)為主防線；三欄唯一約束 + P2002 重試為最後防線
+        不同 (prefix, period) 組互不阻擋
+使用者 →預覽/列印 GET /applications/:id/report/print→ reports
+  【授權】同上；草稿 → 409 CONFLICT + details.status
+  → 顯示完整內容/計算明細/證明圖片(多段依序、圖片不溢出、多頁不重疊)
+  → 與 PDF 同一版型函式、同一輸入 → wire 層字串全等
+  → 尚未產生報表之已完成申請亦可預覽(編號/產生時間呈現「尚未產生」，零寫入)
+  → 回應四項安全標頭(Content-Type/X-Content-Type-Options/Cache-Control/CSP)
+  → 自足文件：零腳本、零外部資源(圖片一律 data URI)
+使用者 →下載 PDF GET /applications/:id/report/pdf→ reports
   【授權】僅擁有人/管理員
-  → 產生安全檔名(移除不安全字元；含類型/姓名/日期或年度/編號)
-  → 回傳原保存 PDF(重下內容/編號一致)
+  → 檔名取自產生時凍結之 Report.fileName(事後改名不影響；下載時不重新推導)
+  → Content-Disposition 雙形式(ASCII fallback + RFC 5987)，零裸 CR/LF
+  → 回傳原保存 PDF(重下位元組全等；渲染器零呼叫)
+  【尚未產生】404 NOT_FOUND「尚未產生正式報表」(不帶 details.status)
+        —— 草稿與「已完成但未產生」之回應逐字相同(AC-25 修訂後語意)
+  【檔案遺失】404 NOT_FOUND「報表檔案遺失」(不得 500)；錯誤日誌不含 storage key
+使用者 →查詢報表資訊 GET /applications/:id/report→ reports
+  【授權】僅擁有人/管理員
+  → 200 { report: ReportDto | null }；ReportDto 恰六鍵
+        (reportNumber/generatedAt/fileName/byteSize/downloadUrl/printUrl)
+  【尚未產生】200 { report: null }（**非 404**）——草稿與「已完成但未產生」逐字相同
 ```
 
 ### 2.5 修正版
@@ -385,7 +418,7 @@ mileage 引擎 sumOfficialMileage(db, {ownerId,dateFrom,dateTo})（唯讀，可�
 | 密碼 | 僅存不可逆雜湊；≥10 字元且拒弱密碼；不入日誌/稽核；改密/重設即失效舊 session；管理員介面不顯示 | NFR-US-08, BE-US-04, BE-US-31 |
 | Session Cookie | HttpOnly/SameSite；正式 Secure；不入日誌 | NFR-US-11, CLAUDE.md |
 | 附件內容 | 授權後才回傳；未登入/非擁有者拒絕；storage 抽象隔離路徑 | NFR-US-10, BE-US-02 |
-| 正式 PDF | 保存於 volume；下載須授權；作廢後保留作廢標示 | FE-US-24, BE-US-27 |
+| 正式 PDF | 保存於 volume；下載須授權；作廢後保留作廢標示。**PHASE-008 落地補記**：①`storageKey` **由系統產生**（`rpt/<uuid>/pdf`，不含使用者輸入，杜絕路徑穿越與列舉取檔），**封閉前綴白名單**下報表實例只認 `rpt`、附件實例只認 `att`，**跨實例互拒**；②PDF **一律經授權端點回傳**，volume **不得由 nginx 靜態直出**（有結構性守門，見 ARCHITECTURE §4.5）；③**日誌禁字**——`storageKey`（`rpt/`／`att/` 前綴值）、volume 絕對路徑、session cookie／token、密碼、**PDF 位元組或其 base64 片段**一律不入日誌（七類掃描 ＋ 反向探針證明非恆真）；④**折舊揭露面於報表延續**——車價／折舊年限／預估年度行駛公里數／參數版本 id **不出現於列印版與 PDF**（全身分一致，含管理員），與 ARCHITECTURE §4.11 同一契約；⑤**檔名於產生時凍結**（事後改顯示姓名不影響已產生報表之下載檔名），檔名恆不含 `/ \ CR LF NUL` 且恆含報表編號 | FE-US-24, BE-US-27, BE-US-28, NFR-US-10, NFR-US-16 |
 | 稽核紀錄 | 記操作者/擁有人/時間/類型/前後摘要；不含密碼與憑證 | BE-US-31, AD-US-14 |
 | 錯誤回應/日誌 | 不外洩堆疊/DB 結構/敏感資訊；日誌含追查識別但不含密碼 | NFR-US-16 |
 | Secrets/連線憑證 | 一律環境變數；不寫死於程式/commit/log/文件 | NFR-US-05 |
