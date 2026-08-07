@@ -31,7 +31,9 @@
  *     would miss.
  *
  * AC covered: AC-27 (a/b/c/d — AR-D), AC-28 (regression), AC-29 (D11 ownerId),
- * B-30 (concurrency).
+ * B-30 (concurrency), AC-08(b) (PHASE-009-T4b addendum, below — VOIDED was
+ * mis-derived as 'draft' by `deriveContainerState`'s three refType branches;
+ * see that function's own doc comment for the fix).
  *
  * Test discipline (Spec §11.0 / Packet):
  *   - loginName prefix "p4ard_" + per-run random suffix.
@@ -45,6 +47,7 @@ import * as path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { voidApplication } from "../../src/applications/application-void.js";
 import { SEGMENT_ATTACHMENT_LIMIT } from "../../src/applications/travel-service.js";
 import { buildMinimalHeader } from "../../src/attachment/detect-mime.js";
 import { hashPassword } from "../../src/auth/password.js";
@@ -289,6 +292,62 @@ describeWithDb("PHASE-004-T11 — AR-D 閉環鑑別力測試", () => {
     ]);
     expect(res.statusCode).toBe(200);
   }
+
+  // ---------------------------------------------------------------------------
+  // PHASE-009-T4b helpers (AC-08(b))
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Directly create a COMPLETED `Application` row (bypassing the full
+   * create/PUT/complete round-trip) — `deriveContainerState`'s MAINTENANCE/
+   * DEPRECIATION branches only ever read `Application.status`, no child-table
+   * join needed. Mirrors `phase6-maintenance-attachment.test.ts`'s synthetic-row pattern.
+   */
+  async function createCompletedApplication(
+    type: "MAINTENANCE" | "DEPRECIATION",
+    forOwnerId: string
+  ): Promise<string> {
+    const app_ = await prisma.application.create({
+      data: {
+        type,
+        status: "COMPLETED",
+        ownerId: forOwnerId,
+        createdById: forOwnerId,
+        primaryDate: new Date("2026-01-01"),
+        totalAmount: 100,
+        completedAt: new Date(),
+      },
+    });
+    createdApplicationIds.push(app_.id);
+    return app_.id;
+  }
+
+  /** Directly create a LINKED attachment under the given refType/refId (no upload round-trip). */
+  async function createLinkedAttachment(
+    refType: "TRIP_SEGMENT" | "MAINTENANCE" | "DEPRECIATION",
+    refId: string,
+    forOwnerId: string,
+    filename: string
+  ): Promise<string> {
+    const att = await prisma.attachment.create({
+      data: {
+        status: "LINKED",
+        storageKey: `p4ard-t4b-${RUN_ID}-${Math.random().toString(36).slice(2)}`,
+        mimeType: "image/jpeg",
+        byteSize: 100,
+        originalFilename: filename,
+        uploaderId: forOwnerId,
+        ownerId: forOwnerId,
+        refType,
+        refId,
+        linkedAt: new Date(),
+      },
+    });
+    createdAttachmentIds.push(att.id);
+    return att.id;
+  }
+
+  const VOID_REASON = "PHASE-009-T4b 測試作廢原因";
 
   // ===========================================================================
   // AC-27c — 公開 link 端點移除
@@ -654,6 +713,95 @@ describeWithDb("PHASE-004-T11 — AR-D 閉環鑑別力測試", () => {
       // (would mean the cap was exceeded, the OLD B-30 bug) and not neither
       // (would mean both requests silently lost their own write).
       expect(raceWinnerIsA !== raceWinnerIsB).toBe(true);
+    });
+  });
+
+  // ===========================================================================
+  // AC-08(b) — VOIDED 申請之附件鎖定（PHASE-009-T4b；deriveContainerState 三
+  // 個 refType 分支）
+  //
+  // Pre-fix RED evidence (all three cases, before the fix): expected 200 to
+  // be 403 — captured by temporarily reverting the fix in
+  // `lifecycle-service.ts` and re-running this block; recorded in the Task
+  // Handoff.
+  //
+  // Write-face parity（「PUT/重上傳等寫入面同等」）: attachment add via
+  // `PUT .../attachmentIds` does NOT go through `deriveContainerState` — it's
+  // gated by `assertApplicationMutable(existing.status)`, already exercised
+  // for VOIDED (body-embedded `attachmentIds`/`segments`) by T3's AC-08(a)
+  // suite (`phase9-void.test.ts`, Files Forbidden here). No duplicate PUT
+  // test added; the standalone `DELETE /attachments/:id` endpoint (fixed
+  // below) is the ONLY gap this Task closes.
+  // ===========================================================================
+
+  describe("AC-08(b) — VOIDED 申請之附件鎖定（三個 refType 分支）", () => {
+    it("TRIP_SEGMENT：已作廢申請之附件 DELETE → 403，附件仍 LINKED（零寫入）", async () => {
+      const { applicationId, segmentId } = await createDraftWithSegment(ownerCookie);
+      const attId = await uploadAs(ownerCookie, "voided-trip-segment.jpg");
+      await linkViaPut(ownerCookie, applicationId, segmentId, attId);
+      await markCompleted(applicationId);
+      await voidApplication(prisma, applicationId, VOID_REASON, ownerId);
+
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/attachments/${attId}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error.code).toBe("FORBIDDEN");
+
+      const dbAtt = await prisma.attachment.findUnique({ where: { id: attId } });
+      expect(dbAtt?.status).toBe("LINKED");
+      expect(dbAtt?.refType).toBe("TRIP_SEGMENT");
+      expect(dbAtt?.refId).toBe(segmentId);
+    });
+
+    it("MAINTENANCE：已作廢申請之附件 DELETE → 403，附件仍 LINKED（零寫入）", async () => {
+      const applicationId = await createCompletedApplication("MAINTENANCE", ownerId);
+      const attId = await createLinkedAttachment(
+        "MAINTENANCE",
+        applicationId,
+        ownerId,
+        "voided-maintenance.jpg"
+      );
+      await voidApplication(prisma, applicationId, VOID_REASON, ownerId);
+
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/attachments/${attId}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error.code).toBe("FORBIDDEN");
+
+      const dbAtt = await prisma.attachment.findUnique({ where: { id: attId } });
+      expect(dbAtt?.status).toBe("LINKED");
+      expect(dbAtt?.refType).toBe("MAINTENANCE");
+      expect(dbAtt?.refId).toBe(applicationId);
+    });
+
+    it("DEPRECIATION：已作廢申請之附件 DELETE → 403，附件仍 LINKED（零寫入）", async () => {
+      const applicationId = await createCompletedApplication("DEPRECIATION", ownerId);
+      const attId = await createLinkedAttachment(
+        "DEPRECIATION",
+        applicationId,
+        ownerId,
+        "voided-depreciation.jpg"
+      );
+      await voidApplication(prisma, applicationId, VOID_REASON, ownerId);
+
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/attachments/${attId}`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).error.code).toBe("FORBIDDEN");
+
+      const dbAtt = await prisma.attachment.findUnique({ where: { id: attId } });
+      expect(dbAtt?.status).toBe("LINKED");
+      expect(dbAtt?.refType).toBe("DEPRECIATION");
+      expect(dbAtt?.refId).toBe(applicationId);
     });
   });
 });
