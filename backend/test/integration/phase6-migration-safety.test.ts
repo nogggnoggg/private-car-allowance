@@ -271,18 +271,20 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
       },
     });
 
-    await client.application.create({
-      data: {
-        id: APPLICATION_ID,
-        type: "TRAVEL",
-        status: "COMPLETED",
-        ownerId: OWNER_ID,
-        createdById: OWNER_ID,
-        primaryDate: TRIP_DATE,
-        totalAmount: 1234,
-        completedAt: new Date(),
-      },
-    });
+    // PHASE-009-T1: `Application` 一律 raw SQL 寫入（沿 FW-8/9——現行
+    // schema 產生之型別化 Client 的 `create()` RETURNING 子句會嘗試選取
+    // PHASE-009 新增的四個欄位，該四欄在此 baseline DB 尚不存在）。
+    {
+      const now = new Date();
+      await client.$executeRaw`
+        INSERT INTO "Application"
+          (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+           "completedAt", "createdAt", "updatedAt")
+        VALUES
+          (${APPLICATION_ID}, 'TRAVEL'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+           ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 1234, ${now}, ${now}, ${now})
+      `;
+    }
 
     await client.travelApplication.create({
       data: {
@@ -427,12 +429,42 @@ describeWithDb("PHASE-006-T1 migration safety net — existing DB", () => {
   });
 
   it("Done When: every pre-existing column, across all five representative tables, is byte-for-byte unchanged after migration", async () => {
-    const appRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
-      `SELECT * FROM "Application" WHERE id = $1`,
-      APPLICATION_ID
-    );
+    // PHASE-009-T1: Application 之欄位集合此後於本連線的查詢計畫快取中已變
+    // （ALTER TABLE ADD COLUMN），沿用 migration 前那條連線重跑 `SELECT *`
+    // 會撞 `0A000: cached plan must not change result type`（沿
+    // PHASE-007-R1 M2 段已驗證之陷阱——一律以新連線讀取 Application）。
+    const appClient = new PrismaClient({ datasources: { db: { url: existingUrl } } });
+    let appRows: Record<string, unknown>[];
+    try {
+      appRows = await appClient.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "Application" WHERE id = $1`,
+        APPLICATION_ID
+      );
+    } finally {
+      await appClient.$disconnect();
+    }
     expect(appRows).toHaveLength(1);
-    assertRowUnchanged("Application", beforeApplicationRow, canonicalizeRow(appRows[0]));
+    // PHASE-009-T1: `Application` 之欄位集合此後多了四個 nullable 新欄
+    // （voidReason/voidedAt/voidedById/supersedesId），故不再是純粹的
+    // closed-set 相等——原十欄逐欄零改寫，四個新欄一律 NULL（零回填）。
+    const afterAppRow = canonicalizeRow(appRows[0]);
+    expect(Object.keys(afterAppRow).sort()).toEqual(
+      [
+        ...Object.keys(beforeApplicationRow),
+        "voidReason",
+        "voidedAt",
+        "voidedById",
+        "supersedesId",
+      ].sort()
+    );
+    for (const col of ["voidReason", "voidedAt", "voidedById", "supersedesId"]) {
+      expect(afterAppRow[col], `Application.${col} must be NULL on pre-existing rows`).toBeNull();
+    }
+    for (const [key, value] of Object.entries(beforeApplicationRow)) {
+      expect(afterAppRow[key], `Application column "${key}" changed across migration`).toEqual(
+        value
+      );
+    }
 
     const travelRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
       `SELECT * FROM "TravelApplication" WHERE "applicationId" = $1`,
@@ -539,16 +571,17 @@ describeWithDb("PHASE-006-T1 migration safety net — clean DB", () => {
 
   // PHASE-007-T1R-LITE: the business-table total moved 14→15 when PHASE-007's
   // `DepreciationApplication` was created. PHASE-008-T1: moved 15→16 when
-  // `Report` was created. The count is a moving number, so it is updated here
-  // rather than weakened — the discriminating part of this test
+  // `Report` was created. PHASE-009-T1: moved 16→17 when `VoidedReportFile`
+  // was created. The count is a moving number, so it is updated here rather
+  // than weakened — the discriminating part of this test
   // (MaintenanceApplication is present, i.e. PHASE-006's table survives later
   // Phases' migrations) is unchanged.
-  it("Done When: MaintenanceApplication 仍在 16 張業務表中", async () => {
+  it("Done When: MaintenanceApplication 仍在 17 張業務表中", async () => {
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(16);
+    expect(tableRows.length).toBe(17);
     expect(tableRows.map((r) => r.table_name)).toContain("MaintenanceApplication");
   });
 
@@ -686,6 +719,7 @@ describeWithDb("PHASE-006-T1 migration safety net — clean DB", () => {
         "APPLICATION_CREATED_ON_BEHALF",
         "APPLICATION_UPDATED_ON_BEHALF",
         "USER_FUEL_CONSUMPTION_VERSION_CREATED",
+        "APPLICATION_VOIDED", // PHASE-009-T1
       ].sort()
     );
   });

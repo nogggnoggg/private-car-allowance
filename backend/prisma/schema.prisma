@@ -37,6 +37,7 @@ enum AuditAction {
   APPLICATION_CREATED_ON_BEHALF
   APPLICATION_UPDATED_ON_BEHALF
   USER_FUEL_CONSUMPTION_VERSION_CREATED // PHASE-005a-T1（§8.1）
+  APPLICATION_VOIDED // PHASE-009-T1（§8.1／D10(a)）
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +289,16 @@ model Application {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  /// PHASE-009：作廢資訊（三欄同生共死——恆同時為 null 或同時非 null）
+  voidReason  String? // trim 後 1..500（應用層驗證）
+  voidedAt    DateTime?
+  voidedById  String? // 操作者（無 FK，沿 Report.generatedById 慣例）
+
+  /// PHASE-009：版本關聯——本列為「哪一筆已完成申請」之修正版（D7：0..1）
+  supersedesId String? @unique
+  supersedes   Application?  @relation("ApplicationRevision", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy Application?  @relation("ApplicationRevision")
+
   travel       TravelApplication?
   maintenance  MaintenanceApplication?
   depreciation DepreciationApplication?
@@ -439,6 +450,25 @@ model Report {
   generatedById String                                    // 操作者（無 FK，沿 003a/005a 慣例）
   generatedAt   DateTime    @default(now())
 
+  voidedFile VoidedReportFile? // PHASE-009：零 DDL 虛擬反向關聯（§8.2）
+
   @@unique([numberPrefix, numberPeriod, sequence])        // 併發最後防線（D3）
   @@index([numberPrefix, numberPeriod])                   // max(sequence) 查詢
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-009 models（§8.2；D4=b1 已裁定——作廢時同交易產生之「作廢版 PDF」）
+// ---------------------------------------------------------------------------
+
+/// PHASE-009：作廢版 PDF（每個 Report 至多一份；獨立表以維持 Report 零更新／刪除路徑之既有結構性守門）。
+model VoidedReportFile {
+  id          String   @id @default(cuid())
+  reportId    String   @unique                            // 冪等鍵：一份 Report 至多一份作廢版
+  report      Report   @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  storageKey  String   @unique                            // "rpt/<uuid>/void.pdf"（系統產生）
+  fileName    String                                       // 與原 Report.fileName 相同（編號不變）
+  byteSize    Int
+  contentHash String                                       // SHA-256 hex
+  createdById String                                       // 作廢操作者（無 FK）
+  createdAt   DateTime @default(now())
 }
