@@ -88,6 +88,13 @@ jobs:
         # but is fully functional on Node 20; the declaration is overly conservative.
         run: npm ci --engine-strict=false
 
+      - name: Install Playwright Chromium (headless shell)
+        # Mirrors backend/Dockerfile's `npx playwright install --only-shell chromium`
+        # (PHASE-008-T7b): backend's phase8-pdf-render.test.ts / phase8-report-print.test.ts
+        # launch a real headless-shell browser. --with-deps also installs the OS-level
+        # dependencies the ubuntu-latest runner doesn't ship by default.
+        run: npx playwright install --with-deps --only-shell chromium
+
       - name: Backend build (prisma generate + tsc)
         run: npm run build --workspace=backend
 
