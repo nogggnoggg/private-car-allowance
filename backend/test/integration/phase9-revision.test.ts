@@ -1673,7 +1673,10 @@ describeWithDb(
     // §7.3 —— Body 一律忽略
     // =========================================================================
 
-    it("§7.3: 修正版端點之 body 一律忽略（夾帶任意鍵仍 201，且不影響新列欄位）——故 §7.5 之 400 一格對本端點不適用", async () => {
+    // `SPEC-REV-9T7`／T7b 更正：§7.5 另有一格 400——「申請擁有人**已停用**
+    // （**僅修正版端點**）」（B-16）——其來源是**擁有人狀態**而非 body，故本
+    // 則之「400 不適用」僅對 **body 驗證**面成立（B-16 覆蓋見本檔 T7b 區塊）。
+    it("§7.3: 修正版端點之 body 一律忽略（夾帶任意鍵仍 201，且不影響新列欄位）——故 §7.5 之 **body 驗證** 400 一格對本端點不適用", async () => {
       const sourceId = await seedCompletedTravel("body-ignored");
       const resp = await postRevision(sourceId, ownerCookie, {
         ownerId: adminId,
@@ -1697,3 +1700,439 @@ describeWithDb(
     });
   }
 );
+
+// ===========================================================================
+// PHASE-009-T7b — 合約一致性批次（B-16 停用擁有人守門 ＋ W-3 兩鍵投影）
+//
+// ---------------------------------------------------------------------------
+// 規範出處（Spec `docs/specs/PHASE-009.md`，逐條原文）
+// ---------------------------------------------------------------------------
+// B-16（§5 :360）：管理員對**已停用**使用者建修正版 → **400
+//   `VALIDATION_ERROR`**「指定的使用者已停用」——沿既有代建立草稿之 B-26 先例
+//   （新草稿屬新建資料）。
+// §7.5（:517）：「申請擁有人**已停用**（**僅修正版端點**）｜400｜
+//   `VALIDATION_ERROR`｜訊息「指定的使用者已停用」…**作廢端點不受此限**——
+//   B-15：管理員對已停用使用者之申請作廢仍 200（作廢為資料修正）」。
+// B-15（§5 :359）：管理員對**已停用**使用者之申請作廢 → 200。
+// AC-12(b)（:185）：查詢**原**申請詳情 → 回應含 `supersededBy`；查詢**修正版**
+//   詳情 → 回應含 `supersedes`。**W-3**（§15 T7b :841）：該投影「應套用於
+//   **每一個**回傳詳情 DTO 之端點」——含 `admin` 之三個代建端點。
+//
+// ---------------------------------------------------------------------------
+// 裁定與範圍（Packet 上游 FW 核銷，據實記載）
+// ---------------------------------------------------------------------------
+// · **只擋新建、不追溯清理**（大總管裁定）：B-16 之 400 僅阻止「新的修正版草
+//   稿被建立」；在本守門落地之前已建立之修正版草稿一律不動（本檔零清理斷
+//   言）。
+// · **文案與 `fields[]` 逐字沿用 B-26 先例**（`admin/routes.ts` 三個代建端點
+//   既有：訊息「指定的使用者已停用，無法代其建立申請」、
+//   `fields[{ field: "userId", reason: "指定的使用者已停用" }]`）——不造第二
+//   套。`field` 值 `"userId"` 指**申請擁有人**而非本端點之請求參數（本端點
+//   §7.3「Body：無」、路徑僅 `:id`），此分歧記於 Handoff Warnings。
+// · **USER 身分不可達**：已停用使用者無法登入（`auth` 既有守門），故「擁有人
+//   本人且已停用」之分支對 `USER` 結構性不可達；本檔之 B-16 一律以**管理員**
+//   身分觸發（§6.1 修正版端點放行管理員）。
+//
+// ---------------------------------------------------------------------------
+// Mutant 自證（暫改後復原，不入最終 diff；結果記於 Handoff）
+// ---------------------------------------------------------------------------
+//   ① 移除 route 之 B-16 守門 → 「B-16: 400」必紅（回 201）。
+//   ② 守門上移至 404／403 之前 → 「判定順序」一則必紅（停用者之不存在 id 回
+//      400 而非 404；他人之停用擁有人回 400 而非 403）。
+//   ③ 任一 `admin` 代建端點移除 `withRevisionLinks` → 對應之 W-3 一則必紅。
+//
+// 紀律：合成資料；`loginName` 前綴 `p9t7b_`；清理僅限本區塊自建 id。
+// ===========================================================================
+
+describeWithDb("PHASE-009-T7b 合約一致性（B-16 停用擁有人守門／W-3 兩鍵投影）", () => {
+  const T7B_PREFIX = "p9t7b_";
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+  let attachmentRoot: string;
+  let reportRoot: string;
+
+  let adminId: string;
+  let adminCookie: string;
+  /** 已停用之申請擁有人（建立時 active，seed 完成後停用）。 */
+  let inactiveOwnerId: string;
+  /** 仍啟用之對照擁有人（正向對照，證明 400 非恆真）。 */
+  let activeOwnerId: string;
+  let activeOwnerCookie: string;
+  /** 他人（一般使用者，非擁有人非管理員）——判定順序用。 */
+  let strangerCookie: string;
+
+  const t7bApplicationIds: string[] = [];
+  const t7bUserIds: string[] = [];
+
+  function track(id: string): string {
+    t7bApplicationIds.push(id);
+    return id;
+  }
+
+  async function login(loginName: string): Promise<string> {
+    const resp = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { loginName, password: PASSWORD },
+    });
+    if (resp.statusCode !== 200) {
+      throw new Error(`login failed: ${resp.statusCode} ${resp.body}`);
+    }
+    const raw = resp.headers["set-cookie"];
+    const str = Array.isArray(raw) ? raw[0] : (raw as string);
+    return str.split(";")[0];
+  }
+
+  async function createUser(
+    suffix: string,
+    role: "USER" | "ADMIN"
+  ): Promise<{ id: string; loginName: string; cookie: string }> {
+    const loginName = `${T7B_PREFIX}${suffix}_${RUN_ID}`;
+    const user = await prisma.user.create({
+      data: {
+        loginName,
+        displayName: `T7b ${suffix}`,
+        passwordHash: await hashPassword(PASSWORD),
+        role,
+        isActive: true,
+        // T3 假綠教訓：fixture 一律顯式指定，不倚賴 schema 預設。
+        mustChangePassword: false,
+      },
+    });
+    t7bUserIds.push(user.id);
+    return { id: user.id, loginName, cookie: await login(loginName) };
+  }
+
+  /** 已完成差旅（指定擁有人）。 */
+  async function seedCompletedTravel(ownerUserId: string, suffix: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId: ownerUserId,
+        createdById: ownerUserId,
+        primaryDate: new Date("2026-07-15T00:00:00.000Z"),
+        totalAmount: 1800,
+        completedAt: new Date("2026-07-15T08:00:00.000Z"),
+        travel: {
+          create: {
+            tripDate: new Date("2026-07-15T00:00:00.000Z"),
+            purpose: `T7b 出差-${suffix}`,
+            fuelUnitPrice: "2.3456",
+            etcUnitPrice: "1.2345",
+            snapshotTotalKm: "160.00",
+            snapshotRawAmount: "1800.0000",
+            calculatedAt: new Date("2026-07-15T08:00:00.000Z"),
+            segments: {
+              create: [
+                {
+                  sortOrder: 0,
+                  origin: "起-0",
+                  destination: "迄-0",
+                  totalKm: "80.00",
+                  highwayKm: "60.00",
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    return track(created.id);
+  }
+
+  function postRevision(id: string, cookie: string) {
+    return app.inject({
+      method: "POST",
+      url: `/applications/${id}/revision`,
+      headers: { cookie },
+    });
+  }
+
+  function postOnBehalfDraft(kind: "travel" | "maintenance" | "depreciation", userId: string) {
+    return app.inject({
+      method: "POST",
+      url: `/admin/users/${userId}/applications/${kind}`,
+      headers: { cookie: adminCookie },
+      payload: {},
+    });
+  }
+
+  async function setActive(userId: string, isActive: boolean): Promise<void> {
+    await prisma.user.update({ where: { id: userId }, data: { isActive } });
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await prisma.$connect();
+
+    attachmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "phase9-t7b-att-"));
+    reportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "phase9-t7b-rpt-"));
+
+    app = await buildServer({
+      databaseUrl: DB_URL,
+      storageRoot: attachmentRoot,
+      reportStorageRoot: reportRoot,
+      logLevel: "error",
+    });
+    await app.ready();
+
+    const admin = await createUser("admin", "ADMIN");
+    adminId = admin.id;
+    adminCookie = admin.cookie;
+    const inactiveOwner = await createUser("inactiveowner", "USER");
+    inactiveOwnerId = inactiveOwner.id;
+    const activeOwner = await createUser("activeowner", "USER");
+    activeOwnerId = activeOwner.id;
+    activeOwnerCookie = activeOwner.cookie;
+    strangerCookie = (await createUser("stranger", "USER")).cookie;
+
+    // 停用在最後——`createUser` 需先登入取得 cookie（停用後無法登入）。本檔
+    // 之 `inactiveOwner` 一律由管理員代操作，其 cookie 不再使用。
+    await setActive(inactiveOwnerId, false);
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    await app.close();
+    if (t7bUserIds.length > 0) {
+      await prisma.attachment.deleteMany({ where: { ownerId: { in: t7bUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { actorId: { in: t7bUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { targetId: { in: t7bUserIds } } });
+      await prisma.report.deleteMany({
+        where: { application: { ownerId: { in: t7bUserIds } } },
+      });
+      // 修正版（`supersedesId` → 原申請，`onDelete: Restrict`）必須先刪。
+      await prisma.application.deleteMany({
+        where: { ownerId: { in: t7bUserIds }, supersedesId: { not: null } },
+      });
+      await prisma.application.deleteMany({ where: { ownerId: { in: t7bUserIds } } });
+      await prisma.session.deleteMany({ where: { userId: { in: t7bUserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: t7bUserIds } } });
+    }
+    await prisma.$disconnect();
+    for (const root of [attachmentRoot, reportRoot]) {
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  // =========================================================================
+  // B-16 — 修正版端點對已停用擁有人之 400 守門
+  // =========================================================================
+
+  describe("B-16: 管理員對已停用使用者建修正版 → 400 VALIDATION_ERROR「指定的使用者已停用」，零寫入", () => {
+    it("B-16: 400 ＋ code／message／fields[] 逐字（沿 B-26 先例）＋ 零寫入（Application 計數不變、零修正版列、零稽核列）", async () => {
+      const sourceId = await seedCompletedTravel(inactiveOwnerId, "b16");
+
+      const applicationsBefore = await prisma.application.count();
+      const auditBefore = await prisma.auditLog.count({ where: { actorId: adminId } });
+
+      const resp = await postRevision(sourceId, adminCookie);
+
+      expect(resp.statusCode).toBe(400);
+      const body = resp.json() as {
+        error?: {
+          code?: string;
+          message?: string;
+          fields?: Array<{ field: string; reason: string }>;
+          details?: unknown;
+        };
+      };
+      expect(body.error?.code).toBe("VALIDATION_ERROR");
+      // 逐字沿用 B-26（`admin/routes.ts` 三個代建端點）之文案，不造第二套。
+      expect(body.error?.message).toBe("指定的使用者已停用，無法代其建立申請");
+      expect(body.error?.fields).toEqual([{ field: "userId", reason: "指定的使用者已停用" }]);
+      // 400 一格不帶 `details`（§7.5：`details` 專屬 409 兩格）。
+      expect(body.error?.details).toBeUndefined();
+
+      // 零寫入：全表計數不變、來源零修正版、零稽核列。
+      expect(await prisma.application.count()).toBe(applicationsBefore);
+      expect(await prisma.application.count({ where: { supersedesId: sourceId } })).toBe(0);
+      expect(await prisma.auditLog.count({ where: { actorId: adminId } })).toBe(auditBefore);
+
+      // 來源列本身未受影響。
+      const source = await prisma.application.findUniqueOrThrow({ where: { id: sourceId } });
+      expect(source.status).toBe("COMPLETED");
+      expect(source.supersedesId).toBeNull();
+    });
+
+    it("B-16 正向對照: 同一管理員對**仍啟用**擁有人之相同形狀來源 → 201（證明 400 非恆真、非管理員身分本身被擋）", async () => {
+      const sourceId = await seedCompletedTravel(activeOwnerId, "b16-control");
+      const resp = await postRevision(sourceId, adminCookie);
+
+      expect(resp.statusCode).toBe(201);
+      const revisionId = (resp.json() as { application: { id: string } }).application.id;
+      track(revisionId);
+      const row = await prisma.application.findUniqueOrThrow({
+        where: { id: revisionId },
+        select: { supersedesId: true, ownerId: true, createdById: true },
+      });
+      expect(row.supersedesId).toBe(sourceId);
+      expect(row.ownerId).toBe(activeOwnerId);
+      expect(row.createdById).toBe(adminId);
+    });
+
+    it("B-16 重新啟用對照: 同一來源於擁有人重新啟用後 → 201（守門讀的是當下 isActive，非建立時狀態）", async () => {
+      const sourceId = await seedCompletedTravel(inactiveOwnerId, "b16-reactivate");
+
+      const blocked = await postRevision(sourceId, adminCookie);
+      expect(blocked.statusCode).toBe(400);
+
+      await setActive(inactiveOwnerId, true);
+      try {
+        const allowed = await postRevision(sourceId, adminCookie);
+        expect(allowed.statusCode).toBe(201);
+        track((allowed.json() as { application: { id: string } }).application.id);
+      } finally {
+        await setActive(inactiveOwnerId, false);
+      }
+    });
+
+    it("B-16 判定順序: 停用守門**晚於** 404（不存在之 id）與 403（他人），**早於** 409（狀態）", async () => {
+      // (1) 不存在之 id × 管理員 → 404（存在性早於停用判定）。
+      const notFound = await postRevision("00000000-0000-0000-0000-000000000000", adminCookie);
+      expect(notFound.statusCode).toBe(404);
+      expect((notFound.json() as { error: { code: string } }).error.code).toBe("NOT_FOUND");
+
+      // (2) 他人（一般使用者）× 停用擁有人之來源 → 403（授權早於停用判定，
+      //     否則帳號停用狀態成為對外可探測之側信道）。
+      const sourceId = await seedCompletedTravel(inactiveOwnerId, "b16-order");
+      const forbidden = await postRevision(sourceId, strangerCookie);
+      expect(forbidden.statusCode).toBe(403);
+      expect((forbidden.json() as { error: { code: string } }).error.code).toBe("FORBIDDEN");
+
+      // (3) 停用擁有人 × **草稿**來源 → 400（停用判定早於 409 狀態守門；與
+      //     B-26「新建資料之呼叫前提檢查」同層，故在 service 交易之前）。
+      const draft = await prisma.application.create({
+        data: {
+          type: "TRAVEL",
+          status: "DRAFT",
+          ownerId: inactiveOwnerId,
+          createdById: inactiveOwnerId,
+          primaryDate: new Date("2026-07-20T00:00:00.000Z"),
+          travel: { create: { purpose: "T7b 停用 × 草稿" } },
+        },
+      });
+      track(draft.id);
+      const draftResp = await postRevision(draft.id, adminCookie);
+      expect(draftResp.statusCode).toBe(400);
+      expect((draftResp.json() as { error: { code: string } }).error.code).toBe("VALIDATION_ERROR");
+    });
+  });
+
+  // =========================================================================
+  // B-15 對照 — 作廢端點**不受**停用限制
+  // =========================================================================
+
+  describe("B-15 對照: 管理員對已停用使用者之已完成申請作廢 → 200（作廢為資料修正，不受帳號狀態限制）", () => {
+    it("B-15: 200 ＋ 狀態轉 VOIDED ＋ 三個作廢欄落地（與 B-16 同一擁有人、同一管理員，僅端點不同）", async () => {
+      const sourceId = await seedCompletedTravel(inactiveOwnerId, "b15");
+
+      const resp = await app.inject({
+        method: "POST",
+        url: `/applications/${sourceId}/void`,
+        headers: { cookie: adminCookie },
+        payload: { reason: "T7b B-15 作廢原因" },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const row = await prisma.application.findUniqueOrThrow({ where: { id: sourceId } });
+      expect(row.status).toBe("VOIDED");
+      expect(row.voidReason).toBe("T7b B-15 作廢原因");
+      expect(row.voidedById).toBe(adminId);
+      expect(row.voidedAt).not.toBeNull();
+    });
+  });
+
+  // =========================================================================
+  // W-3 — admin 三個代建端點之 supersedes／supersededBy 兩鍵
+  // =========================================================================
+
+  describe("W-3: admin 三個代建端點之詳情回應含 supersedes／supersededBy 兩鍵（AC-12(b) 投影套用於每一個回傳詳情 DTO 之端點）", () => {
+    const KINDS = ["travel", "maintenance", "depreciation"] as const;
+
+    for (const kind of KINDS) {
+      it(`W-3 正向（${kind}）: POST /admin/users/:userId/applications/${kind} → 201 且兩鍵**在場**、值皆 null（新草稿無版本關聯）`, async () => {
+        const resp = await postOnBehalfDraft(kind, activeOwnerId);
+        expect(resp.statusCode).toBe(201);
+
+        const application = (resp.json() as { application: Record<string, unknown> }).application;
+        track(application.id as string);
+
+        // 「在場」與「值為 null」是兩件事——鍵被移除時 `toBeNull()` 亦會紅，
+        // 但顯式在場斷言使失敗訊息直指「鍵不在場」（mutant ③）。
+        expect(Object.prototype.hasOwnProperty.call(application, "supersedes")).toBe(true);
+        expect(Object.prototype.hasOwnProperty.call(application, "supersededBy")).toBe(true);
+        expect(application.supersedes).toBeNull();
+        expect(application.supersededBy).toBeNull();
+
+        // 既有鍵零改動之抽樣（附掛不得覆蓋既有 DTO 內容）。
+        expect(application.status).toBe("DRAFT");
+        expect(application.ownerId).toBe(activeOwnerId);
+      });
+    }
+
+    it("W-3 負向（鑑別性）: 兩鍵為**真投影**而非硬編 null——admin 代建之草稿掛上 supersedesId 後，詳情端點之 supersedes 非 null 且雙向皆到位", async () => {
+      // 先以 admin 代建端點取得一筆草稿（其回應兩鍵為 null，如上三則）。
+      const created = await postOnBehalfDraft("travel", activeOwnerId);
+      expect(created.statusCode).toBe(201);
+      const createdBody = created.json() as {
+        application: { id: string; supersedes: unknown; supersededBy: unknown };
+      };
+      const draftId = track(createdBody.application.id);
+      expect(createdBody.application.supersedes).toBeNull();
+
+      // 合成一筆已完成來源並直寫版本關聯——本則之標的是「投影是否為真」，非
+      // 修正版建立流程（後者已由本檔 T7 區塊覆蓋）。
+      const sourceId = await seedCompletedTravel(activeOwnerId, "w3-negative");
+      await prisma.application.update({
+        where: { id: draftId },
+        data: { supersedesId: sourceId },
+      });
+
+      const detail = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${draftId}`,
+        headers: { cookie: activeOwnerCookie },
+      });
+      expect(detail.statusCode).toBe(200);
+      const dto = (detail.json() as { application: Record<string, unknown> }).application;
+      expect(dto.supersedes).toEqual({
+        id: sourceId,
+        status: "COMPLETED",
+        primaryDate: "2026-07-15",
+        reportNumber: null,
+      });
+      expect(dto.supersededBy).toBeNull();
+
+      // 反向側：來源之 `supersededBy` 亦非 null（同一 `supersedesId` 之雙向
+      // 投影，AC-12(c)）。
+      const sourceDetail = await app.inject({
+        method: "GET",
+        url: `/applications/travel/${sourceId}`,
+        headers: { cookie: activeOwnerCookie },
+      });
+      expect(sourceDetail.statusCode).toBe(200);
+      const sourceDto = (sourceDetail.json() as { application: Record<string, unknown> })
+        .application;
+      // 代建草稿（空 body）之 `primaryDate` 由 `createTravelDraft` 依建立當下
+      // 推導，非來源之出差日期（且 `primaryDate` 不在詳情 DTO 之鍵集內）——
+      // 故以該草稿**DB 列**之值為對照（投影必須與被指向之申請逐欄一致），不
+      // 硬編日期字面值。
+      const draftRow = await prisma.application.findUniqueOrThrow({
+        where: { id: draftId },
+        select: { primaryDate: true },
+      });
+      expect(sourceDto.supersededBy).toEqual({
+        id: draftId,
+        status: "DRAFT",
+        primaryDate: draftRow.primaryDate.toISOString().slice(0, 10),
+      });
+    });
+  });
+});

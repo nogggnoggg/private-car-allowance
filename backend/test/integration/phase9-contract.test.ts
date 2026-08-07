@@ -32,7 +32,10 @@
  *   2. ✅ **T7 已補齊**（§K／§L）：AC-27 之 `409 + details.existingRevisionId`
  *      一格（§7.5「已有修正版」列）；修正版端點之 401／403／404／
  *      409(`details.status`)／500 各格；`PHASE_009_VOID_SRC_FILES` 擴列修正版
- *      面兩檔（見 §A）。
+ *      面兩檔（見 §A）。**T7b 補**：§7.5 之「申請擁有人**已停用**（**僅修正版
+ *      端點**）→ 400 `VALIDATION_ERROR`」一格（B-16；`SPEC-REV-9T7` 補格）已
+ *      於 §K 就地補齊——T7 交付時該格之「400 不適用」表述只對 §7.3 之 **body
+ *      驗證** 面成立，B-16 之 400 來自**擁有人狀態**而非 body。
  *   3. ⬜ **仍留 T13**：AC-23 回歸四格中「列印端點於 `VOIDED` → 200」之**狀態碼**斷言屬
  *      **T13**（AC-22／D5：列印端點狀態守門由 `COMPLETED` 放行為
  *      `COMPLETED ∪ VOIDED`）。本檔對列印端點僅斷言**授權面**（401／403）與
@@ -1277,9 +1280,11 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
 //   `FORBIDDEN` 且回應**零業務值**；管理員 201 且新草稿 `ownerId` ＝原擁有人
 //   （AD-US-09①）。他人之「已完成」與「草稿」回應**逐字相同**。
 // AC-27（:223）§7.5：401／403／404／409(`details.status`)／
-//   409(`details.existingRevisionId`)／500。400 一格對本端點**不適用**
-//   （§7.3「Body：無（一律忽略）」——正向實證見
-//   `phase9-revision.test.ts` 之「body 一律忽略」一則）。
+//   409(`details.existingRevisionId`)／500。**body 驗證**之 400 一格對本端點
+//   不適用（§7.3「Body：無（一律忽略）」——正向實證見
+//   `phase9-revision.test.ts` 之「body 一律忽略」一則）；惟 §7.5 另有一格
+//   400——「申請擁有人**已停用**（**僅修正版端點**）」（**B-16**，
+//   `SPEC-REV-9T7` 補格）——其 wire 形狀由 **T7b** 於 §K 補齊。
 // §6.1 判定紀律①：授權（401／403）一律先於狀態守門（409）——他人之草稿／已
 //   完成／已作廢三種狀態之回應逐字相同。
 //
@@ -1585,7 +1590,7 @@ describeWithDb("PHASE-009-T7 — 修正版端點授權矩陣／錯誤合約（AC
   // §K — AC-27 錯誤表逐格（§7.5，修正版端點側）
   // =========================================================================
 
-  describe("AC-27: 修正版端點錯誤表逐格（404／409+details.status×2／409+details.existingRevisionId；400 不適用）", () => {
+  describe("AC-27: 修正版端點錯誤表逐格（404／409+details.status×2／409+details.existingRevisionId／400 擁有人已停用；body 驗證之 400 不適用）", () => {
     it("404 NOT_FOUND: 擁有人對不存在之 id 建修正版（不帶 details，不洩漏型別；B-13）", async () => {
       const resp = await postRevision(NONEXISTENT_ID, { cookie: ownerCookie });
       expect(resp.statusCode).toBe(404);
@@ -1647,6 +1652,60 @@ describeWithDb("PHASE-009-T7 — 修正版端點授權矩陣／錯誤合約（AC
       const resp = await postRevision(draftId, { cookie: strangerCookie });
       expect(resp.statusCode).toBe(403);
       expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+    });
+
+    // -----------------------------------------------------------------------
+    // PHASE-009-T7b — §7.5「申請擁有人**已停用**（**僅修正版端點**）」400 格
+    //
+    // Spec §7.5（:517）逐字：「申請擁有人**已停用**（**僅修正版端點**）｜400｜
+    // `VALIDATION_ERROR`｜訊息「指定的使用者已停用」……**作廢端點不受此限**」；
+    // B-16（§5 :360）「沿既有代建立草稿之 **B-26** 先例」。本則只驗 **wire 形
+    // 狀**（狀態碼／`error` 鍵集／`fields[]` 形狀／零洩漏）——行為面（零寫入、
+    // B-15 對照、判定順序）在 `phase9-revision.test.ts` 之 T7b 區塊。
+    //
+    // Mutant：移除 `routes.ts` 之 B-16 守門 → 本則必紅（201）。
+    // -----------------------------------------------------------------------
+    it('400 VALIDATION_ERROR + fields[] 恰含 { field: "userId" }（B-16 擁有人已停用；error 鍵集封閉、零 details、零洩漏）', async () => {
+      const inactiveOwner = await createUser("t7b-inactive");
+      const source = await prisma.application.create({
+        data: {
+          type: "TRAVEL",
+          status: "COMPLETED",
+          ownerId: inactiveOwner.id,
+          createdById: inactiveOwner.id,
+          primaryDate: new Date("2026-05-10T00:00:00.000Z"),
+          totalAmount: TOTAL_AMOUNT_MARKER,
+          completedAt: new Date("2026-05-10T08:00:00.000Z"),
+          travel: { create: { purpose: `${PURPOSE_MARKER}-t7b-inactive` } },
+        },
+      });
+      createdApplicationIds.push(source.id);
+      await prisma.user.update({
+        where: { id: inactiveOwner.id },
+        data: { isActive: false },
+      });
+
+      const resp = await postRevision(source.id, { cookie: adminCookie });
+      expect(resp.statusCode).toBe(400);
+      const body = JSON.parse(resp.body) as ErrorBody;
+      expect(body.error?.code).toBe("VALIDATION_ERROR");
+      // 逐字沿用 B-26（`admin/routes.ts` 三個代建端點）之文案與 `fields[]`。
+      expect(body.error?.message).toBe("指定的使用者已停用，無法代其建立申請");
+      expect(body.error?.fields).toEqual([{ field: "userId", reason: "指定的使用者已停用" }]);
+      // `error` 鍵集封閉：`details` 專屬 409 兩格，本格不得出現。
+      expect(Object.keys(body.error as Record<string, unknown>).sort()).toEqual(
+        ["code", "fields", "message", "requestId"].sort()
+      );
+      expectNoLeakage(body);
+
+      // 零寫入（wire 面之最小佐證；完整零寫入斷言見 revision 檔）。
+      expect(await prisma.application.count({ where: { supersedesId: source.id } })).toBe(0);
+
+      // 反向對照：同一管理員對**仍啟用**擁有人之來源仍 201（證明 400 非恆真）。
+      const activeSourceId = await createCompletedTravel("t7b-active-control");
+      const ok = await postRevision(activeSourceId, { cookie: adminCookie });
+      expect(ok.statusCode).toBe(201);
+      trackRevision(ok);
     });
   });
 

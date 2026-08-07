@@ -631,8 +631,16 @@ async function resolveRevisionLinks(
   };
 }
 
-/** 把 §7.2 之兩個版本關聯鍵附掛到任一型詳情 DTO 上（既有鍵逐字不變）。 */
-async function withRevisionLinks<T extends { id: string }>(
+/**
+ * 把 §7.2 之兩個版本關聯鍵附掛到任一型詳情 DTO 上（既有鍵逐字不變）。
+ *
+ * **export 之理由（PHASE-009-T7b／W-3）**：AC-12(b) 之投影必須套用在**每一個**
+ * 回傳詳情 DTO 之端點上，否則同一份 DTO 會因端點而異形。`admin/routes.ts` 之
+ * 三個代建端點亦回傳三型詳情 DTO，故需複用本 helper——**只** export 這一個
+ * （`resolveRevisionLinks`／`revisionLinkSelect` 與其餘 private 項維持不
+ * export）。
+ */
+export async function withRevisionLinks<T extends { id: string }>(
   prisma: PrismaClient,
   dto: T
 ): Promise<T & RevisionLinksDto> {
@@ -1583,6 +1591,39 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       // (3) §6.2 資料隔離不變式 1：授權一律以 DB 查得之 ownerId 為準。
       assertOwnershipOrAdmin(request.currentUser, application.ownerId);
+
+      // (3.5) B-16（§5 :360／§7.5 :517）：申請擁有人**已停用** → 400
+      // `VALIDATION_ERROR`。修正版是**新建**一筆草稿，故沿用既有「代建立草
+      // 稿」之 B-26 先例（`admin/routes.ts` 三個代建端點）——訊息與 `fields[]`
+      // 逐字相同，不造第二套。`field: "userId"` 指**申請擁有人**（本端點
+      // §7.3「Body：無」、路徑僅 `:id`，沒有 `userId` 請求參數）。
+      //
+      // 判定位置為 **route 層、service 呼叫之前**（大總管裁定）：這是「能不能
+      // 為這位使用者新建資料」之呼叫前提檢查，不是申請狀態機語意，故不入
+      // `application-revision.ts`（該檔本 Task 零 diff）。順序上刻意排在 (2)
+      // 404 與 (3) 403 **之後**——否則帳號停用狀態會成為未授權者可探測之側信
+      // 道；排在 service 之前，故與 409 狀態守門相遇時回 400。
+      //
+      // **作廢端點不受此限**（§7.5 末句／B-15）：作廢是既有資料之修正，對已停
+      // 用使用者仍 200，該端點刻意沒有這道守門。
+      //
+      // **只擋新建、不追溯清理**（大總管裁定）：本守門落地前已建立之修正版草
+      // 稿一律不動。
+      //
+      // `owner` 理論上必然存在（`Application.ownerId` 之 FK）；查不到時放行而
+      // 非擋下——本守門只在「確定已停用」時生效。
+      //
+      // USER 身分下本分支結構性不可達（已停用者無法登入），實際觸發者恆為管
+      // 理員代操作路徑。
+      const owner = await prisma.user.findUnique({
+        where: { id: application.ownerId },
+        select: { isActive: true },
+      });
+      if (owner && !owner.isActive) {
+        throw new AppError("VALIDATION_ERROR", 400, "指定的使用者已停用，無法代其建立申請", [
+          { field: "userId", reason: "指定的使用者已停用" },
+        ]);
+      }
 
       const actorId = request.currentUser.id;
       const isOnBehalf = actorId !== application.ownerId;
