@@ -565,6 +565,57 @@ describeWithDb("PHASE-009-T5 修正版複製 service（AC-09／AC-10／AC-11）"
   // =========================================================================
 
   describe("T5 service 守門：非 COMPLETED 來源與既有修正版（AC-13 之端點層斷言歸 T7）", () => {
+    // SF-1（T5R，即審 REQUEST_CHANGES）：本 Task 原 27 筆測試對「§3.2 步驟 6
+    // 之 FOR UPDATE 行鎖」**零覆蓋**——reviewer 實跑 mutant「移除
+    // application-revision.ts:360 之行鎖」，27 筆全綠。該行鎖並非可有可無的
+    // 效能設計，而是上方「已有修正版 → 409 + details.existingRevisionId」這
+    // 條確定性語意的前提：無鎖時兩個併發呼叫會雙雙讀到「無修正版」而各建一
+    // 筆，敗方由 `supersedesId @unique` 拋原生 P2002 → 500，且該原生錯誤之
+    // 日誌含絕對路徑（洩漏面）。
+    //
+    // 自然時序併發測試**不加**：T3R 之 reviewer M1 實測其鑑別力不穩定（12
+    // 輪僅 4 紅）——兩個併發呼叫常因 DB 往返時間差而恰巧仍序列化，運氣好就
+    // 綠。故沿 `phase9-void.test.ts:897`（T3R SF-1(a)，已背書）之結構性守門
+    // 形狀：讀原始碼、比對關鍵陳述式之字元位置。行鎖被移除、被搬出交易、或
+    // 交易被拆成兩個，皆必紅。
+    it("SF-1 結構性守門：FOR UPDATE 早於讀取與寫入、位於單一 $transaction 回呼內（行鎖移除／交易拆分之 mutant 必紅）", () => {
+      const srcPath = new URL("../../src/applications/application-revision.ts", import.meta.url);
+      const src = fs.readFileSync(srcPath, "utf8");
+
+      // 全檔恰一次 $transaction(...)——防「拆交易」mutant：若鎖與建立被拆進
+      // 兩個獨立交易，鎖會在建立前釋放，D7 之 0..1 保護即失效，即使各自看起
+      // 來仍「有交易」。
+      const txCallOccurrences = src.split("prisma.$transaction(").length - 1;
+      expect(txCallOccurrences).toBe(1);
+
+      const txCallIdx = src.indexOf("prisma.$transaction(");
+      // 以逐字完整片語比對真實呼叫，而非檔頭文件散文之同名片語——本檔檔頭
+      // 「併發與鎖」段落含「`SELECT ... FOR UPDATE`」「`FOR UPDATE` 取的是列
+      // 鎖」等說明文字，單獨比對 "FOR UPDATE" 會誤命中而使守門恆綠（沿
+      // phase9-void.test.ts:905-909 之同型警示）。
+      const forUpdateIdx = src.indexOf('WHERE "id" = ${sourceId} FOR UPDATE');
+      const findIdx = src.indexOf("tx.application.findUniqueOrThrow(");
+      const createIdx = src.indexOf("tx.application.create(");
+
+      expect(txCallIdx).toBeGreaterThan(-1);
+      expect(forUpdateIdx).toBeGreaterThan(-1);
+      expect(findIdx).toBeGreaterThan(-1);
+      expect(createIdx).toBeGreaterThan(-1);
+
+      // 皆位於 $transaction(...) 回呼內部（交易之後）——結合上方「恰一次」之
+      // 計數，排除鎖／建立被移到交易外、或另立第二個交易之 mutant。
+      expect(txCallIdx).toBeLessThan(forUpdateIdx);
+      expect(txCallIdx).toBeLessThan(createIdx);
+
+      // §3.2 步驟 6：鎖早於新鮮讀取（讀取須在鎖生效之後，否則守門讀到的可能
+      // 是過期狀態）與寫入。
+      expect(forUpdateIdx).toBeLessThan(findIdx);
+      expect(forUpdateIdx).toBeLessThan(createIdx);
+
+      // 讀取早於建立（讀了才判、判完才寫）。
+      expect(findIdx).toBeLessThan(createIdx);
+    });
+
     it("草稿來源 → CONFLICT ＋ details.status=DRAFT，且零新增 Application", async () => {
       const draft = await prisma.application.create({
         data: {
