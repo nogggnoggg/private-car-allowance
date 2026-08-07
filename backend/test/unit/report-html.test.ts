@@ -1211,29 +1211,82 @@ describe("AC-20(c) — 未作廢申請之列印版零 .void-banner、零「已�
 });
 
 describe("AC-20(d) — 作廢原因經 escapeHtml 跳脫（3 XSS payload 逐一）", () => {
-  const VOID_PAYLOADS = [
-    "<script>alert(1)</script>",
-    '"><img src=x onerror=alert(1)>',
-    `&amp;"'<b onmouseover=alert(1)>`,
+  // -------------------------------------------------------------------------
+  // PHASE-009-T11R（即審 S-1 修復）——期望值一律**字面**寫出，不得由被測之
+  // `escapeHtml` 現場算出。
+  //
+  // 原實作以 `expect(banner).toContain(escapeHtml(payload))` 為正向斷言，於
+  // 「`escapeHtml` 弱化為只跳 `<`」之 mutant 下**自我抵銷**（期望值隨被測函式
+  // 一同弱化），使本 6 格全綠、AC-20(d)「移除跳脫必紅」在作廢欄位面未真正成
+  // 立（即審 mutant ⑦ 實測：5 紅全落既有 `escapeHtml` 直接單元測試，本區零紅）。
+  // 修復後每個 payload 攜帶一個**硬編碼**之 `escapedValueSpan`（整段
+  // `<span class="field-value">…</span>`），與被測函式無資料相依。
+  // -------------------------------------------------------------------------
+  const VOID_PAYLOADS: { payload: string; escapedValueSpan: string }[] = [
+    {
+      payload: "<script>alert(1)</script>",
+      escapedValueSpan: '<span class="field-value">&lt;script&gt;alert(1)&lt;/script&gt;</span>',
+    },
+    {
+      payload: '"><img src=x onerror=alert(1)>',
+      escapedValueSpan:
+        '<span class="field-value">&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</span>',
+    },
+    {
+      payload: `&amp;"'<b onmouseover=alert(1)>`,
+      escapedValueSpan:
+        '<span class="field-value">&amp;amp;&quot;&#39;&lt;b onmouseover=alert(1)&gt;</span>',
+    },
   ];
 
-  for (const payload of VOID_PAYLOADS) {
-    it(`payload=${JSON.stringify(payload)} — 作廢原因欄跳脫後在場、原始 payload 不在場`, () => {
+  /** 自 `.void-banner` 區塊擷取指定標籤之 `field-value` 內容（樸素「至第一個真實 `<` 為止」）。 */
+  function extractBannerFieldValue(banner: string, label: string): string | null {
+    const match = banner.match(
+      new RegExp(
+        `<span class="field-label">${label}</span><span class="field-value">([^<]*)</span>`
+      )
+    );
+    return match ? match[1] : null;
+  }
+
+  for (const { payload, escapedValueSpan } of VOID_PAYLOADS) {
+    it(`payload=${JSON.stringify(payload)} — 作廢原因欄跳脫後在場（字面期望值）、原始 payload 不在場`, () => {
       const html = renderReportHtml(travelData({ common: voidedCommon({ reason: payload }) }));
       const banner = extractVoidBanner(html);
       expect(banner).not.toBeNull();
-      expect(banner).toContain(escapeHtml(payload));
+      // 字面期望值（不經 escapeHtml 計算）——鑑別「跳脫弱化」而非僅「跳脫全移除」。
+      expect(banner).toContain(escapedValueSpan);
       expect(html).not.toContain(payload);
       expect(/<script/i.test(html)).toBe(false);
       expect(/<[^>]+\son\w+\s*=/i.test(html)).toBe(false);
     });
 
-    it(`payload=${JSON.stringify(payload)} — 作廢操作者欄同一防線`, () => {
+    it(`payload=${JSON.stringify(payload)} — 作廢原因欄之 value 區段零裸 " ' < >（屬性／標籤逃逸負向）`, () => {
+      const html = renderReportHtml(travelData({ common: voidedCommon({ reason: payload }) }));
+      const banner = extractVoidBanner(html);
+      expect(banner).not.toBeNull();
+      const value = extractBannerFieldValue(banner ?? "", "作廢原因");
+      // 擷取成功本身即為斷言之一：value 內若殘留裸 `<`，正則之 `[^<]*` 會提前
+      // 截斷而與後續逐字比對不符（弱化 mutant 下必紅）。
+      expect(value).not.toBeNull();
+      expect(value).not.toContain('"');
+      expect(value).not.toContain("'");
+      expect(value).not.toContain("<");
+      expect(value).not.toContain(">");
+      expect(`<span class="field-value">${value}</span>`).toBe(escapedValueSpan);
+    });
+
+    it(`payload=${JSON.stringify(payload)} — 作廢操作者欄同一防線（字面期望值）`, () => {
       const html = renderReportHtml(
         travelData({ common: voidedCommon({ byDisplayName: payload }) })
       );
-      expect(extractVoidBanner(html)).toContain(escapeHtml(payload));
+      const banner = extractVoidBanner(html);
+      expect(banner).toContain(escapedValueSpan);
       expect(html).not.toContain(payload);
+      const value = extractBannerFieldValue(banner ?? "", "作廢操作者");
+      expect(value).not.toBeNull();
+      expect(value).not.toContain('"');
+      expect(value).not.toContain("<");
     });
   }
 });
