@@ -117,8 +117,14 @@ describe("ReportSection", () => {
     });
     // Mock Gate 裁-1（AC-30 修訂）：產生時間以台北時區中文在地化格式顯示，
     // 原始 ISO 字串不得在場（負向鎖）。
+    // PHASE-008-TZ-FIX：Linux Node 20 新版 ICU 的 toLocaleString("zh-TW") 在日期與
+    // 時段間輸出 U+2009（THIN SPACE），testing-library 只正規化元素文字、不正規化
+    // 匹配字串，故此處補 .replace(/\s+/g, " ") 與元素側正規化同義；勿改回字面
+    // 字串（會引入主機時區相依）。
     expect(
-      screen.getByText(new Date(report.generatedAt).toLocaleString("zh-TW"))
+      screen.getByText(
+        new Date(report.generatedAt).toLocaleString("zh-TW").replace(/\s+/g, " ").trim()
+      )
     ).toBeInTheDocument();
     expect(screen.queryByText(report.generatedAt)).not.toBeInTheDocument();
 
@@ -293,8 +299,14 @@ describe("ReportSection", () => {
       expect(await screen.findByText(report.reportNumber)).toBeInTheDocument();
       // Mock Gate 裁-1（AC-30 修訂）：產生時間以台北時區中文在地化格式顯示，
       // 原始 ISO 字串不得在場（負向鎖）。
+      // PHASE-008-TZ-FIX：Linux Node 20 新版 ICU 的 toLocaleString("zh-TW") 在日期與
+      // 時段間輸出 U+2009（THIN SPACE），testing-library 只正規化元素文字、不正規化
+      // 匹配字串，故此處補 .replace(/\s+/g, " ") 與元素側正規化同義；勿改回字面
+      // 字串（會引入主機時區相依）。
       expect(
-        screen.getByText(new Date(report.generatedAt).toLocaleString("zh-TW"))
+        screen.getByText(
+          new Date(report.generatedAt).toLocaleString("zh-TW").replace(/\s+/g, " ").trim()
+        )
       ).toBeInTheDocument();
       expect(screen.queryByText(report.generatedAt)).not.toBeInTheDocument();
 
