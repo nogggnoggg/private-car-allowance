@@ -145,18 +145,67 @@ export interface VoidApplicationContext {
  * `OnTravelDraftUpdated` 同型（travel-service.ts 既有模式）。省略時為
  * no-op——本 Task（T3）自身的測試不傳入 hook，天生零稽核寫入。
  *
- * 〔D4(b1)，T12，Files Forbidden，本 Task 不實作〕作廢版 PDF 產生（§3.1 步驟
- * 7d）之接點：須插入於四欄寫入（7c，已完成）之後、本 hook（7e，稽核）之前
- * ——即在 `voidApplication` 呼叫 `onVoided` 之前，多一個型別為
- * `(tx, application) => Promise<void>` 的「PDF 產生」步驟。本 Task 刻意不
- * 新增第二個 hook 參數（避免為未實作的步驟預先做半套 API），T12 落地時於此
- * 檔案就地擴充。
+ * 〔D4(b1)〕作廢版 PDF 產生（§3.1 步驟 7d）之接點已由 **T12a** 落地為
+ * {@link OnVoidedReportGenerate}（`voidApplication` 之第六參數），執行順序如
+ * T3 當時所預留：四欄寫入（7c）之後、本 hook（7e，稽核）之前。
  */
 export type OnApplicationVoided = (
   tx: Prisma.TransactionClient,
   context: VoidApplicationContext,
   application: VoidedApplicationRow
 ) => Promise<void>;
+
+/**
+ * 〔§3.1 步驟 7d／AC-21(a)，PHASE-009-T12a〕作廢版 PDF 產生步驟，於**同一交
+ * 易**內執行——四欄寫入（7c）之後、稽核 hook（7e）之前（§3.1 不變式③：狀態
+ * 寫入早於渲染，使渲染所用之 `ReportData` 恆帶正確作廢資訊）。
+ *
+ * 拋錯即整筆作廢回滾（狀態仍 `COMPLETED`、四欄仍 `NULL`、零稽核列），與
+ * `onVoided` 同型。**storage 之補償刪除不在本檔**：storage 是交易外資源，DB
+ * 回滾不會回收已寫入之檔案；補償責任屬提供本步驟的一方（`reports/
+ * report-service.ts` 之 `prepareVoidedReport`，雙層補償見該處說明），本檔對
+ * storage 零知識——與 T5／T6 之 `application-revision.ts`／`attachment-copy.ts`
+ * 分工完全同型。
+ *
+ * 省略時為 no-op：**未產生報表**之申請作廢（AC-21(e)）與本檔自身之既有測試皆
+ * 走此路徑，天生零渲染、零 storage 寫入。
+ */
+export type OnVoidedReportGenerate = (
+  tx: Prisma.TransactionClient,
+  application: VoidedApplicationRow
+) => Promise<void>;
+
+/**
+ * PHASE-009-T12a（沿 T6 `application-revision.ts` 之 `REVISION_TX_TIMEOUT_MS`
+ * 先例與同一推導方式）：Prisma 互動式交易不明寫 `timeout`／`maxWait` 時套用套
+ * 件預設（`timeout` 5000ms、`maxWait` 2000ms）。T3 當時交易內只有兩次毫秒級
+ * DB 往返，預設綽綽有餘；T12a 之後 `generateVoidedReport` 於**同一交易內**執
+ * 行 PDF 渲染 ＋ `put` ＋ 讀回校驗 ＋ `INSERT`（§3.1 步驟 7d），交易時長改由
+ * Chromium 渲染主導：`REPORT_PDF_TIMEOUT_MS` 預設即 **30000ms**（渲染單步之
+ * 上界），§10 之作廢端點回應時間目標為 **10 s**——兩者皆遠超 5000ms 預設，不
+ * 明寫則**必然**在渲染仍進行中被 Prisma 自身之交易逾時搶先中止（P2028），使
+ * 一個「其實只是慢」的正常作廢變成 500。此為 T3 即審 FW（T12 高風險預警）所
+ * 指之「必撞」。
+ *
+ * **恆定而非條件式**（本 Task 之裁量，記載於 Handoff）：兩值不隨「本次作廢是
+ * 否需要渲染」而變。理由——`timeout` 是**上界**不是等待，未產生報表之作廢仍
+ * 是兩次毫秒級往返，套用 60 s 上界對其行為零影響（不延後任何一毫秒）；反之若
+ * 做成條件式，就等於讓交易的逾時語意依賴一個布林旗標，除錯時得先回答「這筆走
+ * 的是哪一組值」，而換得的好處是零。沿 T6 之同一形狀：常數 ＋ 此處註解，
+ * **不新增 env 變數**（交易裕度不對外開放調整），亦不由
+ * `REPORT_PDF_TIMEOUT_MS` 推導——本檔對 `reports/` 域零依賴（連型別都不
+ * import，見 {@link OnVoidedReportGenerate}），為取一個裕度基準而建立跨域依賴
+ * 不划算；60 s 已涵蓋預設 30 s 渲染上界加上 `put`／讀回／`INSERT` 之餘裕。
+ *
+ * **持鎖時長之連帶**（T4 即審 FW-H）：`FOR UPDATE` 之列鎖自交易首語句持有至
+ * 提交，故有報表之作廢會把該列鎖持有「渲染 ＋ 寫檔」之全長（實測見 Handoff）。
+ * B-08 之併發雙作廢語意**不變**：後手在 `FOR UPDATE` 排隊，前手提交後以新鮮
+ * 讀取看見 `VOIDED` 而確定性地 409；`maxWait` 10 s 涵蓋的是「取得連線、交易正
+ * 式開始前」之等待，與列鎖排隊無關。後手若因前手渲染過久而等到逾時，得到的是
+ * 500 而非錯誤的成功——寧可失敗，不得雙作廢。
+ */
+const VOID_TX_TIMEOUT_MS = 60_000;
+const VOID_TX_MAX_WAIT_MS = 10_000;
 
 /**
  * 作廢一筆已完成申請（AC-03/04/06/07；型別無關——只讀寫 `Application` 共用
@@ -175,101 +224,119 @@ export type OnApplicationVoided = (
  * @param actorId 實際操作者 id（本人或代操作之管理員）——寫入 `voidedById`，
  *   不做任何授權判斷（呼叫端已完成）。
  * @param onVoided 選填 hook，見 `OnApplicationVoided` 文件註解（T4 用）。
+ * @param generateVoidedReport 選填之作廢版 PDF 步驟，見
+ *   {@link OnVoidedReportGenerate}（T12a 用）。**參數順序與執行順序刻意不
+ *   同**：本參數列於 `onVoided` 之後（新增選填參數不得改變既有呼叫端之位置參
+ *   數），但執行上恆**早於** `onVoided`——§3.1 步驟 7d 早於 7e。
  */
 export async function voidApplication(
   prisma: PrismaClient,
   id: string,
   rawReason: unknown,
   actorId: string,
-  onVoided?: OnApplicationVoided
+  onVoided?: OnApplicationVoided,
+  generateVoidedReport?: OnVoidedReportGenerate
 ): Promise<VoidedApplicationRow> {
-  return prisma.$transaction(async (tx) => {
-    // §3.1 步驟 7a：行鎖，防雙作廢競態（B-08）——交易第一個陳述式。
-    await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
+  return prisma.$transaction(
+    async (tx) => {
+      // §3.1 步驟 7a：行鎖，防雙作廢競態（B-08）——交易第一個陳述式。
+      await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
 
-    const existing = await tx.application.findUniqueOrThrow({
-      where: { id },
-      select: {
-        status: true,
-        ownerId: true,
-        type: true,
-        owner: { select: { loginName: true } },
-      },
-    });
-
-    // §3.1 步驟 4（狀態守門，409）＋ 步驟 7b（狀態機再次確認）之合併實作，
-    // 見檔頭文件註解「判定順序」。非 COMPLETED（含 DRAFT、已是 VOIDED 之
-    // AC-06/07）一律 409 CONFLICT + details.status——這是本函式對外可見的
-    // 錯誤碼，**不**倚賴 `assertTransition` 自身的 403（那是給
-    // `/complete`／PUT／DELETE 等其他端點用的既有語意，AC-05(b)）。
-    if (existing.status !== "COMPLETED") {
-      throw new AppError("CONFLICT", 409, "僅已完成之申請可作廢", undefined, {
-        status: existing.status,
+      const existing = await tx.application.findUniqueOrThrow({
+        where: { id },
+        select: {
+          status: true,
+          ownerId: true,
+          type: true,
+          owner: { select: { loginName: true } },
+        },
       });
-    }
 
-    // 狀態機單一事實來源（§3.1 步驟 7b 之字面要求）——上方守門已保證
-    // `existing.status === "COMPLETED"`，故本呼叫在此處恆落入
-    // `COMPLETED → VOIDED` 之合法分支、恆不拋錯；保留此呼叫是為了不讓
-    // `application-state-machine.ts` 以外的任何程式碼片段自行決定「哪些轉
-    // 換合法」——即使在這個已經確定合法的位置也一律經過它。
-    assertTransition(existing.status, "VOIDED");
+      // §3.1 步驟 4（狀態守門，409）＋ 步驟 7b（狀態機再次確認）之合併實作，
+      // 見檔頭文件註解「判定順序」。非 COMPLETED（含 DRAFT、已是 VOIDED 之
+      // AC-06/07）一律 409 CONFLICT + details.status——這是本函式對外可見的
+      // 錯誤碼，**不**倚賴 `assertTransition` 自身的 403（那是給
+      // `/complete`／PUT／DELETE 等其他端點用的既有語意，AC-05(b)）。
+      if (existing.status !== "COMPLETED") {
+        throw new AppError("CONFLICT", 409, "僅已完成之申請可作廢", undefined, {
+          status: existing.status,
+        });
+      }
 
-    // §3.1 步驟 5：reason 驗證（400），見檔頭「判定順序」說明——置於狀態
-    // 守門之後，故草稿／已作廢申請即使原因也不合法，回應仍為 409（狀態）
-    // 而非 400（原因）。
-    const reasonResult = validateVoidReason(rawReason);
-    if (!reasonResult.ok) {
-      throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
-        reasonResult.error,
-      ]);
-    }
+      // 狀態機單一事實來源（§3.1 步驟 7b 之字面要求）——上方守門已保證
+      // `existing.status === "COMPLETED"`，故本呼叫在此處恆落入
+      // `COMPLETED → VOIDED` 之合法分支、恆不拋錯；保留此呼叫是為了不讓
+      // `application-state-machine.ts` 以外的任何程式碼片段自行決定「哪些轉
+      // 換合法」——即使在這個已經確定合法的位置也一律經過它。
+      assertTransition(existing.status, "VOIDED");
 
-    const voidedAt = new Date();
+      // §3.1 步驟 5：reason 驗證（400），見檔頭「判定順序」說明——置於狀態
+      // 守門之後，故草稿／已作廢申請即使原因也不合法，回應仍為 409（狀態）
+      // 而非 400（原因）。
+      const reasonResult = validateVoidReason(rawReason);
+      if (!reasonResult.ok) {
+        throw new AppError("VALIDATION_ERROR", 400, "輸入資料有誤，請檢查標示欄位。", [
+          reasonResult.error,
+        ]);
+      }
 
-    // §3.1 步驟 7c：單一交易內四欄寫入（status／voidReason／voidedById／
-    // voidedAt）——快照相關欄位（totalAmount／completedAt／三型子表
-    // snapshot*）本函式從未讀取也從未寫入，AC-04 之「快照零改寫」由此天然
-    // 成立（不是靠額外的「不要動它」判斷，而是程式碼裡根本沒有觸碰的路徑）。
-    const updated = await tx.application.update({
-      where: { id },
-      data: {
-        status: "VOIDED",
+      const voidedAt = new Date();
+
+      // §3.1 步驟 7c：單一交易內四欄寫入（status／voidReason／voidedById／
+      // voidedAt）——快照相關欄位（totalAmount／completedAt／三型子表
+      // snapshot*）本函式從未讀取也從未寫入，AC-04 之「快照零改寫」由此天然
+      // 成立（不是靠額外的「不要動它」判斷，而是程式碼裡根本沒有觸碰的路徑）。
+      const updated = await tx.application.update({
+        where: { id },
+        data: {
+          status: "VOIDED",
+          voidReason: reasonResult.value,
+          voidedAt,
+          voidedById: actorId,
+        },
+        select: { id: true, type: true, status: true, ownerId: true },
+      });
+
+      const row: VoidedApplicationRow = {
+        id: updated.id,
+        type: updated.type,
+        status: updated.status,
+        ownerId: updated.ownerId,
         voidReason: reasonResult.value,
         voidedAt,
         voidedById: actorId,
-      },
-      select: { id: true, type: true, status: true, ownerId: true },
-    });
+      };
 
-    // 〔D4(b1)，T12，Files Forbidden〕作廢版 PDF 產生之接點——見上方
-    // `OnApplicationVoided` 文件註解「接點」段落：須插入於此處（7c 之後、
-    // 下方 7e 稽核 hook 之前）。本 Task 不實作。
+      // §3.1 步驟 7d〔D4(b1)，T12a〕：作廢版 PDF 產生（渲染 → put → 讀回校驗
+      // → INSERT VoidedReportFile），於**同一交易**內。順序不可對調——本步驟
+      // 恆在四欄寫入（7c，上方）之後、稽核 hook（7e，下方）之前，見
+      // {@link OnVoidedReportGenerate}。省略時整段不執行（AC-21(e)：未產生報
+      // 表之申請作廢為純 DB 操作）。
+      if (generateVoidedReport) {
+        await generateVoidedReport(tx, row);
+      }
 
-    const row: VoidedApplicationRow = {
-      id: updated.id,
-      type: updated.type,
-      status: updated.status,
-      ownerId: updated.ownerId,
-      voidReason: reasonResult.value,
-      voidedAt,
-      voidedById: actorId,
-    };
+      // §3.1 步驟 7e：稽核 hook（T4 用；省略時 no-op，見 `OnApplicationVoided`
+      // 文件註解）。
+      if (onVoided) {
+        await onVoided(
+          tx,
+          {
+            ownerId: existing.ownerId,
+            ownerLoginName: existing.owner.loginName,
+            type: existing.type,
+          },
+          row
+        );
+      }
 
-    // §3.1 步驟 7e：稽核 hook（T4 用；省略時 no-op，見 `OnApplicationVoided`
-    // 文件註解）。
-    if (onVoided) {
-      await onVoided(
-        tx,
-        {
-          ownerId: existing.ownerId,
-          ownerLoginName: existing.owner.loginName,
-          type: existing.type,
-        },
-        row
-      );
+      return row;
+    },
+    {
+      // T12a：明寫兩值，見上方 VOID_TX_TIMEOUT_MS／VOID_TX_MAX_WAIT_MS 之
+      // 推導說明（沿 T6 REVISION_TX_* 先例）。
+      timeout: VOID_TX_TIMEOUT_MS,
+      maxWait: VOID_TX_MAX_WAIT_MS,
     }
-
-    return row;
-  });
+  );
 }

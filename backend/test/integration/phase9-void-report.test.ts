@@ -48,12 +48,14 @@
  *   - cleanup 僅限本檔追蹤之 id；絕不 `deleteMany({})`。
  *   - 一律合成資料。
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import {
   type ReportApplicationRecord,
@@ -63,8 +65,33 @@ import {
 } from "../../src/reports/report-data.js";
 import { buildServer } from "../../src/server.js";
 
+// ── report-html.ts／pdf-renderer.ts：呼叫穿透之 spy 包裝（§D 用；沿
+//    `phase8-report-generate.test.ts` :87-98 之既有慣例，逐字同型：
+//    `vi.fn(actual.fn)` 預設呼叫真實實作，個別測試以 mockImplementation 覆
+//    寫）。§A～§C（T10）不觸及此二模組，行為零影響。────────────────────────
+vi.mock("../../src/reports/report-html.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/reports/report-html.js")>();
+  return { ...actual, renderReportHtml: vi.fn(actual.renderReportHtml) };
+});
+vi.mock("../../src/reports/pdf-renderer.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/reports/pdf-renderer.js")>();
+  return { ...actual, renderPdf: vi.fn(actual.renderPdf) };
+});
+
+import { voidApplication } from "../../src/applications/application-void.js";
+import { renderPdf } from "../../src/reports/pdf-renderer.js";
+import { renderReportHtml } from "../../src/reports/report-html.js";
+import {
+  ReportGenerationError,
+  type ReportServiceDeps,
+  prepareVoidedReport,
+} from "../../src/reports/report-service.js";
+import { LocalVolumeStorage, type Storage } from "../../src/storage/index.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPORT_DATA_SRC_PATH = path.resolve(__dirname, "../../src/reports/report-data.ts");
+const REPORT_SERVICE_SRC_PATH = path.resolve(__dirname, "../../src/reports/report-service.ts");
+const REPORTS_ROUTES_SRC_PATH = path.resolve(__dirname, "../../src/reports/routes.ts");
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -758,5 +785,885 @@ describeWithDb("PHASE-009-T10 §C — buildReportData 之作廢欄位與排序�
       });
       expect(new Set(rows.map((r) => r.linkedAt?.toISOString())).size).toBe(1);
     });
+  });
+});
+
+// ===========================================================================
+// §D — PHASE-009-T12a：作廢版 PDF 之產生與保存（AC-21 (a)(c)(e)(f)）
+//
+// ---------------------------------------------------------------------------
+// 規範出處（`docs/specs/PHASE-009.md` :209，逐字引用）
+// ---------------------------------------------------------------------------
+// AC-21：「(a) 作廢**已產生報表**之申請時，於**同一交易**內以同一份快照 ＋ 作
+//   廢資訊渲染出**作廢版 PDF**，經 `put` → 讀回校驗（位元組數 ＋ SHA-256）→
+//   `INSERT VoidedReportFile` → 提交；任一階段失敗 → **整筆作廢回滾**（狀態仍
+//   為 `COMPLETED`）、storage 零殘留、回應 500 `REPORT_GENERATION_FAILED` ＋
+//   `details.stage`；…(c) 原 `Report.storageKey` 之位元組 SHA-256 **前後不
+//   變**（BE-US-27⑤「保留原始內容」之實證）；…(e) **未產生報表**之申請作廢 →
+//   零渲染、零 storage 寫入（作廢為純 DB 操作）；(f) `Report` 列**零更新**——
+//   PHASE-008 之「`reports/` 零 `.report.update(`／`.delete(`／`.upsert(`」結
+//   構斷言**零改動且全綠**。」
+//
+// (b)(d)（下載語意）屬 **T12b**，不在本段。
+//
+// ---------------------------------------------------------------------------
+// 「作廢標示可證面」之取證方式（沿 PHASE-008 T8R2 SF-7 之既有結論，見
+// `phase8-report-generate.test.ts` :587-606）
+// ---------------------------------------------------------------------------
+// 該處已實證：Chromium 產出之 PDF 內容串流為**子集字型之 glyph 編碼**，對原始
+// 位元組（含 zlib 解壓後）直接做子字串比對**不可命中**，須經 `/ToUnicode` CMap
+// 反查（等同引入一套文字擷取邏輯，超出零新增套件之邊界）。故「PDF 位元組逐字含
+// 已作廢」在本專案技術上不可行，該檔已裁定改以**餵給 `renderPdf` 的 HTML**
+// （即 PDF 之產生輸入）作為同一層次之自證。本段沿用該既有裁定：以
+// `renderReportHtml` 之 spy 斷言「作廢版 PDF 的產生輸入」逐字含 `已作廢`、作廢
+// 原因與操作者，並另以真實 Chromium 端到端一則證明配線（服務層確實呼叫真實渲
+// 染器，非只呼叫替身）。
+//
+// ---------------------------------------------------------------------------
+// TDD 紅燈實錄（先紅後綠；`git stash` 法，完整輸出見 Task Handoff）
+// ---------------------------------------------------------------------------
+// 本段於五檔實作**全部 stash** 之狀態下先行實跑：`prepareVoidedReport` 等匯出
+// 不存在 → 本檔於 collect 階段即紅（tsc 亦紅）。實作還原後全綠。
+// 另有三則 mutant 自證（暫改 `src/` 後復原，不烙入本檔）——見 Handoff：
+//   ① 讀回校驗略過（不比對位元組數／SHA-256）→ §D-5③ 必紅
+//   ② 補償刪除停用（`compensate` 改 no-op）→ §D-5②③④／§D-7 必紅
+//   ③ `INSERT` 移出交易（`tx.` → `deps.prisma.`）→ §D-7 必紅
+// ===========================================================================
+
+/**
+ * 合成 PDF 位元組（沿 `phase8-report-generate.test.ts` :114-118 之同型替身）：
+ * `%PDF-` 開頭、`%%EOF` 結尾、長度 > 1024。多數 §D 測試驗證的是**交易／
+ * storage／補償**之正確性，與位元組是否出自真實 Chromium 無關；真實 Chromium
+ * 之端到端配線另有專則（§D-3）。
+ */
+const FAKE_PDF_BYTES = Buffer.from(
+  `%PDF-1.4\n% synthetic fixture for PHASE-009-T12a fast tests\n${"Y".repeat(1200)}\n%%EOF`
+);
+
+function sha256(bytes: Buffer): string {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function makeTempStorageRoot(label: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `phase9-t12a-${label}-`));
+}
+
+function removeTempStorageRoot(root: string): void {
+  try {
+    fs.rmSync(root, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+/** 列出 `<root>/rpt/<token>/<suffix>` 之全部 key（零殘留／零孤兒斷言用）。 */
+function listReportStorageKeys(root: string): string[] {
+  const rptDir = path.join(root, "rpt");
+  if (!fs.existsSync(rptDir)) return [];
+  const keys: string[] = [];
+  for (const token of fs.readdirSync(rptDir)) {
+    const tokenDir = path.join(rptDir, token);
+    if (!fs.statSync(tokenDir).isDirectory()) continue;
+    for (const suffix of fs.readdirSync(tokenDir)) {
+      keys.push(`rpt/${token}/${suffix}`);
+    }
+  }
+  return keys.sort();
+}
+
+async function readAllBytes(storage: Storage, key: string): Promise<Buffer> {
+  const result = await storage.get(key);
+  if (Buffer.isBuffer(result)) return result;
+  const chunks: Buffer[] = [];
+  for await (const chunk of result as AsyncIterable<Buffer | string>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** `put` 一律拋錯（STORE 階段注入；沿 `phase9-revision-attachment.test.ts` :89 之 FailingStorage 形狀）。 */
+class PutFailingStorage implements Storage {
+  constructor(private readonly inner: Storage) {}
+  async put(key: string): Promise<void> {
+    throw new Error(`Injected storage failure while writing key: ${JSON.stringify(key)}`);
+  }
+  get(key: string): Promise<Buffer | NodeJS.ReadableStream> {
+    return this.inner.get(key);
+  }
+  delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+  exists(key: string): Promise<boolean> {
+    return this.inner.exists(key);
+  }
+}
+
+/**
+ * `put` 正常落地，但 `get`（讀回校驗）回傳**被竄改**之位元組 —— VERIFY 階段
+ * 注入。這是 mutant ①（讀回不比對）之自證點：若實作略過讀回校驗，本注入無法
+ * 被偵測，測試必紅。
+ */
+class TamperingReadBackStorage implements Storage {
+  readonly putKeys: string[] = [];
+  constructor(
+    private readonly inner: Storage,
+    /** `"CORRUPT"` = 同長度不同內容（僅 SHA-256 可辨）；`"TRUNCATE"` = 長度不同。 */
+    private readonly mode: "CORRUPT" | "TRUNCATE"
+  ) {}
+  async put(key: string, bytes: Buffer, contentType: string): Promise<void> {
+    await this.inner.put(key, bytes, contentType);
+    this.putKeys.push(key);
+  }
+  async get(key: string): Promise<Buffer | NodeJS.ReadableStream> {
+    const real = await readAllBytes(this.inner, key);
+    if (this.mode === "TRUNCATE") return real.subarray(0, real.length - 1);
+    const corrupted = Buffer.from(real);
+    // 同長度、單一位元組不同 → 位元組數比對通過，唯 SHA-256 可辨。
+    const last = corrupted.length - 1;
+    corrupted[last] = (corrupted[last] as number) ^ 0xff;
+    return corrupted;
+  }
+  delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+  exists(key: string): Promise<boolean> {
+    return this.inner.exists(key);
+  }
+}
+
+/** 任何呼叫皆拋錯 —— AC-21(e)「零 storage 觸碰」之結構性證人。 */
+class ForbiddenStorage implements Storage {
+  async put(): Promise<void> {
+    throw new Error("ForbiddenStorage.put must never be called");
+  }
+  async get(): Promise<Buffer> {
+    throw new Error("ForbiddenStorage.get must never be called");
+  }
+  async delete(): Promise<void> {
+    throw new Error("ForbiddenStorage.delete must never be called");
+  }
+  async exists(): Promise<boolean> {
+    throw new Error("ForbiddenStorage.exists must never be called");
+  }
+}
+
+// ===========================================================================
+// §D-0 — 結構性斷言（不需 DB；任何環境皆執行）
+// ===========================================================================
+
+describe("PHASE-009-T12a §D-0 — 結構性斷言（AC-21(f) ＋ SPEC-REV-9T12 兩下游約束）", () => {
+  it("AC-21(f): report-service.ts／reports/routes.ts 原始碼零 .report.update(／.delete(／.upsert(／.deleteMany(／.updateMany(（PHASE-008 既有斷言於作廢版落地後零改動且全綠）", () => {
+    const serviceSrc = fs.readFileSync(REPORT_SERVICE_SRC_PATH, "utf8");
+    const routesSrc = fs.readFileSync(REPORTS_ROUTES_SRC_PATH, "utf8");
+    for (const src of [serviceSrc, routesSrc]) {
+      expect(src).not.toMatch(/\.report\.update\(/);
+      expect(src).not.toMatch(/\.report\.delete\(/);
+      expect(src).not.toMatch(/\.report\.upsert\(/);
+      expect(src).not.toMatch(/\.report\.deleteMany\(/);
+      expect(src).not.toMatch(/\.report\.updateMany\(/);
+    }
+    // 正向對照（否則掃描因「根本沒碰 report delegate」而恆真）。
+    expect(serviceSrc).toMatch(/\.report\.create\(/);
+    expect(serviceSrc).toMatch(/\.report\.findUnique\(/);
+    // 作廢版之唯一寫入落在獨立表（§8.2「為何不擴充 Report」）。
+    expect(serviceSrc).toMatch(/\.voidedReportFile\.create\(/);
+  });
+
+  it("SPEC-REV-9T12 下游約束 #1：作廢版渲染碼整段位於既有 §9.1 產生流程之後——renderReportHtml( 之首現位置仍落在產生交易內（phase8-report-generate :225-247 之三段序不變）", () => {
+    const src = fs.readFileSync(REPORT_SERVICE_SRC_PATH, "utf8");
+    const txCallIdx = src.indexOf("$transaction(");
+    const renderCallIdx = src.indexOf("renderReportHtml(");
+    const readCommittedIdx = src.indexOf("Prisma.TransactionIsolationLevel.ReadCommitted");
+    expect(txCallIdx).toBeGreaterThan(-1);
+    expect(renderCallIdx).toBeGreaterThan(-1);
+    expect(readCommittedIdx).toBeGreaterThan(-1);
+    // 既有斷言之逐字複刻——使「把作廢版渲染碼搬到產生流程之前」在本 Task 自己
+    // 的測試檔即刻轉紅，而非只在 Files Forbidden 之 phase8 檔轉紅。
+    expect(txCallIdx).toBeLessThan(renderCallIdx);
+    expect(renderCallIdx).toBeLessThan(readCommittedIdx);
+    // 作廢版之進入點必在既有產生交易之後（位置約束之正面表述）。
+    expect(src.indexOf("export async function prepareVoidedReport")).toBeGreaterThan(
+      readCommittedIdx
+    );
+  });
+
+  it("SPEC-REV-9T12 下游約束 #2：本 Task 零新增 backend/src/reports/*.ts（PHASE_008_SRC_FILES 九檔清單零觸）", () => {
+    const dir = path.resolve(__dirname, "../../src/reports");
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".ts"))
+      .sort();
+    expect(files).toEqual(
+      [
+        "pdf-renderer.ts",
+        "report-data.ts",
+        "report-filename.ts",
+        "report-html.ts",
+        "report-images.ts",
+        "report-labels.ts",
+        "report-number.ts",
+        "report-service.ts",
+        "routes.ts",
+      ].sort()
+    );
+    expect(files.length).toBe(9);
+  });
+});
+
+// ===========================================================================
+// §D-1〜§D-8 — 行為（需 DB ＋ HTTP ＋ 真實 storage 根目錄）
+// ===========================================================================
+
+describeWithDb("PHASE-009-T12a §D — 作廢版 PDF 之產生與保存（AC-21(a)(c)(e)）", () => {
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+  let attachmentRoot: string;
+  let reportRoot: string;
+  let reportStorage: LocalVolumeStorage;
+  let attachmentStorage: LocalVolumeStorage;
+
+  let ownerId: string;
+  let ownerCookie: string;
+  let ownerDisplayName: string;
+
+  const createdApplicationIds: string[] = [];
+  const createdUserIds: string[] = [];
+
+  const D_PREFIX = "p9t12a_";
+  const D_PASSWORD = "P9t12a-Synthetic-Passw0rd!";
+
+  /** §D 專用之最小 deps（service 層失敗注入用）；兩個 storage 可逐測試替換。 */
+  function makeDeps(overrides?: Partial<ReportServiceDeps>): ReportServiceDeps {
+    return {
+      prisma,
+      attachmentStorage,
+      reportStorage,
+      imageMaxPx: 1600,
+      pdfTimeoutMs: 30000,
+      log: { error: () => undefined },
+      ...overrides,
+    };
+  }
+
+  async function login(loginName: string): Promise<string> {
+    const resp = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { loginName, password: D_PASSWORD },
+    });
+    if (resp.statusCode !== 200) {
+      throw new Error(`login failed: ${resp.statusCode} ${resp.body}`);
+    }
+    const raw = resp.headers["set-cookie"];
+    const str = Array.isArray(raw) ? raw[0] : (raw as string);
+    return str.split(";")[0];
+  }
+
+  /** 已完成差旅（完成側以 Prisma 直寫合成，沿本檔 §C 之既有先例）。 */
+  async function seedCompletedTravel(purpose: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2216-04-10T00:00:00.000Z"),
+        totalAmount: 1234,
+        completedAt: new Date("2216-04-11T02:00:00.000Z"),
+        travel: {
+          create: {
+            tripDate: new Date("2216-04-10T00:00:00.000Z"),
+            purpose,
+            fuelUnitPrice: "2.3456",
+            etcUnitPrice: "1.2345",
+            etcParameterVersionId: "p9t12a-etc-v1",
+            fuelPriceVersionId: "p9t12a-fuel-price-v1",
+            fuelConsumptionVersionId: "p9t12a-fuel-consum-v1",
+            snapshotFuelType: "GASOLINE_95",
+            snapshotFuelPricePerLiter: "31.5000",
+            snapshotFuelConsumption: "15.2000",
+            snapshotTotalKm: "210.50",
+            snapshotRawAmount: "1234.4444",
+            calculatedAt: new Date("2216-04-11T02:00:00.000Z"),
+            segments: {
+              create: [
+                {
+                  sortOrder: 0,
+                  origin: "台北",
+                  destination: "台中",
+                  totalKm: "210.50",
+                  highwayKm: "150.00",
+                  snapshotFuelAmount: "436.1000",
+                  snapshotEtcAmount: "185.1750",
+                  snapshotRawAmount: "1234.4444",
+                  snapshotAmount: 1234,
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    createdApplicationIds.push(created.id);
+    return created.id;
+  }
+
+  /** 已完成差旅 ＋ **經真實端點**產生之正式報表（POST /applications/:id/report）。 */
+  async function seedWithReport(purpose: string): Promise<string> {
+    const id = await seedCompletedTravel(purpose);
+    const resp = await app.inject({
+      method: "POST",
+      url: `/applications/${id}/report`,
+      headers: { cookie: ownerCookie },
+    });
+    if (resp.statusCode !== 201) {
+      throw new Error(`report generation failed: ${resp.statusCode} ${resp.body}`);
+    }
+    return id;
+  }
+
+  async function voidViaEndpoint(id: string, reason: string) {
+    return app.inject({
+      method: "POST",
+      url: `/applications/${id}/void`,
+      headers: { cookie: ownerCookie },
+      payload: { reason },
+    });
+  }
+
+  /** 作廢前之完整狀態快照，供「整筆回滾」之逐項比對。 */
+  async function snapshotOf(id: string) {
+    const application = await prisma.application.findUniqueOrThrow({ where: { id } });
+    const report = await prisma.report.findUnique({ where: { applicationId: id } });
+    return {
+      application,
+      report,
+      reportBytesHash: report ? sha256(await readAllBytes(reportStorage, report.storageKey)) : null,
+      storageKeys: listReportStorageKeys(reportRoot),
+      voidedCount: await prisma.voidedReportFile.count(),
+      auditCount: await prisma.auditLog.count({ where: { actorId: ownerId } }),
+    };
+  }
+
+  /**
+   * 「整筆作廢回滾」之統一斷言（AC-21(a) 失敗側）：狀態仍 `COMPLETED`、四個作
+   * 廢欄仍 `NULL`、`Application` 與 `Report` 兩列逐欄不變、原 PDF 位元組
+   * SHA-256 不變（AC-21(c)）、storage 零殘留、零 `VoidedReportFile`、零稽核列。
+   */
+  async function expectFullRollback(
+    id: string,
+    before: Awaited<ReturnType<typeof snapshotOf>>
+  ): Promise<void> {
+    const after = await prisma.application.findUniqueOrThrow({ where: { id } });
+    expect(after.status).toBe("COMPLETED");
+    expect(after.voidReason).toBeNull();
+    expect(after.voidedAt).toBeNull();
+    expect(after.voidedById).toBeNull();
+    // 快照零改寫（AC-04 之延伸）：整列逐欄與作廢前全等。
+    expect(after).toEqual(before.application);
+
+    // AC-21(c)：原 Report 列與其位元組 SHA-256 前後不變。
+    const report = await prisma.report.findUnique({ where: { applicationId: id } });
+    expect(report).toEqual(before.report);
+    if (before.report) {
+      expect(sha256(await readAllBytes(reportStorage, before.report.storageKey))).toBe(
+        before.reportBytesHash
+      );
+    }
+
+    // storage 零殘留（補償刪除已回收本輪已 put 之 key）。
+    expect(listReportStorageKeys(reportRoot)).toEqual(before.storageKeys);
+    expect(await prisma.voidedReportFile.count()).toBe(before.voidedCount);
+    expect(await prisma.auditLog.count({ where: { actorId: ownerId } })).toBe(before.auditCount);
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    attachmentRoot = makeTempStorageRoot("att");
+    reportRoot = makeTempStorageRoot("rpt");
+    attachmentStorage = new LocalVolumeStorage(attachmentRoot, { prefixes: ["att"] });
+    reportStorage = new LocalVolumeStorage(reportRoot, { prefixes: ["rpt"] });
+
+    prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await prisma.$connect();
+    app = await buildServer({ storageRoot: attachmentRoot, reportStorageRoot: reportRoot });
+    await app.ready();
+
+    ownerDisplayName = "T12a 擁有人";
+    const owner = await prisma.user.create({
+      data: {
+        loginName: `${D_PREFIX}owner_${RUN_ID}`,
+        displayName: ownerDisplayName,
+        passwordHash: await hashPassword(D_PASSWORD),
+        role: "USER",
+        isActive: true,
+        // T3 假綠教訓：fixture 一律顯式指定，不倚賴 schema 預設。
+        mustChangePassword: false,
+      },
+    });
+    ownerId = owner.id;
+    createdUserIds.push(owner.id);
+    ownerCookie = await login(owner.loginName);
+  }, 60000);
+
+  afterAll(async () => {
+    if (!prisma) return;
+    if (app) await app.close();
+    if (createdApplicationIds.length > 0) {
+      const reports = await prisma.report.findMany({
+        where: { applicationId: { in: createdApplicationIds } },
+        select: { id: true },
+      });
+      if (reports.length > 0) {
+        await prisma.voidedReportFile.deleteMany({
+          where: { reportId: { in: reports.map((r) => r.id) } },
+        });
+        await prisma.report.deleteMany({
+          where: { applicationId: { in: createdApplicationIds } },
+        });
+      }
+      await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
+    }
+    if (createdUserIds.length > 0) {
+      await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { targetId: { in: createdUserIds } } });
+      await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    }
+    await prisma.$disconnect();
+    removeTempStorageRoot(attachmentRoot);
+    removeTempStorageRoot(reportRoot);
+  }, 60000);
+
+  // =========================================================================
+  // §D-1〜§D-2、§D-4〜§D-8：快速替身區塊（renderPdf → 合成位元組）
+  // =========================================================================
+
+  describe("§快速替身（renderPdf 覆寫為合成位元組；renderReportHtml 仍為真實實作）", () => {
+    beforeEach(() => {
+      vi.mocked(renderReportHtml).mockClear();
+      vi.mocked(renderPdf).mockClear();
+      vi.mocked(renderPdf).mockImplementation(async () => Buffer.from(FAKE_PDF_BYTES));
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-1 AC-21(a) 正向
+    // -----------------------------------------------------------------------
+
+    it("AC-21(a) 正向: 作廢已產生報表之申請 → 200 ＋ 恰一列 VoidedReportFile（逐欄齊）＋ 讀回位元組之長度與 SHA-256 與該列相符", async () => {
+      const id = await seedWithReport("D1 正向");
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      const reason = "T12a 正向：金額誤植，重新申報";
+
+      const resp = await voidViaEndpoint(id, reason);
+      expect(resp.statusCode, resp.body).toBe(200);
+
+      const rows = await prisma.voidedReportFile.findMany({ where: { reportId: report.id } });
+      expect(rows.length).toBe(1);
+      const row = rows[0];
+      if (!row) throw new Error("unreachable");
+
+      // §8.2 逐欄。
+      expect(row.reportId).toBe(report.id);
+      expect(row.fileName).toBe(report.fileName); // 編號不變 → 檔名不變
+      expect(row.createdById).toBe(ownerId);
+      expect(row.storageKey).toMatch(/^rpt\/[A-Za-z0-9_-]+\/void$/);
+      expect(row.storageKey).not.toBe(report.storageKey);
+
+      // 讀回校驗之實證：DB 記錄之 byteSize／contentHash 與 storage 實際位元組相符。
+      const bytes = await readAllBytes(reportStorage, row.storageKey);
+      expect(row.byteSize).toBe(bytes.length);
+      expect(row.contentHash).toBe(sha256(bytes));
+
+      const application = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(application.status).toBe("VOIDED");
+      expect(application.voidReason).toBe(reason);
+    });
+
+    it("AC-21(a) 作廢標示可證面: 餵給 renderPdf 之 HTML（作廢版 PDF 之產生輸入）逐字含「已作廢」＋作廢原因，且 ReportData 之 common 帶正確作廢資訊與原編號", async () => {
+      const id = await seedWithReport("D1 標示");
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      const reason = "T12a 標示：出差取消";
+
+      vi.mocked(renderReportHtml).mockClear();
+      const resp = await voidViaEndpoint(id, reason);
+      expect(resp.statusCode, resp.body).toBe(200);
+
+      const application = await prisma.application.findUniqueOrThrow({ where: { id } });
+      const call = vi.mocked(renderReportHtml).mock.calls.at(-1);
+      const result = vi.mocked(renderReportHtml).mock.results.at(-1);
+      expect(call, "作廢版渲染未呼叫 renderReportHtml").toBeDefined();
+      if (!call || !result) throw new Error("unreachable");
+
+      const data = call[0];
+      // 作廢資訊（§3.1 不變式③：狀態寫入早於渲染 → 渲染輸入恆帶正確作廢資訊）。
+      expect(data.common.void).toEqual({
+        reason,
+        at: application.voidedAt?.toISOString(),
+        byDisplayName: ownerDisplayName,
+      });
+      expect(data.common.statusLabel).toBe("已作廢");
+      // 同一份快照 ＋ 原編號／原產生時間（AC-21(a)「同一份快照」；編號不變）。
+      expect(data.common.reportNumber).toBe(report.reportNumber);
+      expect(data.common.generatedAt).toBe(report.generatedAt.toISOString());
+      expect(data.common.totalAmount).toBe(application.totalAmount);
+
+      // 產生輸入之 HTML 逐字含作廢標示、原因與操作者（T11 之 .void-banner）。
+      expect(result.type).toBe("return");
+      const html = String(result.value);
+      expect(html).toContain("已作廢");
+      expect(html).toContain(reason);
+      expect(html).toContain("void-banner");
+      expect(html).toContain(ownerDisplayName);
+      expect(html).toContain(report.reportNumber);
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-2 AC-21(c)
+    // -----------------------------------------------------------------------
+
+    it("AC-21(c): 原 Report 列逐欄不變、其 storageKey 之位元組 SHA-256 前後不變（作廢成功路徑）", async () => {
+      const id = await seedWithReport("D2 原檔保留");
+      const before = await snapshotOf(id);
+      if (!before.report) throw new Error("fixture: report 必須存在");
+
+      const resp = await voidViaEndpoint(id, "T12a 原檔保留驗證");
+      expect(resp.statusCode, resp.body).toBe(200);
+
+      const after = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      expect(after).toEqual(before.report);
+      expect(sha256(await readAllBytes(reportStorage, before.report.storageKey))).toBe(
+        before.reportBytesHash
+      );
+      expect(await reportStorage.exists(before.report.storageKey)).toBe(true);
+
+      // 作廢版落在**另一個** key（原檔永不被覆寫）。
+      const voided = await prisma.voidedReportFile.findUniqueOrThrow({
+        where: { reportId: before.report.id },
+      });
+      expect(voided.storageKey).not.toBe(before.report.storageKey);
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-4 AC-21(e)
+    // -----------------------------------------------------------------------
+
+    it("AC-21(e): 未產生報表之申請作廢 → 200、零渲染（renderReportHtml／renderPdf 零呼叫）、零 storage 寫入、零 VoidedReportFile", async () => {
+      const id = await seedCompletedTravel("D4 無報表");
+      const keysBefore = listReportStorageKeys(reportRoot);
+      const voidedBefore = await prisma.voidedReportFile.count();
+      vi.mocked(renderReportHtml).mockClear();
+      vi.mocked(renderPdf).mockClear();
+
+      const resp = await voidViaEndpoint(id, "T12a 無報表作廢");
+      expect(resp.statusCode, resp.body).toBe(200);
+
+      expect(vi.mocked(renderReportHtml)).not.toHaveBeenCalled();
+      expect(vi.mocked(renderPdf)).not.toHaveBeenCalled();
+      expect(listReportStorageKeys(reportRoot)).toEqual(keysBefore);
+      expect(await prisma.voidedReportFile.count()).toBe(voidedBefore);
+
+      const application = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(application.status).toBe("VOIDED");
+    });
+
+    it("AC-21(e) 結構性證人: 未產生報表時 prepareVoidedReport 回 null，且**兩個 storage 皆為呼叫即拋錯之替身**仍不拋錯（零 storage 觸碰非靠條件式運氣）", async () => {
+      const id = await seedCompletedTravel("D4 證人");
+      const deps = makeDeps({
+        reportStorage: new ForbiddenStorage(),
+        attachmentStorage: new ForbiddenStorage(),
+      });
+      vi.mocked(renderReportHtml).mockClear();
+      vi.mocked(renderPdf).mockClear();
+      await expect(prepareVoidedReport(deps, id, ownerId)).resolves.toBeNull();
+      expect(vi.mocked(renderReportHtml)).not.toHaveBeenCalled();
+      expect(vi.mocked(renderPdf)).not.toHaveBeenCalled();
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-5 四階段失敗注入（service 層；每一則皆整筆回滾，故同一 fixture 可重用
+    // ——「可重用」本身即回滾正確性之附帶自證）
+    // -----------------------------------------------------------------------
+
+    describe("AC-21(a) 失敗側：四階段失敗注入各自整筆回滾、零殘留、stage 逐字", () => {
+      let injectId: string;
+
+      beforeAll(async () => {
+        if (!DB_URL) return;
+        injectId = await seedWithReport("D5 失敗注入共用 fixture");
+      }, 60000);
+
+      it("① RENDER（renderReportHtml 拋錯）→ ReportGenerationError(stage=RENDER) ＋ 整筆回滾 ＋ 零殘留", async () => {
+        const before = await snapshotOf(injectId);
+        vi.mocked(renderReportHtml).mockImplementationOnce(() => {
+          throw new Error("injected html render failure");
+        });
+
+        const plan = await prepareVoidedReport(makeDeps(), injectId, ownerId);
+        expect(plan).not.toBeNull();
+        if (!plan) throw new Error("unreachable");
+
+        await expect(
+          voidApplication(prisma, injectId, "RENDER 注入", ownerId, undefined, plan.onVoided)
+        ).rejects.toMatchObject({ name: "ReportGenerationError", stage: "RENDER" });
+
+        await plan.compensate();
+        await expectFullRollback(injectId, before);
+      });
+
+      it("① RENDER（renderPdf 拋錯／逾時）→ stage=RENDER ＋ 整筆回滾 ＋ 零殘留", async () => {
+        const before = await snapshotOf(injectId);
+        vi.mocked(renderPdf).mockImplementationOnce(async () => {
+          throw new Error("injected pdf render timeout");
+        });
+
+        const plan = await prepareVoidedReport(makeDeps(), injectId, ownerId);
+        if (!plan) throw new Error("unreachable");
+
+        await expect(
+          voidApplication(prisma, injectId, "RENDER 注入 2", ownerId, undefined, plan.onVoided)
+        ).rejects.toMatchObject({ name: "ReportGenerationError", stage: "RENDER" });
+
+        await plan.compensate();
+        await expectFullRollback(injectId, before);
+      });
+
+      it("② STORE（put 拋錯）→ stage=STORE ＋ 整筆回滾 ＋ 零殘留", async () => {
+        const before = await snapshotOf(injectId);
+        const plan = await prepareVoidedReport(
+          makeDeps({ reportStorage: new PutFailingStorage(reportStorage) }),
+          injectId,
+          ownerId
+        );
+        if (!plan) throw new Error("unreachable");
+
+        await expect(
+          voidApplication(prisma, injectId, "STORE 注入", ownerId, undefined, plan.onVoided)
+        ).rejects.toMatchObject({ name: "ReportGenerationError", stage: "STORE" });
+
+        await plan.compensate();
+        await expectFullRollback(injectId, before);
+      });
+
+      it("③ VERIFY（讀回位元組被竄改：同長度、單一位元組不同）→ stage=VERIFY ＋ 已 put 之 key 補償刪除 ＋ 整筆回滾（校驗略過與補償停用兩個 mutant 之共同自證點）", async () => {
+        const before = await snapshotOf(injectId);
+        const tampering = new TamperingReadBackStorage(reportStorage, "CORRUPT");
+        const plan = await prepareVoidedReport(
+          makeDeps({ reportStorage: tampering }),
+          injectId,
+          ownerId
+        );
+        if (!plan) throw new Error("unreachable");
+
+        await expect(
+          voidApplication(prisma, injectId, "VERIFY 注入", ownerId, undefined, plan.onVoided)
+        ).rejects.toMatchObject({ name: "ReportGenerationError", stage: "VERIFY" });
+
+        // 本輪確實走到過 storage 寫入（否則「補償」之斷言恆真）。
+        expect(tampering.putKeys.length).toBe(1);
+        for (const key of tampering.putKeys) {
+          expect(await reportStorage.exists(key), "補償刪除遺漏 key（殘留檔）").toBe(false);
+        }
+        await plan.compensate();
+        await expectFullRollback(injectId, before);
+      });
+
+      it("③ VERIFY（讀回位元組長度不符）→ stage=VERIFY ＋ 零殘留（位元組數比對之獨立自證）", async () => {
+        const before = await snapshotOf(injectId);
+        const tampering = new TamperingReadBackStorage(reportStorage, "TRUNCATE");
+        const plan = await prepareVoidedReport(
+          makeDeps({ reportStorage: tampering }),
+          injectId,
+          ownerId
+        );
+        if (!plan) throw new Error("unreachable");
+
+        await expect(
+          voidApplication(prisma, injectId, "VERIFY 注入 2", ownerId, undefined, plan.onVoided)
+        ).rejects.toMatchObject({ name: "ReportGenerationError", stage: "VERIFY" });
+
+        expect(tampering.putKeys.length).toBe(1);
+        await plan.compensate();
+        await expectFullRollback(injectId, before);
+      });
+
+      it("④ PERSIST（reportId 唯一約束衝突）→ stage=PERSIST ＋ 整筆回滾 ＋ 零殘留", async () => {
+        const report = await prisma.report.findUniqueOrThrow({
+          where: { applicationId: injectId },
+        });
+        // 冪等鍵（`reportId` @unique，§8.2）之先占列——使 INSERT 必然 P2002。
+        const blocker = await prisma.voidedReportFile.create({
+          data: {
+            reportId: report.id,
+            storageKey: `rpt/${crypto.randomUUID()}/void`,
+            fileName: report.fileName,
+            byteSize: 1,
+            contentHash: sha256(Buffer.from("blocker")),
+            createdById: ownerId,
+          },
+        });
+        try {
+          const before = await snapshotOf(injectId);
+          const plan = await prepareVoidedReport(makeDeps(), injectId, ownerId);
+          if (!plan) throw new Error("unreachable");
+
+          await expect(
+            voidApplication(prisma, injectId, "PERSIST 注入", ownerId, undefined, plan.onVoided)
+          ).rejects.toMatchObject({ name: "ReportGenerationError", stage: "PERSIST" });
+
+          await plan.compensate();
+          await expectFullRollback(injectId, before);
+          // 先占列本身零觸碰（本流程對既有列零更新、零刪除）。
+          expect(await prisma.voidedReportFile.findUnique({ where: { id: blocker.id } })).toEqual(
+            blocker
+          );
+        } finally {
+          await prisma.voidedReportFile.delete({ where: { id: blocker.id } });
+        }
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-6 wire 層：500 REPORT_GENERATION_FAILED ＋ details.stage 逐字
+    // -----------------------------------------------------------------------
+
+    it("AC-21(a) wire 層: 作廢版 PDF 產生失敗 → 500 REPORT_GENERATION_FAILED ＋ details.stage 逐字 ＋ 整筆回滾（狀態仍 COMPLETED、零稽核列、storage 零殘留）", async () => {
+      const id = await seedWithReport("D6 wire 500");
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      const blocker = await prisma.voidedReportFile.create({
+        data: {
+          reportId: report.id,
+          storageKey: `rpt/${crypto.randomUUID()}/void`,
+          fileName: report.fileName,
+          byteSize: 1,
+          contentHash: sha256(Buffer.from("blocker-wire")),
+          createdById: ownerId,
+        },
+      });
+      try {
+        const before = await snapshotOf(id);
+
+        const resp = await voidViaEndpoint(id, "T12a wire 層失敗注入");
+        expect(resp.statusCode, resp.body).toBe(500);
+        const body = JSON.parse(resp.body);
+        expect(body.error.code).toBe("REPORT_GENERATION_FAILED");
+        expect(body.error.details).toEqual({ stage: "PERSIST" });
+        expect(typeof body.error.requestId).toBe("string");
+        // 回應零 storage key 外洩（§7.5／AC-25 之同型紀律）。
+        expect(resp.body).not.toContain("rpt/");
+        expect(resp.body).not.toContain(report.storageKey);
+
+        await expectFullRollback(id, before);
+      } finally {
+        await prisma.voidedReportFile.delete({ where: { id: blocker.id } });
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-7 外層補償 ＋ mutant ③（INSERT 移出交易）之自證點
+    // -----------------------------------------------------------------------
+
+    it("PDF 步驟成功、其後稽核 hook 拋錯 → 整筆回滾：零 VoidedReportFile（INSERT 移出交易之 mutant 必紅）＋ 外層補償使 storage 零殘留（補償停用之 mutant 必紅）", async () => {
+      const id = await seedWithReport("D7 外層補償");
+      const before = await snapshotOf(id);
+
+      const plan = await prepareVoidedReport(makeDeps(), id, ownerId);
+      if (!plan) throw new Error("unreachable");
+
+      await expect(
+        voidApplication(
+          prisma,
+          id,
+          "T12a 稽核失敗注入",
+          ownerId,
+          async () => {
+            // 7e（稽核）拋錯——此時 7d 之 put 與 INSERT 皆已成功。
+            throw new Error("injected audit failure");
+          },
+          plan.onVoided
+        )
+      ).rejects.toThrow(/injected audit failure/);
+
+      // 內層補償不涵蓋此路徑（PDF 步驟自身成功），故必須由外層補償回收。
+      await plan.compensate();
+      await expectFullRollback(id, before);
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-8 B-08：含報表之申請雙作廢（併發）
+    // -----------------------------------------------------------------------
+
+    it("B-08 併發回歸: 同一筆已產生報表之申請雙作廢 → 恰一成功（200）一衝突（409），恰一列 VoidedReportFile，storage 恰增一個 key", async () => {
+      const id = await seedWithReport("D8 併發");
+      const keysBefore = listReportStorageKeys(reportRoot);
+
+      const [a, b] = await Promise.all([
+        voidViaEndpoint(id, "併發作廢-A"),
+        voidViaEndpoint(id, "併發作廢-B"),
+      ]);
+      const codes = [a.statusCode, b.statusCode].sort();
+      expect(codes, `${a.statusCode}:${a.body} / ${b.statusCode}:${b.body}`).toEqual([200, 409]);
+
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      const rows = await prisma.voidedReportFile.findMany({ where: { reportId: report.id } });
+      expect(rows.length).toBe(1);
+      const row = rows[0];
+      if (!row) throw new Error("unreachable");
+
+      // 敗方零殘留：storage 恰多出一個 key（勝方之作廢版），不多不少。
+      const keysAfter = listReportStorageKeys(reportRoot);
+      expect(keysAfter.length).toBe(keysBefore.length + 1);
+      expect(keysAfter).toContain(row.storageKey);
+
+      const application = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(application.status).toBe("VOIDED");
+    }, 60000);
+  });
+
+  // =========================================================================
+  // §D-3 真實 Chromium 端到端（唯一未覆寫 renderPdf 之區塊——配線證明：服務層
+  // 確實呼叫真實渲染器，而非只呼叫測試替身）
+  // =========================================================================
+
+  describe("§真實 Chromium 端到端（renderPdf 未覆寫）", () => {
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import("../../src/reports/pdf-renderer.js")>(
+        "../../src/reports/pdf-renderer.js"
+      );
+      vi.mocked(renderPdf).mockImplementation(actual.renderPdf);
+      const actualHtml = await vi.importActual<typeof import("../../src/reports/report-html.js")>(
+        "../../src/reports/report-html.js"
+      );
+      vi.mocked(renderReportHtml).mockImplementation(actualHtml.renderReportHtml);
+    });
+
+    it("AC-21(a) 端到端: 真實 Chromium 產出之作廢版 PDF 通過 %PDF-／%%EOF／長度校驗，讀回 SHA-256 與 VoidedReportFile 相符，且與原 PDF 位元組互異（T11 FW③ 之預期差異）", async () => {
+      const id = await seedWithReport("D3 真實 Chromium");
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      const originalHash = sha256(await readAllBytes(reportStorage, report.storageKey));
+
+      const resp = await voidViaEndpoint(id, "T12a 端到端：真實渲染");
+      expect(resp.statusCode, resp.body).toBe(200);
+
+      const row = await prisma.voidedReportFile.findUniqueOrThrow({
+        where: { reportId: report.id },
+      });
+      const bytes = await readAllBytes(reportStorage, row.storageKey);
+      // 本區塊之「替身已還原」自證：位元組必**不**等於 §快速替身之合成常數。
+      // 少了這一條，若 `renderPdf` 之真實實作未被還原，本則會假綠——合成常數
+      // 同樣以 `%PDF-` 開頭、以 `%%EOF` 結尾、長度 > 1024，下方三項校驗無從
+      // 分辨。
+      expect(bytes.equals(FAKE_PDF_BYTES), "renderPdf 真實實作未還原（仍為合成替身）").toBe(false);
+      expect(bytes.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+      expect(bytes.subarray(-8).toString("latin1")).toContain("%%EOF");
+      expect(bytes.length).toBeGreaterThan(1024);
+      expect(row.byteSize).toBe(bytes.length);
+      expect(row.contentHash).toBe(sha256(bytes));
+
+      // AC-21(c)：原檔位元組零觸碰。
+      expect(sha256(await readAllBytes(reportStorage, report.storageKey))).toBe(originalHash);
+      // 作廢版與原版必然互異（作廢版多 .void-banner 與其樣式規則）。
+      expect(row.contentHash).not.toBe(originalHash);
+    }, 180000);
   });
 });

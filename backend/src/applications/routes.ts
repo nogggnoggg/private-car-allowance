@@ -53,7 +53,8 @@ import { createApplicationRevisionWithAttachments } from "../attachment/attachme
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { formatUtcDate, parseUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
-import { AppError } from "../platform/errors.js";
+import { AppError, buildErrorBody } from "../platform/errors.js";
+import { ReportGenerationError, prepareVoidedReport } from "../reports/report-service.js";
 import type { Storage } from "../storage/index.js";
 import {
   parseApplicationListQuery,
@@ -125,6 +126,21 @@ interface ApplicationsPluginOptions {
    * 出現「附件端點寫進 A、修正版端點讀 B」的靜默資料錯置。
    */
   attachmentStorage: Storage;
+  /**
+   * 報表位元組儲存（`rpt/` 前綴之實例，與 `reportsPlugin` **同一個**
+   * `LocalVolumeStorage`）——PHASE-009-T12a 之作廢端點需要它：作廢一筆**已產生
+   * 報表**之申請時，於同一交易內產生並保存作廢版 PDF（AC-21(a)／§16 D4(b1)）。
+   *
+   * 為何由 `server.ts` 注入而非在本模組自建：與上方 `attachmentStorage` 逐字
+   * 同一理由（storage root 之解析是 `server.ts` 的單一事實來源），另加一條——
+   * 自建會繞過 `buildServer({ reportStorageRoot })` 之測試注入，使作廢端點寫入
+   * 的根目錄與下載端點讀取的根目錄不同。
+   */
+  reportStorage: Storage;
+  /** `REPORT_IMAGE_MAX_PX`——作廢版 PDF 之附件嵌圖降尺寸上限（與報表產生同值）。 */
+  imageMaxPx: number;
+  /** `REPORT_PDF_TIMEOUT_MS`——作廢版 PDF 之 Playwright 渲染逾時（與報表產生同值）。 */
+  pdfTimeoutMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -708,7 +724,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
   fastify: FastifyInstance,
   options: ApplicationsPluginOptions
 ) => {
-  const { prisma, attachmentStorage } = options;
+  const { prisma, attachmentStorage, reportStorage, imageMaxPx, pdfTimeoutMs } = options;
 
   const authPreHandlers = [requireAuth(prisma), requirePasswordChanged];
 
@@ -1513,7 +1529,80 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       // 皆由 service 於交易內處理——`body.reason` 以 `unknown` 原樣傳入，
       // 驗證與 trim 之單一事實來源恆為 `void-reason.ts`（其餘 body 鍵一律
       // 忽略，沿 AC-54 既有紀律：此處從未讀取 reason 以外的任何鍵）。
-      const voided = await voidApplication(prisma, id, body.reason, actorId, onVoided);
+      //
+      // (6)(7)d〔D4(b1)，T12a〕作廢版 PDF（AC-21）：
+      //   · §3.1 步驟 6 之「交易外組裝」由 `prepareVoidedReport` 承擔（讀快照
+      //     ＋ 嵌圖，零 DB 寫入）；**未產生報表**者回 `null`，作廢因而是純 DB
+      //     操作（AC-21(e)：零渲染、零 storage 寫入）。
+      //   · 步驟 7d 之渲染／`put`／讀回校驗／`INSERT VoidedReportFile` 以第六
+      //     參數掛入 `voidApplication` 的**同一交易**，任一階段失敗 → 整筆作廢
+      //     回滾（狀態仍 `COMPLETED`）。
+      //   · storage 為交易外資源，DB 回滾不回收檔案：任一失敗路徑皆呼叫
+      //     `plan.compensate()`（外層補償，涵蓋稽核 hook 拋錯與 commit 失敗；
+      //     PDF 步驟自身之失敗另有內層補償，見 `report-service.ts`）。**成功
+      //     路徑永不呼叫**——commit 之後補償會刪掉線上作廢版之位元組。
+      const reportDeps = {
+        prisma,
+        attachmentStorage,
+        reportStorage,
+        imageMaxPx,
+        pdfTimeoutMs,
+        log: {
+          error: (obj: Record<string, unknown>, msg: string) => request.log.error(obj, msg),
+        },
+      };
+
+      let voided: Awaited<ReturnType<typeof voidApplication>>;
+      try {
+        // 狀態預判**僅為避免無謂工作**（已作廢／草稿之重複請求不必先組裝一份
+        // 用不到的 ReportData），權威守門恆在交易內（`voidApplication` 之
+        // 7b）。競態下（此讀取之後、交易之前狀態改變）之行為仍正確：plan 已建
+        // 但交易 409，`plan.onVoided` 永不執行 → 零渲染零寫入，`compensate()`
+        // 為 no-op。
+        const plan =
+          application.status === "COMPLETED"
+            ? await prepareVoidedReport(reportDeps, id, actorId)
+            : null;
+
+        try {
+          voided = await voidApplication(
+            prisma,
+            id,
+            body.reason,
+            actorId,
+            onVoided,
+            plan?.onVoided
+          );
+        } catch (err) {
+          if (plan) await plan.compensate();
+          throw err;
+        }
+      } catch (err) {
+        // §7.5：作廢版 PDF 產生失敗 → 500 REPORT_GENERATION_FAILED ＋
+        // `details.stage`（四值封閉，不擴充）。轉譯形狀逐字沿 `reports/
+        // routes.ts` 之產生端點：只記 `stage` ＋ `applicationId`，**不**記錄
+        // 原始錯誤訊息（storage 錯誤訊息逐字含 key、Chromium 失敗訊息逐字含
+        // executablePath——§7.5／AC-25 之日誌紀律）。
+        if (err instanceof ReportGenerationError) {
+          const requestId = String(request.id);
+          request.log.error(
+            { stage: err.stage, applicationId: id },
+            "Voided report generation failed"
+          );
+          return reply
+            .status(500)
+            .send(
+              buildErrorBody(
+                "REPORT_GENERATION_FAILED",
+                "報表產生失敗，請稍後再試或聯絡管理員。",
+                requestId,
+                undefined,
+                { stage: err.stage }
+              )
+            );
+        }
+        throw err;
+      }
 
       // §7.3：200 { application: <型別分派之詳情 DTO；void 非 null> }。型別
       // 取自作廢結果列，不需再探測一次（沿 `/complete` 之型別分派形狀）。

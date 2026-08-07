@@ -129,21 +129,21 @@ export async function buildServer(
   const storage = new LocalVolumeStorage(storageRoot, { prefixes: ["att"] });
   await fastify.register(attachmentPlugin, { prisma, storage });
 
-  // Register applications routes (差旅草稿 CRUD — PHASE-004-T3)
-  // PHASE-009-T7：修正版端點（POST /applications/:id/revision）會連同證明附件
-  // 一併複製位元組，故注入**同一個**附件 storage 實例（不另建，見
-  // `applications/routes.ts` 之 `ApplicationsPluginOptions` 註解）。
-  await fastify.register(applicationsPlugin, { prisma, attachmentStorage: storage });
-
-  // Register mileage statistics route (GET /statistics/mileage — PHASE-005-T4)
-  await fastify.register(mileagePlugin, { prisma });
-
-  // Register reports routes (POST /applications/:id/report — PHASE-008-T8)
   // Report storage root resolution mirrors ATTACHMENT_STORAGE_ROOT above
   // (Spec §10-2, §16 D6; T7-FW2④ — fail-fast shape must mirror
   // ATTACHMENT_STORAGE_ROOT's production fail-fast exactly):
   //   Priority: options.reportStorageRoot (test injection) > env REPORT_STORAGE_ROOT
   //   (compose/Zeabur mount) > production fail-fast > non-production dynamic temp fallback.
+  //
+  // PHASE-009-T12a：本區塊由原本的「reportsPlugin 註冊前」**前移至此**
+  // （applicationsPlugin 註冊之前）——作廢端點（POST /applications/:id/void）
+  // 於 D4(b1) 之下需要同一份報表 storage 來寫入作廢版 PDF（AC-21(a)），而
+  // `applicationsPlugin` 註冊於下方。前移只改變建構時機，不改變解析優先序、
+  // production fail-fast 形狀或 `{ prefixes: ["rpt"] }` 之字面。**兩個 plugin
+  // 共用同一個實例**（不新建第二個 `LocalVolumeStorage`）：storage root 之解
+  // 析是本檔的單一事實來源，另建實例等於複製該段邏輯，兩份一旦分歧就會出現
+  // 「作廢端點寫進 A、下載端點讀 B」的靜默資料錯置（同紀律已逐字記於
+  // `applications/routes.ts` 之 `attachmentStorage` 註解）。
   const resolvedReportStorageRoot = options.reportStorageRoot ?? appEnv.REPORT_STORAGE_ROOT;
 
   let reportStorageRoot: string;
@@ -164,6 +164,26 @@ export async function buildServer(
   // T8a-FW①：報表實例明寫 { prefixes: ["rpt"] }（封閉前綴集合，與附件實例
   // 互不接受對方之 key，AC-26）。
   const reportStorage = new LocalVolumeStorage(reportStorageRoot, { prefixes: ["rpt"] });
+
+  // Register applications routes (差旅草稿 CRUD — PHASE-004-T3)
+  // PHASE-009-T7：修正版端點（POST /applications/:id/revision）會連同證明附件
+  // 一併複製位元組，故注入**同一個**附件 storage 實例（不另建，見
+  // `applications/routes.ts` 之 `ApplicationsPluginOptions` 註解）。
+  // PHASE-009-T12a：作廢端點（POST /applications/:id/void）於同一交易內產生作
+  // 廢版 PDF，故一併注入報表 storage 與兩個渲染參數——與 `reportsPlugin` 拿到
+  // 的是**同一個** `reportStorage` 實例、同一組 env 值。
+  await fastify.register(applicationsPlugin, {
+    prisma,
+    attachmentStorage: storage,
+    reportStorage,
+    imageMaxPx: appEnv.REPORT_IMAGE_MAX_PX,
+    pdfTimeoutMs: appEnv.REPORT_PDF_TIMEOUT_MS,
+  });
+
+  // Register mileage statistics route (GET /statistics/mileage — PHASE-005-T4)
+  await fastify.register(mileagePlugin, { prisma });
+
+  // Register reports routes (POST /applications/:id/report — PHASE-008-T8)
   await fastify.register(reportsPlugin, {
     prisma,
     attachmentStorage: storage,
