@@ -1,7 +1,7 @@
 # PHASE-008 — 報表列印與正式 PDF
 
 - Governance-Version: 2026-08-04.1（初版誤植 2026-08-05.1，大總管勘誤——治理現行版即 2026-08-04.1）
-- 狀態：**`ACTIVE`**（**Spec Gate 通過**：人類 leonchih 2026-08-06 經 AskUserQuestion 三問全數照推薦——D1~D16 全數照推薦批准、D4 三項附帶批准（CJK 字型必裝／`--no-sandbox` 安全取捨明示接受／playwright runtime 依賴）、High Task 10 項（T1/T2/T4/T5/T7/T7b/T8a/T8/T9/T10）一併事前批准。固化紀錄見 §18）
+- 狀態：**`COMPLETED`**（2026-08-07 PR #17 合併 main（merge `aeaa0f4`）；人類批准；CI 三檢全綠）
 - 建立日期：2026-08-06
 - Task ID：`PHASE-008-SPEC`
 - Base Commit：`1e9c23e`（branch `phase-008`，自 main `e597810` 切出）
