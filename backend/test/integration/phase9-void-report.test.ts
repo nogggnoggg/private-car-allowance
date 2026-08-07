@@ -1719,3 +1719,393 @@ describeWithDb("PHASE-009-T12a §D — 作廢版 PDF 之產生與保存（AC-21(
     }, 180000);
   });
 });
+
+// ===========================================================================
+// §E — PHASE-009-T12b：作廢後之下載語意（AC-21 (b)(d)）
+//
+// ---------------------------------------------------------------------------
+// 規範出處（`docs/specs/PHASE-009.md` :209，逐字引用）
+// ---------------------------------------------------------------------------
+// AC-21：「…(b) 作廢後下載 → 回**作廢版**位元組，`Content-Disposition` 之報表
+//   編號**不變**；…(d) 作廢後重複下載**位元組全等**且**渲染器零呼叫**
+//   （PHASE-008 AC-08 之紀律於作廢後仍成立）。」
+//
+// (a)(c)(e)(f)（產生／保存面）屬 **T12a**，見 §D。AC-23 之「下載 → 200（依
+// D4）」一格（授權矩陣面）由 T12b 補於 `phase9-contract.test.ts` §D。
+//
+// ---------------------------------------------------------------------------
+// 「無 `VoidedReportFile` → 回原檔」之 fallback（T12a 即審 AR-1／FW-3；大總管
+// 2026-08-07 裁量）
+// ---------------------------------------------------------------------------
+// D4(b1) 之交易語意保證「`VOIDED` 且有 `Report` ⇒ 有 `VoidedReportFile`」，故
+// 本 fallback 於正確實作下**結構性不可達**。仍實作並實測之理由：回原檔是「保
+// 留原始內容」（BE-US-27⑤）之安全預設——理論競態窗或未來歷史資料若落入該狀
+// 態，回原檔遠優於 404／500。本段以**直造資料**（`prisma.application.update`
+// 直寫 `VOIDED`，繞過作廢服務）使該路徑可達並釘樁。
+//
+// ---------------------------------------------------------------------------
+// 替身之可辨識性（本段之關鍵前提）
+// ---------------------------------------------------------------------------
+// §D 之 `renderPdf` 替身對任何輸入皆回**同一份** `FAKE_PDF_BYTES`——若沿用，
+// 「回作廢版」與「回原檔」之位元組完全相同，(b) 之斷言將**恆真而無鑑別力**。
+// 故本段之替身依「產生輸入 HTML 是否含 `已作廢`」（AC-20(a) 之逐字標示）回傳
+// **兩份互異**之合成位元組（長度亦不同），使「端點誤回原檔」必紅。
+//
+// ---------------------------------------------------------------------------
+// TDD 紅燈實錄（先紅後綠；`git stash` 法，完整輸出見 Task Handoff）
+// ---------------------------------------------------------------------------
+// 本段於 `src/reports/routes.ts` 之作廢分支 stash 之狀態下先行實跑：下載端點
+// 一律回原檔 → §E-1 兩則與 §E-2 紅（位元組為原版）；§E-3／§E-4 綠（fallback
+// 與未作廢兩者本即回原檔，屬「零行為變更」之對照面）。實作還原後全綠。
+// ===========================================================================
+
+/** 未作廢版之合成 PDF 位元組（`renderPdf` 替身之「產生輸入不含『已作廢』」分支）。 */
+const E_ORIGINAL_PDF_BYTES = Buffer.from(
+  `%PDF-1.4\n% synthetic ORIGINAL fixture for PHASE-009-T12b\n${"O".repeat(1100)}\n%%EOF`
+);
+/** 作廢版之合成 PDF 位元組——與上者**長度與內容皆不同**（見上方「替身之可辨識性」）。 */
+const E_VOIDED_PDF_BYTES = Buffer.from(
+  `%PDF-1.4\n% synthetic VOIDED fixture for PHASE-009-T12b\n${"V".repeat(1500)}\n%%EOF`
+);
+
+describeWithDb("PHASE-009-T12b §E — 作廢後之下載語意（AC-21(b)(d)）", () => {
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+  let attachmentRoot: string;
+  let reportRoot: string;
+  let reportStorage: LocalVolumeStorage;
+
+  let ownerId: string;
+  let ownerCookie: string;
+
+  const createdApplicationIds: string[] = [];
+  const createdUserIds: string[] = [];
+
+  const E_PREFIX = "p9t12b_";
+  const E_PASSWORD = "P9t12b-Synthetic-Passw0rd!";
+
+  async function login(loginName: string): Promise<string> {
+    const resp = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { loginName, password: E_PASSWORD },
+    });
+    if (resp.statusCode !== 200) {
+      throw new Error(`login failed: ${resp.statusCode} ${resp.body}`);
+    }
+    const raw = resp.headers["set-cookie"];
+    const str = Array.isArray(raw) ? raw[0] : (raw as string);
+    return str.split(";")[0];
+  }
+
+  /** 已完成差旅（完成側以 Prisma 直寫合成，沿 §C／§D 之既有先例）。 */
+  async function seedCompletedTravel(purpose: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2217-06-12T00:00:00.000Z"),
+        totalAmount: 987,
+        completedAt: new Date("2217-06-13T02:00:00.000Z"),
+        travel: {
+          create: {
+            tripDate: new Date("2217-06-12T00:00:00.000Z"),
+            purpose,
+            fuelUnitPrice: "2.3456",
+            etcUnitPrice: "1.2345",
+            etcParameterVersionId: "p9t12b-etc-v1",
+            fuelPriceVersionId: "p9t12b-fuel-price-v1",
+            fuelConsumptionVersionId: "p9t12b-fuel-consum-v1",
+            snapshotFuelType: "GASOLINE_95",
+            snapshotFuelPricePerLiter: "31.5000",
+            snapshotFuelConsumption: "15.2000",
+            snapshotTotalKm: "180.00",
+            snapshotRawAmount: "987.1234",
+            calculatedAt: new Date("2217-06-13T02:00:00.000Z"),
+            segments: {
+              create: [
+                {
+                  sortOrder: 0,
+                  origin: "台北",
+                  destination: "新竹",
+                  totalKm: "180.00",
+                  highwayKm: "120.00",
+                  snapshotFuelAmount: "373.0000",
+                  snapshotEtcAmount: "148.1400",
+                  snapshotRawAmount: "987.1234",
+                  snapshotAmount: 987,
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    createdApplicationIds.push(created.id);
+    return created.id;
+  }
+
+  /** 已完成差旅 ＋ **經真實端點**產生之正式報表。 */
+  async function seedWithReport(purpose: string): Promise<string> {
+    const id = await seedCompletedTravel(purpose);
+    const resp = await app.inject({
+      method: "POST",
+      url: `/applications/${id}/report`,
+      headers: { cookie: ownerCookie },
+    });
+    if (resp.statusCode !== 201) {
+      throw new Error(`report generation failed: ${resp.statusCode} ${resp.body}`);
+    }
+    return id;
+  }
+
+  function voidViaEndpoint(id: string, reason: string) {
+    return app.inject({
+      method: "POST",
+      url: `/applications/${id}/void`,
+      headers: { cookie: ownerCookie },
+      payload: { reason },
+    });
+  }
+
+  function downloadPdf(id: string) {
+    return app.inject({
+      method: "GET",
+      url: `/applications/${id}/report/pdf`,
+      headers: { cookie: ownerCookie },
+    });
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    attachmentRoot = makeTempStorageRoot("att-e");
+    reportRoot = makeTempStorageRoot("rpt-e");
+    reportStorage = new LocalVolumeStorage(reportRoot, { prefixes: ["rpt"] });
+
+    prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await prisma.$connect();
+    app = await buildServer({ storageRoot: attachmentRoot, reportStorageRoot: reportRoot });
+    await app.ready();
+
+    const owner = await prisma.user.create({
+      data: {
+        loginName: `${E_PREFIX}owner_${RUN_ID}`,
+        displayName: "T12b 擁有人",
+        passwordHash: await hashPassword(E_PASSWORD),
+        role: "USER",
+        isActive: true,
+        // T3 假綠教訓：fixture 一律顯式指定，不倚賴 schema 預設。
+        mustChangePassword: false,
+      },
+    });
+    ownerId = owner.id;
+    createdUserIds.push(owner.id);
+    ownerCookie = await login(owner.loginName);
+  }, 60000);
+
+  afterAll(async () => {
+    if (!prisma) return;
+    if (app) await app.close();
+    if (createdApplicationIds.length > 0) {
+      const reports = await prisma.report.findMany({
+        where: { applicationId: { in: createdApplicationIds } },
+        select: { id: true },
+      });
+      if (reports.length > 0) {
+        await prisma.voidedReportFile.deleteMany({
+          where: { reportId: { in: reports.map((r) => r.id) } },
+        });
+        await prisma.report.deleteMany({
+          where: { applicationId: { in: createdApplicationIds } },
+        });
+      }
+      await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
+    }
+    if (createdUserIds.length > 0) {
+      await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { targetId: { in: createdUserIds } } });
+      await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    }
+    await prisma.$disconnect();
+    removeTempStorageRoot(attachmentRoot);
+    removeTempStorageRoot(reportRoot);
+  }, 60000);
+
+  beforeEach(() => {
+    vi.mocked(renderReportHtml).mockClear();
+    vi.mocked(renderPdf).mockClear();
+    vi.mocked(renderPdf).mockImplementation(async (html: string) =>
+      Buffer.from(html.includes("已作廢") ? E_VOIDED_PDF_BYTES : E_ORIGINAL_PDF_BYTES)
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // §E-1 AC-21(b)
+  // -------------------------------------------------------------------------
+
+  it("AC-21(b): 作廢後下載 → 200 ＋ 回作廢版位元組（SHA-256 ＝ VoidedReportFile.contentHash，且**不等於**原檔）", async () => {
+    const id = await seedWithReport("E1 作廢後下載");
+    const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+    const originalBytes = await readAllBytes(reportStorage, report.storageKey);
+
+    // 作廢前之對照：下載回原檔（本則自身之「非恆真」證人）。
+    const beforeResp = await downloadPdf(id);
+    expect(beforeResp.statusCode, beforeResp.body).toBe(200);
+    expect(beforeResp.rawPayload.equals(originalBytes)).toBe(true);
+
+    const voidResp = await voidViaEndpoint(id, "E1：金額誤植，重新申報");
+    expect(voidResp.statusCode, voidResp.body).toBe(200);
+    const voidedRow = await prisma.voidedReportFile.findUniqueOrThrow({
+      where: { reportId: report.id },
+    });
+
+    const resp = await downloadPdf(id);
+    expect(resp.statusCode, resp.body).toBe(200);
+    expect(sha256(resp.rawPayload)).toBe(voidedRow.contentHash);
+    expect(resp.rawPayload.length).toBe(voidedRow.byteSize);
+    expect(resp.rawPayload.equals(await readAllBytes(reportStorage, voidedRow.storageKey))).toBe(
+      true
+    );
+    // 鑑別力：作廢版與原檔互異（若端點誤回原檔，本行必紅）。
+    expect(resp.rawPayload.equals(originalBytes)).toBe(false);
+    expect(resp.headers["content-type"]).toBe("application/pdf");
+    expect(resp.headers["cache-control"]).toBe("no-store");
+    expect(resp.headers["x-content-type-options"]).toBe("nosniff");
+
+    // AC-21(c) 之下載面對照：原檔位元組零觸碰。
+    expect(sha256(await readAllBytes(reportStorage, report.storageKey))).toBe(
+      sha256(originalBytes)
+    );
+  }, 60000);
+
+  it("AC-21(b): Content-Disposition 之報表編號與檔名作廢前後逐字不變（storageKey 之 void 後綴不得外洩為檔名）", async () => {
+    const id = await seedWithReport("E1 編號不變");
+    const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+
+    const before = await downloadPdf(id);
+    const dispositionBefore = before.headers["content-disposition"] as string;
+
+    const voidResp = await voidViaEndpoint(id, "E1：編號不變之驗證");
+    expect(voidResp.statusCode, voidResp.body).toBe(200);
+    const after = await downloadPdf(id);
+    const dispositionAfter = after.headers["content-disposition"] as string;
+
+    expect(dispositionAfter).toBe(dispositionBefore);
+    expect(dispositionAfter).toContain(`filename="${report.reportNumber}.pdf"`);
+    expect(dispositionAfter).toContain("filename*=UTF-8''");
+
+    // T12a 即審 FW-1：`VoidedReportFile.storageKey` 之後綴為 `void`（**非**
+    // `void.pdf`）——檔名沿 `VoidedReportFile.fileName`（＝原 `Report.fileName`）
+    // 而非 storageKey，故標頭零 `rpt/` 片段、零 storageKey 外洩。
+    const voidedRow = await prisma.voidedReportFile.findUniqueOrThrow({
+      where: { reportId: report.id },
+    });
+    expect(voidedRow.storageKey.endsWith("/void")).toBe(true);
+    expect(voidedRow.fileName).toBe(report.fileName);
+    expect(dispositionAfter).not.toContain("rpt/");
+    expect(dispositionAfter).not.toContain(voidedRow.storageKey);
+  }, 60000);
+
+  // -------------------------------------------------------------------------
+  // §E-2 AC-21(d)
+  // -------------------------------------------------------------------------
+
+  it("AC-21(d): 作廢後重複下載位元組全等，且下載期間 renderPdf／renderReportHtml 零呼叫（PHASE-008 AC-08 紀律於作廢後仍成立）", async () => {
+    const id = await seedWithReport("E2 重複下載");
+    const voidResp = await voidViaEndpoint(id, "E2：重複下載一致性");
+    expect(voidResp.statusCode, voidResp.body).toBe(200);
+    const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+
+    const renderPdfCallsBefore = vi.mocked(renderPdf).mock.calls.length;
+    const renderHtmlCallsBefore = vi.mocked(renderReportHtml).mock.calls.length;
+    const storageKeysBefore = listReportStorageKeys(reportRoot);
+
+    const first = await downloadPdf(id);
+    const second = await downloadPdf(id);
+    const third = await downloadPdf(id);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(third.statusCode).toBe(200);
+
+    // 逐位元全等（Buffer.compare，沿 PHASE-008 AC-08 之既有手法）。
+    expect(Buffer.compare(first.rawPayload, second.rawPayload)).toBe(0);
+    expect(Buffer.compare(first.rawPayload, third.rawPayload)).toBe(0);
+    expect(second.headers["content-disposition"]).toBe(first.headers["content-disposition"]);
+    // 回的確實是作廢版（否則本則於「恆回原檔」之實作下亦會全綠）。
+    const voidedRow = await prisma.voidedReportFile.findUniqueOrThrow({
+      where: { reportId: report.id },
+    });
+    expect(sha256(first.rawPayload)).toBe(voidedRow.contentHash);
+
+    // 渲染器零呼叫（三次下載期間之呼叫數增量恆為 0）。
+    expect(vi.mocked(renderPdf).mock.calls.length).toBe(renderPdfCallsBefore);
+    expect(vi.mocked(renderReportHtml).mock.calls.length).toBe(renderHtmlCallsBefore);
+
+    // 下載為唯讀路徑：storage 零新增檔案、作廢版列仍恰一列。
+    expect(listReportStorageKeys(reportRoot)).toEqual(storageKeysBefore);
+    expect(await prisma.voidedReportFile.count({ where: { reportId: report.id } })).toBe(1);
+  }, 60000);
+
+  // -------------------------------------------------------------------------
+  // §E-3 fallback（T12a 即審 AR-1／FW-3）
+  // -------------------------------------------------------------------------
+
+  it("fallback（AR-1／FW-3）: VOIDED 但無 VoidedReportFile（直造資料）→ 200 回**原檔**位元組，非 404／500", async () => {
+    const id = await seedWithReport("E3 fallback");
+    const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+    const originalBytes = await readAllBytes(reportStorage, report.storageKey);
+
+    // 直寫 `VOIDED`（繞過作廢服務）——製造「D4(b1) 交易語意下結構性不可達」之
+    // 狀態，使 fallback 分支可達並可釘樁。
+    await prisma.application.update({
+      where: { id },
+      data: {
+        status: "VOIDED",
+        voidReason: "E3：直造之無作廢版狀態",
+        voidedAt: new Date("2217-06-20T02:00:00.000Z"),
+        voidedById: ownerId,
+      },
+    });
+    expect(await prisma.voidedReportFile.count({ where: { reportId: report.id } })).toBe(0);
+
+    const renderPdfCallsBefore = vi.mocked(renderPdf).mock.calls.length;
+    const resp = await downloadPdf(id);
+    expect(resp.statusCode, resp.body).toBe(200);
+    expect(resp.rawPayload.equals(originalBytes)).toBe(true);
+    expect(resp.headers["content-disposition"]).toContain(`filename="${report.reportNumber}.pdf"`);
+    // 唯讀：fallback 不得「補產生」作廢版（渲染器零呼叫、零新列）。
+    expect(vi.mocked(renderPdf).mock.calls.length).toBe(renderPdfCallsBefore);
+    expect(await prisma.voidedReportFile.count({ where: { reportId: report.id } })).toBe(0);
+  }, 60000);
+
+  // -------------------------------------------------------------------------
+  // §E-4 回歸：未作廢申請之下載行為零變更
+  // -------------------------------------------------------------------------
+
+  it("回歸: 未作廢（COMPLETED）申請之下載行為零變更——200 回原檔、重複下載全等、渲染器零呼叫；未產生報表仍 404（B-27）", async () => {
+    const id = await seedWithReport("E4 未作廢回歸");
+    const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+    const originalBytes = await readAllBytes(reportStorage, report.storageKey);
+
+    const renderPdfCallsBefore = vi.mocked(renderPdf).mock.calls.length;
+    const renderHtmlCallsBefore = vi.mocked(renderReportHtml).mock.calls.length;
+
+    const first = await downloadPdf(id);
+    const second = await downloadPdf(id);
+    expect(first.statusCode, first.body).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(first.rawPayload.equals(originalBytes)).toBe(true);
+    expect(Buffer.compare(first.rawPayload, second.rawPayload)).toBe(0);
+    expect(sha256(first.rawPayload)).toBe(report.contentHash);
+    expect(first.headers["content-disposition"]).toContain(`filename="${report.reportNumber}.pdf"`);
+    expect(vi.mocked(renderPdf).mock.calls.length).toBe(renderPdfCallsBefore);
+    expect(vi.mocked(renderReportHtml).mock.calls.length).toBe(renderHtmlCallsBefore);
+
+    // B-27 語意不變：未產生報表之已完成申請下載仍 404。
+    const noReportId = await seedCompletedTravel("E4 未產生報表");
+    expect((await downloadPdf(noReportId)).statusCode).toBe(404);
+  }, 60000);
+});

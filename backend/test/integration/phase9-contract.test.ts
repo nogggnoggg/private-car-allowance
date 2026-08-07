@@ -24,7 +24,8 @@
  *   DB 查得之 `ownerId`；③403 回應零業務值。
  *
  * ---------------------------------------------------------------------------
- * T7 留白清單（T4 開列；1./2. 已由 **T7** 於本檔 §I〜§L 就地補齊，3. 仍留 T13）
+ * T7 留白清單（T4 開列；1./2. 已由 **T7** 於本檔 §I〜§L 就地補齊，
+ * 4. 已由 **T12b** 於 §D 就地補齊，3. 仍留 T13）
  * ---------------------------------------------------------------------------
  *   1. ✅ **T7 已補齊**（§I／§J）：AC-23 之修正版端點 5 格（未登入／強制改密
  *      ／本人 201／他人 403／管理員 201 且 `ownerId` ＝原擁有人）＋ 側信道
@@ -43,6 +44,16 @@
  *      （401／403）與 `COMPLETED` 時逐字相同」——刻意不釘樁其擁有人視角之
  *      狀態碼，以免 T13 放行後必須回頭修改本檔（本檔非 T13 之 Files
  *      Allowed）。
+ *   4. ✅ **T12b 已補齊**（§D）：AC-23 回歸四格中「**下載端點於 `VOIDED` →
+ *      200**（依 §16 **D4**(b1)）」一格。T4 即審 **SF-1／FW-A** 開列此留白之
+ *      理由：該格須待**作廢版 PDF 落地**（AC-21(a)，T12a）方可成立——T4／T7
+ *      交付當時 `VoidedReportFile` 尚無寫入路徑，「已作廢且已產生報表」之申
+ *      請結構性不存在，故本檔當時僅能釘樁「已作廢且**未**產生報表 → 下載
+ *      404」（B-27 語意，見 §D 之擁有人視角一則）。**T12b 補齊之格**：已作
+ *      廢**且有** `Report` 之申請，擁有人與管理員下載皆 **200**。位元組面
+ *      （回作廢版、編號不變、重複下載全等且渲染器零呼叫，AC-21(b)(d)）屬
+ *      `phase9-void-report.test.ts` §E，本檔僅釘樁授權矩陣所要求之**狀態
+ *      碼**。
  *
  * ---------------------------------------------------------------------------
  * TDD 與紅燈實錄（Task Handoff 附完整輸出）
@@ -61,6 +72,7 @@
  * 重疊）；清理一律以本檔自建 id 精確比對，禁用全域 `deleteMany({})`；禁止
  * spawn 任何 subagent。
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -71,6 +83,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
+import { LocalVolumeStorage } from "../../src/storage/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_ROOT = path.resolve(__dirname, "..", "..");
@@ -444,6 +457,21 @@ describeWithDb("PHASE-009-T4 — 作廢端點授權矩陣／錯誤合約（AC-05
       await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
       await prisma.auditLog.deleteMany({ where: { targetId: { in: createdUserIds } } });
     }
+    // T12b：§D 之「下載 → 200」一格直寫了 `Report`／`VoidedReportFile`；
+    // 兩者之 FK 皆為 `onDelete: Restrict`，故須先於 `Application` 刪除
+    // （沿 `phase9-void-report.test.ts` 之既有清理形狀）。
+    const reports = await prisma.report.findMany({
+      where: { applicationId: { in: createdApplicationIds } },
+      select: { id: true },
+    });
+    if (reports.length > 0) {
+      await prisma.voidedReportFile.deleteMany({
+        where: { reportId: { in: reports.map((r) => r.id) } },
+      });
+      await prisma.report.deleteMany({
+        where: { applicationId: { in: createdApplicationIds } },
+      });
+    }
     await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
     if (createdUserIds.length > 0) {
       await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
@@ -720,6 +748,80 @@ describeWithDb("PHASE-009-T4 — 作廢端點授權矩陣／錯誤合約（AC-05
 
       // 列印端點之擁有人視角狀態碼（D5：VOIDED 應放行為 200）屬 **T13**
       // （AC-22），本檔刻意不釘樁——見檔頭「T7 留白清單」第 3 點。
+    });
+
+    // -----------------------------------------------------------------------
+    // T12b（FW-A 銷帳）：AC-23 之「下載 → 200（依 D4）」一格
+    //
+    // 上一則之 VOIDED 申請**未產生報表**，故下載為 404（B-27）。本則補齊
+    // 「已作廢**且有** `Report`」之格：擁有人／管理員下載皆 200。
+    //
+    // 資料建構刻意**不經**產生端點：本檔零 `renderPdf` 替身，經端點產生會啟
+    // 動真實 Chromium（分鐘級）且本格所驗為**狀態碼**而非位元組來源。故先經
+    // 真實作廢端點取得 `VOIDED`（此時無 `Report`，作廢為純 DB 操作，
+    // AC-21(e)），再直寫 `Report` ＋ `VoidedReportFile` ＋ 兩份 storage 位元
+    // 組。位元組面之語意（回作廢版、編號不變、AC-21(b)(d)）由
+    // `phase9-void-report.test.ts` §E 以真實作廢流程覆蓋。
+    // -----------------------------------------------------------------------
+
+    it("擁有人／管理員視角: 已作廢**且有報表**之申請下載 → 200（依 §16 D4(b1)；T4 即審 FW-A 之留白補齊）", async () => {
+      const id = await createVoidedTravel("regression-download-200");
+      const reportStorage = new LocalVolumeStorage(reportStorageRoot, { prefixes: ["rpt"] });
+
+      const originalBytes = Buffer.from(`%PDF-1.4\n% T12b original\n${"o".repeat(600)}\n%%EOF`);
+      const voidedBytes = Buffer.from(`%PDF-1.4\n% T12b voided\n${"v".repeat(900)}\n%%EOF`);
+      const originalKey = `rpt/${crypto.randomUUID()}/pdf`;
+      const voidedKey = `rpt/${crypto.randomUUID()}/void`;
+      await reportStorage.put(originalKey, originalBytes, "application/pdf");
+      await reportStorage.put(voidedKey, voidedBytes, "application/pdf");
+
+      const report = await prisma.report.create({
+        data: {
+          applicationId: id,
+          reportNumber: `TRV-299901-${RUN_ID.slice(0, 4).toUpperCase()}`,
+          numberPrefix: "TRV",
+          numberPeriod: "299901",
+          sequence: 1,
+          storageKey: originalKey,
+          fileName: "差旅補助報表-TRV-299901-0001.pdf",
+          byteSize: originalBytes.length,
+          contentHash: crypto.createHash("sha256").update(originalBytes).digest("hex"),
+          generatedById: ownerId,
+        },
+      });
+      await prisma.voidedReportFile.create({
+        data: {
+          reportId: report.id,
+          storageKey: voidedKey,
+          // §8.2：與原 `Report.fileName` 相同（報表編號不變）。
+          fileName: report.fileName,
+          byteSize: voidedBytes.length,
+          contentHash: crypto.createHash("sha256").update(voidedBytes).digest("hex"),
+          createdById: ownerId,
+        },
+      });
+
+      for (const identity of [
+        { label: "擁有人", cookie: ownerCookie },
+        { label: "管理員", cookie: adminCookie },
+      ]) {
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/pdf`,
+          headers: { cookie: identity.cookie },
+        });
+        expect(resp.statusCode, `${identity.label}: ${resp.body}`).toBe(200);
+        expect(resp.headers["content-type"]).toBe("application/pdf");
+        // 編號不變（AC-21(b)）——ASCII fallback 檔名沿原報表編號。
+        expect(resp.headers["content-disposition"]).toContain(
+          `filename="${report.reportNumber}.pdf"`
+        );
+      }
+
+      // 作廢狀態未因下載而改變，且下載為唯讀（作廢版列仍恰一列）。
+      const after = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(after.status).toBe("VOIDED");
+      expect(await prisma.voidedReportFile.count({ where: { reportId: report.id } })).toBe(1);
     });
   });
 

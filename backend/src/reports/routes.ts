@@ -41,10 +41,16 @@
  * 草稿申請之產生端點被拒絕（409），故草稿**恆無** `Report` 列（結構性不可
  * 達）。查詢端點對此天然回 `200 { report: null }`（D10 之既定行為，與是否
  * 為草稿無關）；下載端點對此天然回 `404 NOT_FOUND`（B-27「尚未產生報表即
- * 下載」，與 B-01/B-02 之產生端點 409/403 為不同情境）。兩端點皆**不**額
- * 外查詢 `application.status`，理由：`Report` 列的存在本身即結構性蘊含
- * `COMPLETED`（唯一寫入路徑 `generateReport` 已守門），額外的狀態檢查只會
- * 是恆真的重複判斷，故依 §3.3／§3.4 之流程字面不實作。
+ * 下載」，與 B-01/B-02 之產生端點 409/403 為不同情境）。兩端點皆**不**因
+ * `application.status` 而拒絕，理由：`Report` 列的存在本身即結構性蘊含申請
+ * 曾為 `COMPLETED`（唯一寫入路徑 `generateReport` 已守門），狀態守門只會是
+ * 恆真的重複判斷，故依 §3.3／§3.4 之流程字面不實作。
+ *
+ * 【PHASE-009-T12b 修訂】下載端點自本次起**確有**讀取 `application.status`
+ * ——但它**不是守門**，而是 AC-21(b) 之**內容選擇**（`VOIDED` 且有
+ * `VoidedReportFile` → 回作廢版位元組）。狀態碼語意逐字不變：`VOIDED` 之下
+ * 載仍為 200（§16 D4(b1)；AC-23 回歸格「下載 → 200」）。查詢端點維持零狀態
+ * 讀取。
  *
  * ---------------------------------------------------------------------------
  * `REPORT_GENERATION_FAILED`（500）——不經 `AppError`（見 report-service.ts
@@ -223,8 +229,10 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
   // GET /applications/:id/report/pdf — 下載正式 PDF（PHASE-008-T9）
   // §3.3／§9.3；AC-08（重下一致 ＋ 渲染器零呼叫）／AC-22（Content-
   // Disposition 雙形式）／AC-23（檔名凍結）／AC-24（下載列）。
-  // 一律回傳原保存位元組（零渲染）；Report 不存在 → 404（B-27）；storage
-  // 檔遺失 → 404 不 500（B-28，見檔頭說明）。
+  // PHASE-009-T12b：AC-21(b)(d)（作廢後回作廢版位元組、編號不變、重複下載
+  // 全等且零渲染；§16 D4(b1)）。
+  // 一律回傳**已保存**之位元組（零渲染、零寫入）；Report 不存在 → 404
+  // （B-27）；storage 檔遺失 → 404 不 500（B-28，見檔頭說明）。
   // -------------------------------------------------------------------------
 
   fastify.get(
@@ -236,7 +244,7 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
 
       const application = await prisma.application.findUnique({
         where: { id },
-        select: { id: true, ownerId: true },
+        select: { id: true, ownerId: true, status: true },
       });
       if (!application) {
         throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
@@ -248,9 +256,29 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
         throw new AppError("NOT_FOUND", 404, "尚未產生正式報表");
       }
 
+      // PHASE-009-T12b／AC-21(b)(d)（§16 D4(b1)）：已作廢且作廢版已落地 → 回
+      // **作廢版**位元組；否則回原檔。兩條分支皆為**純讀取**（零渲染、零寫
+      // 入），AC-08 之「下載期間渲染器零呼叫、重複下載位元組全等」紀律於作廢
+      // 後仍逐字成立。關聯查詢（非 `report.id`）：`findReportByApplicationId`
+      // 之回傳型別 `StoredReportRow` 不含 `id`，而 `VoidedReportFile.reportId`
+      // 為唯一鍵，故以關聯過濾取至多一列，等價且不需擴充該型別。
+      const voidedFile =
+        application.status === "VOIDED"
+          ? await prisma.voidedReportFile.findFirst({
+              where: { report: { applicationId: id } },
+              select: { storageKey: true, fileName: true },
+            })
+          : null;
+
+      // fallback（T12a 即審 AR-1／FW-3，大總管 2026-08-07 裁量）：`VOIDED` 但
+      // 無 `VoidedReportFile`（D4(b1) 之同交易語意下結構性不可達；僅理論競態
+      // 窗或歷史資料可達）→ 回**原檔**。回原檔是 BE-US-27⑤「保留原始內容」之
+      // 安全預設，遠優於 404／500。
+      const source = voidedFile ?? report;
+
       let bytes: Buffer;
       try {
-        const raw = await reportStorage.get(report.storageKey);
+        const raw = await reportStorage.get(source.storageKey);
         bytes = Buffer.isBuffer(raw) ? raw : await streamToBuffer(raw);
       } catch {
         // B-28：storage 檔遺失（或讀取失敗）→ 404 不 500；日誌僅含
@@ -259,7 +287,12 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
         throw new AppError("NOT_FOUND", 404, "報表檔案遺失");
       }
 
-      const disposition = buildReportContentDisposition(report.reportNumber, report.fileName);
+      // AC-21(b)「報表編號不變」：ASCII fallback 檔名恆取自 `report.
+      // reportNumber`（作廢不產生新編號）；RFC 5987 檔名取自 `source.fileName`
+      // ——`VoidedReportFile.fileName` 依 §8.2 恆等於原 `Report.fileName`，故
+      // 標頭作廢前後逐字不變。**不得**改用 `storageKey`（其後綴為 `void`，非
+      // 檔名；T12a 即審 FW-1）。
+      const disposition = buildReportContentDisposition(report.reportNumber, source.fileName);
       return reply
         .header("Content-Type", "application/pdf")
         .header("Content-Disposition", disposition)
