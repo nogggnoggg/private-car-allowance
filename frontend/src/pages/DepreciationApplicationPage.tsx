@@ -66,6 +66,7 @@ import {
 } from "../api/depreciation.js";
 import AttachmentUploader from "../components/AttachmentUploader.js";
 import ReportSection from "../components/ReportSection.js";
+import VoidApplicationDialog from "../components/VoidApplicationDialog.js";
 import type { ApiError } from "../types/api.js";
 
 const PREVIEW_DEBOUNCE_MS = 300; // D8
@@ -205,6 +206,10 @@ export default function DepreciationApplicationPage(): React.ReactElement {
   const [previewState, setPreviewState] = useState<PreviewState>({ kind: "idle" });
 
   const [attachments, setAttachments] = useState<AttachmentDto[]>([]);
+
+  // PHASE-009-T15（AC-29(a)）：作廢確認對話框之開關；對話框本體與其五態
+  // 皆由 VoidApplicationDialog 負責（T14），本頁只負責入口與作廢後之呈現。
+  const [showVoidDialog, setShowVoidDialog] = useState(false);
 
   const createdRef = useRef(false);
 
@@ -446,13 +451,22 @@ export default function DepreciationApplicationPage(): React.ReactElement {
     );
   }
 
-  // ---- COMPLETED：唯讀檢視 ----
-  if (application.status === "COMPLETED") {
+  // ---- COMPLETED／VOIDED：唯讀檢視 ----
+  //
+  // PHASE-009-T15（AC-31(a)）**現況缺陷修復**：`VOIDED` 原本落到本分支之後的
+  // 草稿分支，因而渲染出可編輯表單。已作廢與已完成之呈現需求幾乎相同（同一組
+  // 唯讀欄位＋證明清單＋報表區），差異僅在標題／提示文案、作廢入口（僅
+  // `COMPLETED` 有）與作廢資訊區塊（僅 `VOIDED` 有），故沿用同一唯讀分支並以
+  // `voided` 分歧（比照 TravelApplicationPage／MaintenanceApplicationPage 同型
+  // 處置）。
+  if (application.status === "COMPLETED" || application.status === "VOIDED") {
     const snapshot = application.snapshot;
+    const voided = application.status === "VOIDED";
+    const voidInfo = application.void;
     return (
       <div className="page-container">
         <header className="page-header">
-          <h1>年度折舊補貼申請（已完成）</h1>
+          <h1>年度折舊補貼申請（{voided ? "已作廢" : "已完成"}）</h1>
           <div className="header-actions">
             <Link to="/" className="btn btn-secondary">
               返回列表
@@ -460,9 +474,33 @@ export default function DepreciationApplicationPage(): React.ReactElement {
           </div>
         </header>
         <main className="page-main">
-          <div className="success-block">
-            此申請已完成，資料已鎖定不可修改。如需異動，請聯絡管理員建立修正版（功能將於後續版本提供）。
-          </div>
+          {voided ? (
+            // AC-31(c)／FE-US-26⑤：文案明示不可恢復，且本分支不提供任何
+            // 恢復途徑（負向斷言：整頁零「恢復／還原／取消作廢」控制項）。
+            <div className="warn-text">此申請已作廢，資料已鎖定不可修改，且無法恢復為已完成。</div>
+          ) : (
+            <div className="success-block">
+              此申請已完成，資料已鎖定不可修改。如需異動，請聯絡管理員建立修正版（功能將於後續版本提供）。
+            </div>
+          )}
+
+          {/* AC-30(c)：作廢原因／操作者／時間三項逐字呈現。時間格式沿用本頁
+              既有「計算時間」之 `toLocaleString("zh-TW")`（不另立第二種格式）。
+              AC-33 Empty：`void` 未作廢恆為 null（§7.2），故未作廢時整個區塊
+              不渲染——條件必須是 `voidInfo` 而非 `voided`。 */}
+          {voidInfo && (
+            <section aria-labelledby="void-info-heading">
+              <h2 id="void-info-heading">作廢資訊</h2>
+              <dl className="detail-list">
+                <dt>作廢原因</dt>
+                <dd>{voidInfo.reason}</dd>
+                <dt>作廢操作者</dt>
+                <dd>{voidInfo.voidedByDisplayName}</dd>
+                <dt>作廢時間</dt>
+                <dd>{new Date(voidInfo.voidedAt).toLocaleString("zh-TW")}</dd>
+              </dl>
+            </section>
+          )}
 
           <section aria-labelledby="depreciation-info-heading">
             <h2 id="depreciation-info-heading">基本資料</h2>
@@ -527,10 +565,42 @@ export default function DepreciationApplicationPage(): React.ReactElement {
             )}
           </section>
 
-          {/* AC-30（PHASE-008-T13）：已完成申請顯示報表區塊；元件內建
-              status !== "COMPLETED" 不渲染之守門，此處恆為 COMPLETED。 */}
+          {/* AC-30（PHASE-008-T13）／AC-31(d)（PHASE-009-T14）：已完成與已作廢
+              皆顯示報表區塊。`status` 逐字透傳——作廢成功後本頁 state 會換成
+              後端回傳的 VOIDED DTO，此 prop 隨之變為 "VOIDED"，元件才會把下載
+              入口文案改為「下載 PDF（作廢版）」（T14 即審 FW-1）。 */}
           <ReportSection applicationId={application.id} status={application.status} />
+
+          {/* AC-29(a)：作廢入口僅在已完成申請出現；已作廢頁零作廢按鈕
+              （AC-31(b)）。 */}
+          {!voided && (
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => setShowVoidDialog(true)}
+              >
+                作廢
+              </button>
+            </div>
+          )}
         </main>
+
+        {showVoidDialog && (
+          <VoidApplicationDialog
+            applicationId={application.id}
+            onCancel={() => setShowVoidDialog(false)}
+            onVoided={(voidedApplication) => {
+              // 後端回傳型別分派之詳情 DTO（§7.3）；本頁以自己的型別窄化。
+              setApplication(voidedApplication as DepreciationApplicationDto);
+              setShowVoidDialog(false);
+            }}
+            onReload={() => {
+              setShowVoidDialog(false);
+              loadApplication(application.id);
+            }}
+          />
+        )}
       </div>
     );
   }

@@ -15,7 +15,11 @@ import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
-import type { TravelApplicationDto, TravelComputedDto } from "../src/api/applications.js";
+import type {
+  TravelApplicationDto,
+  TravelComputedDto,
+  VoidInfoDto,
+} from "../src/api/applications.js";
 import TravelApplicationPage from "../src/pages/TravelApplicationPage.js";
 
 // ---------------------------------------------------------------------------
@@ -40,11 +44,74 @@ function draftFixture(overrides: Partial<TravelApplicationDto> = {}): TravelAppl
     ],
     computed: null,
     snapshot: null,
+    void: null, // PHASE-009 §7.2：未作廢恆為 null
     createdAt: "2026-03-01T00:00:00.000Z",
     updatedAt: "2026-03-01T00:00:00.000Z",
     completedAt: null,
     ...overrides,
   };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-009-T15 fixtures（作廢面）
+// ---------------------------------------------------------------------------
+
+function voidInfoFixture(overrides: Partial<VoidInfoDto> = {}): VoidInfoDto {
+  return {
+    reason: "里程填寫錯誤，需重新申報",
+    voidedAt: "2026-03-05T02:34:56.000Z",
+    voidedByDisplayName: "管理員甲",
+    ...overrides,
+  };
+}
+
+function completedFixture(overrides: Partial<TravelApplicationDto> = {}): TravelApplicationDto {
+  return draftFixture({
+    status: "COMPLETED",
+    tripDate: "2026-03-01",
+    purpose: "台中出差",
+    completionBlockers: [],
+    computed: null,
+    completedAt: "2026-03-02T00:00:00.000Z",
+    snapshot: {
+      fuelUnitPrice: "5.0000",
+      etcUnitPrice: "3.0000",
+      fuelParameterVersionId: "fv-1",
+      etcParameterVersionId: "ev-1",
+      fuelPriceVersionId: null,
+      fuelConsumptionVersionId: null,
+      totalKm: "0.00",
+      totalRawAmount: "0.0000",
+      totalAmount: 0,
+      calculatedAt: "2026-03-02T00:00:00.000Z",
+    },
+    ...overrides,
+  });
+}
+
+/**
+ * 已作廢之詳情 fixture。`snapshot: null` 為**後端實況**（實查
+ * `backend/src/applications/travel-service.ts` :1799 之
+ * `application.status === "COMPLETED" && …` 守門；保養／折舊之
+ * `buildSnapshotDto` 亦同——三型對稱），故唯讀頁之快照區在 VOIDED 下不渲染。
+ */
+function voidedFixture(overrides: Partial<TravelApplicationDto> = {}): TravelApplicationDto {
+  return completedFixture({
+    status: "VOIDED",
+    snapshot: null,
+    void: voidInfoFixture(),
+    ...overrides,
+  });
+}
+
+/**
+ * 讀取 `<dl className="detail-list">` 中指定 `<dt>` 緊鄰之 `<dd>` 文字（沿
+ * DepreciationApplicationPage.test.tsx 既有 `dtDdText` 慣例）——將值與其標籤
+ * 綁定比對，可鑑別「三項作廢資訊 dt/dd 配對互換」之錯置 mutant。
+ */
+function dtDdText(dtLabel: string): string | null {
+  const dt = screen.getByText(dtLabel, { selector: "dt" });
+  return dt.nextElementSibling?.textContent ?? null;
 }
 
 function previewFixture(overrides: Partial<TravelComputedDto> = {}): TravelComputedDto {
@@ -127,6 +194,31 @@ const isPutDraft = (p: string) => p === "/api/applications/travel/app-1";
 const isComplete = (p: string) => p === "/api/applications/app-1/complete";
 const isDelete = (p: string) => p === "/api/applications/app-1";
 const isGetReport = (p: string) => p === "/api/applications/app-1/report";
+const isVoid = (p: string) => p === "/api/applications/app-1/void";
+
+/** AC-31(c)／FE-US-26⑤：任何「把已作廢恢復為已完成」語意之控制項字樣。 */
+const RESTORE_CONTROL_PATTERN = /恢復|還原|復原|取消作廢|重新完成|解除作廢/;
+
+/** 唯讀頁不得出現之五類按鈕（AC-31(b) 逐一負向）。 */
+const FORBIDDEN_VOIDED_BUTTONS = ["儲存草稿", "完成申請", "刪除草稿", "作廢", "建立修正版"];
+
+/**
+ * AC-31(b)(c)：唯讀頁零寫入型控制項。逐一具名負向（五類）＋全頁掃描
+ * （避免「換個字樣就繞過具名斷言」）。「下載 PDF（作廢版）」等唯讀入口
+ * 含「作廢」二字但非作廢入口，故以全等比對而非包含比對排除。
+ */
+function expectNoWriteControls(): void {
+  for (const name of FORBIDDEN_VOIDED_BUTTONS) {
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+  }
+  const controls = [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")];
+  for (const el of controls) {
+    const label = el.textContent ?? "";
+    expect(label).not.toMatch(/儲存|完成申請|刪除|建立修正版/);
+    expect(label).not.toMatch(RESTORE_CONTROL_PATTERN);
+    expect(label).not.toBe("作廢");
+  }
+}
 
 describe("TravelApplicationPage", () => {
   beforeEach(() => {
@@ -988,5 +1080,164 @@ describe("TravelApplicationPage", () => {
     expect(container.querySelector(".trip-segment-list")).toBeInTheDocument();
     expect(container.querySelector(".trip-segment-list table")).not.toBeInTheDocument();
     expect(container.querySelector(".trip-segment")).toBeInTheDocument();
+  });
+
+  // =========================================================================
+  // PHASE-009-T15：作廢入口／VOIDED 唯讀分支／作廢資訊
+  // （AC-29(a)、AC-30(c)、AC-31(a)(b)(c)、AC-33 頁面層 Empty／Success）
+  // =========================================================================
+  describe("作廢（PHASE-009-T15）", () => {
+    it("AC-31(a)：VOIDED 走唯讀分支，不再渲染草稿編輯表單", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("heading", { level: 1, name: "差旅補助申請（已作廢）" })
+        ).toBeInTheDocument();
+      });
+
+      // 現況缺陷之回歸鎖：VOIDED 曾落入草稿分支而渲染可編輯表單。
+      expect(screen.queryByLabelText("出差日期")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("出差目的")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "新增行程段" })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { level: 1, name: "差旅補助申請（草稿）" })
+      ).not.toBeInTheDocument();
+      // 唯讀頁不呼叫預覽端點（草稿分支才有的 debounce 預覽）。
+      await sleep(400);
+      expect(router.countCalls("POST", isPreview)).toBe(0);
+    });
+
+    it("AC-31(b)(c)：VOIDED 唯讀頁零五類按鈕、零可恢復為已完成之控制項", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(
+          screen.getByRole("heading", { level: 1, name: "差旅補助申請（已作廢）" })
+        ).toBeInTheDocument();
+      });
+      await screen.findByRole("heading", { name: "報表" });
+
+      expectNoWriteControls();
+      // 「產生正式報表」對 VOIDED 亦不得出現（AC-31(d) 之頁面層對照）。
+      expect(screen.queryByRole("button", { name: "產生正式報表" })).not.toBeInTheDocument();
+    });
+
+    it("AC-30(c)：VOIDED 詳情頁逐字顯示作廢原因／作廢操作者／作廢時間", async () => {
+      const info = voidInfoFixture();
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢原因")).toBe(info.reason);
+      expect(dtDdText("作廢操作者")).toBe(info.voidedByDisplayName);
+      // 時間長相與既有「計算時間」同一格式（toLocaleString("zh-TW")）。
+      // PHASE-008-TZ-FIX：CI（Linux ICU）會輸出細空格家族，故兩側同義正規化。
+      expect(dtDdText("作廢時間")?.replace(/\s+/g, " ").trim()).toBe(
+        new Date(info.voidedAt).toLocaleString("zh-TW").replace(/\s+/g, " ").trim()
+      );
+      // 原始 ISO 字串不得在場（負向鎖，沿 ReportSection 既有紀律）。
+      expect(screen.queryByText(info.voidedAt)).not.toBeInTheDocument();
+    });
+
+    it("AC-33 Empty：COMPLETED（未作廢）詳情頁零作廢資訊區塊", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(
+          screen.getByRole("heading", { level: 1, name: "差旅補助申請（已完成）" })
+        ).toBeInTheDocument();
+      });
+
+      expect(screen.queryByRole("heading", { name: "作廢資訊" })).not.toBeInTheDocument();
+      expect(screen.queryByText("作廢原因")).not.toBeInTheDocument();
+      expect(screen.queryByText("作廢操作者")).not.toBeInTheDocument();
+      expect(screen.queryByText("作廢時間")).not.toBeInTheDocument();
+    });
+
+    it("AC-29(a)：COMPLETED 詳情頁有作廢入口，點擊開啟確認對話框；取消零請求", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("POST", isVoid, () => jsonRes({ application: voidedFixture() }));
+
+      renderPage();
+      const voidBtn = await screen.findByRole("button", { name: "作廢" });
+
+      fireEvent.click(voidBtn);
+      expect(screen.getByRole("dialog", { name: "確認作廢申請" })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+      await waitFor(() => {
+        expect(screen.queryByRole("dialog", { name: "確認作廢申請" })).not.toBeInTheDocument();
+      });
+      expect(router.countCalls("POST", isVoid)).toBe(0);
+      // 取消零狀態變更：仍為已完成檢視。
+      expect(
+        screen.getByRole("heading", { level: 1, name: "差旅補助申請（已完成）" })
+      ).toBeInTheDocument();
+    });
+
+    it("AC-33 Success：作廢成功後頁面轉唯讀、顯示三項作廢資訊，且報表區狀態變 VOIDED", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () =>
+        jsonRes({
+          report: {
+            reportNumber: "TRV-202603-0001",
+            generatedAt: "2026-03-02T01:23:45.678Z",
+            fileName: "差旅_使用者一_2026-03-01_TRV-202603-0001.pdf",
+            byteSize: 123456,
+            downloadUrl: "/applications/app-1/report/pdf",
+            printUrl: "/applications/app-1/report/print",
+          },
+        })
+      );
+      router.on("POST", isVoid, () => jsonRes({ application: voidedFixture() }));
+
+      renderPage();
+      // 作廢前：報表下載入口為正式版文案。
+      expect(await screen.findByRole("link", { name: "下載 PDF" })).toBeInTheDocument();
+
+      fireEvent.click(await screen.findByRole("button", { name: "作廢" }));
+      fireEvent.change(screen.getByLabelText("作廢原因"), {
+        target: { value: "里程填寫錯誤，需重新申報" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "確認作廢" }));
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("heading", { level: 1, name: "差旅補助申請（已作廢）" })
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("dialog", { name: "確認作廢申請" })).not.toBeInTheDocument();
+      expect(dtDdText("作廢原因")).toBe("里程填寫錯誤，需重新申報");
+      expect(dtDdText("作廢操作者")).toBe("管理員甲");
+      expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+
+      // T14 即審 FW-1：ReportSection 之 status prop 必須真變 VOIDED——否則
+      // 下載入口仍稱「下載 PDF」而實得作廢版位元組（反向誤導）。
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "下載 PDF（作廢版）" })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("link", { name: "下載 PDF" })).not.toBeInTheDocument();
+
+      expectNoWriteControls();
+    });
   });
 });

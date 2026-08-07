@@ -81,6 +81,7 @@ function draftFixture(overrides: Partial<TravelApplicationDto> = {}): TravelAppl
     ],
     computed: null,
     snapshot: null,
+    void: null, // PHASE-009 §7.2：未作廢恆為 null
     createdAt: "2026-03-01T00:00:00.000Z",
     updatedAt: "2026-03-01T00:00:00.000Z",
     completedAt: null,

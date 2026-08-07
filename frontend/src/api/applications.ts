@@ -111,6 +111,22 @@ export interface TravelSnapshotDto {
   calculatedAt: string; // ISO
 }
 
+/**
+ * 作廢資訊（PHASE-009 §7.2）——三型詳情 DTO 共用之新增鍵 `void` 之型別。
+ * **未作廢恆為 `null`**，此即 AC-33 Empty 態「未作廢詳情頁零作廢資訊區塊」
+ * 之呈現依據（詳情頁以 `application.void && (...)` 條件渲染）。
+ *
+ * 與後端 `backend/src/applications/application-void.ts` 之同名 interface
+ * 同形（前端獨立副本，本 repo 無 backend/frontend 共用 package）。
+ * `voidedByDisplayName` 於後端解析不到該使用者時為 `"—"`；`voidedById`
+ * **恆不外露**（§8.3），故本型別刻意沒有該欄。
+ */
+export interface VoidInfoDto {
+  reason: string;
+  voidedAt: string; // ISO8601
+  voidedByDisplayName: string;
+}
+
 export interface TravelApplicationDto {
   id: string;
   type: "TRAVEL";
@@ -126,6 +142,7 @@ export interface TravelApplicationDto {
   completionBlockers: BlockerDto[]; // DRAFT 有值；COMPLETED 為 []
   computed: TravelComputedDto | null; // DRAFT：即算預覽；COMPLETED：null
   snapshot: TravelSnapshotDto | null; // COMPLETED：快照；DRAFT：null
+  void: VoidInfoDto | null; // PHASE-009 §7.2：VOIDED 才非 null
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;

@@ -43,7 +43,7 @@
  */
 
 import { parseApiResponse } from "../types/api.js";
-import type { ApplicationStatusDto, BlockerDto } from "./applications.js";
+import type { ApplicationStatusDto, BlockerDto, VoidInfoDto } from "./applications.js";
 import type { AttachmentDto } from "./attachments.js";
 
 // ---------------------------------------------------------------------------
@@ -100,6 +100,7 @@ export interface DepreciationApplicationDto {
   completionBlockers: BlockerDto[] | null; // DRAFT 才有；COMPLETED 為 null
   computed: DepreciationComputedDto | null; // DRAFT 才有
   snapshot: DepreciationSnapshotDto | null; // COMPLETED 才有
+  void: VoidInfoDto | null; // PHASE-009 §7.2：VOIDED 才非 null
 }
 
 // ---------------------------------------------------------------------------
