@@ -1270,6 +1270,46 @@ describe("MaintenanceApplicationPage", () => {
       );
     });
 
+    // T16R M-1（`SPEC-REV-9T16`）：D15 之人類批准前提「不自動作廢 ＋ **前端強
+    // 提示**」。原申請頁之 `supersededBy` 側必含「重複計入」提醒（三點語意：
+    // ①仍為已完成 ②未作廢則兩筆同時計入統計 ③作廢入口即在本頁）。
+    //
+    // 本頁自持一份 VersionRelationSection（三頁各一份，見 T16 Handoff W-3），
+    // 故正向／負向皆須逐頁具備——差旅頁的負向無法證明本頁沒有把提醒寫死。
+    const DUPLICATE_COUNT_WARNING =
+      "本申請仍為已完成狀態。若未作廢，本申請與修正版將同時計入里程與金額統計；如需避免重複計入，請於本頁作廢本申請。";
+
+    it("AC-32(c)／D15：原申請已有修正版時，版本關係區塊含「重複計入」提醒文案（逐字）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: completedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.getByText(DUPLICATE_COUNT_WARNING)).toBeInTheDocument();
+      // ③「作廢入口即在本頁」不能只是文案宣稱——同頁必須真的有作廢按鈕。
+      expect(screen.getByRole("button", { name: "作廢" })).toBeInTheDocument();
+    });
+
+    it("AC-32(c)／D15 負向：已完成但未建立修正版時零提醒文案（防恆真）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已完成）" });
+
+      expect(screen.queryByText(DUPLICATE_COUNT_WARNING)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
+    });
+
     it("AC-32(c) 負向：無任何版本關聯時零版本關係區塊", async () => {
       const router = installFetchRouter();
       router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));

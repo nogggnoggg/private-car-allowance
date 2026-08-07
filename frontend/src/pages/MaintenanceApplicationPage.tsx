@@ -74,6 +74,14 @@ const DETAIL_BASE_PATH = "/applications/maintenance";
 const ATTACHMENT_REVISION_HINT = "已完成申請的附件無法直接刪除或替換。如需修正附件，請建立修正版。";
 
 /**
+ * AC-32(c)／D15 之「重複計入」提醒（`SPEC-REV-9T16` 補入 AC）。逐字文案於
+ * Mock Gate 由人類目視定案；文案可微調，但三點語意（仍為已完成／未作廢則
+ * 重複計入統計／作廢入口在本頁）不得縮減。三型頁逐字相同。
+ */
+const DUPLICATE_COUNT_WARNING =
+  "本申請仍為已完成狀態。若未作廢，本申請與修正版將同時計入里程與金額統計；如需避免重複計入，請於本頁作廢本申請。";
+
+/**
  * 版本關係區塊（PHASE-009-T16；AC-32(c)、AC-34 之 DOM 面）。與
  * `TravelApplicationPage.tsx`／`DepreciationApplicationPage.tsx` 同型——三頁
  * 各自持有一份（本 Phase 之 Files Allowed 為三頁 ＋ api client，不新建共用
@@ -98,10 +106,19 @@ function VersionRelationSection({
         </p>
       )}
       {supersededBy && (
-        <p>
-          <span>已建立修正版</span>{" "}
-          <Link to={`${DETAIL_BASE_PATH}/${supersededBy.id}`}>檢視修正版</Link>
-        </p>
+        <>
+          <p>
+            <span>已建立修正版</span>{" "}
+            <Link to={`${DETAIL_BASE_PATH}/${supersededBy.id}`}>檢視修正版</Link>
+          </p>
+          {/* AC-32(c)／D15（`SPEC-REV-9T16`）：人類 Spec Gate 批准「不自動作廢」
+              之**前提**即為本則前端強提示——建立修正版**不會**自動作廢原申請，
+              未作廢時兩筆都會進統計。三點語意不可省：①仍為已完成 ②未作廢則
+              重複計入里程與金額統計 ③作廢入口即在本頁（同頁下方之「作廢」鈕）。
+              **僅 `supersededBy` 側**——作廢動作之落點在原申請頁，修正版頁加此
+              提示會把使用者導向錯誤的那一筆。 */}
+          <p className="warn-text">{DUPLICATE_COUNT_WARNING}</p>
+        </>
       )}
     </section>
   );

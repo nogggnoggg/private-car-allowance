@@ -1281,6 +1281,11 @@ describe("TravelApplicationPage", () => {
       // 逐字負向：佔位文案必須被真實入口取代（未移除之 mutant 必紅）。
       expect(document.body.textContent).not.toContain("功能將於後續版本提供");
       expect(document.body.textContent).not.toContain("請聯絡管理員建立修正版");
+      // T16R S-1①：取代後之新文案本身亦須有正向斷言（否則「整段刪光」與
+      // 「換成真實入口」對測試無從分辨）。
+      expect(
+        screen.getByText("此申請已完成，資料已鎖定不可修改。如需異動，請建立修正版。")
+      ).toBeInTheDocument();
     });
 
     it("AC-32(a) 守門：VOIDED 唯讀頁零「建立修正版」按鈕（T15 負向相容）", async () => {
@@ -1361,6 +1366,55 @@ describe("TravelApplicationPage", () => {
         "href",
         "/applications/travel/rev-1"
       );
+    });
+
+    // T16R M-1（`SPEC-REV-9T16`）：D15 之人類批准前提「不自動作廢 ＋ **前端強
+    // 提示**」。原申請頁之 `supersededBy` 側必含「重複計入」提醒（三點語意：
+    // ①仍為已完成 ②未作廢則兩筆同時計入統計 ③作廢入口即在本頁）。
+    const DUPLICATE_COUNT_WARNING =
+      "本申請仍為已完成狀態。若未作廢，本申請與修正版將同時計入里程與金額統計；如需避免重複計入，請於本頁作廢本申請。";
+
+    it("AC-32(c)／D15：原申請已有修正版時，版本關係區塊含「重複計入」提醒文案（逐字）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: completedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.getByText(DUPLICATE_COUNT_WARNING)).toBeInTheDocument();
+      // ③「作廢入口即在本頁」不能只是文案宣稱——同頁必須真的有作廢按鈕。
+      expect(screen.getByRole("button", { name: "作廢" })).toBeInTheDocument();
+    });
+
+    it("AC-32(c)／D15 負向：已完成但未建立修正版時零提醒文案（防恆真）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（已完成）" });
+
+      expect(screen.queryByText(DUPLICATE_COUNT_WARNING)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
+    });
+
+    it("AC-32(c)／D15 負向：修正版側（supersedes）不加此提醒——作廢落點在原申請頁", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetRevisionDraft, () => jsonRes({ application: revisionDraftFixture() }));
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage("rev-1");
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.queryByText(DUPLICATE_COUNT_WARNING)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
     });
 
     it("AC-32(c) 負向：無任何版本關聯時零版本關係區塊", async () => {
