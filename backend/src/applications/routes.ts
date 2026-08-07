@@ -47,18 +47,21 @@
  * (AC-74/84) rather than `assertOwnershipOrAdmin` — see T9 note above.
  */
 
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { ApplicationStatus, Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import { createApplicationRevisionWithAttachments } from "../attachment/attachment-copy.js";
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { formatUtcDate, parseUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
+import type { Storage } from "../storage/index.js";
 import {
   parseApplicationListQuery,
   queryApplications,
   resolveOwnerId,
   toApplicationListItemDto,
 } from "./application-query.js";
+import type { OnApplicationRevisionCreated } from "./application-revision.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
 import type { OnApplicationVoided } from "./application-void.js";
 import { voidApplication } from "./application-void.js";
@@ -111,6 +114,17 @@ import {
 
 interface ApplicationsPluginOptions {
   prisma: PrismaClient;
+  /**
+   * 附件位元組儲存（`att/` 前綴之實例，與 `attachmentPlugin`／`reportsPlugin`
+   * **同一個** `LocalVolumeStorage`）——PHASE-009-T7 之修正版端點需要它，因為
+   * 建立修正版會連同證明附件一併複製位元組（AC-14／§3.2 步驟 6d）。
+   *
+   * 為何由 `server.ts` 注入而非在本模組自建：storage root 之解析（測試注入 >
+   * 環境變數 > production fail-fast > 非 production 暫存目錄）是 `server.ts`
+   * 的單一事實來源；在此另建一個實例等於複製那段解析邏輯，兩份一旦分歧就會
+   * 出現「附件端點寫進 A、修正版端點讀 B」的靜默資料錯置。
+   */
+  attachmentStorage: Storage;
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +550,149 @@ export function parseDepreciationFieldsInput(
 }
 
 // ---------------------------------------------------------------------------
+// 版本關聯投影（PHASE-009-T7；AC-12、§7.2 `RevisionLinkDto`）
+//
+// AC-12(c) 逐字：「兩向皆為**單一 `supersedesId` 欄位**之投影，不另存反向欄
+// 位（單一事實來源）」——故本區塊**只**讀 `Application.supersedesId` 之正向
+// 關聯（`supersedes`）與其 Prisma 反向虛擬關聯（`supersededBy`；§8.1「僅
+// `supersedesId` 產生 DDL，`supersededBy` 側零 DDL」）。沒有第二個欄位、沒有
+// 第二張表、沒有任何在建立／刪除時同步反向值的寫入路徑。
+//
+// 為何投影落在 route 層而非三型 DTO 建構器（`travel-service.ts` 等）：本 Task
+// 之 Files Allowed 不含三型 service（Packet「Files/Components Forbidden：三型
+// service」）。故此處以「DTO 組好之後統一附掛兩鍵」達成 §7.2 之三型 DTO 擴
+// 充；`withRevisionLinks` 因而必須套用在**每一個**回傳詳情 DTO 的端點上，否
+// 則同一份 DTO 會因端點而異形（見 Handoff Warnings）。
+//
+// AC-12(b)：`supersedes` 之投影另含 `reportNumber | null`（查詢修正版詳情時
+// 顯示「本申請為 {原編號} 之修正版」——FE-US-25③／AC-32(c) 之資料來源）。此
+// 處僅**讀** `Report.reportNumber` 一欄，不觸 `reports/` 之任何程式路徑。
+// ---------------------------------------------------------------------------
+
+/** §7.2：版本關聯之最小投影（雙向皆由 `supersedesId` 推導）。 */
+interface RevisionLinkDto {
+  id: string;
+  status: ApplicationStatus;
+  primaryDate: string; // YYYY-MM-DD
+}
+
+/** AC-12(b)：修正版 → 原申請之投影，另含原申請之正式報表編號（無則 null）。 */
+interface SupersedesLinkDto extends RevisionLinkDto {
+  reportNumber: string | null;
+}
+
+/** 三型詳情 DTO 之兩個新鍵（§7.2）。 */
+interface RevisionLinksDto {
+  supersedes: SupersedesLinkDto | null;
+  supersededBy: RevisionLinkDto | null;
+}
+
+const revisionLinkSelect = {
+  supersedes: {
+    select: {
+      id: true,
+      status: true,
+      primaryDate: true,
+      report: { select: { reportNumber: true } },
+    },
+  },
+  supersededBy: { select: { id: true, status: true, primaryDate: true } },
+} satisfies Prisma.ApplicationSelect;
+
+async function resolveRevisionLinks(
+  prisma: PrismaClient,
+  applicationId: string
+): Promise<RevisionLinksDto> {
+  const row = await prisma.application.findUnique({
+    where: { id: applicationId },
+    select: revisionLinkSelect,
+  });
+
+  // 理論上不可達（呼叫端剛以同一 id 組出 DTO）；列不在時回兩個 null 而非拋
+  // 錯——詳情回應不該因為版本關聯這種附屬資訊而整個失敗。
+  if (!row) return { supersedes: null, supersededBy: null };
+
+  return {
+    supersedes: row.supersedes
+      ? {
+          id: row.supersedes.id,
+          status: row.supersedes.status,
+          primaryDate: formatUtcDate(row.supersedes.primaryDate),
+          reportNumber: row.supersedes.report?.reportNumber ?? null,
+        }
+      : null,
+    supersededBy: row.supersededBy
+      ? {
+          id: row.supersededBy.id,
+          status: row.supersededBy.status,
+          primaryDate: formatUtcDate(row.supersededBy.primaryDate),
+        }
+      : null,
+  };
+}
+
+/** 把 §7.2 之兩個版本關聯鍵附掛到任一型詳情 DTO 上（既有鍵逐字不變）。 */
+async function withRevisionLinks<T extends { id: string }>(
+  prisma: PrismaClient,
+  dto: T
+): Promise<T & RevisionLinksDto> {
+  return { ...dto, ...(await resolveRevisionLinks(prisma, dto.id)) };
+}
+
+/** Prisma 已知錯誤碼之鴨子型別偵測（沿 `admin/routes.ts:83-100` 既有形狀）。 */
+function isPrismaErrorCode(err: unknown, code: string): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code: unknown }).code === code
+  );
+}
+
+/**
+ * 修正版建立失敗之 HTTP 語意轉譯（PHASE-009-T7；Packet FW-5／FW-6）。
+ *
+ * · **P2002（`supersedesId @unique`）**——縱深防禦。正常路徑下重複建立由
+ *   service 的 `FOR UPDATE` 列鎖 ＋ `supersededBy` 守門確定性地攔成
+ *   `CONFLICT`（AC-13(c)）；唯有那道行鎖失效時，敗方才會撞上 DB 的唯一鍵。
+ *   若不轉譯，同一個使用者可見情境（「這筆已經有修正版了」）會因為時序而時
+ *   而 409、時而 500。此處回查既有修正版之 id，組出與 service **同一形狀**
+ *   的 409（`details.existingRevisionId` ＋ 同一訊息）。
+ * · **P2025（`findUniqueOrThrow` 找不到來源）**——route 已於交易外前置
+ *   `getApplicationForAuth` 之 404，故此碼只可能來自「前置檢查與交易之間原
+ *   申請被刪除」之競態窗（實務上已完成申請不可刪，屬理論窗）。窗內的正確語
+ *   意仍是「找不到指定的申請」而非 500，故一併轉譯。
+ *
+ * 其餘錯誤原樣傳遞（`AppError` 由 error-handler 依 `httpStatus` 回應；未預期
+ * 錯誤走既有 500 `INTERNAL_ERROR` 路徑）。
+ */
+async function translateRevisionError(
+  prisma: PrismaClient,
+  sourceId: string,
+  err: unknown
+): Promise<unknown> {
+  if (isPrismaErrorCode(err, "P2002")) {
+    const existing = await prisma.application.findFirst({
+      where: { supersedesId: sourceId },
+      select: { id: true },
+    });
+    if (existing) {
+      // 訊息與 `application-revision.ts` 之 409 分支逐字相同——兩條路徑對使用
+      // 者是同一件事，不得因內部路徑不同而出現兩種文案。
+      return new AppError("CONFLICT", 409, "此申請已有修正版", undefined, {
+        existingRevisionId: existing.id,
+      });
+    }
+  }
+
+  if (isPrismaErrorCode(err, "P2025")) {
+    return new AppError("NOT_FOUND", 404, "找不到指定的申請");
+  }
+
+  return err;
+}
+
+// ---------------------------------------------------------------------------
 // Applications plugin
 // ---------------------------------------------------------------------------
 
@@ -543,7 +700,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
   fastify: FastifyInstance,
   options: ApplicationsPluginOptions
 ) => {
-  const { prisma } = options;
+  const { prisma, attachmentStorage } = options;
 
   const authPreHandlers = [requireAuth(prisma), requirePasswordChanged];
 
@@ -591,7 +748,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       });
 
       const dto = await toTravelApplicationDto(prisma, application);
-      return reply.status(201).send({ application: dto });
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -614,7 +771,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       assertOwnershipOrAdmin(request.currentUser, application.ownerId);
 
       const dto = await toTravelApplicationDto(prisma, application);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -721,7 +878,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const updated = await updateTravelDraft(prisma, id, patch, parsedSegments, onUpdated);
       const dto = await toTravelApplicationDto(prisma, updated);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -814,7 +971,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const application = await createMaintenanceDraft(prisma, createInput);
       const dto = await buildMaintenanceApplicationDto(prisma, application);
-      return reply.status(201).send({ application: dto });
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -837,7 +994,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       assertOwnershipOrAdmin(request.currentUser, application.ownerId);
 
       const dto = await buildMaintenanceApplicationDto(prisma, application);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -936,7 +1093,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const updated = await updateMaintenanceDraft(prisma, id, patch, onUpdated);
       const dto = await buildMaintenanceApplicationDto(prisma, updated);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -1007,7 +1164,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const application = await createDepreciationDraft(prisma, createInput);
       const dto = await buildDepreciationApplicationDto(prisma, application);
-      return reply.status(201).send({ application: dto });
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -1031,7 +1188,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
       assertOwnershipOrAdmin(request.currentUser, application.ownerId);
 
       const dto = await buildDepreciationApplicationDto(prisma, application);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -1133,7 +1290,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const updated = await updateDepreciationDraft(prisma, id, patch, onUpdated);
       const dto = await buildDepreciationApplicationDto(prisma, updated);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -1226,7 +1383,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
         const completed = await completeMaintenanceApplication(prisma, id);
         const dto = await buildMaintenanceApplicationDto(prisma, completed);
-        return reply.status(200).send({ application: dto });
+        return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
       }
 
       // PHASE-007-T9（§9.3、AC-29／§16 D9(a)）：折舊分支——與 MAINTENANCE
@@ -1251,7 +1408,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         // `buildDepreciationApplicationDto` 對非 DRAFT 一律 `computed: null`
         // （§7.2；T7 即審 FW-7：完成回應不得夾帶 `computed`）。
         const dto = await buildDepreciationApplicationDto(prisma, completed);
-        return reply.status(200).send({ application: dto });
+        return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
       }
 
       const existing = await getTravelApplication(prisma, id);
@@ -1270,7 +1427,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const completed = await completeTravelApplication(prisma, id);
       const dto = await toTravelApplicationDto(prisma, completed);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -1358,7 +1515,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
           throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
         }
         const dto = await buildMaintenanceApplicationDto(prisma, updated);
-        return reply.status(200).send({ application: dto });
+        return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
       }
 
       if (voided.type === "DEPRECIATION") {
@@ -1367,7 +1524,7 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
           throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
         }
         const dto = await buildDepreciationApplicationDto(prisma, updated);
-        return reply.status(200).send({ application: dto });
+        return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
       }
 
       const updated = await getTravelApplication(prisma, id);
@@ -1375,7 +1532,125 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
       }
       const dto = await toTravelApplicationDto(prisma, updated);
-      return reply.status(200).send({ application: dto });
+      return reply.status(200).send({ application: await withRevisionLinks(prisma, dto) });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/:id/revision (PHASE-009-T7)
+  // Spec §3.2「建立修正版」／§6.1 授權矩陣 #6〜#10／§6.2 稽核／§7.3／§7.5；
+  // AC-12／AC-13／AC-23（修正版列）／AC-26(b)(c)／AC-27。
+  //
+  // 判定順序（§6.1 判定紀律①，與作廢端點逐字同型）：
+  //   (1) 401 ／ 403 PASSWORD_CHANGE_REQUIRED   ← `authPreHandlers`
+  //   (2) 404 NOT_FOUND                          ← 存在性（B-13，不洩漏型別）
+  //   (3) 403 FORBIDDEN                          ← `assertOwnershipOrAdmin`
+  //   (4) 409 CONFLICT                           ← service 交易內（狀態守門
+  //       ＋ D7 之既有修正版守門）
+  // (4) 封裝在 service 的交易裡（T5 之刻意設計），因此「授權早於 409」只可能
+  // 在**本層**成立——(3) 若被移到 service 呼叫之後，他人對草稿／已完成／已作
+  // 廢會得到互異回應（狀態洩漏）。此不變式由 `phase9-contract.test.ts` §J 之
+  // 側信道測試守門。
+  //
+  // 授權放行管理員（與 owner-only 之完成端點刻意不同）：依 **AD-US-09 之逐字
+  // 授權**（§6.1「與完成端點 owner-only 先例之差異（記載）」，§16 D12）。
+  //
+  // **唯一入口**（T6／T6R 之 SF-2 裁定）：一律呼叫
+  // `createApplicationRevisionWithAttachments`——它是「業務欄位複製 ＋ 附件位
+  // 元組複製 ＋ 補償刪除」之單一 production 入口。直接呼叫
+  // `createApplicationRevision` 會失去附件複製與任一失敗路徑之補償刪除。
+  //
+  // 稽核（§6.2／AC-26）：與作廢端點**刻意不同**——僅在 `actorId !== ownerId`
+  // 時才建構 hook（沿 PHASE-004 AC-86 與 `admin/routes.ts` 之既有形狀）：
+  // AC-26(c) 逐字「**本人**建立修正版 → **零稽核列**」。hook 於同一交易內、
+  // 附件複製**之後**執行（`createApplicationRevisionWithAttachments` 之第 5
+  // 參數），拋錯時整筆修正版一併回滾（零孤兒稽核列、零殘留 storage）。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/:id/revision",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      // §7.3「Body：無（一律忽略）」——本 handler 從未讀取 `request.body`。
+
+      // (2) 存在性——與作廢端點共用 `getApplicationForAuth`（只取 id／ownerId
+      // ／status，不分型別），故兩端點對不存在之 id 一律 404 且不洩漏型別。
+      const application = await getApplicationForAuth(prisma, id);
+      if (!application) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // (3) §6.2 資料隔離不變式 1：授權一律以 DB 查得之 ownerId 為準。
+      assertOwnershipOrAdmin(request.currentUser, application.ownerId);
+
+      const actorId = request.currentUser.id;
+      const isOnBehalf = actorId !== application.ownerId;
+
+      // AC-26(b)：沿用既有 `APPLICATION_CREATED_ON_BEHALF`（**不新增第二個
+      // enum 值**），以 `summary.revisionOf` 與一般代建立草稿區分。
+      const onCreated: OnApplicationRevisionCreated | undefined = isOnBehalf
+        ? async (tx, source, revision) => {
+            await tx.auditLog.create({
+              data: {
+                action: "APPLICATION_CREATED_ON_BEHALF",
+                actorId,
+                targetId: source.ownerId,
+                targetLabel: `${source.ownerLoginName}#${revision.id}`,
+                // AC-26(b) 之封閉三鍵。內部識別值（`ownerId`／`createdById`）
+                // 刻意不入 summary（§6.3：內部識別值不外露；操作者已由
+                // `actorId` 欄承載）。
+                summary: {
+                  applicationId: revision.id,
+                  type: source.type,
+                  revisionOf: source.id,
+                },
+              },
+            });
+          }
+        : undefined;
+
+      let revision: Awaited<ReturnType<typeof createApplicationRevisionWithAttachments>>;
+      try {
+        revision = await createApplicationRevisionWithAttachments(
+          prisma,
+          id,
+          actorId,
+          // `log` 必實傳：附件複製之失敗事件唯有經此才會留下（log-safe 的）
+          // 痕跡；省略時 production 對 AC-14(e) 的失敗路徑將完全無痕。
+          { storage: attachmentStorage, log: request.log },
+          onCreated
+        );
+      } catch (err) {
+        throw await translateRevisionError(prisma, id, err);
+      }
+
+      // §7.3：201 { application: <新草稿之型別分派 DTO；supersedes 非 null> }。
+      // 型別取自建立結果列，不需再探測一次（沿作廢端點之型別分派形狀）。
+      if (revision.type === "MAINTENANCE") {
+        const created = await getMaintenanceApplication(prisma, revision.id);
+        if (!created) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+        const dto = await buildMaintenanceApplicationDto(prisma, created);
+        return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
+      }
+
+      if (revision.type === "DEPRECIATION") {
+        const created = await getDepreciationApplication(prisma, revision.id);
+        if (!created) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+        const dto = await buildDepreciationApplicationDto(prisma, created);
+        return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
+      }
+
+      const created = await getTravelApplication(prisma, revision.id);
+      if (!created) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+      const dto = await toTravelApplicationDto(prisma, created);
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 

@@ -24,13 +24,16 @@
  *   DB 查得之 `ownerId`；③403 回應零業務值。
  *
  * ---------------------------------------------------------------------------
- * T7 留白清單（本檔刻意未涵蓋，由 T7 於本檔就地補齊）
+ * T7 留白清單（T4 開列；1./2. 已由 **T7** 於本檔 §I〜§L 就地補齊，3. 仍留 T13）
  * ---------------------------------------------------------------------------
- *   1. AC-23 之修正版端點 5 格（未登入／強制改密／本人 201／他人 403／管理員
- *      201 且 `ownerId` ＝原擁有人）。
- *   2. AC-27 之 `409 + details.existingRevisionId` 一格（§7.5「已有修正版」
- *      列）；修正版端點之 401／403／404／409(`details.status`)／500 各格。
- *   3. AC-23 回歸四格中「列印端點於 `VOIDED` → 200」之**狀態碼**斷言屬
+ *   1. ✅ **T7 已補齊**（§I／§J）：AC-23 之修正版端點 5 格（未登入／強制改密
+ *      ／本人 201／他人 403／管理員 201 且 `ownerId` ＝原擁有人）＋ 側信道
+ *      三態指紋。
+ *   2. ✅ **T7 已補齊**（§K／§L）：AC-27 之 `409 + details.existingRevisionId`
+ *      一格（§7.5「已有修正版」列）；修正版端點之 401／403／404／
+ *      409(`details.status`)／500 各格；`PHASE_009_VOID_SRC_FILES` 擴列修正版
+ *      面兩檔（見 §A）。
+ *   3. ⬜ **仍留 T13**：AC-23 回歸四格中「列印端點於 `VOIDED` → 200」之**狀態碼**斷言屬
  *      **T13**（AC-22／D5：列印端點狀態守門由 `COMPLETED` 放行為
  *      `COMPLETED ∪ VOIDED`）。本檔對列印端點僅斷言**授權面**（401／403）與
  *      `COMPLETED` 時逐字相同——即 §6.1 回歸格所要求之「四格之授權判定
@@ -124,14 +127,31 @@ describe("AC-27 結構性 — ErrorCode 聯集全等（本 Phase 零新增碼）
     expect(members.length).toBe(14);
   });
 
-  /** 本 Phase 之作廢面 src 檔（T3 新增兩檔 ＋ T4 接線之 routes.ts）。 */
+  /**
+   * 本 Phase 之申請面 src 檔——**掃描面**之定義是「本 Phase 新增或接線、且會
+   * 自行拋出 `AppError` 的 src 檔」。
+   *
+   *   · T3 新增兩檔：`void-reason.ts`／`application-void.ts`（作廢面）。
+   *   · T4／T7 接線：`routes.ts`（兩個新端點皆掛於此）。
+   *   · **T7 擴列（Packet FW-8）**：
+   *     - `src/applications/application-revision.ts`（T5）：修正版 service，
+   *       自拋 `CONFLICT`（兩處守門）與 `INTERNAL_ERROR`（子列缺席）。
+   *     - `src/attachment/attachment-copy.ts`（T6）：修正版**唯一** production
+   *       入口 `createApplicationRevisionWithAttachments` 所在，自拋
+   *       `INTERNAL_ERROR`（對位不一致／複製失敗之 log-safe 轉譯）。雖位於
+   *       `src/attachment/`，其錯誤碼是**修正版端點**回應之一部分（§7.5
+   *       「附件複製失敗 → 500 `INTERNAL_ERROR`」列），故屬本 Phase 掃描
+   *       面；下方清單自證即依此分目錄核對。
+   */
   const PHASE_009_VOID_SRC_FILES = [
     "src/applications/void-reason.ts",
     "src/applications/application-void.ts",
+    "src/applications/application-revision.ts",
     "src/applications/routes.ts",
+    "src/attachment/attachment-copy.ts",
   ];
 
-  it("AC-27: 作廢面三檔（void-reason.ts／application-void.ts／routes.ts）僅使用基線 ErrorCode 字面值", () => {
+  it("AC-27: 本 Phase 掃描面五檔（作廢三檔 ＋ 修正版兩檔）僅使用基線 ErrorCode 字面值", () => {
     const usedCodes = new Set<string>();
     let filesSeen = 0;
     for (const rel of PHASE_009_VOID_SRC_FILES) {
@@ -154,21 +174,43 @@ describe("AC-27 結構性 — ErrorCode 聯集全等（本 Phase 零新增碼）
     }
   });
 
-  it("AC-27 清單自證: PHASE_009_VOID_SRC_FILES 與 src/applications/ 之本 Phase 新增檔一致（新增作廢面 src 檔而未同步清單即紅）", () => {
-    // `src/applications/` 目錄之全部 .ts 檔——本清單刻意只列「作廢面」三
-    // 檔，故以「三檔皆為該目錄之實際成員」＋「目錄內不存在其他以
-    // `void-` 開頭之未列入檔案」雙向自證（修正版面之 `application-
-    // revision.ts` 屬 T5，屆時由 T7 於本檔擴充清單）。
-    const dir = path.join(BACKEND_ROOT, "src/applications");
-    const actual = fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
-      .sort();
+  it("AC-27 清單自證: PHASE_009_VOID_SRC_FILES 之五檔皆為實際成員，且作廢面／修正版面之檔名族群無遺漏（新增本 Phase src 檔而未同步清單即紅）", () => {
+    // 每一列各自回到其所屬目錄核對（T7 擴列後清單橫跨 `src/applications/`
+    // 與 `src/attachment/` 兩目錄，不能再以單一目錄之 basename 比對）。
     for (const rel of PHASE_009_VOID_SRC_FILES) {
-      expect(actual).toContain(path.basename(rel));
+      const dir = path.join(BACKEND_ROOT, path.dirname(rel));
+      const actual = fs
+        .readdirSync(dir)
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
+      expect(actual, `${rel} 不是 ${path.dirname(rel)} 之實際成員`).toContain(path.basename(rel));
     }
-    const voidFaceFiles = actual.filter((f) => f.startsWith("void-") || f.includes("-void"));
+
+    // 反向：以檔名族群自證「沒有漏列」。作廢面 ＝ `src/applications/` 內含
+    // `void-`／`-void` 者；修正版面 ＝ `src/applications/` 內含 `-revision`
+    // 者 ＋ `src/attachment/` 內含 `-copy` 者。任一族群多出新檔而未列入清
+    // 單，本斷言即紅（清單腐化守門，T4 即審 FW-D）。
+    const applicationsFiles = fs
+      .readdirSync(path.join(BACKEND_ROOT, "src/applications"))
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
+    const attachmentFiles = fs
+      .readdirSync(path.join(BACKEND_ROOT, "src/attachment"))
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"));
+
+    const voidFaceFiles = applicationsFiles.filter(
+      (f) => f.startsWith("void-") || f.includes("-void")
+    );
     expect(voidFaceFiles.sort()).toEqual(["application-void.ts", "void-reason.ts"]);
+
+    const revisionFaceFiles = [
+      ...applicationsFiles.filter((f) => f.includes("-revision")),
+      ...attachmentFiles.filter((f) => f.includes("-copy")),
+    ].sort();
+    expect(revisionFaceFiles).toEqual(["application-revision.ts", "attachment-copy.ts"]);
+
+    // 兩族群之四檔皆須在清單內（移除任一擴列項即紅）。
+    for (const basename of [...voidFaceFiles, ...revisionFaceFiles]) {
+      expect(PHASE_009_VOID_SRC_FILES.map((rel) => path.basename(rel))).toContain(basename);
+    }
   });
 });
 
@@ -1220,5 +1262,458 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
     expect(probeJoined).toContain(toLogSearchable(reportStorageRoot));
     expect(probeJoined).toContain(VEHICLE_PRICE_MARKER);
     expect(probeJoined).toContain(String(USEFUL_LIFE_YEARS_MARKER));
+  });
+});
+
+// ===========================================================================
+// §I〜§L — PHASE-009-T7：修正版端點之授權矩陣與錯誤合約
+//   （AC-23 修正版 5 格／AC-27 §7.5 逐格，含 details.existingRevisionId）
+//
+// ---------------------------------------------------------------------------
+// 規範出處
+// ---------------------------------------------------------------------------
+// AC-23（:213）§6.1 表 #6〜#10：未登入 401；`mustChangePassword` 403
+//   `PASSWORD_CHANGE_REQUIRED`；擁有人本人 201；他人一般使用者 403
+//   `FORBIDDEN` 且回應**零業務值**；管理員 201 且新草稿 `ownerId` ＝原擁有人
+//   （AD-US-09①）。他人之「已完成」與「草稿」回應**逐字相同**。
+// AC-27（:223）§7.5：401／403／404／409(`details.status`)／
+//   409(`details.existingRevisionId`)／500。400 一格對本端點**不適用**
+//   （§7.3「Body：無（一律忽略）」——正向實證見
+//   `phase9-revision.test.ts` 之「body 一律忽略」一則）。
+// §6.1 判定紀律①：授權（401／403）一律先於狀態守門（409）——他人之草稿／已
+//   完成／已作廢三種狀態之回應逐字相同。
+//
+// ---------------------------------------------------------------------------
+// Mutant 自證（暫改後復原，不入最終 diff；結果記於 Handoff）
+// ---------------------------------------------------------------------------
+//   ① 修正版 route 之 `assertOwnershipOrAdmin` 移到 service 呼叫之後（409 早
+//      於授權）→ §J 側信道必紅。
+//   ② 代操作稽核移出交易（`createApplicationRevisionWithAttachments` 回傳後
+//      才寫 `auditLog`）→ §L 必紅（修正版已提交）。
+//   ③ 自 `PHASE_009_VOID_SRC_FILES` 移除任一 T7 擴列項 → §A 清單自證必紅。
+//
+// 紀律：合成資料；`loginName` 前綴 `p9t7c_`；清理僅限本套件自建 id。
+// ===========================================================================
+
+describeWithDb("PHASE-009-T7 — 修正版端點授權矩陣／錯誤合約（AC-23／AC-27）", () => {
+  const T7_PREFIX = "p9t7c_";
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+  let attachmentStorageRoot: string;
+  let reportStorageRoot: string;
+
+  let ownerId: string;
+  let ownerCookie: string;
+  let strangerCookie: string;
+  let mustChangeCookie: string;
+  let adminCookie: string;
+
+  const createdApplicationIds: string[] = [];
+  const createdUserIds: string[] = [];
+
+  async function createUser(
+    labelSuffix: string,
+    opts: { role?: "USER" | "ADMIN"; mustChangePassword?: boolean; displayName?: string } = {}
+  ) {
+    const loginName = `${T7_PREFIX}${labelSuffix}_${RUN_ID}`;
+    const user = await prisma.user.create({
+      data: {
+        loginName,
+        displayName: opts.displayName ?? `T7 ${labelSuffix}`,
+        passwordHash: await hashPassword(PASSWORD),
+        role: opts.role ?? "USER",
+        isActive: true,
+        mustChangePassword: opts.mustChangePassword ?? false,
+      },
+    });
+    createdUserIds.push(user.id);
+    return { id: user.id, cookie: await loginUser(app, loginName, PASSWORD), loginName };
+  }
+
+  /** 已完成差旅（含業務值標記，供 403 零業務值掃描）。 */
+  async function createCompletedTravel(suffix: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2026-05-10T00:00:00.000Z"),
+        totalAmount: TOTAL_AMOUNT_MARKER,
+        completedAt: new Date("2026-05-10T08:00:00.000Z"),
+        travel: {
+          create: {
+            tripDate: new Date("2026-05-10T00:00:00.000Z"),
+            purpose: `${PURPOSE_MARKER}-${suffix}`,
+            fuelUnitPrice: "2.3456",
+            etcUnitPrice: "1.2345",
+            snapshotTotalKm: "60.00",
+            snapshotRawAmount: "500.0000",
+            calculatedAt: new Date("2026-05-10T08:00:00.000Z"),
+          },
+        },
+      },
+    });
+    createdApplicationIds.push(created.id);
+    return created.id;
+  }
+
+  async function createDraftTravel(suffix: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "DRAFT",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2026-05-10T00:00:00.000Z"),
+        travel: { create: { purpose: `${PURPOSE_MARKER}-${suffix}` } },
+      },
+    });
+    createdApplicationIds.push(created.id);
+    return created.id;
+  }
+
+  /** 已作廢差旅——經**真實作廢端點**產生（非直寫 DB）。 */
+  async function createVoidedTravel(suffix: string): Promise<string> {
+    const id = await createCompletedTravel(suffix);
+    const resp = await app.inject({
+      method: "POST",
+      url: `/applications/${id}/void`,
+      headers: { cookie: ownerCookie },
+      payload: { reason: `T7 作廢原因-${suffix}` },
+    });
+    if (resp.statusCode !== 200) {
+      throw new Error(`void endpoint failed for ${suffix}: ${resp.statusCode} ${resp.body}`);
+    }
+    return id;
+  }
+
+  function postRevision(id: string, headers?: Record<string, string>) {
+    return app.inject({ method: "POST", url: `/applications/${id}/revision`, headers });
+  }
+
+  /** 追蹤成功建立之修正版（cleanup 需先刪修正版，見 afterAll）。 */
+  function trackRevision(resp: { body: string }): string {
+    const id = (JSON.parse(resp.body) as { application: { id: string } }).application.id;
+    createdApplicationIds.push(id);
+    return id;
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await prisma.$connect();
+
+    attachmentStorageRoot = makeTempStorageRoot("att-t7");
+    reportStorageRoot = makeTempStorageRoot("rpt-t7");
+
+    app = await buildServer({
+      databaseUrl: DB_URL,
+      storageRoot: attachmentStorageRoot,
+      reportStorageRoot,
+      logLevel: "error",
+    });
+    await app.ready();
+
+    const owner = await createUser("owner", { displayName: OWNER_DISPLAY_MARKER });
+    ownerId = owner.id;
+    ownerCookie = owner.cookie;
+    strangerCookie = (await createUser("stranger")).cookie;
+    mustChangeCookie = (await createUser("mustchg", { mustChangePassword: true })).cookie;
+    adminCookie = (await createUser("admin", { role: "ADMIN" })).cookie;
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    await app.close();
+    if (createdUserIds.length > 0) {
+      await prisma.attachment.deleteMany({ where: { ownerId: { in: createdUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { targetId: { in: createdUserIds } } });
+    }
+    // 修正版（supersedesId → 原申請，onDelete: Restrict）必須先於原申請刪除。
+    for (const id of [...createdApplicationIds].reverse()) {
+      await prisma.application.deleteMany({ where: { supersedesId: id } });
+    }
+    await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
+    if (createdUserIds.length > 0) {
+      await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    }
+    await prisma.$disconnect();
+    removeTempStorageRoot(attachmentStorageRoot);
+    removeTempStorageRoot(reportStorageRoot);
+  });
+
+  // =========================================================================
+  // §I — AC-23 授權矩陣：修正版端點 5 格（§6.1 表 #6〜#10）
+  // =========================================================================
+
+  describe("AC-23: 授權矩陣 5 格逐格（POST /applications/:id/revision × 5 身分）", () => {
+    it("§6.1 #6 未登入 → 401 UNAUTHORIZED（判定先於存在性——以不存在之 id 呼叫亦為 401）", async () => {
+      const resp = await postRevision(NONEXISTENT_ID);
+      expect(resp.statusCode).toBe(401);
+      const body = JSON.parse(resp.body) as ErrorBody;
+      expect(body.error?.code).toBe("UNAUTHORIZED");
+      expectNoLeakage(body);
+    });
+
+    it("§6.1 #7 已登入但 mustChangePassword → 403 PASSWORD_CHANGE_REQUIRED（先於存在性判定）", async () => {
+      const resp = await postRevision(NONEXISTENT_ID, { cookie: mustChangeCookie });
+      expect(resp.statusCode).toBe(403);
+      const body = JSON.parse(resp.body) as ErrorBody;
+      expect(body.error?.code).toBe("PASSWORD_CHANGE_REQUIRED");
+      expectNoLeakage(body);
+    });
+
+    it("§6.1 #8 擁有人本人 → 201，回應為新草稿之型別分派 DTO 且 supersedes 非 null", async () => {
+      const sourceId = await createCompletedTravel("matrix-owner");
+      const resp = await postRevision(sourceId, { cookie: ownerCookie });
+      expect(resp.statusCode).toBe(201);
+      const revisionId = trackRevision(resp);
+
+      const body = JSON.parse(resp.body) as {
+        application: {
+          id: string;
+          type: string;
+          status: string;
+          ownerId: string;
+          supersedes: { id: string } | null;
+        };
+      };
+      expect(body.application.id).toBe(revisionId);
+      expect(body.application.type).toBe("TRAVEL");
+      expect(body.application.status).toBe("DRAFT");
+      expect(body.application.ownerId).toBe(ownerId);
+      expect(body.application.supersedes).not.toBeNull();
+      expect(body.application.supersedes?.id).toBe(sourceId);
+    });
+
+    it("§6.1 #9 他人一般使用者 → 403 FORBIDDEN，回應零業務值（狀態／型別／金額／姓名／行程目的皆不外洩），零寫入", async () => {
+      const sourceId = await createCompletedTravel("matrix-stranger");
+      const resp = await postRevision(sourceId, { cookie: strangerCookie });
+      expect(resp.statusCode).toBe(403);
+      const body = JSON.parse(resp.body) as ErrorBody;
+      expect(body.error?.code).toBe("FORBIDDEN");
+      expectNoLeakage(body);
+
+      // 零業務值掃描（§6.1 判定紀律③）。
+      expect(resp.body).not.toContain(PURPOSE_MARKER);
+      expect(resp.body).not.toContain(OWNER_DISPLAY_MARKER);
+      expect(resp.body).not.toContain(String(TOTAL_AMOUNT_MARKER));
+      expect(resp.body).not.toContain("COMPLETED");
+      expect(resp.body).not.toContain("TRAVEL");
+      expect(body.error?.details).toBeUndefined();
+
+      // 零寫入：既無修正版，原申請亦未被 touch。
+      expect(await prisma.application.count({ where: { supersedesId: sourceId } })).toBe(0);
+      const after = await prisma.application.findUniqueOrThrow({ where: { id: sourceId } });
+      expect(after.status).toBe("COMPLETED");
+    });
+
+    it("§6.1 #10 管理員（非擁有人）→ 201，新草稿 ownerId ＝原擁有人（AD-US-09①）", async () => {
+      const sourceId = await createCompletedTravel("matrix-admin");
+      const resp = await postRevision(sourceId, { cookie: adminCookie });
+      expect(resp.statusCode).toBe(201);
+      const revisionId = trackRevision(resp);
+
+      const row = await prisma.application.findUniqueOrThrow({ where: { id: revisionId } });
+      expect(row.ownerId).toBe(ownerId);
+      expect(row.supersedesId).toBe(sourceId);
+      expect(row.status).toBe("DRAFT");
+    });
+  });
+
+  // =========================================================================
+  // §J — AC-23／§6.1 判定紀律①：側信道（他人視角三種狀態逐字相同）
+  //
+  // T4 即審 FW-G：授權早於 409 只能在 route 層落地——判定順序若對調，他人對
+  // 草稿／已完成／已作廢會分別得到 409(DRAFT)／403／409(VOIDED)，指紋互異
+  // → 必紅。
+  // =========================================================================
+
+  describe("AC-23 側信道: 他人之「草稿」「已完成」「已作廢」三種狀態回應逐字相同（授權判定早於狀態守門）", () => {
+    it("三種狀態之 403 回應（狀態碼＋body，requestId 除外）逐字全等，且皆零寫入", async () => {
+      const draftId = await createDraftTravel("t7-sidechannel-draft");
+      const completedId = await createCompletedTravel("t7-sidechannel-completed");
+      const voidedId = await createVoidedTravel("t7-sidechannel-voided");
+
+      const headers = { cookie: strangerCookie };
+      const [draftResp, completedResp, voidedResp] = await Promise.all([
+        postRevision(draftId, headers),
+        postRevision(completedId, headers),
+        postRevision(voidedId, headers),
+      ]);
+
+      const fingerprints = [draftResp, completedResp, voidedResp].map(responseFingerprint);
+      expect(fingerprints[0]).toBe(fingerprints[1]);
+      expect(fingerprints[1]).toBe(fingerprints[2]);
+      // 正向對照：三者皆為 403 FORBIDDEN（非「三者皆 500」之恆真式全等）。
+      expect(draftResp.statusCode).toBe(403);
+      expect(JSON.parse(draftResp.body).error.code).toBe("FORBIDDEN");
+
+      // 零寫入：三筆狀態皆未變，且皆無修正版。
+      const rows = await prisma.application.findMany({
+        where: { id: { in: [draftId, completedId, voidedId] } },
+        select: { id: true, status: true },
+      });
+      const byId = new Map(rows.map((r) => [r.id, r.status]));
+      expect(byId.get(draftId)).toBe("DRAFT");
+      expect(byId.get(completedId)).toBe("COMPLETED");
+      expect(byId.get(voidedId)).toBe("VOIDED");
+      expect(
+        await prisma.application.count({
+          where: { supersedesId: { in: [draftId, completedId, voidedId] } },
+        })
+      ).toBe(0);
+    });
+
+    it("同一不存在之 id：他人與擁有人皆得 404（不因擁有人身分洩漏差異）；他人之「存在但非其所有」則為 403", async () => {
+      const sourceId = await createCompletedTravel("t7-sidechannel-404");
+      const strangerMissing = await postRevision(NONEXISTENT_ID, { cookie: strangerCookie });
+      const ownerMissing = await postRevision(NONEXISTENT_ID, { cookie: ownerCookie });
+      expect(strangerMissing.statusCode).toBe(404);
+      expect(ownerMissing.statusCode).toBe(404);
+      expect(responseFingerprint(strangerMissing)).toBe(responseFingerprint(ownerMissing));
+
+      const strangerExisting = await postRevision(sourceId, { cookie: strangerCookie });
+      expect(strangerExisting.statusCode).toBe(403);
+    });
+  });
+
+  // =========================================================================
+  // §K — AC-27 錯誤表逐格（§7.5，修正版端點側）
+  // =========================================================================
+
+  describe("AC-27: 修正版端點錯誤表逐格（404／409+details.status×2／409+details.existingRevisionId；400 不適用）", () => {
+    it("404 NOT_FOUND: 擁有人對不存在之 id 建修正版（不帶 details，不洩漏型別；B-13）", async () => {
+      const resp = await postRevision(NONEXISTENT_ID, { cookie: ownerCookie });
+      expect(resp.statusCode).toBe(404);
+      const body = JSON.parse(resp.body) as ErrorBody;
+      expect(body.error?.code).toBe("NOT_FOUND");
+      expect(body.error?.details).toBeUndefined();
+      expectNoLeakage(body);
+    });
+
+    it('409 CONFLICT + details.status="DRAFT"／"VOIDED"（AC-13(a)(b) 端點層），訊息逐字釘樁', async () => {
+      const draftId = await createDraftTravel("t7-errtable-draft");
+      const voidedId = await createVoidedTravel("t7-errtable-voided");
+      const headers = { cookie: ownerCookie };
+
+      const draftResp = await postRevision(draftId, headers);
+      expect(draftResp.statusCode).toBe(409);
+      const draftBody = JSON.parse(draftResp.body) as ErrorBody;
+      expect(draftBody.error?.code).toBe("CONFLICT");
+      expect(draftBody.error?.details).toEqual({ status: "DRAFT" });
+      expect(draftBody.error?.message).toBe("僅已完成之申請可建立修正版");
+      expectNoLeakage(draftBody);
+
+      const voidedResp = await postRevision(voidedId, headers);
+      expect(voidedResp.statusCode).toBe(409);
+      const voidedBody = JSON.parse(voidedResp.body) as ErrorBody;
+      expect(voidedBody.error?.code).toBe("CONFLICT");
+      expect(voidedBody.error?.details).toEqual({ status: "VOIDED" });
+      expect(voidedBody.error?.message).toBe("僅已完成之申請可建立修正版");
+
+      expect(
+        await prisma.application.count({ where: { supersedesId: { in: [draftId, voidedId] } } })
+      ).toBe(0);
+    });
+
+    it("409 CONFLICT + details.existingRevisionId（§7.5「已有修正版」列；T4 留白清單第 2 點）", async () => {
+      const sourceId = await createCompletedTravel("t7-errtable-existing");
+      const first = await postRevision(sourceId, { cookie: ownerCookie });
+      expect(first.statusCode).toBe(201);
+      const firstRevisionId = trackRevision(first);
+
+      const second = await postRevision(sourceId, { cookie: ownerCookie });
+      expect(second.statusCode).toBe(409);
+      const body = JSON.parse(second.body) as ErrorBody;
+      expect(body.error?.code).toBe("CONFLICT");
+      expect(body.error?.details).toEqual({ existingRevisionId: firstRevisionId });
+      expect(body.error?.message).toBe("此申請已有修正版");
+      expectNoLeakage(body);
+
+      // 仍恰一筆修正版（非冪等成功、非第二筆）。
+      const revisions = await prisma.application.findMany({
+        where: { supersedesId: sourceId },
+        select: { id: true },
+      });
+      expect(revisions.map((r) => r.id)).toEqual([firstRevisionId]);
+    });
+
+    it("判定順序: 他人 × 草稿（雙重違規）→ 403（授權），非 409（狀態）", async () => {
+      const draftId = await createDraftTravel("t7-errtable-order");
+      const resp = await postRevision(draftId, { cookie: strangerCookie });
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+    });
+  });
+
+  // =========================================================================
+  // §L — 500 INTERNAL_ERROR（§7.5 末列）＋ 代操作稽核同交易之端點層自證
+  //
+  // 手法沿 §G（T4）：於本 worker schema 對 `"AuditLog"` 建立僅對本測試專屬
+  // `targetLabel` 前綴生效之 BEFORE INSERT 觸發器，使代操作稽核寫入必然失敗
+  // ——
+  //   · 正確實作（稽核在交易內）→ 整筆回滾：零修正版列、零稽核列、500。
+  //   · Mutant（稽核移到交易後）→ 修正版已提交 → **必紅**。
+  // =========================================================================
+
+  describe("§7.5 500 INTERNAL_ERROR ＋ AC-26(b) 同交易之端點層自證（代操作稽核寫入失敗 → 整筆回滾）", () => {
+    it("稽核 INSERT 於 DB 層失敗 → 500 INTERNAL_ERROR，零修正版列、零稽核列、零附件複製（稽核移出交易之 mutant 必紅）", async () => {
+      const trapFn = `p9t7_audit_trap_${RUN_ID}`;
+      const trapTrigger = `p9t7_audit_trap_trg_${RUN_ID}`;
+      // 專屬擁有人：其 loginName 即 targetLabel 之前綴（`{loginName}#{id}`）。
+      const trapOwner = await createUser("audittrap");
+      const trapAdmin = await createUser("audittrapadmin", { role: "ADMIN" });
+
+      const sourceRow = await prisma.application.create({
+        data: {
+          type: "TRAVEL",
+          status: "COMPLETED",
+          ownerId: trapOwner.id,
+          createdById: trapOwner.id,
+          primaryDate: new Date("2026-06-01T00:00:00.000Z"),
+          totalAmount: 1234,
+          completedAt: new Date("2026-06-01T08:00:00.000Z"),
+          travel: { create: { purpose: "T7 audit trap fixture" } },
+        },
+      });
+      createdApplicationIds.push(sourceRow.id);
+
+      try {
+        await prisma.$executeRawUnsafe(
+          `CREATE OR REPLACE FUNCTION "${trapFn}"() RETURNS trigger AS $trap$
+             BEGIN RAISE EXCEPTION 'p9t7 audit trap'; END;
+           $trap$ LANGUAGE plpgsql;`
+        );
+        await prisma.$executeRawUnsafe(
+          `CREATE TRIGGER "${trapTrigger}" BEFORE INSERT ON "AuditLog"
+             FOR EACH ROW WHEN (NEW."targetLabel" LIKE '${trapOwner.loginName}#%')
+             EXECUTE FUNCTION "${trapFn}"();`
+        );
+
+        const resp = await postRevision(sourceRow.id, { cookie: trapAdmin.cookie });
+        expect(resp.statusCode).toBe(500);
+        const body = JSON.parse(resp.body) as ErrorBody;
+        expect(body.error?.code).toBe("INTERNAL_ERROR");
+        expectNoLeakage(body);
+
+        // 整筆回滾：零修正版列、零稽核列。
+        expect(await prisma.application.count({ where: { supersedesId: sourceRow.id } })).toBe(0);
+        expect(await prisma.auditLog.count({ where: { actorId: trapAdmin.id } })).toBe(0);
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${trapTrigger}" ON "AuditLog";`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${trapFn}"();`);
+      }
+
+      // 反向對照：觸發器卸除後同一來源可正常建立修正版（證明上方 500 來自注
+      // 入而非實作本身壞掉，避免「恆 500」之恆真式通過）。
+      const okResp = await postRevision(sourceRow.id, { cookie: trapAdmin.cookie });
+      expect(okResp.statusCode).toBe(201);
+      trackRevision(okResp);
+      expect(await prisma.auditLog.count({ where: { actorId: trapAdmin.id } })).toBe(1);
+    });
   });
 });

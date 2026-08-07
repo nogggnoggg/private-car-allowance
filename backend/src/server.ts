@@ -130,7 +130,10 @@ export async function buildServer(
   await fastify.register(attachmentPlugin, { prisma, storage });
 
   // Register applications routes (差旅草稿 CRUD — PHASE-004-T3)
-  await fastify.register(applicationsPlugin, { prisma });
+  // PHASE-009-T7：修正版端點（POST /applications/:id/revision）會連同證明附件
+  // 一併複製位元組，故注入**同一個**附件 storage 實例（不另建，見
+  // `applications/routes.ts` 之 `ApplicationsPluginOptions` 註解）。
+  await fastify.register(applicationsPlugin, { prisma, attachmentStorage: storage });
 
   // Register mileage statistics route (GET /statistics/mileage — PHASE-005-T4)
   await fastify.register(mileagePlugin, { prisma });

@@ -937,6 +937,11 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
           "computed",
           "snapshot",
           "void", // PHASE-009-T3b-LITE（§7.2，Spec Gate 已批准之 AC；三型 DTO 受控擴充）
+          // PHASE-009-T7（§7.2 三型詳情 DTO 之兩個版本關聯鍵；AC-12(b)）——
+          // 機械連動第六類，Spec §8.5 逐字「`supersedes`／`supersededBy` 兩鍵
+          // 之同步屬 **T7**」，Spec Gate 已同批預授權（僅更新基線值，零弱化）。
+          "supersedes",
+          "supersededBy",
         ].sort()
       );
       for (const forbidden of [
