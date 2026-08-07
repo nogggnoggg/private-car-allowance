@@ -230,6 +230,9 @@ export default function ApplicationListSection({
             <option value="">全部</option>
             <option value="DRAFT">草稿</option>
             <option value="COMPLETED">已完成</option>
+            {/* PHASE-009-T15b（AC-30(b)）：後端 `APPLICATION_STATUSES` 早已含
+                `VOIDED`，缺口純在本下拉——無此選項則已作廢申請無法被篩出。 */}
+            <option value="VOIDED">已作廢</option>
           </select>
         </div>
         <div className="form-group">
