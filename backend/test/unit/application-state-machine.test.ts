@@ -334,13 +334,17 @@ function listStatusLiteralOccurrences(root: string = SRC_ROOT): string[] {
  * 任何新出現的位置都不在此白名單內，測試即轉紅，強制人工複核並更新此
  * 清單——這就是「白名單外必紅」。
  */
+// PHASE-009-T3（機械連動，僅更新行號，T2 即審 AR-1 預授權）：三個 service
+// 檔各新增一行 import（`application-void.ts`）＋ DTO `void` 欄位相關程式碼，
+// 使下列六個既有位置之行號位移；比對對象與理由不變（見本區塊上方文件註
+// 解），逐一以 `grep` 核對後回填新行號——不新增任何條目。
 const AC05A_WHITELIST = [
-  "applications/depreciation-service.ts:179:DRAFT",
-  "applications/depreciation-service.ts:1421:COMPLETED",
-  "applications/maintenance-service.ts:194:DRAFT",
-  "applications/maintenance-service.ts:1188:COMPLETED",
-  "applications/travel-service.ts:247:DRAFT",
-  "applications/travel-service.ts:1393:COMPLETED",
+  "applications/depreciation-service.ts:180:DRAFT",
+  "applications/depreciation-service.ts:1430:COMPLETED",
+  "applications/maintenance-service.ts:195:DRAFT",
+  "applications/maintenance-service.ts:1196:COMPLETED",
+  "applications/travel-service.ts:248:DRAFT",
+  "applications/travel-service.ts:1394:COMPLETED",
   "mileage/mileage-range.ts:117:COMPLETED",
   "parameters/reference-guard.ts:114:COMPLETED",
   "parameters/reference-guard.ts:132:COMPLETED",

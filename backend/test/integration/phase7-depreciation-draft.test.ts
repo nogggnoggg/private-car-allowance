@@ -936,6 +936,7 @@ describeWithDb("PHASE-007-T4 — 折舊草稿 CRUD ＋ 欄位驗證 ＋ 狀態�
           "completionBlockers",
           "computed",
           "snapshot",
+          "void", // PHASE-009-T3b-LITE（§7.2，Spec Gate 已批准之 AC；三型 DTO 受控擴充）
         ].sort()
       );
       for (const forbidden of [
