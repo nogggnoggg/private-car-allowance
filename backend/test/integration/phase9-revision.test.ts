@@ -914,6 +914,7 @@ describeWithDb(
     let ownerLoginName: string;
     let ownerCookie: string;
     let adminId: string;
+    let adminLoginName: string;
     let adminCookie: string;
 
     const t7ApplicationIds: string[] = [];
@@ -1133,6 +1134,7 @@ describeWithDb(
       ownerCookie = owner.cookie;
       const admin = await createUser("admin", "ADMIN");
       adminId = admin.id;
+      adminLoginName = admin.loginName;
       adminCookie = admin.cookie;
     });
 
@@ -1552,6 +1554,69 @@ describeWithDb(
             where: {
               action: "APPLICATION_CREATED_ON_BEHALF",
               targetLabel: `${ownerLoginName}#${revisionId}`,
+            },
+          })
+        ).toBe(0);
+      });
+
+      // T7R SF-1（即審 REQUEST_CHANGES）：上面兩則無法鑑別「判定基準是
+      // `actorId !== ownerId`（正確）還是 `role === 'ADMIN'`（錯誤）」——前者
+      // 之 fixture 恆為 USER 擁有人 × ADMIN 操作者，後者恆為 USER × 本人，兩
+      // 種判定在這兩組資料上結論相同，mutant「isOnBehalf = role === 'ADMIN'」
+      // 因而存活（實測 65/65 全綠）。唯一能區分兩者的資料點是
+      // **ADMIN 對自己擁有之申請操作**：`actorId === ownerId` → 零稽核（正
+      // 確）；`role === 'ADMIN'` → 寫一筆（錯誤）。
+      //
+      // 專案既定標準（三處先例）：`phase4-admin-on-behalf` 系列／PHASE-006
+      // 保養代操作／PHASE-007 折舊代操作三個測試檔皆各有一則「管理員對自己
+      // 代建立 → 零稽核列」之專屬 it（`admin/routes.ts:495-498` 之 C3 邊界註
+      // 解逐字記載此語意）。本則即該標準於修正版端點之落地。
+      it("AC-26(c) C3 邊界: 管理員對**自己擁有**之申請建立修正版 → 201 且零稽核列（判定基準為 actorId !== ownerId，非 role === 'ADMIN'——角色判定之 mutant 必紅）", async () => {
+        const adminOwnSource = await prisma.application.create({
+          data: {
+            type: "TRAVEL",
+            status: "COMPLETED",
+            // 擁有人與建立者皆為管理員本人——這是唯一能區分「本人判定」與
+            // 「角色判定」的資料形狀。
+            ownerId: adminId,
+            createdById: adminId,
+            primaryDate: new Date("2026-03-15T00:00:00.000Z"),
+            totalAmount: 1500,
+            completedAt: new Date("2026-03-15T08:00:00.000Z"),
+            travel: {
+              create: {
+                tripDate: new Date("2026-03-15T00:00:00.000Z"),
+                purpose: "T7R 管理員自有申請",
+              },
+            },
+          },
+        });
+        track(adminOwnSource.id);
+
+        const before = await prisma.auditLog.count({ where: { actorId: adminId } });
+
+        const resp = await postRevision(adminOwnSource.id, adminCookie);
+        expect(resp.statusCode).toBe(201);
+        const revisionId = (resp.json() as { application: { id: string } }).application.id;
+        track(revisionId);
+
+        // 新草稿之擁有人與建立者皆仍為管理員本人（非代操作）。
+        const row = await prisma.application.findUniqueOrThrow({
+          where: { id: revisionId },
+          select: { ownerId: true, createdById: true, supersedesId: true },
+        });
+        expect(row.ownerId).toBe(adminId);
+        expect(row.createdById).toBe(adminId);
+        expect(row.supersedesId).toBe(adminOwnSource.id);
+
+        // 零稽核列：全域計數未增 ＋ 針對這一筆之 targetLabel 精確比對
+        // （沿 AC-26(c) 既有手法，防同套件之 AC-26(b) 代建列汙染）。
+        expect(await prisma.auditLog.count({ where: { actorId: adminId } })).toBe(before);
+        expect(
+          await prisma.auditLog.count({
+            where: {
+              action: "APPLICATION_CREATED_ON_BEHALF",
+              targetLabel: `${adminLoginName}#${revisionId}`,
             },
           })
         ).toBe(0);
