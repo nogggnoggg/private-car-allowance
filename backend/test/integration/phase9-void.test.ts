@@ -50,6 +50,7 @@
  *     非完成流程，直寫可避免重複驗證已在 PHASE-004/006/007 覆蓋過的完成
  *     流程，將預算集中在本 Task 的實際變更面。
  */
+import fs from "node:fs";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -359,6 +360,34 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
     await app.close();
   });
 
+  // ── SF-2（T3R）：全欄指紋法，沿 phase7-depreciation-draft.test.ts:896-901
+  // 之 `fingerprintOf` 既有形狀——逐鍵轉字串後依鍵排序，避免 Decimal／Date
+  // 物件之 toEqual 結構比對細節干擾，同時（相較舊版逐欄手選斷言）不會漏掉
+  // 任何「新增之允許外欄位」。`excludeKeys` 供父列排除四個作廢欄＋
+  // `updatedAt`（唯一預期變動集合）；子列（三型子表／TripSegment）呼叫時
+  // 一律不傳 `excludeKeys`（整列比對，零例外——void 不得觸碰任何子表欄位）。
+  function fingerprintRow(
+    row: Record<string, unknown>,
+    excludeKeys: string[] = []
+  ): Array<[string, string | null]> {
+    return Object.entries(row)
+      .filter(([key]) => !excludeKeys.includes(key))
+      .map(([key, value]): [string, string | null] => [
+        key,
+        value === null || value === undefined ? null : String(value),
+      ])
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  /** AC-04 允許變動集合（父列 `Application`）——僅此五鍵，其餘逐鍵指紋比對。 */
+  const APPLICATION_VOID_ALLOWED_CHANGES = [
+    "status",
+    "voidReason",
+    "voidedAt",
+    "voidedById",
+    "updatedAt",
+  ];
+
   // =========================================================================
   // AC-04 — 成功作廢：單一交易四欄寫入 ＋ 快照逐欄不變
   // =========================================================================
@@ -389,41 +418,29 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       expect(after.voidedById).toBe(ownerId);
       expect(after.voidedAt).not.toBeNull();
 
-      // 快照零改寫：totalAmount／completedAt
-      expect(after.totalAmount).toBe(before.totalAmount);
-      expect(after.completedAt?.toISOString()).toBe(before.completedAt?.toISOString());
-
-      // 快照零改寫：TravelApplication 四欄
-      expect(after.travel?.fuelUnitPrice?.toString()).toBe(
-        before.travel?.fuelUnitPrice?.toString()
+      // SF-2（T3R）：父列全欄指紋（僅排除五個允許變動鍵＋巢狀關聯鍵
+      // "travel"——關聯鍵改由下方子列指紋獨立、完整覆蓋，非略過）。取代原本
+      // 手選 totalAmount／completedAt 兩欄之逐欄斷言——判定收緊：任何其他父
+      // 欄位（如 primaryDate／createdById／ownerId／type）被夾帶改寫，此指紋
+      // 比對必紅（M9 鑑別力來源）。
+      expect(fingerprintRow(after, [...APPLICATION_VOID_ALLOWED_CHANGES, "travel"])).toEqual(
+        fingerprintRow(before, [...APPLICATION_VOID_ALLOWED_CHANGES, "travel"])
       );
-      expect(after.travel?.etcUnitPrice?.toString()).toBe(before.travel?.etcUnitPrice?.toString());
-      expect(after.travel?.snapshotTotalKm?.toString()).toBe(
-        before.travel?.snapshotTotalKm?.toString()
-      );
-      expect(after.travel?.snapshotRawAmount?.toString()).toBe(
-        before.travel?.snapshotRawAmount?.toString()
-      );
-      expect(after.travel?.calculatedAt?.toISOString()).toBe(
-        before.travel?.calculatedAt?.toISOString()
-      );
-
-      // 快照零改寫：段落四欄
-      const beforeSeg = before.travel?.segments[0];
-      const afterSeg = after.travel?.segments[0];
-      expect(afterSeg?.snapshotFuelAmount?.toString()).toBe(
-        beforeSeg?.snapshotFuelAmount?.toString()
-      );
-      expect(afterSeg?.snapshotEtcAmount?.toString()).toBe(
-        beforeSeg?.snapshotEtcAmount?.toString()
-      );
-      expect(afterSeg?.snapshotRawAmount?.toString()).toBe(
-        beforeSeg?.snapshotRawAmount?.toString()
-      );
-      expect(afterSeg?.snapshotAmount).toBe(beforeSeg?.snapshotAmount);
-
       // 允許變動集合：updatedAt 依 @updatedAt 更新屬預期（AC-04 明文）。
       expect(after.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
+
+      // SF-2：TravelApplication 子列整列指紋（零例外——void 不得觸碰任何子
+      // 表欄位，取代原本僅列 5 欄之逐欄斷言，13 欄全覆蓋）。
+      expect(fingerprintRow(after.travel as Record<string, unknown>)).toEqual(
+        fingerprintRow(before.travel as Record<string, unknown>)
+      );
+
+      // SF-2：段落整列指紋（零例外）。
+      const beforeSeg = before.travel?.segments[0];
+      const afterSeg = after.travel?.segments[0];
+      expect(fingerprintRow(afterSeg as Record<string, unknown>)).toEqual(
+        fingerprintRow(beforeSeg as Record<string, unknown>)
+      );
     });
 
     it("保養：成功作廢 → 五個快照欄（intervalKm/officialKm/ratio/rawAmount/calculatedAt）逐欄不變", async () => {
@@ -441,21 +458,14 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
 
       expect(after.status).toBe("VOIDED");
-      expect(after.totalAmount).toBe(before.totalAmount);
-      expect(after.maintenance?.snapshotIntervalKm?.toString()).toBe(
-        before.maintenance?.snapshotIntervalKm?.toString()
+
+      // SF-2（T3R）：父列全欄指紋（取代 totalAmount 單欄斷言）。
+      expect(fingerprintRow(after, [...APPLICATION_VOID_ALLOWED_CHANGES, "maintenance"])).toEqual(
+        fingerprintRow(before, [...APPLICATION_VOID_ALLOWED_CHANGES, "maintenance"])
       );
-      expect(after.maintenance?.snapshotOfficialKm?.toString()).toBe(
-        before.maintenance?.snapshotOfficialKm?.toString()
-      );
-      expect(after.maintenance?.snapshotRatio?.toString()).toBe(
-        before.maintenance?.snapshotRatio?.toString()
-      );
-      expect(after.maintenance?.snapshotRawAmount?.toString()).toBe(
-        before.maintenance?.snapshotRawAmount?.toString()
-      );
-      expect(after.maintenance?.calculatedAt?.toISOString()).toBe(
-        before.maintenance?.calculatedAt?.toISOString()
+      // SF-2：MaintenanceApplication 子列整列指紋（零例外）。
+      expect(fingerprintRow(after.maintenance as Record<string, unknown>)).toEqual(
+        fingerprintRow(before.maintenance as Record<string, unknown>)
       );
     });
 
@@ -474,33 +484,16 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
 
       expect(after.status).toBe("VOIDED");
-      expect(after.totalAmount).toBe(before.totalAmount);
-      expect(after.depreciation?.snapshotVehiclePrice?.toString()).toBe(
-        before.depreciation?.snapshotVehiclePrice?.toString()
+
+      // SF-2（T3R）：父列全欄指紋（取代 totalAmount 單欄斷言）。
+      expect(fingerprintRow(after, [...APPLICATION_VOID_ALLOWED_CHANGES, "depreciation"])).toEqual(
+        fingerprintRow(before, [...APPLICATION_VOID_ALLOWED_CHANGES, "depreciation"])
       );
-      expect(after.depreciation?.snapshotUsefulLifeYears).toBe(
-        before.depreciation?.snapshotUsefulLifeYears
-      );
-      expect(after.depreciation?.snapshotAnnualDepreciation?.toString()).toBe(
-        before.depreciation?.snapshotAnnualDepreciation?.toString()
-      );
-      expect(after.depreciation?.snapshotOfficialKm?.toString()).toBe(
-        before.depreciation?.snapshotOfficialKm?.toString()
-      );
-      expect(after.depreciation?.snapshotAnnualTotalKm?.toString()).toBe(
-        before.depreciation?.snapshotAnnualTotalKm?.toString()
-      );
-      expect(after.depreciation?.snapshotRatio?.toString()).toBe(
-        before.depreciation?.snapshotRatio?.toString()
-      );
-      expect(after.depreciation?.snapshotRawAmount?.toString()).toBe(
-        before.depreciation?.snapshotRawAmount?.toString()
-      );
-      expect(after.depreciation?.calculatedAt?.toISOString()).toBe(
-        before.depreciation?.calculatedAt?.toISOString()
-      );
-      expect(after.depreciation?.depreciationParameterVersionId).toBe(
-        before.depreciation?.depreciationParameterVersionId
+      // SF-2：DepreciationApplication 子列整列指紋（零例外，九個快照欄 ＋
+      // applicationYear／annualTotalKm／depreciationParameterVersionId 等全
+      // 覆蓋，取代原本手選九欄之逐欄斷言）。
+      expect(fingerprintRow(after.depreciation as Record<string, unknown>)).toEqual(
+        fingerprintRow(before.depreciation as Record<string, unknown>)
       );
     });
 
@@ -731,6 +724,107 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       expect(["併發作廢-A", "併發作廢-B"]).toContain(after.voidReason);
       // 恰一個贏家——voidReason 對應勝出之那次呼叫。
       expect(after.voidReason).toBe(fulfilled[0].value.voidReason);
+    });
+
+    // SF-1(a)（T3R）：上方自然時序測試無法可靠鑑別「行鎖被移除」（reviewer
+    // M1：12 輪僅 4 紅）或「交易被拆分」（reviewer M10：拆交易後 34 全綠）—
+    // —自然時序下兩個併發呼叫常因 DB 往返時間差而恰巧仍保持序列化，運氣好
+    // 就綠。本測試改為結構性守門，沿 phase8-report-generate.test.ts:254-272
+    // 已背書之「讀原始碼、比對關鍵陳述式之字元位置」形狀：直接掃描
+    // application-void.ts 原始碼，斷言 `FOR UPDATE` 行鎖在場、位於單一
+    // `$transaction(...)` 回呼內部、且早於讀取（`findUniqueOrThrow`）與寫入
+    // （`update`）——鎖移除或搬出交易／拆成第二個交易皆必紅。同一 it 順帶
+    // AR-1：斷言 `assertTransition(existing.status, "VOIDED")` 呼叫在場（狀
+    // 態機單一事實來源，沿 application-state-machine.test.ts:397 之「原始碼
+    // 字面比對」形狀），且介於讀取與寫入之間。
+    it('SF-1(a)/AR-1 結構性守門：FOR UPDATE 早於讀取與寫入、位於單一 $transaction 回呼內；assertTransition(...,"VOIDED") 在場（行鎖移除／交易拆分／狀態機呼叫移除之 mutant 必紅）', () => {
+      const srcPath = new URL("../../src/applications/application-void.ts", import.meta.url);
+      const src = fs.readFileSync(srcPath, "utf8");
+
+      // 全檔恰一次 $transaction(...)——防「拆交易」mutant（M10）：若鎖與寫入
+      // 被拆進兩個獨立交易，鎖會在寫入前釋放，B-08 保護即失效，即使各自看
+      // 起來仍「有交易」。
+      const txCallOccurrences = src.split("prisma.$transaction(").length - 1;
+      expect(txCallOccurrences).toBe(1);
+
+      const txCallIdx = src.indexOf("prisma.$transaction(");
+      // 以逐字完整片語比對真實呼叫（非檔頭文件說明散文之同名片語——單獨比
+      // 對 "FOR UPDATE" 會誤命中檔頭之「`SELECT ... FOR UPDATE` 為交易第一
+      // 個陳述式」等說明文字，沿 phase8-report-generate.test.ts 檔頭同型警
+      // 示）。
+      const forUpdateIdx = src.indexOf('WHERE "id" = ${id} FOR UPDATE');
+      const findIdx = src.indexOf("tx.application.findUniqueOrThrow(");
+      const assertTransitionIdx = src.indexOf('assertTransition(existing.status, "VOIDED")');
+      const updateIdx = src.indexOf("tx.application.update(");
+
+      expect(txCallIdx).toBeGreaterThan(-1);
+      expect(forUpdateIdx).toBeGreaterThan(-1);
+      expect(findIdx).toBeGreaterThan(-1);
+      expect(assertTransitionIdx).toBeGreaterThan(-1);
+      expect(updateIdx).toBeGreaterThan(-1);
+
+      // 皆位於 $transaction(...) 回呼內部（交易之後）——結合上方「恰一次」
+      // 之計數，排除鎖／寫入被移到交易外、或另立第二個交易之 mutant。
+      expect(txCallIdx).toBeLessThan(forUpdateIdx);
+      expect(txCallIdx).toBeLessThan(updateIdx);
+
+      // §3.1 步驟 7a（鎖）早於讀取（新鮮讀取須在鎖生效之後）與寫入。
+      expect(forUpdateIdx).toBeLessThan(findIdx);
+      expect(forUpdateIdx).toBeLessThan(updateIdx);
+
+      // AR-1／狀態機單一事實來源：assertTransition 呼叫介於讀取與寫入之間
+      // （讀了才判、判完才寫）。
+      expect(findIdx).toBeLessThan(assertTransitionIdx);
+      expect(assertTransitionIdx).toBeLessThan(updateIdx);
+    });
+
+    // SF-1(b)（T3R）：確定性 barrier——測試自行開第三個交易，對目標列持有
+    // `SELECT ... FOR UPDATE` 鎖約 200ms 後才提交釋放；期間發動兩個
+    // `voidApplication`。若實作確實在自己的交易內對同一列取用 `FOR UPDATE`
+    // （正確實作），兩者會被本測試持有的外部鎖真正卡住、直到釋放後才序列化
+    // 執行，收斂為「恰一成功、另一 409」；若鎖被移除（reviewer M1），
+    // `voidApplication` 的讀取階段不會被外部鎖擋下、兩者都會在鎖釋放前讀到
+    // 「尚未作廢」的快照並各自成功寫入——必紅（見下方自證）。這是比上方
+    // 「自然時序」B-08 it 更強的鑑別力來源：外部持鎖強制製造真正的重疊執行
+    // 窗口，不依賴 DB 往返時間差的運氣。
+    it("SF-1(b) 確定性 barrier：外部持鎖 ~200ms 期間發動兩個 voidApplication → 有鎖時仍恰一成功、另一 409", async () => {
+      const id = await createCompletedTravel("sf1b-barrier");
+
+      let releaseBarrier: () => void = () => {};
+      const barrierReleaseSignal = new Promise<void>((resolve) => {
+        releaseBarrier = resolve;
+      });
+
+      const barrierTxPromise = prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${id} FOR UPDATE`;
+        await barrierReleaseSignal;
+      });
+
+      // 給 barrier 交易一點時間真正取得鎖，才發動兩個 voidApplication——
+      // 避免兩者的第一個陳述式搶在 barrier 之前執行。
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const resultsPromise = Promise.allSettled([
+        voidApplication(prisma, id, "barrier-A", ownerId),
+        voidApplication(prisma, id, "barrier-B", otherActorId),
+      ]);
+
+      // 確保兩個 voidApplication 已發動且（若正確實作）正卡在鎖上，才釋放。
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      releaseBarrier();
+      await barrierTxPromise;
+
+      const results = await resultsPromise;
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        code: "CONFLICT",
+        httpStatus: 409,
+        details: { status: "VOIDED" },
+      });
     });
   });
 
