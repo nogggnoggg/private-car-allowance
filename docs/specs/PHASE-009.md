@@ -749,7 +749,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | AC-19 | integration | `phase9-void-report.test.ts` | `AC-19(a): ReportCommon 鍵集恰八鍵（toEqual 全等，多一鍵必紅）`；`AC-19(b): 三型 body 鍵集逐字不變`；`AC-19(c): byDisplayName 解析失敗以「—」呈現且輸出零 voidedById`；`AC-19(d): report-data.ts 零算式結構掃描維持全綠` | T10 | PENDING |
 | AC-20 | unit | `report-html.test.ts` | `AC-20(a)(b): 已作廢列印版首屏 .void-banner 含「已作廢」＋原因／操作者／時間逐字`；`AC-20(c): 未作廢列印版零 .void-banner、零「已作廢」字樣`；`AC-20(d): 作廢原因 3 payload 跳脫（移除跳脫必紅）`；`AC-20(e): renderReportHtml 純函式性不變（同輸入 toEqual、零時鐘）`；`AC-20(f): .void-banner 具 avoid-break 且不套用 @media print 隱藏` | T11 | PENDING |
 | AC-21 | integration | `phase9-void-report.test.ts` | `AC-21(a): 作廢版 PDF 同交易產生並校驗；任一階段失敗 → 整筆回滾、狀態仍 COMPLETED、零殘留、500 + details.stage`；`AC-21(b): 作廢後下載回作廢版且報表編號與檔名不變`；`AC-21(c): 原 Report PDF 位元組雜湊前後不變`；`AC-21(d): 作廢後重複下載位元組全等且渲染器零呼叫`；`AC-21(e): 未產生報表者作廢 → 零渲染零 storage 寫入`；`AC-21(f): reports/ 零 report.update／delete／upsert 之既有結構斷言零改動且全綠` | T12 | PENDING（D4=b1 已裁定解鎖） |
-| AC-22 | integration | `phase8-report-print.test.ts` | `AC-22: 已作廢申請列印端點 200 且含作廢標示；草稿仍 409 + details.status（既有斷言零弱化）`；`AC-22: VOIDED 狀態下之列印端點授權五格逐格重驗` | T13 | **BLOCKED（待 D5 裁定）** |
+| AC-22 | integration | `phase8-report-print.test.ts` | `AC-22: 已作廢申請列印端點 200 且含作廢標示；草稿仍 409 + details.status（既有斷言零弱化）`；`AC-22: VOIDED 狀態下之列印端點授權五格逐格重驗` | T13 | PENDING（D5=a 照推薦已裁定解鎖） |
 | AC-23 | integration | `phase9-contract.test.ts` | `AC-23: 授權矩陣 10 格逐格（狀態碼 + 回應鍵集）`；`AC-23: 報表四端點於 VOIDED 之回歸四格`；`AC-23: 403 回應零業務值掃描` | T4 ＋ T7 | PENDING |
 | AC-24 | integration | `phase9-void.test.ts` | `AC-24: 作廢成功寫入恰一筆 AuditLog(APPLICATION_VOIDED)，欄位與 summary 形狀逐鍵`；`AC-24 同交易自證: 稽核 hook 拋錯 → 業務寫入一併回滾（零孤兒稽核列、狀態未變）`；`AC-24: 本人作廢亦寫稽核（正向斷言）` | T4 | PENDING |
 | AC-25 | integration | `phase9-contract.test.ts` | `AC-25: AuditLog.summary 與 logStream 七類敏感字串零命中`；`AC-25: 作廢原因入稽核但零入日誌（含反向探針證明掃描非恆真）` | T4 | PENDING |
@@ -765,9 +765,9 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | AC-35 | e2e | `e2e/void-application.spec.ts` | `AC-35: 兩型端到端（完成→產生報表→作廢→列表已作廢→詳情三項→列印版標示→下載→統計不含該筆）`；`AC-35: 草稿無作廢入口（負向）` | T17 | PENDING |
 | AC-36 | e2e | `e2e/revision.spec.ts` | `AC-36: 修正版端到端（建立→複製欄位與附件→完成→新編號→版本關係雙向→原報表編號未變）` | T17 | PENDING |
 | AC-37 | 全 Task ＋ 終審 | —（無單一測試載體；以三套件實跑數為證） | 每個 Task 之 Done When 含「既有測試零弱化」；終審三套件實跑對照基準線（後端 2952／前端 254／E2E 44） | 全 Task | PENDING |
-| AC-38 | integration | `phase9-contract.test.ts` | `AC-38: upload-service 補償刪檔與非預期錯誤路徑之日誌零 storage key（修復前必紅之紅燈證據記入 Handoff）` | T18 | **BLOCKED（待 D14 裁定）** |
+| AC-38 | integration | `phase9-contract.test.ts` | `AC-38: upload-service 補償刪檔與非預期錯誤路徑之日誌零 storage key（修復前必紅之紅燈證據記入 Handoff）` | T18 | PENDING（D14 照推薦已裁定解鎖） |
 | AC-39 | integration | `phase9-void-report.test.ts` | `AC-39(a) 結構: report-data.ts 之 orderBy 含 { id: "asc" } 恰兩處（移除任一處必紅）`；`AC-39(b): 保養／折舊路徑之同 linkedAt 三附件恆依 id 遞增序輸出（寫入序與 id 序刻意相反）` | T10 ＋ T18 | PENDING |
-| AC-40 | e2e ＋ integration | `e2e/report-print-layout.spec.ts`（檔頭）；`phase8-contract.test.ts` | `AC-40(a): 檔頭字型敘述更正為子集字型 Tj／ToUnicode（記載型，無斷言變更）`；`AC-40(b): REPORT_GENERATION_FAILED 改經 AppError 後 wire 格式逐字不變（鍵集與值全等）` | T18 | **BLOCKED（待 D14 裁定）** |
+| AC-40 | e2e ＋ integration | `e2e/report-print-layout.spec.ts`（檔頭）；`phase8-contract.test.ts` | `AC-40(a): 檔頭字型敘述更正為子集字型 Tj／ToUnicode（記載型，無斷言變更）`；`AC-40(b): REPORT_GENERATION_FAILED 改經 AppError 後 wire 格式逐字不變（鍵集與值全等）` | T18 | PENDING（D14 照推薦已裁定解鎖） |
 
 > **本表統計**：**40 條 AC**；映射表 **44 列**（AC-01 拆為 (a)(c)(d)(h)／(b)／(e)／(f)／(g) **五列**，其餘 AC-02~AC-40 各一列 ＝ 39 列）。其中 **8 列標記 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）`**——**6 條完整 AC**（AC-14／AC-18／AC-21／AC-22／AC-38／AC-40）＋ **AC-01 之兩個子項**（(b) 依 D4、(e) 依 D10）。
 
@@ -1246,4 +1246,4 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
 
 ---
 
-**（Spec 全文結束。狀態 `DRAFT`；經人類 Spec Gate 批准 D1~D16 與 13 項 High Task 後，由大總管將狀態欄改為 `ACTIVE`、將 §12 之 8 列 `BLOCKED` 依裁定結果轉為 `PENDING` 或刪除，並開始派工。）**
+**（Spec 全文結束。狀態 `ACTIVE`（2026-08-07 Spec Gate 通過，全部 BLOCKED 列已解鎖——見 §18）。）**
