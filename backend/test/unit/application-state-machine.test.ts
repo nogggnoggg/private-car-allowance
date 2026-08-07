@@ -338,7 +338,16 @@ function listStatusLiteralOccurrences(root: string = SRC_ROOT): string[] {
 // 檔各新增一行 import（`application-void.ts`）＋ DTO `void` 欄位相關程式碼，
 // 使下列六個既有位置之行號位移；比對對象與理由不變（見本區塊上方文件註
 // 解），逐一以 `grep` 核對後回填新行號——不新增任何條目。
+// PHASE-009-T5（機械連動，大總管裁決限縮授權：僅本宣告區塊）：新檔
+// `applications/application-revision.ts`（修正版複製 service）新增兩個掃描命中
+// 位置，逐一裁定為非 VOIDED→DRAFT 寫入路徑，理由見各條目行末註解。
 const AC05A_WHITELIST = [
+  // 型別宣告非寫入：`interface ApplicationRevisionCommonData` 之 `status: "DRAFT"`
+  // 欄位型別註記（STATUS_LITERAL_PATTERN 不分型別註記與值寫入之既有誤報族）。
+  "applications/application-revision.ts:114:DRAFT",
+  // 建新列與 create*Draft 同型：`buildCommonData` 之回傳物件只被
+  // `tx.application.create()` 消費，建立全新列、無既有 status 可供轉換，恆安全。
+  "applications/application-revision.ts:176:DRAFT",
   "applications/depreciation-service.ts:180:DRAFT",
   "applications/depreciation-service.ts:1430:COMPLETED",
   "applications/maintenance-service.ts:195:DRAFT",
