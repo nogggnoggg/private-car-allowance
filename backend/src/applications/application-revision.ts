@@ -267,6 +267,31 @@ export function buildDepreciationRevisionData(
 // createApplicationRevision（§3.2 步驟 4~6）
 // ---------------------------------------------------------------------------
 
+/**
+ * PHASE-009-T6（沿 PHASE-008 T8R2 MF-2 之先例與推導方式）：Prisma 互動式交易
+ * 不明寫 `timeout`／`maxWait` 時套用套件預設（`timeout` 5000ms、`maxWait`
+ * 2000ms）。T5 當時交易內只有三次毫秒級 DB 往返，預設綽綽有餘；T6 之後
+ * `onCreated` hook 於**同一交易內**執行附件位元組複製（§3.2 步驟 6d），交易
+ * 時長改由 storage I/O 主導：
+ *
+ *   最壞情形 ＝ 段數 × 每段附件上限（差旅 3／保養 5／折舊 5）× 每檔
+ *   `ATTACHMENT_MAX_BYTES`（預設 10 MiB）× 2（原檔 ＋ 縮圖）× 2（讀 ＋ 寫）。
+ *   例：10 段 × 3 張 ＝ 30 檔 → 最壞約 1.2 GiB 之循序 I/O，於 50 MiB/s 之
+ *   受管磁碟約 24 秒——遠超 5000ms 預設，會在複製中途被 Prisma 自身之交易逾
+ *   時搶先中止（P2028），使一個「其實只是慢」的正常請求變成 500。
+ *
+ * 故此處明寫兩值。**不新增 env 變數**（沿 T8R2 之同一裁量：交易裕度不對外
+ * 開放調整），亦不由 `ATTACHMENT_MAX_BYTES` 推導——位元組數換算成時間需先假
+ * 定一個吞吐率常數，那個常數本身同樣是拍板值，多一層推導只是把同一個裁量藏
+ * 起來。`maxWait` 僅涵蓋「取得連線、交易正式開始前」之排隊等待，與複製量無
+ * 關，故取較小值。
+ *
+ * 逾時仍發生時之語意不變：交易回滾，已寫入之新 storage key 由
+ * `attachment-copy.ts` 之補償刪除回收（AC-14(e) 之零殘留對此路徑同樣成立）。
+ */
+const REVISION_TX_TIMEOUT_MS = 60_000;
+const REVISION_TX_MAX_WAIT_MS = 10_000;
+
 /** 修正版建立後之最小列——僅本函式實際寫入之欄位，供呼叫端（T7）組回應與稽核摘要。 */
 export interface ApplicationRevisionRow {
   id: string;
@@ -355,76 +380,82 @@ export async function createApplicationRevision(
   actorId: string,
   onCreated?: OnApplicationRevisionCreated
 ): Promise<ApplicationRevisionRow> {
-  return prisma.$transaction(async (tx) => {
-    // §3.2 步驟 6 之交易；第一個陳述式為列鎖（見檔頭「併發與鎖」）。
-    await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${sourceId} FOR UPDATE`;
+  return prisma.$transaction(
+    async (tx) => {
+      // §3.2 步驟 6 之交易；第一個陳述式為列鎖（見檔頭「併發與鎖」）。
+      await tx.$queryRaw`SELECT "id" FROM "Application" WHERE "id" = ${sourceId} FOR UPDATE`;
 
-    const source = await tx.application.findUniqueOrThrow({
-      where: { id: sourceId },
-      select: revisionSourceSelect,
-    });
-
-    // §3.2 步驟 4：狀態守門（DRAFT／VOIDED 皆拒）。AC-13(a)(b) 之端點層回應
-    // 斷言歸 T7，本檔僅確立 service 層之錯誤形狀。
-    if (source.status !== "COMPLETED") {
-      throw new AppError("CONFLICT", 409, "僅已完成之申請可建立修正版", undefined, {
-        status: source.status,
+      const source = await tx.application.findUniqueOrThrow({
+        where: { id: sourceId },
+        select: revisionSourceSelect,
       });
-    }
 
-    // §3.2 步驟 5：既有修正版守門〔D7：0..1〕。AC-13(c) 同上歸 T7。
-    if (source.supersededBy) {
-      throw new AppError("CONFLICT", 409, "此申請已有修正版", undefined, {
-        existingRevisionId: source.supersededBy.id,
-      });
-    }
+      // §3.2 步驟 4：狀態守門（DRAFT／VOIDED 皆拒）。AC-13(a)(b) 之端點層回應
+      // 斷言歸 T7，本檔僅確立 service 層之錯誤形狀。
+      if (source.status !== "COMPLETED") {
+        throw new AppError("CONFLICT", 409, "僅已完成之申請可建立修正版", undefined, {
+          status: source.status,
+        });
+      }
 
-    // §3.2 步驟 6b/6c：依 type 建構逐欄複製資料（§7.4）並建立新列；
-    // `supersedesId` 由建構器一併帶入，與子列同屬單一 `create`（同交易）。
-    const now = new Date();
-    const data = buildRevisionData(source, actorId, now);
+      // §3.2 步驟 5：既有修正版守門〔D7：0..1〕。AC-13(c) 同上歸 T7。
+      if (source.supersededBy) {
+        throw new AppError("CONFLICT", 409, "此申請已有修正版", undefined, {
+          existingRevisionId: source.supersededBy.id,
+        });
+      }
 
-    const created = await tx.application.create({
-      data,
-      select: {
-        id: true,
-        type: true,
-        status: true,
-        ownerId: true,
-        createdById: true,
-        primaryDate: true,
-        supersedesId: true,
-      },
-    });
+      // §3.2 步驟 6b/6c：依 type 建構逐欄複製資料（§7.4）並建立新列；
+      // `supersedesId` 由建構器一併帶入，與子列同屬單一 `create`（同交易）。
+      const now = new Date();
+      const data = buildRevisionData(source, actorId, now);
 
-    const revision: ApplicationRevisionRow = {
-      id: created.id,
-      type: created.type,
-      status: created.status,
-      ownerId: created.ownerId,
-      createdById: created.createdById,
-      primaryDate: created.primaryDate,
-      // `supersedesId` 於建構資料中恆為 `sourceId`；此處以非空斷言換成
-      // `string`（回傳型別語意上必非 null），值本身仍取自 DB 回讀。
-      supersedesId: created.supersedesId ?? sourceId,
-    };
-
-    // §3.2 步驟 6d（T6 附件複製）／6e（T7 代操作稽核）之接點。
-    if (onCreated) {
-      await onCreated(
-        tx,
-        {
-          id: source.id,
-          type: source.type,
-          ownerId: source.ownerId,
-          ownerLoginName: source.owner.loginName,
+      const created = await tx.application.create({
+        data,
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          ownerId: true,
+          createdById: true,
+          primaryDate: true,
+          supersedesId: true,
         },
-        revision
-      );
-    }
+      });
 
-    return revision;
-  });
+      const revision: ApplicationRevisionRow = {
+        id: created.id,
+        type: created.type,
+        status: created.status,
+        ownerId: created.ownerId,
+        createdById: created.createdById,
+        primaryDate: created.primaryDate,
+        // `supersedesId` 於建構資料中恆為 `sourceId`；此處以非空斷言換成
+        // `string`（回傳型別語意上必非 null），值本身仍取自 DB 回讀。
+        supersedesId: created.supersedesId ?? sourceId,
+      };
+
+      // §3.2 步驟 6d（T6 附件複製）／6e（T7 代操作稽核）之接點。
+      if (onCreated) {
+        await onCreated(
+          tx,
+          {
+            id: source.id,
+            type: source.type,
+            ownerId: source.ownerId,
+            ownerLoginName: source.owner.loginName,
+          },
+          revision
+        );
+      }
+
+      return revision;
+    },
+    {
+      timeout: REVISION_TX_TIMEOUT_MS,
+      maxWait: REVISION_TX_MAX_WAIT_MS,
+    }
+  );
 }
 
 type RevisionSourceRow = Prisma.ApplicationGetPayload<{ select: typeof revisionSourceSelect }>;
