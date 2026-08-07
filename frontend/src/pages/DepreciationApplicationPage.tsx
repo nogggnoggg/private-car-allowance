@@ -104,9 +104,15 @@ const DUPLICATE_COUNT_WARNING =
 function VersionRelationSection({
   supersedes,
   supersededBy,
+  voided,
 }: {
   supersedes: SupersedesLinkDto | null;
   supersededBy: RevisionLinkDto | null;
+  /**
+   * T16R2 **S-2**：本筆是否已作廢。**只影響提醒文案，不影響雙向連結**——版本
+   * 關係本身在 VOIDED 下仍須可見（AC-32(c) 未以狀態設限）。
+   */
+  voided: boolean;
 }): React.ReactElement | null {
   if (!supersedes && !supersededBy) return null;
   return (
@@ -129,8 +135,14 @@ function VersionRelationSection({
               未作廢時兩筆都會進統計。三點語意不可省：①仍為已完成 ②未作廢則
               重複計入里程與金額統計 ③作廢入口即在本頁（同頁下方之「作廢」鈕）。
               **僅 `supersededBy` 側**——作廢動作之落點在原申請頁，修正版頁加此
-              提示會把使用者導向錯誤的那一筆。 */}
-          <p className="warn-text">{DUPLICATE_COUNT_WARNING}</p>
+              提示會把使用者導向錯誤的那一筆。
+
+              T16R2 **S-2**（複審 probe 實證）：另須 `!voided`——已作廢＋已有修正
+              版之組合**可達**（作廢端點對已有修正版之申請無限制，正是 D15(a)
+              期望使用者走完的終局）。該狀態下三點語意全部不成立：①已非「仍為
+              已完成」②已作廢即不計入統計（AC-15~AC-17）③本頁零作廢按鈕
+              （AC-31(b)）。照顯即為畫面自相矛盾並指向不存在的操作。 */}
+          {!voided && <p className="warn-text">{DUPLICATE_COUNT_WARNING}</p>}
         </>
       )}
     </section>
@@ -589,6 +601,7 @@ export default function DepreciationApplicationPage(): React.ReactElement {
           <VersionRelationSection
             supersedes={application.supersedes}
             supersededBy={application.supersededBy}
+            voided={voided}
           />
 
           {/* AC-30(c)：作廢原因／操作者／時間三項逐字呈現。時間格式沿用本頁
@@ -762,6 +775,8 @@ export default function DepreciationApplicationPage(): React.ReactElement {
         <VersionRelationSection
           supersedes={application.supersedes}
           supersededBy={application.supersededBy}
+          // 本分支恆為 DRAFT（COMPLETED／VOIDED 已由上方唯讀分支攔截）。
+          voided={false}
         />
 
         {/* AC-42 前半（FE-US-17 第 4 條）：同年度已有其他申請時顯示提醒，

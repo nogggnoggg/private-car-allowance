@@ -1417,6 +1417,36 @@ describe("TravelApplicationPage", () => {
       expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
     });
 
+    it("AC-32(c)／D15 負向（T16R2 S-2）：VOIDED＋已有修正版 → 零提醒文案，但版本關係區塊其餘內容仍在場", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: voidedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "差旅補助申請（已作廢）" });
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      // 提醒之三點語意在 VOIDED 下**全部不成立**：①已非「仍為已完成」
+      // ②已作廢即不計入統計 ③本頁零作廢按鈕（AC-31(b)）——照顯即為自相矛盾
+      // 且指向不存在的操作。
+      expect(screen.queryByText(DUPLICATE_COUNT_WARNING)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
+      expect(screen.queryByRole("button", { name: "作廢" })).not.toBeInTheDocument();
+
+      // 正向對照（防「整個區塊消失」之誤修）：雙向連結內容不受守門影響。
+      expect(screen.getByText("已建立修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視修正版" })).toHaveAttribute(
+        "href",
+        "/applications/travel/rev-1"
+      );
+    });
+
     it("AC-32(c) 負向：無任何版本關聯時零版本關係區塊", async () => {
       const router = installFetchRouter();
       router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
