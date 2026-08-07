@@ -61,8 +61,16 @@ export interface RevisionAttachmentCopyDeps {
 /**
  * 附件複製器：一次修正版建立之生命週期物件（**不可重用**——`written` 記錄
  * 的是「本次交易已寫入 storage 的新 key」）。
+ *
+ * **module-private（T6R SF-2）**：`compensate()` 無「已定案」旗標——交易
+ * commit 成功之後若仍有人呼叫它，會**無條件刪除線上附件之位元組**（DB 列仍
+ * 在、檔案已消失＝靜默資料毀損）。它之所以安全，唯一理由是它的生命週期完全
+ * 被 {@link createApplicationRevisionWithAttachments} 包住：只在拋錯路徑上被
+ * 呼叫，成功路徑永不呼叫。把它匯出等於把這個前提交給呼叫端自律，而 T7 正是
+ * 最可能誤用的呼叫端。故本型別與其工廠一律不 export；外界唯一入口是
+ * {@link createApplicationRevisionWithAttachments}。
  */
-export interface RevisionAttachmentCopier {
+interface RevisionAttachmentCopier {
   /** 掛入 `createApplicationRevision` 之 hook，於同一交易內執行。 */
   onRevisionCreated: OnApplicationRevisionCreated;
   /**
@@ -90,7 +98,7 @@ interface ContainerPair {
  *   `uploaderId` **不複製**，恆為操作者）。新列之 `ownerId` 則**沿用原附件之
  *   `ownerId`**（AC-14(a)「＝原擁有人」；管理員代建時授權面零變化）。
  */
-export function createRevisionAttachmentCopier(
+function createRevisionAttachmentCopier(
   actorId: string,
   deps: RevisionAttachmentCopyDeps
 ): RevisionAttachmentCopier {

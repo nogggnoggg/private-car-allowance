@@ -710,5 +710,65 @@ describeWithDb("PHASE-009-T6 修正版之證明附件複製（AC-14）", () => {
       const probe = `compensation delete failed for ${seeded.storageKey}`;
       expect(forbiddenFragments.some((fragment) => probe.includes(fragment))).toBe(true);
     });
+
+    // T6R SF-1（即審 REQUEST_CHANGES）：原 10 筆對「外層 catch 之 compensate」
+    // 零鑑別力——reviewer 實跑 mutant「停用
+    // `createApplicationRevisionWithAttachments` 之外層補償」，10 筆全綠。原因是
+    // 全部既有 it 的失敗都發生在**複製途中**，該路徑由 hook 自身的 catch 先補償
+    // 完畢，外層那一層只是重複呼叫（冪等後為 no-op）。§9.2「失敗：回滾 ＋ 新
+    // storage key 補償刪除」要求對**任一**失敗路徑成立，而「複製成功之後才失
+    // 敗」（T7 之代操作稽核寫入失敗、commit 失敗）正是唯有外層補償能涵蓋的路
+    // 徑——本 it 以 `onCreated` 這個真實 seam 把它建構出來。
+    it("複製成功之後才失敗（onCreated 拋錯，對應 T7 稽核寫入失敗／commit 失敗之路徑）：整筆回滾、已寫新 key 補償刪除、零殘留", async () => {
+      const sourceId = await createCompletedMaintenance("e-post-copy");
+      await seedAttachment("MAINTENANCE", sourceId, "e-post-0", true);
+      await seedAttachment("MAINTENANCE", sourceId, "e-post-1", false);
+
+      const applicationsBefore = await prisma.application.count({ where: { ownerId } });
+      const segmentsBefore = await countOwnerSegments();
+      const attachmentsBefore = await prisma.attachment.count({ where: { ownerId } });
+      const filesBefore = listStorageFiles(storageRoot);
+
+      // failOnPutIndex = -1：永不注入失敗，僅借其 putKeys 記錄實際落地之新 key。
+      const recording = new FailingStorage(storage, -1);
+
+      // 時序證明用：hook 執行當下（交易內、複製之後）所觀察到的新容器附件數。
+      let observedCopiesAtHookTime = -1;
+      const sentinel = new Error("PHASE-009-T6 post-copy hook failure (synthetic)");
+
+      await expect(
+        createApplicationRevisionWithAttachments(
+          prisma,
+          sourceId,
+          adminId,
+          { storage: recording },
+          async (tx, _source, revision) => {
+            // (iv) 時序：附件複製必須**已經**完成（本 hook 掛在複製之後）。
+            observedCopiesAtHookTime = await tx.attachment.count({
+              where: { status: "LINKED", refType: "MAINTENANCE", refId: revision.id },
+            });
+            throw sentinel;
+          }
+        )
+      ).rejects.toThrow(sentinel);
+
+      // (iv) 時序證明：複製確實先於本 hook 執行（否則下面的「補償」為恆真）。
+      expect(observedCopiesAtHookTime).toBe(2);
+      // 兩張附件 → 3 次 put（原檔 ×2 ＋ 縮圖 ×1）全部成功落地過。
+      expect(recording.putKeys).toHaveLength(3);
+
+      // (i) DB 三表零殘留。
+      expect(await prisma.application.count({ where: { ownerId } })).toBe(applicationsBefore);
+      expect(await countOwnerSegments()).toBe(segmentsBefore);
+      expect(await prisma.attachment.count({ where: { ownerId } })).toBe(attachmentsBefore);
+      expect(await prisma.application.count({ where: { supersedesId: sourceId } })).toBe(0);
+
+      // (ii)(iii) storage 零殘留——此處**只有**外層 compensate 能達成：hook 自身
+      // 未拋錯，其 catch 從未執行。
+      for (const key of recording.putKeys) {
+        expect(await storage.exists(key), "外層補償刪除遺漏 key（殘留檔）").toBe(false);
+      }
+      expect(listStorageFiles(storageRoot)).toEqual(filesBefore);
+    });
   });
 });
