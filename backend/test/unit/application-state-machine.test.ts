@@ -327,9 +327,15 @@ function listStatusLiteralOccurrences(root: string = SRC_ROOT): string[] {
  *     `assertTransition(existing.status, "COMPLETED")` 呼叫之後——該呼叫在
  *     `existing.status !== "DRAFT"`（含 VOIDED）時已拋 403，此 update 因而
  *     不可能在 VOIDED 來源下執行到（見下方鄰近測試對此的自證）。
- *   - `mileage/mileage-range.ts:117`、`parameters/reference-guard.ts:114`／
- *     `132` 的 `status: "COMPLETED"` 均在 `where:` 查詢過濾條件內，是讀取
- *     而非寫入（D8(a)，本 Phase `mileage-range.ts` 零 diff）。
+ *   - `mileage/mileage-range.ts:117` 的 `status: "COMPLETED"` 在 `where:`
+ *     查詢過濾條件內，是讀取而非寫入（D8(a)，本 Phase 該檔零 diff）。
+ *   - PHASE-009-T8（AC-18／§16 D2(a)）：`parameters/reference-guard.ts` 原
+ *     :114／:132 兩條讀取面條目**已自本清單移除**——該兩處 `where` 之
+ *     `status` 條件改為具名常數 `REFERENCING_STATUSES`
+ *     （`{ in: ["COMPLETED", "VOIDED"] }`），字面因而不再命中
+ *     `STATUS_LITERAL_PATTERN`。移除方向為「條目消失」而非「新增未複核之
+ *     寫入點」，故「白名單外必紅」之守門意圖不變；該兩處自始至終為讀取面，
+ *     從不是 VOIDED→COMPLETED／DRAFT 寫入路徑。
  *
  * 任何新出現的位置都不在此白名單內，測試即轉紅，強制人工複核並更新此
  * 清單——這就是「白名單外必紅」。
@@ -341,6 +347,10 @@ function listStatusLiteralOccurrences(root: string = SRC_ROOT): string[] {
 // PHASE-009-T5（機械連動，大總管裁決限縮授權：僅本宣告區塊）：新檔
 // `applications/application-revision.ts`（修正版複製 service）新增兩個掃描命中
 // 位置，逐一裁定為非 VOIDED→DRAFT 寫入路徑，理由見各條目行末註解。
+// PHASE-009-T8（機械連動，大總管裁決限縮授權：僅本宣告區塊）：AC-18／D2(a)
+// 將 `parameters/reference-guard.ts` 兩處 `where` 之 `status` 條件改為具名常數
+// `REFERENCING_STATUSES`，使原 :114／:132 兩條字面消失，故**刪除該兩條目**
+// （零新增、零其他條目變更；`STATUS_LITERAL_PATTERN` 與掃描函式一律不動）。
 const AC05A_WHITELIST = [
   // 型別宣告非寫入：`interface ApplicationRevisionCommonData` 之 `status: "DRAFT"`
   // 欄位型別註記（STATUS_LITERAL_PATTERN 不分型別註記與值寫入之既有誤報族）。
@@ -355,8 +365,6 @@ const AC05A_WHITELIST = [
   "applications/travel-service.ts:248:DRAFT",
   "applications/travel-service.ts:1394:COMPLETED",
   "mileage/mileage-range.ts:117:COMPLETED",
-  "parameters/reference-guard.ts:114:COMPLETED",
-  "parameters/reference-guard.ts:132:COMPLETED",
 ].sort();
 
 describe("AC-05(a) 結構性守門 — backend/src 全域零 VOIDED→COMPLETED／DRAFT 寫入路徑", () => {
