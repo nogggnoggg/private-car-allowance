@@ -82,6 +82,9 @@ function draftFixture(overrides: Partial<TravelApplicationDto> = {}): TravelAppl
     computed: null,
     snapshot: null,
     void: null, // PHASE-009 §7.2：未作廢恆為 null
+    // PHASE-009 §7.2（T16）：版本關聯之雙向投影；無關聯恆為 null。
+    supersedes: null,
+    supersededBy: null,
     createdAt: "2026-03-01T00:00:00.000Z",
     updatedAt: "2026-03-01T00:00:00.000Z",
     completedAt: null,
@@ -325,6 +328,7 @@ describe("AdminUserApplicationsPage", () => {
           onBehalf: true,
           createdAt: "2026-03-01T00:00:00.000Z",
           updatedAt: "2026-03-01T00:00:00.000Z",
+          isRevision: false, // PHASE-009 §7.2（T16pre 後端／T16 前端型別）
         },
       ],
       page: 1,

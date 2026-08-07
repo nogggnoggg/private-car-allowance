@@ -127,6 +127,28 @@ export interface VoidInfoDto {
   voidedByDisplayName: string;
 }
 
+/**
+ * 版本關聯之最小投影（PHASE-009 §7.2；AC-12(b)(c)）——**雙向皆由後端單一
+ * `supersedesId` 欄位推導**，前端不得自行拼湊第二條關聯來源。
+ *
+ * `supersededBy` 側為本三鍵；`supersedes` 側為 `SupersedesLinkDto`（四鍵，
+ * 多 `reportNumber`）。此不對稱為 AC-12(b) 原文，非疏漏——修正版頁需以
+ * 「原編號或原日期」標示來源（AC-32(c)），原申請頁只需指向修正版。
+ *
+ * 與後端 `backend/src/applications/routes.ts` 之同名 interface 同形（前端
+ * 獨立副本，本 repo 無 backend/frontend 共用 package）。
+ */
+export interface RevisionLinkDto {
+  id: string;
+  status: ApplicationStatusDto;
+  primaryDate: string; // YYYY-MM-DD
+}
+
+/** §7.2：`supersedes` 側之四鍵投影（原申請未產生報表時 `reportNumber` 為 null）。 */
+export interface SupersedesLinkDto extends RevisionLinkDto {
+  reportNumber: string | null;
+}
+
 export interface TravelApplicationDto {
   id: string;
   type: "TRAVEL";
@@ -143,6 +165,8 @@ export interface TravelApplicationDto {
   computed: TravelComputedDto | null; // DRAFT：即算預覽；COMPLETED：null
   snapshot: TravelSnapshotDto | null; // COMPLETED：快照；DRAFT：null
   void: VoidInfoDto | null; // PHASE-009 §7.2：VOIDED 才非 null
+  supersedes: SupersedesLinkDto | null; // 本筆為修正版時指向原申請
+  supersededBy: RevisionLinkDto | null; // 本筆已有修正版時指向該修正版
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -163,6 +187,13 @@ export interface ApplicationListItemDto {
   onBehalf: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * PHASE-009 §7.2（T16pre 後端落地：`application-query.ts` 之
+   * `toApplicationListItemDto`，`supersedesId != null`）。列表徽章用之**純顯示**
+   * 旗標——列表刻意**不**外露 `supersedesId`（T16pre FW-2：徽章不需要跳轉能力，
+   * 跳轉走詳情端點之 `supersedes` 投影），故本鍵為 boolean 而非 id。
+   */
+  isRevision: boolean;
 }
 
 export interface ApplicationListResponse {
@@ -393,6 +424,38 @@ export async function apiVoidApplication<TApplication = unknown>(
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ reason }),
+  });
+  return parseApiResponse<{ application: TApplication }>(res);
+}
+
+// ---------------------------------------------------------------------------
+// POST /applications/:id/revision (PHASE-009 §7.3, AC-32)
+//
+// §7.3 逐字：「Body：無（一律忽略）」。因此本函式**不送 body、亦不宣告
+// `Content-Type`**——沿 `apiCompleteApplication` 之 PHASE-004-R8 修復先例：
+// 宣告 JSON 卻送空 body 會讓 Fastify 的預設 JSON parser 在 auth preHandler
+// 之前丟 wire-level 錯誤，落入全域 error handler 的未知例外分支變成 500
+// INTERNAL_ERROR（見 backend/test/integration/
+// phase4-r8-wire-level-empty-json-body.test.ts）。沒有 body 就不該宣告 body
+// 型別；不得改為送假 body 繞過。
+//
+// 錯誤形狀由後端權威（§7.5），皆由 `parseApiResponse` 轉成 thrown `ApiError`：
+//   400 VALIDATION_ERROR（擁有人已停用；`fields[{ field:"userId" }]` —— 該
+//       `field` 對不到本頁任何輸入欄，故呼叫端必須顯示 `message` 本身，不得
+//       只做逐欄標紅而靜默吞錯，T7b 即審 AR-2）
+//   409 CONFLICT + details.status ∈ {"DRAFT","VOIDED"}
+//   409 CONFLICT + details.existingRevisionId（已有修正版）
+//
+// 回應之 `application` 為**型別分派**之新草稿詳情 DTO（§7.3 之 201），故以
+// 型別參數表達而不寫死 `TravelApplicationDto`（沿 `apiVoidApplication` 形狀）。
+// ---------------------------------------------------------------------------
+
+export async function apiCreateRevision<TApplication = unknown>(
+  id: string
+): Promise<{ application: TApplication }> {
+  const res = await fetch(`/api/applications/${id}/revision`, {
+    method: "POST",
+    credentials: "include",
   });
   return parseApiResponse<{ application: TApplication }>(res);
 }

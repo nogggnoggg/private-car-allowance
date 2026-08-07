@@ -17,7 +17,13 @@
  */
 
 import { parseApiResponse } from "../types/api.js";
-import type { ApplicationStatusDto, BlockerDto, VoidInfoDto } from "./applications.js";
+import type {
+  ApplicationStatusDto,
+  BlockerDto,
+  RevisionLinkDto,
+  SupersedesLinkDto,
+  VoidInfoDto,
+} from "./applications.js";
 import type { AttachmentDto } from "./attachments.js";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +76,8 @@ export interface MaintenanceApplicationDto {
   computed: MaintenanceComputedDto | null; // DRAFT 且五欄齊備才有；否則 null
   snapshot: MaintenanceSnapshotDto | null; // COMPLETED 才有
   void: VoidInfoDto | null; // PHASE-009 §7.2：VOIDED 才非 null
+  supersedes: SupersedesLinkDto | null; // 本筆為修正版時指向原申請（四鍵）
+  supersededBy: RevisionLinkDto | null; // 本筆已有修正版時指向該修正版（三鍵）
 }
 
 // ---------------------------------------------------------------------------

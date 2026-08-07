@@ -45,6 +45,9 @@ function draftFixture(overrides: Partial<TravelApplicationDto> = {}): TravelAppl
     computed: null,
     snapshot: null,
     void: null, // PHASE-009 §7.2：未作廢恆為 null
+    // PHASE-009 §7.2（T16）：版本關聯之雙向投影；無關聯恆為 null。
+    supersedes: null,
+    supersededBy: null,
     createdAt: "2026-03-01T00:00:00.000Z",
     updatedAt: "2026-03-01T00:00:00.000Z",
     completedAt: null,
@@ -1238,6 +1241,283 @@ describe("TravelApplicationPage", () => {
       expect(screen.queryByRole("link", { name: "下載 PDF" })).not.toBeInTheDocument();
 
       expectNoWriteControls();
+    });
+  });
+
+  // =========================================================================
+  // PHASE-009-T16：修正版入口 ＋ 版本關係區塊 ＋ 文案（AC-32／AC-33 Success）
+  // =========================================================================
+  describe("修正版（PHASE-009-T16）", () => {
+    const isRevisionEndpoint = (p: string) => p === "/api/applications/app-1/revision";
+    const isGetRevisionDraft = (p: string) => p === "/api/applications/travel/rev-1";
+
+    /** 修正版草稿（`supersedes` 非 null，§7.3 之 201 回應形狀）。 */
+    function revisionDraftFixture(
+      overrides: Partial<TravelApplicationDto> = {}
+    ): TravelApplicationDto {
+      return draftFixture({
+        id: "rev-1",
+        tripDate: "2026-03-01",
+        purpose: "台中出差",
+        supersedes: {
+          id: "app-1",
+          status: "COMPLETED",
+          primaryDate: "2026-03-01",
+          reportNumber: "TRV-202603-0001",
+        },
+        ...overrides,
+      });
+    }
+
+    it("AC-32(a)：COMPLETED 詳情頁出現「建立修正版」按鈕，且佔位文案逐字不在場", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（已完成）" });
+
+      expect(screen.getByRole("button", { name: "建立修正版" })).toBeInTheDocument();
+      // 逐字負向：佔位文案必須被真實入口取代（未移除之 mutant 必紅）。
+      expect(document.body.textContent).not.toContain("功能將於後續版本提供");
+      expect(document.body.textContent).not.toContain("請聯絡管理員建立修正版");
+    });
+
+    it("AC-32(a) 守門：VOIDED 唯讀頁零「建立修正版」按鈕（T15 負向相容）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（已作廢）" });
+
+      expect(screen.queryByRole("button", { name: "建立修正版" })).not.toBeInTheDocument();
+      expectNoWriteControls();
+    });
+
+    it("AC-32(b)／AC-33 Success：點擊建立修正版 → POST /revision（零 body）→ 導向新草稿頁", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("GET", isGetRevisionDraft, () => jsonRes({ application: revisionDraftFixture() }));
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("POST", isRevisionEndpoint, () =>
+        jsonRes({ application: revisionDraftFixture() }, 201)
+      );
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+
+      // 導向新草稿頁（同一路由樣板、不同 :id）。
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（草稿）" });
+      expect(router.countCalls("POST", isRevisionEndpoint)).toBe(1);
+      expect(router.countCalls("GET", isGetRevisionDraft)).toBe(1);
+
+      // AC-32(c) 修正版側：版本關係逐字 ＋ 指向原申請之連結。
+      expect(screen.getByText("本申請為 TRV-202603-0001 之修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視原申請" })).toHaveAttribute(
+        "href",
+        "/applications/travel/app-1"
+      );
+    });
+
+    it("AC-32(b)：修正版端點不得宣告 Content-Type（R8 防線：無 body 不宣告 body 型別）", async () => {
+      const seen: { headers?: HeadersInit; body?: unknown }[] = [];
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("GET", isGetRevisionDraft, () => jsonRes({ application: revisionDraftFixture() }));
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("POST", isRevisionEndpoint, (_url, init) => {
+        seen.push({ headers: init?.headers, body: init?.body });
+        return jsonRes({ application: revisionDraftFixture() }, 201);
+      });
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+      await waitFor(() => expect(seen).toHaveLength(1));
+
+      const first = seen[0] as { headers?: HeadersInit; body?: unknown };
+      expect(first.body).toBeUndefined();
+      expect(JSON.stringify(first.headers ?? {})).not.toContain("Content-Type");
+    });
+
+    it("AC-32(c) 原申請側：已有修正版時顯示「已建立修正版」與指向修正版之連結", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: completedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.getByText("已建立修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視修正版" })).toHaveAttribute(
+        "href",
+        "/applications/travel/rev-1"
+      );
+    });
+
+    it("AC-32(c) 負向：無任何版本關聯時零版本關係區塊", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（已完成）" });
+
+      expect(screen.queryByRole("heading", { name: "版本關係" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "檢視原申請" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "檢視修正版" })).not.toBeInTheDocument();
+    });
+
+    it("AC-32(c)：原申請未產生報表（reportNumber 為 null）時以原日期呈現", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetRevisionDraft, () =>
+        jsonRes({
+          application: revisionDraftFixture({
+            supersedes: {
+              id: "app-1",
+              status: "COMPLETED",
+              primaryDate: "2026-03-01",
+              reportNumber: null,
+            },
+          }),
+        })
+      );
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+
+      renderPage("rev-1");
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.getByText("本申請為 2026-03-01 之修正版")).toBeInTheDocument();
+    });
+
+    it("AC-32(d)：COMPLETED 附件區提示逐字含「如需修正附件，請建立修正版」；VOIDED 零該提示", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      const { unmount } = renderPage();
+      await screen.findByRole("heading", { name: "行程段明細" });
+      expect(document.body.textContent).toContain("如需修正附件，請建立修正版");
+      unmount();
+
+      const router2 = installFetchRouter();
+      router2.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router2.on("GET", isGetReport, () => jsonRes({ report: null }));
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（已作廢）" });
+      expect(document.body.textContent).not.toContain("如需修正附件，請建立修正版");
+    });
+
+    it("AC-33 Error：409 已有修正版 → 顯示訊息並提供指向既有修正版之連結，且零導向", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("POST", isRevisionEndpoint, () =>
+        jsonRes(
+          {
+            error: {
+              code: "CONFLICT",
+              message: "此申請已有修正版",
+              details: { existingRevisionId: "rev-1" },
+            },
+          },
+          409
+        )
+      );
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+
+      expect(await screen.findByText("此申請已有修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視既有修正版" })).toHaveAttribute(
+        "href",
+        "/applications/travel/rev-1"
+      );
+      // 零導向：仍停留在原已完成頁。
+      expect(
+        screen.getByRole("heading", { level: 1, name: "差旅補助申請（已完成）" })
+      ).toBeInTheDocument();
+    });
+
+    it("AC-33 Error：400 逐字顯示 error.message（T7b AR-2：fields[].field=userId 對不到輸入欄，不得靜默吞錯）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("POST", isRevisionEndpoint, () =>
+        jsonRes(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "指定的使用者已停用，無法代其建立申請",
+              fields: [{ field: "userId", reason: "指定的使用者已停用" }],
+            },
+          },
+          400
+        )
+      );
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+
+      expect(await screen.findByText("指定的使用者已停用，無法代其建立申請")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "檢視既有修正版" })).not.toBeInTheDocument();
+    });
+
+    it("AC-32(e)：管理員代操作之申請（onBehalf）入口與文案一致", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: completedFixture({ onBehalf: true, createdByDisplayName: "管理員甲" }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { level: 1, name: "差旅補助申請（已完成）" });
+
+      expect(screen.getByRole("button", { name: "建立修正版" })).toBeInTheDocument();
+      expect(document.body.textContent).toContain("如需修正附件，請建立修正版");
+      expect(document.body.textContent).not.toContain("功能將於後續版本提供");
+    });
+
+    it("C3：建立修正版送出中按鈕停用（防重複提交）", async () => {
+      // 型別以 `let` 宣告 ＋ 明確聯集：TS 之控制流分析會把「只在 callback 內
+      // 賦值」的變數窄化為 `never`，故以顯式型別註記阻斷該窄化。
+      let resolveRevision: ((res: Response) => void) | undefined;
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on(
+        "POST",
+        isRevisionEndpoint,
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveRevision = resolve;
+          })
+      );
+
+      renderPage();
+      const btn = await screen.findByRole("button", { name: "建立修正版" });
+      fireEvent.click(btn);
+
+      const pending = await screen.findByRole("button", { name: "建立中…" });
+      expect(pending).toBeDisabled();
+      fireEvent.click(pending);
+      expect(router.countCalls("POST", isRevisionEndpoint)).toBe(1);
+
+      // 收尾：讓 pending 的請求結束，避免測試結束時仍有未決 promise。
+      resolveRevision?.(
+        jsonRes({ error: { code: "INTERNAL_ERROR", message: "伺服器錯誤，請稍後再試。" } }, 500)
+      );
+      await screen.findByText("伺服器錯誤，請稍後再試。");
     });
   });
 });

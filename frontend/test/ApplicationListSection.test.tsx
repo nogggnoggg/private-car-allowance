@@ -99,6 +99,7 @@ describe("ApplicationListSection", () => {
           onBehalf: false,
           createdAt: "2026-03-01T00:00:00.000Z",
           updatedAt: "2026-03-01T00:00:00.000Z",
+          isRevision: false,
         },
       ],
       page: 1,
@@ -180,6 +181,7 @@ describe("ApplicationListSection", () => {
           onBehalf: false,
           createdAt: "2026-03-01T00:00:00.000Z",
           updatedAt: "2026-03-01T00:00:00.000Z",
+          isRevision: false,
         },
         {
           id: "app-2",
@@ -196,6 +198,7 @@ describe("ApplicationListSection", () => {
           onBehalf: false,
           createdAt: "2026-03-05T00:00:00.000Z",
           updatedAt: "2026-03-05T00:00:00.000Z",
+          isRevision: false,
         },
       ],
       page: 1,
@@ -243,6 +246,7 @@ describe("ApplicationListSection", () => {
       onBehalf: false,
       createdAt: "2026-03-01T00:00:00.000Z",
       updatedAt: "2026-03-01T00:00:00.000Z",
+      isRevision: false,
     };
   }
 
@@ -365,6 +369,7 @@ describe("ApplicationListSection", () => {
       onBehalf: false,
       createdAt: "2026-03-01T00:00:00.000Z",
       updatedAt: "2026-03-05T00:00:00.000Z",
+      isRevision: false,
     };
 
     it("AC-30(a)：列表該筆狀態欄逐字顯示「已作廢」", async () => {
@@ -446,6 +451,7 @@ describe("ApplicationListSection", () => {
       onBehalf: false,
       createdAt: "2026-03-01T00:00:00.000Z",
       updatedAt: "2026-03-01T00:00:00.000Z",
+      isRevision: false,
     }));
     mockListResponse({ items, page: 1, pageSize: 20, total: 45, appliedFilters: emptyFilters });
     renderSection();
@@ -461,6 +467,90 @@ describe("ApplicationListSection", () => {
       const calls = (fetch as Mock).mock.calls;
       const last = calls[calls.length - 1]?.[0] as string;
       expect(last).toContain("page=2");
+    });
+  });
+
+  // ---- PHASE-009-T16：修正版徽章（AC-32／§7.2 `isRevision`）----
+  //
+  // T16pre FW-2：徽章為**純顯示**——只讀列表 DTO 之 `isRevision`，不要求列表
+  // 補 `supersedesId`（跳轉需求走詳情端點之 `supersedes` 投影）。
+  describe("修正版徽章（PHASE-009-T16）", () => {
+    function listItem(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "app-1",
+        type: "TRAVEL" as const,
+        status: "COMPLETED" as const,
+        primaryDate: "2026-03-01",
+        tripDate: "2026-03-01",
+        title: "台中客戶拜訪",
+        totalKm: "120.00",
+        totalAmount: 600,
+        segmentCount: 1,
+        ownerId: "self",
+        ownerDisplayName: "使用者一",
+        onBehalf: false,
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+        isRevision: false,
+        ...overrides,
+      };
+    }
+
+    it("isRevision 為 true 之列顯示「修正版」徽章", async () => {
+      mockListResponse({
+        items: [listItem({ id: "rev-1", isRevision: true })],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+        appliedFilters: emptyFilters,
+      });
+      renderSection();
+
+      await waitFor(() => {
+        expect(screen.getByText("台中客戶拜訪")).toBeInTheDocument();
+      });
+      expect(screen.getByText("修正版")).toBeInTheDocument();
+    });
+
+    it("isRevision 為 false 之列零「修正版」徽章（徽章恆顯示之 mutant 必紅）", async () => {
+      mockListResponse({
+        items: [listItem()],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+        appliedFilters: emptyFilters,
+      });
+      renderSection();
+
+      await waitFor(() => {
+        expect(screen.getByText("台中客戶拜訪")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("修正版")).not.toBeInTheDocument();
+    });
+
+    it("混合列表：僅修正版該列有徽章（逐列綁定，非全表掃描）", async () => {
+      mockListResponse({
+        items: [
+          listItem({ id: "app-1", title: "原申請", isRevision: false }),
+          listItem({ id: "rev-1", title: "修正後申請", isRevision: true }),
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 2,
+        appliedFilters: emptyFilters,
+      });
+      renderSection();
+
+      await waitFor(() => {
+        expect(screen.getByText("修正後申請")).toBeInTheDocument();
+      });
+
+      const originalRow = screen.getByText("原申請").closest("tr");
+      const revisionRow = screen.getByText("修正後申請").closest("tr");
+      expect(originalRow).not.toBeNull();
+      expect(revisionRow).not.toBeNull();
+      expect(within(originalRow as HTMLElement).queryByText("修正版")).not.toBeInTheDocument();
+      expect(within(revisionRow as HTMLElement).getByText("修正版")).toBeInTheDocument();
     });
   });
 });
