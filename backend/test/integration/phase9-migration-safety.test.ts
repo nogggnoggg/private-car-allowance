@@ -11,15 +11,17 @@
  * verified mechanically: `git stash` on `backend/prisma/schema.prisma`
  * (reverting to the PHASE-008 shape) plus temporarily moving both new
  * migration directories out of `prisma/migrations/`, regenerating the
- * Prisma Client against that reverted schema, and re-running this file —
- * every `it` in both `describe` blocks went red for one of three reasons:
- * `tsc`/runtime `Cannot read properties of undefined (reading 'create')`
- * (`client.voidedReportFile` / `application.supersedesId` absent from a
- * client generated without them), `relation "VoidedReportFile" does not
- * exist` (raw SQL against a not-yet-created table), or `ENOENT` (the two
- * migration directories this file reads did not exist). Reverted
- * afterwards via `git stash pop` and directory restore, matching the
- * PHASE-006/007/008-T1 "TDD safety net" precedent this file follows
+ * Prisma Client against that reverted schema, and re-running this file:
+ * reviewer replay measured 19 of the file's 25 `it`s went red, across
+ * three reasons — typed client missing fields, `relation
+ * "VoidedReportFile" does not exist`, or `ENOENT`. The remaining 6 —
+ * pure-function mutation self-proofs, Postgres-behavior probes, and
+ * fixture sanity checks — stay green by design under this Phase's schema
+ * change; their discriminating power is instead evidenced by the
+ * mutation self-proof blocks and the T1 即審 mutant campaign,
+ * respectively. Reverted afterwards via `git stash pop` and directory
+ * restore, matching the PHASE-006/007/008-T1 "TDD safety net" precedent
+ * this file follows
  * structurally. See Task Handoff for the exact stash/restore transcript.
  *
  * Covers Spec docs/specs/PHASE-009.md §8（資料模型與 migration）and §15 Task
@@ -933,11 +935,13 @@ describeWithDb("PHASE-009-T1 migration safety net — clean DB", () => {
   });
 
   it("AC-01(a): Application.supersedesId — 唯一約束 ＋ FK(onDelete: Restrict) 指向 Application(id)", async () => {
-    const indexRows = await client.$queryRawUnsafe<Array<{ indexname: string }>>(
-      `SELECT indexname FROM pg_indexes
+    const indexRows = await client.$queryRawUnsafe<Array<{ indexname: string; indexdef: string }>>(
+      `SELECT indexname, indexdef FROM pg_indexes
         WHERE schemaname = current_schema() AND tablename = 'Application'`
     );
     expect(indexRows.map((r) => r.indexname)).toContain("Application_supersedesId_key");
+    const supersedesIdIndex = indexRows.find((r) => r.indexname === "Application_supersedesId_key");
+    expect(supersedesIdIndex?.indexdef.includes("CREATE UNIQUE INDEX")).toBe(true);
 
     const fkRows = await client.$queryRawUnsafe<
       Array<{ conname: string; confdeltype: string; confrelid_name: string }>
