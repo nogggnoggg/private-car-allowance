@@ -1,7 +1,7 @@
 # PHASE-009 — 作廢與修正版
 
-- Governance-Version: 2026-08-05.1
-- 狀態：**`DRAFT`**（待人類 Spec Gate：D1~D16 逐條裁定 ＋ High Task 事前批准）
+- Governance-Version: 2026-08-04.1（勘誤：初版誤植 2026-08-05.1，與 PHASE-008 同型誤植，大總管於 Spec Gate 固化時更正）
+- 狀態：**`ACTIVE`**（人類 leonchih 2026-08-07 Spec Gate 通過：D1~D16 全數裁定＋13 項 High Task 事前批准——見 §18）
 - 建立日期：2026-08-07
 - Task ID：`PHASE-009-SPEC`
 - Base Commit：`ac56f20`（branch `phase-009`，自 `phase-008` 尖端切出；PHASE-008 已終審 APPROVE，待晨間合併後 rebase 至 `main`——本 Spec 一律以 **008 完成後之現實**為基底）
@@ -77,7 +77,7 @@
 | **FE-US-05⑤**（篩選個人申請紀錄） | 選擇申請類型及狀態→同時符合所有條件 | AC-30（狀態＝已作廢之真實資料回歸） |
 | **NFR-US-10**（附件存取安全） | 附件之授權與生命週期 | AC-14（修正版附件之擁有人與授權面不變） |
 
-> **US 原意保護聲明**：本 Spec **未改變任何 US 之原意**，亦未刪減任何 US 驗收條件。凡本 Spec 判定「US 字面與既有已批准架構存在張力」者（僅 BE-US-22④／BE-US-27⑤ 一組），**一律不由 spec-writer 折衷**，而是完整列為 §16 **D4** 之選項與代價交人類裁定；在裁定前 AC-21 標記為**條件 AC**（`BLOCKED（待裁定）`），相關 Task 不得開工。
+> **US 原意保護聲明**：本 Spec **未改變任何 US 之原意**，亦未刪減任何 US 驗收條件。凡本 Spec 判定「US 字面與既有已批准架構存在張力」者（僅 BE-US-22④／BE-US-27⑤ 一組），**一律不由 spec-writer 折衷**，而是完整列為 §16 **D4** 之選項與代價交人類裁定；在裁定前 AC-21 標記為**條件 AC**（`PENDING（Spec Gate 2026-08-07 裁定後解鎖）`），相關 Task 不得開工。
 
 ### 0.3 跨 Phase 追蹤義務核銷表（Packet 十項，逐項核銷）
 
@@ -718,7 +718,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 ## 12. AC ↔ 測試映射表（機械可查；隨 Task 完成更新「狀態」欄）
 
 > **格式**：`AC` ｜ `層級` ｜ `測試檔（預定路徑）` ｜ `測試名（預定名稱）` ｜ `Task` ｜ `狀態`
-> 狀態值：`PENDING`（Spec 階段）／`BLOCKED（待裁定）`／`RED`（測試已寫且失敗）／`GREEN`（實作完成通過）。
+> 狀態值：`PENDING`（Spec 階段）／`PENDING（Spec Gate 2026-08-07 裁定後解鎖）`／`RED`（測試已寫且失敗）／`GREEN`（實作完成通過）。
 > **Phase 完成前之覆蓋檢查與終審核對以本表為準**（治理 2026-08-02.1）。
 > **`GREEN` 列之測試名須為實際存在之測試名（逐字可 `grep`）**；`PENDING` 列為預定名稱，落地後依 `vitest --reporter=verbose`／`playwright --reporter=list` 之實際輸出**逐字回填**（沿 PHASE-008 DOC-SYNC 之實名回填規則：巢狀者以 `describe 標題 › it 標題` 表示，回填一律以 `grep` 逐檔核對，不得抄錄清單）。
 
@@ -769,7 +769,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | AC-39 | integration | `phase9-void-report.test.ts` | `AC-39(a) 結構: report-data.ts 之 orderBy 含 { id: "asc" } 恰兩處（移除任一處必紅）`；`AC-39(b): 保養／折舊路徑之同 linkedAt 三附件恆依 id 遞增序輸出（寫入序與 id 序刻意相反）` | T10 ＋ T18 | PENDING |
 | AC-40 | e2e ＋ integration | `e2e/report-print-layout.spec.ts`（檔頭）；`phase8-contract.test.ts` | `AC-40(a): 檔頭字型敘述更正為子集字型 Tj／ToUnicode（記載型，無斷言變更）`；`AC-40(b): REPORT_GENERATION_FAILED 改經 AppError 後 wire 格式逐字不變（鍵集與值全等）` | T18 | **BLOCKED（待 D14 裁定）** |
 
-> **本表統計**：**40 條 AC**；映射表 **44 列**（AC-01 拆為 (a)(c)(d)(h)／(b)／(e)／(f)／(g) **五列**，其餘 AC-02~AC-40 各一列 ＝ 39 列）。其中 **8 列標記 `BLOCKED（待裁定）`**——**6 條完整 AC**（AC-14／AC-18／AC-21／AC-22／AC-38／AC-40）＋ **AC-01 之兩個子項**（(b) 依 D4、(e) 依 D10）。
+> **本表統計**：**40 條 AC**；映射表 **44 列**（AC-01 拆為 (a)(c)(d)(h)／(b)／(e)／(f)／(g) **五列**，其餘 AC-02~AC-40 各一列 ＝ 39 列）。其中 **8 列標記 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）`**——**6 條完整 AC**（AC-14／AC-18／AC-21／AC-22／AC-38／AC-40）＋ **AC-01 之兩個子項**（(b) 依 D4、(e) 依 D10）。
 
 ---
 
@@ -905,7 +905,7 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
 ## 16. 需人類批准之決策點（D1 ~ D16）
 
 > 每條格式：**為什麼要決定** ｜ **選項** ｜ **各選項影響** ｜ **推薦**。
-> **凡未裁定者，相關 AC 與實作一律不得開工**（§12 已以 `BLOCKED（待裁定）` 標記受影響之 8 列）。
+> **凡未裁定者，相關 AC 與實作一律不得開工**（§12 已以 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）` 標記受影響之 8 列）。
 > 標記 **【High】** 者屬架構／安全／資料／成本／部署面，須於 Spec Gate 明示批准。
 
 ### D1 — 作廢與版本關聯之資料模型落點　**【High：資料模型 ＋ 不可逆 migration】**
@@ -1228,7 +1228,8 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
 
 | 日期 | Task ID | 內容 | 批准依據 |
 |---|---|---|---|
-| 2026-08-07 | `PHASE-009-SPEC` | 初版 DRAFT：§0~§19 全文；**40 條 AC**、**18 個 Task**（13 項 High）、**16 個決策點**、**34 條邊界條件**（B-01~B-34）、**10 格授權矩陣（＋4 格報表端點於 `VOIDED` 之回歸）**、AC↔測試映射表 **44 列**（36 列 `PENDING`、**8 列 `BLOCKED（待裁定）`**）。跨 Phase 核銷十項逐項有落點（§0.3）。 | 待 Spec Gate |
+| 2026-08-07 | `PHASE-009-SPEC` | 初版 DRAFT：§0~§19 全文；**40 條 AC**、**18 個 Task**（13 項 High）、**16 個決策點**、**34 條邊界條件**（B-01~B-34）、**10 格授權矩陣（＋4 格報表端點於 `VOIDED` 之回歸）**、AC↔測試映射表 **44 列**（36 列 `PENDING`、**8 列 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）`**）。跨 Phase 核銷十項逐項有落點（§0.3）。 | 待 Spec Gate |
+| 2026-08-07 | `Spec Gate 通過`（大總管固化） | **人類 Spec Gate 通過，Spec 轉 `ACTIVE`**。裁定（AskUserQuestion 兩輪：四條重點細節裁定＋六項複述確認）：**D4=(b1)** 作廢時同交易另產作廢版 PDF（獨立 `VoidedReportFile` 表；渲染失敗整筆回滾可重試——人類知悉並接受此失敗語意）；**D15=(a)** 不自動作廢＋前端強提示，**人類明示接受「使用者忘記手動作廢時統計重複計入」之風險**（§17.1 已知限制據此生效）；**D2=(a)** `VOIDED` 仍算參數引用（統計面單值/引用面雙值為設計意圖）；**D6=(c)** 修正版附件複製位元組（(b) 共用 storageKey 依實查判不可選）；**其餘 D1/D3/D5/D7~D14/D16 十二條全數照推薦**；**13 項 High Task（T1~T13）事前批准**（之後不再逐項請示）。§12 之 8 列 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）` 依上開裁定全數轉 `PENDING`（無刪除列——四條裁定皆採含該功能之選項）。走查腳本 `WALKTHROUGH-PHASE-009-SPEC-GATE.md` 結果欄同步回填。**Governance-Version 誤植勘誤**（08-05.1→08-04.1）併本列記錄。 | 人類 leonchih 2026-08-07（AskUserQuestion 複述確認「正確，Spec 轉 ACTIVE 開工」；固化於 `PROJECT_STATE.md` Spec Gate 列） |
 
 ---
 
