@@ -1563,31 +1563,83 @@ describeWithDb("PHASE-009-T12a §D — 作廢版 PDF 之產生與保存（AC-21(
     // §D-7 外層補償 ＋ mutant ③（INSERT 移出交易）之自證點
     // -----------------------------------------------------------------------
 
-    it("PDF 步驟成功、其後稽核 hook 拋錯 → 整筆回滾：零 VoidedReportFile（INSERT 移出交易之 mutant 必紅）＋ 外層補償使 storage 零殘留（補償停用之 mutant 必紅）", async () => {
-      const id = await seedWithReport("D7 外層補償");
+    it("PDF 步驟成功、其後稽核寫入於 DB 層失敗（**經真實端點** ＋ 觸發器注入）→ 500 ＋ 整筆回滾：零 VoidedReportFile（INSERT 移出交易之 mutant 必紅）＋ **端點之外層補償**使 storage 零殘留（刪除 routes.ts 之 plan.compensate() 之 mutant 必紅）", async () => {
+      const id = await seedWithReport("D7 端點外層補償");
       const before = await snapshotOf(id);
+      const application = await prisma.application.findUniqueOrThrow({
+        where: { id },
+        select: { owner: { select: { loginName: true } } },
+      });
+      // 端點寫入之 `targetLabel` 形狀為 `{loginName}#{applicationId}`（AC-24）。
+      const targetLabel = `${application.owner.loginName}#${id}`;
+      const fnName = `p9t12a_fail_audit_${RUN_ID}`;
+      const trgName = `p9t12a_fail_audit_trg_${RUN_ID}`;
 
-      const plan = await prepareVoidedReport(makeDeps(), id, ownerId);
-      if (!plan) throw new Error("unreachable");
+      // ── 為何用 DB 觸發器而非 spy ──────────────────────────────────────────
+      // 本則的驗證目標是**端點的外層補償接線**（`applications/routes.ts` 之
+      // `catch { if (plan) await plan.compensate(); throw err; }`），故必須**走
+      // 真實端點**——先前版本改為在測試內自行呼叫 `plan.compensate()`，驗到的只
+      // 是機制本身，刪掉端點那一行仍會全綠（T12a 即審 MF-1）。
+      // 端點的稽核寫入走的是 `tx.auditLog.create`（交易客戶端），且 server 內部
+      // 持有的是**自己的** `PrismaClient` 實例（`buildServer` 內建立），非本檔的
+      // `prisma`——故 `vi.spyOn(prisma.auditLog, "create")` 攔不到。BEFORE INSERT
+      // 觸發器作用於資料庫本身，與哪一個 client／是否在交易內無關，是此處唯一
+      // 可靠且與 per-worker prisma 相容的注入點。作用域以 `targetLabel` 精確限縮
+      // 於本則之申請，`finally` 一律拆除。
+      await prisma.$executeRawUnsafe(
+        `CREATE FUNCTION ${fnName}() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected audit failure (p9t12a)'; END; $$ LANGUAGE plpgsql;`
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE TRIGGER ${trgName} BEFORE INSERT ON "AuditLog" FOR EACH ROW WHEN (NEW."targetLabel" = '${targetLabel}') EXECUTE FUNCTION ${fnName}();`
+      );
 
-      await expect(
-        voidApplication(
-          prisma,
-          id,
-          "T12a 稽核失敗注入",
-          ownerId,
-          async () => {
-            // 7e（稽核）拋錯——此時 7d 之 put 與 INSERT 皆已成功。
-            throw new Error("injected audit failure");
-          },
-          plan.onVoided
-        )
-      ).rejects.toThrow(/injected audit failure/);
+      try {
+        const resp = await voidViaEndpoint(id, "T12a 稽核寫入失敗（觸發器注入）");
 
-      // 內層補償不涵蓋此路徑（PDF 步驟自身成功），故必須由外層補償回收。
-      await plan.compensate();
-      await expectFullRollback(id, before);
+        // 稽核失敗不是 PDF 產生失敗，故**不是** REPORT_GENERATION_FAILED——
+        // 走一般未預期錯誤路徑之 500（錯誤碼與 stage 之分辨力於 §D-6 另證）。
+        expect(resp.statusCode, resp.body).toBe(500);
+        const body = JSON.parse(resp.body);
+        expect(body.error.code).toBe("INTERNAL_ERROR");
+        expect(resp.body).not.toContain("rpt/");
+
+        // 此路徑之 storage 回收**只能**來自端點的外層補償：7d 之 put 與 INSERT
+        // 皆已成功，內層補償（PDF 步驟自身之 catch）根本不會被觸發。
+        await expectFullRollback(id, before);
+      } finally {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS ${trgName} ON "AuditLog";`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${fnName}();`);
+      }
     });
+
+    // -----------------------------------------------------------------------
+    // §D-7b 交易 timeout 裕度（沿 `phase8-report-generate.test.ts` 之
+    // 「MF-2 探針①：交易內渲染 6000ms」同型先例——T12a 即審 SF-2）
+    // -----------------------------------------------------------------------
+
+    it("交易 timeout 裕度: 交易內渲染耗時 6000ms（逼近並超過 Prisma 套件預設之 5000ms 交易 timeout）→ 仍 200 ＋ 恰一列 VoidedReportFile（移除 application-void.ts 之顯式 timeout／maxWait 之 mutant 必紅）", async () => {
+      const id = await seedWithReport("D7b 交易裕度");
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+
+      // 僅本次作廢之渲染耗時 6000ms（fixture 之報表產生不受影響）。
+      vi.mocked(renderPdf).mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 6000));
+        return Buffer.from(FAKE_PDF_BYTES);
+      });
+
+      const startedAt = Date.now();
+      const resp = await voidViaEndpoint(id, "T12a 交易裕度探針");
+      const elapsedMs = Date.now() - startedAt;
+
+      // 確實走過 6s 之渲染（否則本則對 timeout 零鑑別力，恆真）。
+      expect(elapsedMs).toBeGreaterThan(6000);
+      expect(resp.statusCode, resp.body).toBe(200);
+
+      const rows = await prisma.voidedReportFile.findMany({ where: { reportId: report.id } });
+      expect(rows.length).toBe(1);
+      const application = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(application.status).toBe("VOIDED");
+    }, 60000);
 
     // -----------------------------------------------------------------------
     // §D-8 B-08：含報表之申請雙作廢（併發）
