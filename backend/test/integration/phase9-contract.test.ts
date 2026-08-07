@@ -37,13 +37,17 @@
  *      端點**）→ 400 `VALIDATION_ERROR`」一格（B-16；`SPEC-REV-9T7` 補格）已
  *      於 §K 就地補齊——T7 交付時該格之「400 不適用」表述只對 §7.3 之 **body
  *      驗證** 面成立，B-16 之 400 來自**擁有人狀態**而非 body。
- *   3. ⬜ **仍留 T13**：AC-23 回歸四格中「列印端點於 `VOIDED` → 200」之**狀態碼**斷言屬
- *      **T13**（AC-22／D5：列印端點狀態守門由 `COMPLETED` 放行為
- *      `COMPLETED ∪ VOIDED`）。本檔對列印端點僅斷言**授權面**（401／403）與
- *      `COMPLETED` 時逐字相同——即 §6.1 回歸格所要求之「四格之授權判定
- *      （401／403）與 `COMPLETED` 時逐字相同」——刻意不釘樁其擁有人視角之
- *      狀態碼，以免 T13 放行後必須回頭修改本檔（本檔非 T13 之 Files
- *      Allowed）。
+ *   3. ✅ **T13 已補齊**（§D）：AC-23 回歸四格中「列印端點於 `VOIDED` → 200」之
+ *      **狀態碼**斷言（AC-22／D5：列印端點狀態守門由 `COMPLETED` 放行為
+ *      `COMPLETED ∪ VOIDED`）。T4／T7／T12b 交付當時本檔對列印端點僅斷言**授
+ *      權面**（401／403）與 `COMPLETED` 時逐字相同——即 §6.1 回歸格所要求之
+ *      「四格之授權判定（401／403）與 `COMPLETED` 時逐字相同」——刻意不釘樁
+ *      擁有人視角之狀態碼，以免 T13 放行後必須回頭修改本檔。**T13 補齊之
+ *      格**：擁有人／管理員對已作廢申請列印皆 **200 text/html** 且含
+ *      `.void-banner` 作廢標示；未作廢之同型申請為零標示之對照。列印版**內
+ *      容**面之完整覆蓋（AC-20 標示三欄、XSS wire 探針、charset、授權五格逐
+ *      格）屬 `phase8-report-print.test.ts` §K，本檔僅釘樁授權矩陣所要求之
+ *      **狀態碼**（沿第 4 點之同一分工）。
  *   4. ✅ **T12b 已補齊**（§D）：AC-23 回歸四格中「**下載端點於 `VOIDED` →
  *      200**（依 §16 **D4**(b1)）」一格。T4 即審 **SF-1／FW-A** 開列此留白之
  *      理由：該格所要釘樁的**語意**（200 ＝ 回**作廢版**位元組）須待 D4(b1)
@@ -755,6 +759,61 @@ describeWithDb("PHASE-009-T4 — 作廢端點授權矩陣／錯誤合約（AC-05
 
       // 列印端點之擁有人視角狀態碼（D5：VOIDED 應放行為 200）屬 **T13**
       // （AC-22），本檔刻意不釘樁——見檔頭「T7 留白清單」第 3 點。
+    });
+
+    // -----------------------------------------------------------------------
+    // T13（AC-22／§16 D5）：AC-23 之「列印 → 200（依 D5）」一格
+    //
+    // 上一則刻意留白之「擁有人視角列印狀態碼」於本則補齊（見檔頭 T7／T13 留
+    // 白清單第 3 點）。本則只釘**狀態碼 ＋ 標示在場**；列印版內容面之完整覆
+    // 蓋屬 `phase8-report-print.test.ts` §K。
+    //
+    // 資料建構：`createVoidedTravel` 之申請**未產生報表**（作廢為純 DB 操
+    // 作，AC-21(e)），故列印路徑零 `renderPdf`／零 Chromium——與本檔「零渲染
+    // 器替身」之既有前提相容。
+    // -----------------------------------------------------------------------
+
+    it("擁有人／管理員視角: 已作廢申請列印 → 200 text/html ＋ .void-banner 作廢標示（依 §16 D5；T4 開列之 T13 留白補齊）", async () => {
+      const voidedId = await createVoidedTravel("regression-print-200");
+      const voidedReason = "作廢原因-regression-print-200";
+      const completedId = await createCompletedTravel("regression-print-200-control");
+
+      /** 擷取 `.void-banner` 區塊內容（T11 W-4：statusLabel 亦含「已作廢」）。 */
+      const extractVoidBanner = (html: string): string | null => {
+        const match = html.match(/<section class="void-banner avoid-break">([\s\S]*?)<\/section>/);
+        return match ? match[1] : null;
+      };
+
+      for (const identity of [
+        { label: "擁有人", cookie: ownerCookie },
+        { label: "管理員", cookie: adminCookie },
+      ]) {
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/${voidedId}/report/print`,
+          headers: { cookie: identity.cookie },
+        });
+        expect(resp.statusCode, `${identity.label}: ${resp.body.slice(0, 300)}`).toBe(200);
+        expect(resp.headers["content-type"]).toBe("text/html; charset=utf-8");
+        const banner = extractVoidBanner(resp.body);
+        expect(banner, `${identity.label}: 缺 .void-banner 區塊`).not.toBeNull();
+        expect(banner).toContain("已作廢");
+        expect(banner).toContain(voidedReason);
+      }
+
+      // 對照組（避免上述斷言恆真）：未作廢之同型申請列印亦 200，但零作廢標示。
+      const controlResp = await app.inject({
+        method: "GET",
+        url: `/applications/${completedId}/report/print`,
+        headers: { cookie: ownerCookie },
+      });
+      expect(controlResp.statusCode).toBe(200);
+      expect(extractVoidBanner(controlResp.body)).toBeNull();
+      expect(controlResp.body).not.toContain("已作廢");
+
+      // 列印為唯讀：狀態未因列印而改變。
+      const after = await prisma.application.findUniqueOrThrow({ where: { id: voidedId } });
+      expect(after.status).toBe("VOIDED");
     });
 
     // -----------------------------------------------------------------------

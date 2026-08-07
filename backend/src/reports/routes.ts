@@ -327,9 +327,25 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
       // 判定紀律②：授權先於狀態（AC-25 側信道守門）。
       assertOwnershipOrAdmin(actor, application.ownerId);
 
-      // D11／AC-25（SPEC-REV-T9 修訂後）：草稿一律拒絕（409 CONFLICT +
-      // details.status）——本端點與產生端點同型，下載／查詢兩端點不適用。
-      if (application.status !== "COMPLETED") {
+      // D11／AC-25（SPEC-REV-T9）＋【PHASE-009-T13／AC-22（§16 D5）】：狀態守
+      // 門由 `COMPLETED` 單值放行為 **`COMPLETED ∪ VOIDED`**——FE-US-23⑤「報表
+      // 已作廢 → 開啟列印版 → 顯示明確作廢標示及作廢原因」之前提。草稿仍一律
+      // 409 CONFLICT + details.status（既有語意逐字不變；草稿無快照、無金額，
+      // 列印版會呈現半成品或觸發 required() 拋錯，D5(c)）。
+      //
+      // **白名單而非黑名單**（刻意）：不寫成 `!== "DRAFT"`。二者在今日之三值
+      // `ApplicationStatus` 上行為等價，但黑名單會使**未來新增之狀態**預設被
+      // 放行；白名單則預設拒絕。此形式由 `phase8-report-print.test.ts` §K4 之
+      // 原始碼字面斷言守門。
+      //
+      // 產生端點（上方）之守門**不**放行 VOIDED（B-27／D13：已作廢申請不得產
+      // 生新報表），故兩端點之字面刻意不同。
+      //
+      // 訊息**逐字不變**（surgical）：本分支自本次起僅對 `DRAFT` 觸發，而
+      // 「僅已完成之申請可檢視列印版」對草稿使用者仍是正確且可行動的指引；
+      // 已作廢者永不再看到此訊息。改寫訊息會使草稿之 409 回應含「已作廢」字
+      // 樣（§K1-d 之零洩漏掃描實測攔截），無益反增噪。
+      if (application.status !== "COMPLETED" && application.status !== "VOIDED") {
         throw new AppError("CONFLICT", 409, "僅已完成之申請可檢視列印版", undefined, {
           status: application.status,
         });
