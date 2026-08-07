@@ -1944,3 +1944,226 @@ describeWithDb("PHASE-009-T7 — 修正版端點授權矩陣／錯誤合約（AC
     });
   });
 });
+
+// ===========================================================================
+// §M — PHASE-009-T16pre：列表 DTO 之 `isRevision`（§7.2；SPEC-REV-9T7 補列）
+//
+// §7.2 逐字：「列表 DTO 新增一鍵（列表徽章用）：`isRevision: boolean`
+// （`supersedesId != null`）」。§12 之 `AC-32／§7.2 列表 DTO isRevision` 列：
+// 「`§7.2: 列表 DTO 含 isRevision（supersedesId != null 為 true，否則
+// false）——既有鍵逐字不變`」。
+//
+// 本區塊為**列表鍵集之基線**（本檔開列前全 repo 無同型封閉斷言——見 Handoff
+// Warnings）：以 `toEqual` 鎖死 `ApplicationListItemDto` 之完整鍵集，任何一
+// 鍵之新增／移除／改名皆必紅，前端徽章之消費面（T16）因而有穩定合約。
+//
+// 鍵集基線之權威 ＝ `src/applications/application-query.ts` 之
+// `ApplicationListItemDto` 宣告：既有 14 鍵（`id`／`type`／`status`／
+// `primaryDate`／`tripDate`／`title`／`totalKm`／`totalAmount`／
+// `segmentCount`／`ownerId`／`ownerDisplayName`／`onBehalf`／`createdAt`／
+// `updatedAt`）＋ 本 Task 新增 `isRevision` ＝ **15 鍵**。
+// （§7.2 之「既有 17 鍵」與 §12 之「17→18」為記載失準——實查 14→15；
+// 本 Task 僅忠實鎖定實作，不改變任何既有鍵，見 Handoff Warnings。）
+// ===========================================================================
+
+describeWithDb("PHASE-009-T16pre — 列表 DTO `isRevision`（§7.2）＋ 列表鍵集基線", () => {
+  const T16_PREFIX = "p9t16_";
+
+  /** §7.2 列表 DTO 之完整鍵集（既有 14 鍵 ＋ isRevision）。多一鍵／少一鍵必紅。 */
+  const APPLICATION_LIST_ITEM_KEYS = [
+    "id",
+    "type",
+    "status",
+    "primaryDate",
+    "tripDate",
+    "title",
+    "totalKm",
+    "totalAmount",
+    "segmentCount",
+    "ownerId",
+    "ownerDisplayName",
+    "onBehalf",
+    "createdAt",
+    "updatedAt",
+    "isRevision",
+  ].sort();
+
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+  let attachmentStorageRoot: string;
+  let reportStorageRoot: string;
+
+  let ownerId: string;
+  let ownerCookie: string;
+
+  const createdApplicationIds: string[] = [];
+  const createdUserIds: string[] = [];
+
+  /** 已完成差旅（修正版端點之合法來源）。 */
+  async function createCompletedTravel(suffix: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2026-05-10T00:00:00.000Z"),
+        totalAmount: 1234,
+        completedAt: new Date("2026-05-10T08:00:00.000Z"),
+        travel: {
+          create: {
+            tripDate: new Date("2026-05-10T00:00:00.000Z"),
+            purpose: `T16pre 來源-${suffix}`,
+            snapshotTotalKm: "60.00",
+            calculatedAt: new Date("2026-05-10T08:00:00.000Z"),
+          },
+        },
+      },
+    });
+    createdApplicationIds.push(created.id);
+    return created.id;
+  }
+
+  /** 經**真實修正版端點**建立修正版（非直寫 `supersedesId`）。 */
+  async function createRevision(sourceId: string): Promise<string> {
+    const resp = await app.inject({
+      method: "POST",
+      url: `/applications/${sourceId}/revision`,
+      headers: { cookie: ownerCookie },
+    });
+    if (resp.statusCode !== 201) {
+      throw new Error(`revision endpoint failed: ${resp.statusCode} ${resp.body}`);
+    }
+    const id = (JSON.parse(resp.body) as { application: { id: string } }).application.id;
+    createdApplicationIds.push(id);
+    return id;
+  }
+
+  interface ListItemWire {
+    id: string;
+    isRevision: boolean;
+  }
+
+  async function listItems(): Promise<ListItemWire[]> {
+    const resp = await app.inject({
+      method: "GET",
+      url: "/applications?dateFrom=2026-05-01&dateTo=2026-05-31&pageSize=100",
+      headers: { cookie: ownerCookie },
+    });
+    expect(resp.statusCode).toBe(200);
+    return (JSON.parse(resp.body) as { items: ListItemWire[] }).items;
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await prisma.$connect();
+
+    attachmentStorageRoot = makeTempStorageRoot("att-t16");
+    reportStorageRoot = makeTempStorageRoot("rpt-t16");
+
+    app = await buildServer({
+      databaseUrl: DB_URL,
+      storageRoot: attachmentStorageRoot,
+      reportStorageRoot,
+      logLevel: "error",
+    });
+    await app.ready();
+
+    const loginName = `${T16_PREFIX}owner_${RUN_ID}`;
+    const owner = await prisma.user.create({
+      data: {
+        loginName,
+        displayName: "T16pre owner",
+        passwordHash: await hashPassword(PASSWORD),
+        role: "USER",
+        isActive: true,
+        mustChangePassword: false,
+      },
+    });
+    createdUserIds.push(owner.id);
+    ownerId = owner.id;
+    ownerCookie = await loginUser(app, loginName, PASSWORD);
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    await app.close();
+    if (createdUserIds.length > 0) {
+      await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
+      await prisma.auditLog.deleteMany({ where: { targetId: { in: createdUserIds } } });
+    }
+    // 修正版（`supersedesId` → 原申請，`onDelete: Restrict`）須先於原申請刪除。
+    for (const id of [...createdApplicationIds].reverse()) {
+      await prisma.application.deleteMany({ where: { supersedesId: id } });
+    }
+    await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
+    if (createdUserIds.length > 0) {
+      await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
+    }
+    await prisma.$disconnect();
+    removeTempStorageRoot(attachmentStorageRoot);
+    removeTempStorageRoot(reportStorageRoot);
+  });
+
+  it("§7.2 正向: 修正版列之 isRevision 為 true（supersedesId 非 null；投影改恆 false 之 mutant 必紅）", async () => {
+    const sourceId = await createCompletedTravel("pos");
+    const revisionId = await createRevision(sourceId);
+
+    const items = await listItems();
+    const revisionItem = items.find((item) => item.id === revisionId);
+    expect(revisionItem, "修正版未出現於列表").toBeTruthy();
+    expect(revisionItem?.isRevision).toBe(true);
+
+    // DB 面對照：該列之 `supersedesId` 確為來源 id（證明 true 來自關聯投影，
+    // 而非「修正版恆為 DRAFT」等他欄之誤用）。
+    const row = await prisma.application.findUnique({
+      where: { id: revisionId },
+      select: { supersedesId: true, status: true },
+    });
+    expect(row?.supersedesId).toBe(sourceId);
+  });
+
+  it("§7.2 負向: 一般申請（未經修正版端點建立）之 isRevision 為 false，且鍵存在（非 undefined）", async () => {
+    const plainId = await createCompletedTravel("neg");
+
+    const items = await listItems();
+    const plainItem = items.find((item) => item.id === plainId);
+    expect(plainItem, "一般申請未出現於列表").toBeTruthy();
+    expect(plainItem?.isRevision).toBe(false);
+    expect(Object.hasOwn(plainItem as object, "isRevision")).toBe(true);
+  });
+
+  it("§7.2 負向（狀態非權威）: DRAFT 但非修正版之申請仍為 false（誤用 status 判定之 mutant 必紅）", async () => {
+    const draft = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "DRAFT",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2026-05-12T00:00:00.000Z"),
+        travel: { create: { purpose: "T16pre 草稿非修正版" } },
+      },
+    });
+    createdApplicationIds.push(draft.id);
+
+    const items = await listItems();
+    const draftItem = items.find((item) => item.id === draft.id);
+    expect(draftItem, "草稿未出現於列表").toBeTruthy();
+    expect(draftItem?.isRevision).toBe(false);
+  });
+
+  it("§7.2 鍵集基線: 列表項鍵集全等於 15 鍵宣告（多一鍵／少一鍵／改名必紅）", async () => {
+    const sourceId = await createCompletedTravel("keys");
+    const revisionId = await createRevision(sourceId);
+
+    const items = await listItems();
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(Object.keys(item as object).sort()).toEqual(APPLICATION_LIST_ITEM_KEYS);
+    }
+    // 正向對照：來源列與修正版列皆在本次比對範圍內（非空集合恆真）。
+    expect(items.map((item) => item.id)).toEqual(expect.arrayContaining([sourceId, revisionId]));
+  });
+});
