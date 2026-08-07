@@ -41,6 +41,27 @@
  * /applications/:id`。此缺口已另行以 `spawn_task` 標記，供人類決定歸屬
  * Task。
  *
+ * ── PHASE-009-T4 追加（本檔第二批內容）──────────────────────────────────
+ * 上述 AC-08(b) 缺口已由 **T4b**（`SPEC-REV-9T3` 擴列後）於
+ * `attachment/lifecycle-service.ts` 修復並經即審 APPROVE；其端點層回歸落在
+ * `phase4-attachment-ard.test.ts` 之 `AC-08(b)` 區塊（本檔不重複）。T4 於本
+ * 檔追加：
+ *   · **AC-24／AC-26**（§2 :215／:219、§6.2）：作廢稽核之形狀逐鍵、同交易
+ *     回滾自證（`onVoided` hook 拋錯）、本人作廢亦寫稽核之正向斷言，以及
+ *     管理員代作廢（`actorId ≠ targetId`）與管理員作廢自己申請兩格。
+ *     〔稽核之**端點層**同交易自證（route 把稽核寫在交易之後的 mutant）另
+ *     見 `phase9-contract.test.ts` §G——本檔之 hook 拋錯測試無法鑑別該
+ *     mutant，兩者互補。〕
+ *   · **T4b 即審 FW-1**：AC-08(b) 之「新增」面端到端補齊——保養／折舊兩型
+ *     `PUT` 各補一則 `attachmentIds: [<TEMP 附件 id>]` 變體（403 ＋ 附件狀
+ *     態仍 `TEMP`）；差旅型已由 T3 之 `segments[].attachmentIds` 涵蓋。
+ *   · **fixture 缺陷修復**（非弱化）：兩個 fixture 使用者補上
+ *     `mustChangePassword: false`——`User.mustChangePassword` 之 schema 預設
+ *     為 `true`，T3 未顯式指定，導致本檔既有 AC-08 之四則「403」實際命中的
+ *     是 `PASSWORD_CHANGE_REQUIRED`（假綠：即使
+ *     `assertApplicationMutable` 守門被整個移除，測試仍會綠）。修復後各該
+ *     it 另補錯誤碼逐字斷言（`FORBIDDEN`），判定收緊。
+ *
  * Test discipline (Spec §11.0 / Packet)：
  *   - loginName 前綴 "p9t3_" ＋ 每次執行之隨機後綴。
  *   - cleanup 僅限本檔追蹤之 id ＋ loginName 前綴；絕不 `deleteMany({})`。
@@ -192,11 +213,17 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
   let prisma: PrismaClient;
 
   let ownerId: string;
+  let ownerLoginName: string;
   let ownerCookie: string;
   let otherActorId: string; // 模擬「代操作者」——本 Task 不做授權判斷，僅需一個與 ownerId 不同的合法 actorId
+  // PHASE-009-T4：AC-24／AC-26 需要以 HTTP 端點（非直呼 service）觸發稽核寫
+  // 入，故 T3 既有之「代操作者」（role=ADMIN）於本 Task 追加登入 cookie 與
+  // 一筆自己擁有的已完成申請（AC-26(d)）。
+  let adminCookie: string;
 
   const createdApplicationIds: string[] = [];
   const createdUserIds: string[] = [];
+  const createdAttachmentIds: string[] = [];
 
   function trackApp(id: string): string {
     createdApplicationIds.push(id);
@@ -304,6 +331,54 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
     return trackApp(created.id);
   }
 
+  /**
+   * PHASE-009-T4：任意擁有人之已完成差旅（AC-26(d) 需要一筆「管理員自己擁
+   * 有」的已完成申請）。與上方 `createCompletedTravel` 之差別僅在 owner 可
+   * 指定，欄位形狀逐字相同。
+   */
+  async function createCompletedTravelOwnedBy(owner: string, suffix: string): Promise<string> {
+    const created = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId: owner,
+        createdById: owner,
+        primaryDate: new Date("2026-03-15T00:00:00.000Z"),
+        totalAmount: 500,
+        completedAt: new Date("2026-03-15T08:00:00.000Z"),
+        travel: {
+          create: {
+            tripDate: new Date("2026-03-15T00:00:00.000Z"),
+            purpose: `PHASE-009-T4 測試出差-${suffix}`,
+            fuelUnitPrice: "2.3456",
+            etcUnitPrice: "1.2345",
+            snapshotTotalKm: "60.00",
+            snapshotRawAmount: "500.0000",
+            calculatedAt: new Date("2026-03-15T08:00:00.000Z"),
+          },
+        },
+      },
+    });
+    return trackApp(created.id);
+  }
+
+  /** PHASE-009-T4 FW-8：TEMP 附件（尚未關聯任何容器），供 PUT 夾帶用。 */
+  async function createTempAttachment(suffix: string): Promise<string> {
+    const attachment = await prisma.attachment.create({
+      data: {
+        status: "TEMP",
+        storageKey: `att/p9t4-${RUN_ID}/${suffix}.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1024,
+        originalFilename: `${suffix}.jpg`,
+        uploaderId: ownerId,
+        ownerId,
+      },
+    });
+    createdAttachmentIds.push(attachment.id);
+    return attachment.id;
+  }
+
   async function createDraftTravel(): Promise<string> {
     const created = await prisma.application.create({
       data: {
@@ -321,7 +396,7 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
     app = await buildServer({ databaseUrl: DB_URL, logLevel: "error" });
     prisma = new PrismaClient();
 
-    const ownerLoginName = `${LOGIN_PREFIX}owner_${RUN_ID}`;
+    ownerLoginName = `${LOGIN_PREFIX}owner_${RUN_ID}`;
     const owner = await prisma.user.create({
       data: {
         loginName: ownerLoginName,
@@ -329,6 +404,15 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
         passwordHash: await hashPassword(PASSWORD),
         role: "USER",
         isActive: true,
+        // PHASE-009-T4（缺陷修復，非弱化）：`User.mustChangePassword` 之
+        // schema 預設為 `true`（schema.prisma:55）——T3 建立 fixture 時未顯
+        // 式指定，導致本檔既有 AC-08 之四則「403」斷言實際命中的是
+        // `requirePasswordChanged` 的 403 `PASSWORD_CHANGE_REQUIRED`，而非
+        // 意圖驗證的 403 `FORBIDDEN`（`assertApplicationMutable`）——即**假
+        // 綠**（守門若被整個移除，測試仍會綠）。改為 `false` 後這些斷言才
+        // 真正走到狀態守門；同時於各該 it 補上錯誤碼逐字斷言，防止同型假
+        // 綠再次發生（判定收緊，非放寬）。
+        mustChangePassword: false,
       },
     });
     ownerId = owner.id;
@@ -343,15 +427,28 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
         passwordHash: await hashPassword(PASSWORD),
         role: "ADMIN",
         isActive: true,
+        // 同上（PHASE-009-T4）：本 Task 追加 `adminCookie`，需能通過
+        // `requirePasswordChanged` 才能觸及作廢端點之授權與稽核判定。
+        mustChangePassword: false,
       },
     });
     otherActorId = other.id;
     createdUserIds.push(other.id);
+    adminCookie = await loginUser(app, otherLoginName, PASSWORD);
   });
 
   afterAll(async () => {
+    for (const id of createdAttachmentIds) {
+      await prisma.attachment.deleteMany({ where: { id } });
+    }
     for (const id of createdApplicationIds) {
       await prisma.application.deleteMany({ where: { id } });
+    }
+    // PHASE-009-T4：AuditLog.actorId／targetId 對 User 有 FK——本 Task 新增
+    // 之稽核斷言會留下列，須先於 user 刪除（否則 afterAll 因 FK 失敗）。
+    for (const id of createdUserIds) {
+      await prisma.auditLog.deleteMany({ where: { actorId: id } });
+      await prisma.auditLog.deleteMany({ where: { targetId: id } });
     }
     for (const id of createdUserIds) {
       await prisma.user.deleteMany({ where: { id } });
@@ -631,6 +728,8 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
 
       expect(resp.statusCode).toBe(403);
+      // PHASE-009-T4：錯誤碼逐字斷言（防 PASSWORD_CHANGE_REQUIRED 型假綠）。
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
       const after = await prisma.application.findUniqueOrThrow({
         where: { id },
         include: { travel: true },
@@ -650,6 +749,7 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
 
       expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
       const after = await prisma.application.findUniqueOrThrow({
         where: { id },
         include: { maintenance: true },
@@ -669,11 +769,57 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
 
       expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
       const after = await prisma.application.findUniqueOrThrow({
         where: { id },
         include: { depreciation: true },
       });
       expect(after.depreciation?.applicationYear).not.toBe(1999);
+    });
+
+    // ── PHASE-009-T4（T4b 即審 FW-1）：AC-08(b)「新增」面之端到端補齊 ──────
+    // T3 已於上方差旅分支（:622 一帶）以 `segments[].attachmentIds` 夾帶涵蓋
+    // 差旅型之「附件新增」路徑；保養／折舊兩型之 `attachmentIds` 為頂層鍵，
+    // 走 `parseAttachmentIdsField`——而 `assertApplicationMutable` 在解析
+    // body 之前即已 403 短路，故附件恆保持 TEMP、零 LINKED 寫入。
+    it("FW-1 保養 PUT 夾帶 attachmentIds:[TEMP 附件] → 403，該附件仍為 TEMP（零關聯寫入）", async () => {
+      const id = await createCompletedMaintenance("fw1-maintenance-att");
+      await voidApplication(prisma, id, "FW-1 保養附件測試", ownerId);
+      const attId = await createTempAttachment("fw1-maintenance");
+
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/maintenance/${id}`,
+        headers: { cookie: ownerCookie },
+        payload: { attachmentIds: [attId] },
+      });
+
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+      const att = await prisma.attachment.findUniqueOrThrow({ where: { id: attId } });
+      expect(att.status).toBe("TEMP");
+      expect(att.refType).toBeNull();
+      expect(att.refId).toBeNull();
+    });
+
+    it("FW-1 折舊 PUT 夾帶 attachmentIds:[TEMP 附件] → 403，該附件仍為 TEMP（零關聯寫入）", async () => {
+      const id = await createCompletedDepreciation("fw1-depreciation-att", 2204);
+      await voidApplication(prisma, id, "FW-1 折舊附件測試", ownerId);
+      const attId = await createTempAttachment("fw1-depreciation");
+
+      const resp = await app.inject({
+        method: "PUT",
+        url: `/applications/depreciation/${id}`,
+        headers: { cookie: ownerCookie },
+        payload: { attachmentIds: [attId] },
+      });
+
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
+      const att = await prisma.attachment.findUniqueOrThrow({ where: { id: attId } });
+      expect(att.status).toBe("TEMP");
+      expect(att.refType).toBeNull();
+      expect(att.refId).toBeNull();
     });
 
     it("DELETE /applications/:id → 403，列不被刪除", async () => {
@@ -687,6 +833,7 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
 
       expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body).error.code).toBe("FORBIDDEN");
       const after = await prisma.application.findUnique({ where: { id } });
       expect(after).not.toBeNull();
     });
@@ -939,6 +1086,148 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
   // =========================================================================
   // resolveVoidInfo — 直接單元覆蓋（同生共死三欄邏輯）
   // =========================================================================
+
+  // =========================================================================
+  // PHASE-009-T4 — AC-24 作廢稽核（同交易）＋ AC-26(a)(d) 代操作稽核
+  //
+  // 規範出處：§2 AC-24（`action='APPLICATION_VOIDED'`／`actorId`＝實際操作
+  // 者／`targetId`＝申請擁有人／`targetLabel`＝`{loginName}#{applicationId}`
+  // ／`summary` 含 `{ applicationId, type, reason, voidedAt }`；**本人作廢亦
+  // 寫稽核**）、§6.2 稽核表、AC-26(a)（管理員代作廢：actorId≠targetId）／
+  // AC-26(d)（管理員作廢自己的申請仍寫 `APPLICATION_VOIDED`）。
+  //
+  // §12 映射表將 AC-26(a)(d) 之落點列為本檔（`phase9-void.test.ts`）＋ T4；
+  // T4 Packet 之 Required Tests 未逐條列出 AC-26——以 Spec §12 原文為準納
+  // 入，並於 Handoff Warnings 記載此差異（Packet 轉述與 Spec 不一致時以 Spec
+  // 為準之治理規則）。
+  // =========================================================================
+
+  describe("AC-24／AC-26: 作廢稽核（同交易）", () => {
+    /** 取本申請之 `APPLICATION_VOIDED` 稽核列（以 summary.applicationId 精確定位）。 */
+    async function findVoidAudits(applicationId: string) {
+      const rows = await prisma.auditLog.findMany({
+        where: { action: "APPLICATION_VOIDED" },
+        orderBy: { createdAt: "asc" },
+      });
+      return rows.filter(
+        (r) => (r.summary as Record<string, unknown> | null)?.applicationId === applicationId
+      );
+    }
+
+    it("AC-24: 本人經端點作廢 → 恰一筆 AuditLog(APPLICATION_VOIDED)，action／actorId／targetId／targetLabel／summary 逐鍵", async () => {
+      const id = await createCompletedTravel("ac24-shape");
+
+      const resp = await app.inject({
+        method: "POST",
+        url: `/applications/${id}/void`,
+        headers: { cookie: ownerCookie },
+        payload: { reason: "AC-24 形狀測試原因" },
+      });
+      expect(resp.statusCode).toBe(200);
+
+      const audits = await findVoidAudits(id);
+      expect(audits).toHaveLength(1);
+      const audit = audits[0];
+      expect(audit.action).toBe("APPLICATION_VOIDED");
+      expect(audit.actorId).toBe(ownerId);
+      expect(audit.targetId).toBe(ownerId);
+      expect(audit.targetLabel).toBe(`${ownerLoginName}#${id}`);
+
+      const persisted = await prisma.application.findUniqueOrThrow({ where: { id } });
+      // summary 鍵集封閉（`toEqual`）——多寫一鍵（例如夾帶 voidedById／
+      // ownerId 等內部識別值）必紅。
+      expect(audit.summary).toEqual({
+        applicationId: id,
+        type: "TRAVEL",
+        reason: "AC-24 形狀測試原因",
+        voidedAt: persisted.voidedAt?.toISOString(),
+      });
+    });
+
+    it("AC-24 同交易自證: 稽核 hook 拋錯 → 四欄寫入一併回滾（零孤兒稽核列、狀態未變）", async () => {
+      const id = await createCompletedTravel("ac24-rollback");
+
+      await expect(
+        voidApplication(prisma, id, "AC-24 回滾測試", ownerId, async (tx, context, application) => {
+          // 先真的在同一交易寫入稽核列，再拋錯——若稽核寫入不在交易內，這
+          // 一列會殘留成孤兒（下方斷言必紅）。
+          await tx.auditLog.create({
+            data: {
+              action: "APPLICATION_VOIDED",
+              actorId: ownerId,
+              targetId: context.ownerId,
+              targetLabel: `${context.ownerLoginName}#${application.id}`,
+              summary: { applicationId: application.id, type: context.type },
+            },
+          });
+          throw new Error("injected audit hook failure");
+        })
+      ).rejects.toThrow("injected audit hook failure");
+
+      const after = await prisma.application.findUniqueOrThrow({ where: { id } });
+      expect(after.status).toBe("COMPLETED");
+      expect(after.voidReason).toBeNull();
+      expect(after.voidedAt).toBeNull();
+      expect(after.voidedById).toBeNull();
+      expect(await findVoidAudits(id)).toHaveLength(0);
+    });
+
+    it("AC-24: 本人作廢亦寫稽核（正向斷言——與 PHASE-004 AC-86「本人自建草稿不寫稽核」刻意不同）", async () => {
+      const id = await createCompletedTravel("ac24-self");
+
+      const resp = await app.inject({
+        method: "POST",
+        url: `/applications/${id}/void`,
+        headers: { cookie: ownerCookie },
+        payload: { reason: "本人作廢" },
+      });
+      expect(resp.statusCode).toBe(200);
+
+      const audits = await findVoidAudits(id);
+      expect(audits).toHaveLength(1);
+      // 本人操作：actorId === targetId（若沿用 AC-86 之「本人豁免」而跳過寫
+      // 入，此處 length 為 0 必紅）。
+      expect(audits[0].actorId).toBe(ownerId);
+      expect(audits[0].actorId).toBe(audits[0].targetId);
+    });
+
+    it("AC-26(a): 管理員代作廢 → actorId=管理員、targetId=擁有人（actorId ≠ targetId）", async () => {
+      const id = await createCompletedTravel("ac26a-onbehalf");
+
+      const resp = await app.inject({
+        method: "POST",
+        url: `/applications/${id}/void`,
+        headers: { cookie: adminCookie },
+        payload: { reason: "管理員代作廢" },
+      });
+      expect(resp.statusCode).toBe(200);
+
+      const audits = await findVoidAudits(id);
+      expect(audits).toHaveLength(1);
+      expect(audits[0].actorId).toBe(otherActorId);
+      expect(audits[0].targetId).toBe(ownerId);
+      expect(audits[0].actorId).not.toBe(audits[0].targetId);
+      expect(audits[0].targetLabel).toBe(`${ownerLoginName}#${id}`);
+    });
+
+    it("AC-26(d): 管理員作廢自己的申請 → 仍寫 APPLICATION_VOIDED（作廢不受 AC-86 本人豁免影響）", async () => {
+      const id = await createCompletedTravelOwnedBy(otherActorId, "ac26d-admin-self");
+
+      const resp = await app.inject({
+        method: "POST",
+        url: `/applications/${id}/void`,
+        headers: { cookie: adminCookie },
+        payload: { reason: "管理員作廢自己的申請" },
+      });
+      expect(resp.statusCode).toBe(200);
+
+      const audits = await findVoidAudits(id);
+      expect(audits).toHaveLength(1);
+      expect(audits[0].action).toBe("APPLICATION_VOIDED");
+      expect(audits[0].actorId).toBe(otherActorId);
+      expect(audits[0].targetId).toBe(otherActorId);
+    });
+  });
 
   describe("resolveVoidInfo：三欄同生共死", () => {
     it("三欄皆 null → 回傳 null", async () => {

@@ -60,6 +60,8 @@ import {
   toApplicationListItemDto,
 } from "./application-query.js";
 import { assertApplicationMutable } from "./application-state-machine.js";
+import type { OnApplicationVoided } from "./application-void.js";
+import { voidApplication } from "./application-void.js";
 import type { CreateDepreciationDraftInput } from "./depreciation-service.js";
 import {
   type OnDepreciationDraftUpdated,
@@ -1268,6 +1270,111 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
 
       const completed = await completeTravelApplication(prisma, id);
       const dto = await toTravelApplicationDto(prisma, completed);
+      return reply.status(200).send({ application: dto });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /applications/:id/void (PHASE-009-T4)
+  // Spec §3.1「作廢已完成申請」／§6.1 授權矩陣 #1〜#5／§6.2 稽核／§7.3／
+  // §7.5；AC-23／AC-24／AC-25／AC-27。
+  //
+  // 判定順序（§6.1 判定紀律①，逐字「授權（401／403）一律先於狀態守門
+  // （409）與欄位驗證（400）」）——本 handler 之語句順序即該順序：
+  //   (1) 401 ／ 403 PASSWORD_CHANGE_REQUIRED   ← `authPreHandlers`
+  //   (2) 404 NOT_FOUND                          ← 存在性（B-13，不洩漏型別）
+  //   (3) 403 FORBIDDEN                          ← `assertOwnershipOrAdmin`
+  //   (4) 409 CONFLICT ／ (5) 400 VALIDATION_ERROR ← `voidApplication` 交易內
+  // 由於 (4)(5) 封裝在 service 的交易裡（T3 之刻意設計，見
+  // `application-void.ts` 檔頭「判定順序」），「授權早於 409」只可能在**本
+  // 層**成立——(3) 若被移到 service 之後，他人對草稿／已完成／已作廢會得到
+  // 互異回應（狀態洩漏）。此不變式由 `phase9-contract.test.ts` 之側信道測試
+  // 守門。
+  //
+  // 授權與完成端點（`/complete`）之刻意差異：完成端點依 D17／D7(a)／D9(a)
+  // 為 **owner-only**（管理員亦 403）；作廢端點依 **AD-US-10 之逐字授權**放
+  // 行管理員，故此處使用本檔其餘端點共用的 `assertOwnershipOrAdmin`（§6.1
+  // 「與完成端點 owner-only 先例之差異（記載）」，差異已列 §16 D12）。
+  //
+  // 稽核（§6.2／AC-24）：`onVoided` hook 於 `voidApplication` 的**同一交易**
+  // 內執行（四欄寫入之後、提交之前）——hook 拋錯或其 INSERT 於 DB 層失敗
+  // 時，四欄寫入一併回滾（零孤兒稽核列、零狀態變更）。與三型 PUT 之
+  // `APPLICATION_UPDATED_ON_BEHALF` 不同，本 hook **恆**傳入、不以
+  // `actorId !== ownerId` 分野：BE-US-31② 逐字「使用者**或**管理員作廢申請
+  // → 應記錄作廢原因、操作者及時間」，**本人作廢亦寫稽核**（AC-24 明文，
+  // 與 PHASE-004 AC-86「本人自建草稿不寫稽核」之差異理由見 §6.2 表）。
+  // -------------------------------------------------------------------------
+
+  fastify.post(
+    "/applications/:id/void",
+    { preHandler: authPreHandlers },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as Record<string, unknown>;
+
+      // (2) 存在性——`getApplicationForAuth` 只取 id／ownerId／status（不分型
+      // 別），故兩端點對不存在之 id 一律 404 且不洩漏型別（B-13）。
+      const application = await getApplicationForAuth(prisma, id);
+      if (!application) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+
+      // (3) §6.2 資料隔離不變式 1：授權一律以 DB 查得之 ownerId 為準。
+      assertOwnershipOrAdmin(request.currentUser, application.ownerId);
+
+      const actorId = request.currentUser.id;
+
+      const onVoided: OnApplicationVoided = async (tx, context, voided) => {
+        await tx.auditLog.create({
+          data: {
+            action: "APPLICATION_VOIDED",
+            actorId,
+            targetId: context.ownerId,
+            targetLabel: `${context.ownerLoginName}#${voided.id}`,
+            // AC-24 之封閉四鍵。作廢原因入稽核為 BE-US-31② 之既定要求；
+            // 內部識別值（`voidedById`／`ownerId`）刻意不入 summary
+            // （§6.3：內部識別值不外露；操作者已由 `actorId` 欄承載）。
+            summary: {
+              applicationId: voided.id,
+              type: context.type,
+              reason: voided.voidReason,
+              voidedAt: voided.voidedAt.toISOString(),
+            },
+          },
+        });
+      };
+
+      // (4)(5) 狀態守門（409 + details.status）與原因驗證（400 + fields[]）
+      // 皆由 service 於交易內處理——`body.reason` 以 `unknown` 原樣傳入，
+      // 驗證與 trim 之單一事實來源恆為 `void-reason.ts`（其餘 body 鍵一律
+      // 忽略，沿 AC-54 既有紀律：此處從未讀取 reason 以外的任何鍵）。
+      const voided = await voidApplication(prisma, id, body.reason, actorId, onVoided);
+
+      // §7.3：200 { application: <型別分派之詳情 DTO；void 非 null> }。型別
+      // 取自作廢結果列，不需再探測一次（沿 `/complete` 之型別分派形狀）。
+      if (voided.type === "MAINTENANCE") {
+        const updated = await getMaintenanceApplication(prisma, id);
+        if (!updated) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+        const dto = await buildMaintenanceApplicationDto(prisma, updated);
+        return reply.status(200).send({ application: dto });
+      }
+
+      if (voided.type === "DEPRECIATION") {
+        const updated = await getDepreciationApplication(prisma, id);
+        if (!updated) {
+          throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+        }
+        const dto = await buildDepreciationApplicationDto(prisma, updated);
+        return reply.status(200).send({ application: dto });
+      }
+
+      const updated = await getTravelApplication(prisma, id);
+      if (!updated) {
+        throw new AppError("NOT_FOUND", 404, "找不到指定的申請");
+      }
+      const dto = await toTravelApplicationDto(prisma, updated);
       return reply.status(200).send({ application: dto });
     }
   );

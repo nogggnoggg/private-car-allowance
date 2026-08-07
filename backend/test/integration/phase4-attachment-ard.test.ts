@@ -742,6 +742,13 @@ describeWithDb("PHASE-004-T11 — AR-D 閉環鑑別力測試", () => {
       await markCompleted(applicationId);
       await voidApplication(prisma, applicationId, VOID_REASON, ownerId);
 
+      // T4b AR-1（PHASE-009-T4 順帶）：前提自證——本測試之鑑別力取決於申請
+      // 確實處於 VOIDED；若跨檔依賴之 voidApplication 行為改變而未作廢成
+      // 功，403 斷言會退化為「因其他原因也 403」的假綠。
+      expect(
+        (await prisma.application.findUniqueOrThrow({ where: { id: applicationId } })).status
+      ).toBe("VOIDED");
+
       const res = await app.inject({
         method: "DELETE",
         url: `/attachments/${attId}`,
@@ -766,6 +773,13 @@ describeWithDb("PHASE-004-T11 — AR-D 閉環鑑別力測試", () => {
       );
       await voidApplication(prisma, applicationId, VOID_REASON, ownerId);
 
+      // T4b AR-1（PHASE-009-T4 順帶）：前提自證——本測試之鑑別力取決於申請
+      // 確實處於 VOIDED；若跨檔依賴之 voidApplication 行為改變而未作廢成
+      // 功，403 斷言會退化為「因其他原因也 403」的假綠。
+      expect(
+        (await prisma.application.findUniqueOrThrow({ where: { id: applicationId } })).status
+      ).toBe("VOIDED");
+
       const res = await app.inject({
         method: "DELETE",
         url: `/attachments/${attId}`,
@@ -789,6 +803,13 @@ describeWithDb("PHASE-004-T11 — AR-D 閉環鑑別力測試", () => {
         "voided-depreciation.jpg"
       );
       await voidApplication(prisma, applicationId, VOID_REASON, ownerId);
+
+      // T4b AR-1（PHASE-009-T4 順帶）：前提自證——本測試之鑑別力取決於申請
+      // 確實處於 VOIDED；若跨檔依賴之 voidApplication 行為改變而未作廢成
+      // 功，403 斷言會退化為「因其他原因也 403」的假綠。
+      expect(
+        (await prisma.application.findUniqueOrThrow({ where: { id: applicationId } })).status
+      ).toBe("VOIDED");
 
       const res = await app.inject({
         method: "DELETE",
