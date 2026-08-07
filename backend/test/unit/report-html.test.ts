@@ -1089,6 +1089,197 @@ describe("MF-2②／SF-4 — report-html.ts 結構性掃描", () => {
 });
 
 // ---------------------------------------------------------------------------
+// PHASE-009-T11 — AC-20 列印版之作廢標示（`.void-banner`）
+// ---------------------------------------------------------------------------
+//
+// 規範原文（`docs/specs/PHASE-009.md` §12 AC-20）：
+//   (a) 逐字字串 `已作廢` 出現於專屬區塊（`.void-banner`）且該區塊位於文件
+//       首屏（`renderCommonHeader` 之前）；
+//   (b) 逐字顯示作廢原因、作廢操作者、作廢時間（台北時區中文格式，沿
+//       `formatTaipeiDateTime` 唯一格式化來源，不新增第二個格式化函式）；
+//   (c) 未作廢申請之列印版零 `.void-banner`、零 `已作廢` 字樣；
+//   (d) 作廢原因經 `escapeHtml` 跳脫——3 種 XSS payload 逐一驗證；
+//   (e) `renderReportHtml` 仍為純函式（同輸入兩次呼叫 `toEqual`）；
+//   (f) `.void-banner` 加 `avoid-break`，且不得套用 `@media print
+//       { display: none }`。
+//
+// 上游 FW 核銷：`common.void.at` 為 ISO8601，直傳既有唯一格式化來源
+// `formatTaipeiDateTime`（`report-labels.ts`），本檔零新格式化函式；
+// `void.reason` 為使用者原文（T10 刻意不跳脫），`escapeHtml` 為唯一防線。
+// fixture 沿 `makeCommon({ void: {...} })` 覆寫（T10R 關閉輪 FW-1，不另建
+// 平行 builder）。
+
+const VOID_INFO = {
+  reason: "重複申報，經主管指示作廢",
+  at: "2026-08-06T09:05:00.000Z",
+  byDisplayName: "李管理",
+} as const;
+
+/** 已作廢之共通區塊覆寫（`makeCommon` 之 `void` 覆寫，不另建平行 builder）。 */
+function voidedCommon(overrides: Partial<typeof VOID_INFO> = {}): Partial<ReportCommon> {
+  return { statusLabel: "已作廢", void: { ...VOID_INFO, ...overrides } };
+}
+
+/** 擷取 `.void-banner` 區塊內容（不含外層標籤）；不存在時回 `null`。 */
+function extractVoidBanner(html: string): string | null {
+  const match = html.match(/<section class="void-banner avoid-break">([\s\S]*?)<\/section>/);
+  return match ? match[1] : null;
+}
+
+describe("AC-20(a) — 作廢標示為專屬區塊且位於文件首屏（renderCommonHeader 之前）", () => {
+  const html = renderReportHtml(travelData({ common: voidedCommon() }));
+
+  it("`.void-banner` 專屬區塊在場且掛 avoid-break", () => {
+    expect(html).toContain('<section class="void-banner avoid-break">');
+  });
+
+  it("逐字 `已作廢` 出現於 `.void-banner` 區塊之內（非僅出現在別處）", () => {
+    const banner = extractVoidBanner(html);
+    expect(banner).not.toBeNull();
+    expect(banner).toContain("已作廢");
+  });
+
+  it('`.void-banner` 位於 `renderCommonHeader` 輸出（<header class="report-header">）之前', () => {
+    const bannerAt = html.indexOf('<section class="void-banner avoid-break">');
+    const headerAt = html.indexOf('<header class="report-header">');
+    expect(bannerAt).toBeGreaterThanOrEqual(0);
+    expect(headerAt).toBeGreaterThanOrEqual(0);
+    expect(bannerAt).toBeLessThan(headerAt);
+  });
+
+  it("三型皆於 header 之前呈現作廢區塊", () => {
+    for (const data of [
+      travelData({ common: voidedCommon() }),
+      maintenanceData({ common: voidedCommon() }),
+      depreciationData({ common: voidedCommon() }),
+    ]) {
+      const typed = renderReportHtml(data);
+      const bannerAt = typed.indexOf('<section class="void-banner avoid-break">');
+      const headerAt = typed.indexOf('<header class="report-header">');
+      expect(bannerAt).toBeGreaterThanOrEqual(0);
+      expect(bannerAt).toBeLessThan(headerAt);
+    }
+  });
+});
+
+describe("AC-20(b) — 作廢原因／操作者／時間三項逐字在場（時間為台北時區中文格式）", () => {
+  const html = renderReportHtml(travelData({ common: voidedCommon() }));
+  const banner = extractVoidBanner(html);
+
+  it("作廢原因逐字（標籤 ＋ 值）", () => {
+    expect(banner).toContain('<span class="field-label">作廢原因</span>');
+    expect(banner).toContain(`<span class="field-value">${VOID_INFO.reason}</span>`);
+  });
+
+  it("作廢操作者逐字（標籤 ＋ 值）", () => {
+    expect(banner).toContain('<span class="field-label">作廢操作者</span>');
+    expect(banner).toContain(`<span class="field-value">${VOID_INFO.byDisplayName}</span>`);
+  });
+
+  it("作廢時間為 formatTaipeiDateTime 之輸出（2026-08-06T09:05:00.000Z → 2026/8/6 下午5:05），原始 ISO 字面不在場", () => {
+    expect(banner).toContain('<span class="field-label">作廢時間</span>');
+    expect(banner).toContain(
+      `<span class="field-value">${formatTaipeiDateTime(VOID_INFO.at)}</span>`
+    );
+    expect(banner).toContain("2026/8/6 下午5:05");
+    expect(html).not.toContain(VOID_INFO.at);
+  });
+
+  it("`byDisplayName` 為 `—`（使用者不存在之 T10 呈現）時逐字呈現，不拋錯", () => {
+    const dashHtml = renderReportHtml(travelData({ common: voidedCommon({ byDisplayName: "—" }) }));
+    expect(extractVoidBanner(dashHtml)).toContain(
+      '<span class="field-label">作廢操作者</span><span class="field-value">—</span>'
+    );
+  });
+});
+
+describe("AC-20(c) — 未作廢申請之列印版零 .void-banner、零「已作廢」字樣（三型抽驗）", () => {
+  it("差旅／保養／折舊（void: null）皆零作廢痕跡", () => {
+    for (const data of [travelData({}), maintenanceData({}), depreciationData({})]) {
+      const html = renderReportHtml(data);
+      expect(html).not.toContain("void-banner");
+      expect(html).not.toContain("已作廢");
+      expect(extractVoidBanner(html)).toBeNull();
+    }
+  });
+
+  it("正向對照：同一 fixture 加上 void 後兩者皆在場（避免上述負向斷言恆真）", () => {
+    const html = renderReportHtml(travelData({ common: voidedCommon() }));
+    expect(html).toContain("void-banner");
+    expect(html).toContain("已作廢");
+  });
+});
+
+describe("AC-20(d) — 作廢原因經 escapeHtml 跳脫（3 XSS payload 逐一）", () => {
+  const VOID_PAYLOADS = [
+    "<script>alert(1)</script>",
+    '"><img src=x onerror=alert(1)>',
+    `&amp;"'<b onmouseover=alert(1)>`,
+  ];
+
+  for (const payload of VOID_PAYLOADS) {
+    it(`payload=${JSON.stringify(payload)} — 作廢原因欄跳脫後在場、原始 payload 不在場`, () => {
+      const html = renderReportHtml(travelData({ common: voidedCommon({ reason: payload }) }));
+      const banner = extractVoidBanner(html);
+      expect(banner).not.toBeNull();
+      expect(banner).toContain(escapeHtml(payload));
+      expect(html).not.toContain(payload);
+      expect(/<script/i.test(html)).toBe(false);
+      expect(/<[^>]+\son\w+\s*=/i.test(html)).toBe(false);
+    });
+
+    it(`payload=${JSON.stringify(payload)} — 作廢操作者欄同一防線`, () => {
+      const html = renderReportHtml(
+        travelData({ common: voidedCommon({ byDisplayName: payload }) })
+      );
+      expect(extractVoidBanner(html)).toContain(escapeHtml(payload));
+      expect(html).not.toContain(payload);
+    });
+  }
+});
+
+describe("AC-20(e) — 已作廢輸入之 renderReportHtml 仍為純函式", () => {
+  it("三型已作廢 fixture 同輸入兩次呼叫 toEqual", () => {
+    for (const data of [
+      travelData({ common: voidedCommon() }),
+      maintenanceData({ common: voidedCommon() }),
+      depreciationData({ common: voidedCommon() }),
+    ]) {
+      expect(renderReportHtml(data)).toEqual(renderReportHtml(data));
+    }
+  });
+
+  it("兩個各自獨立建構、內容相同之已作廢輸入，結果亦 toEqual", () => {
+    expect(renderReportHtml(travelData({ common: voidedCommon() }))).toEqual(
+      renderReportHtml(travelData({ common: voidedCommon() }))
+    );
+  });
+});
+
+describe("AC-20(f) — .void-banner 之分頁與列印媒體可見性", () => {
+  const html = renderReportHtml(travelData({ common: voidedCommon() }));
+
+  it("`.void-banner` 掛 avoid-break class（沿既有 break-inside: avoid 規則）", () => {
+    expect(html).toContain('class="void-banner avoid-break"');
+    expect(html).toMatch(/\.avoid-break\s*\{\s*break-inside:\s*avoid;?\s*\}/);
+  });
+
+  it("`@media print` 區塊內零 .void-banner 之 display: none（列印媒體與 PDF 皆可見）", () => {
+    const printBlock = html.match(/@media print\s*\{([\s\S]*?)\}\s*@page/);
+    expect(printBlock).not.toBeNull();
+    const printCss = printBlock?.[1] ?? "";
+    expect(printCss).toContain(".print-hint");
+    expect(printCss).not.toContain("void-banner");
+  });
+
+  it("全文任何 `.void-banner` 樣式規則皆不含 display: none", () => {
+    for (const rule of html.matchAll(/\.void-banner[^{}]*\{([^}]*)\}/g)) {
+      expect(rule[1]).not.toMatch(/display:\s*none/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ApplicationType 型別覆蓋自證（避免測試檔本身之 fixture 型別漂移，非 AC 直接
 // 對應，純粹確保 fixture 建構器與 @prisma/client 之 ApplicationType 同步）
 // ---------------------------------------------------------------------------
