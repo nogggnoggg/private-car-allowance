@@ -30,6 +30,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ApplicationStatus } from "@prisma/client";
@@ -126,6 +127,9 @@ describe("assertTransition — 狀態轉換矩陣（資料驅動，取自 enum �
             // 來源已是終態（COMPLETED 或 VOIDED）→ 403 FORBIDDEN（D13 比照）
             expect(err.code).toBe("FORBIDDEN");
             expect(err.httpStatus).toBe(403);
+            // SF-1（T2R-LITE，reviewer M6）：COMPLETED 與 VOIDED 兩種來源必須共用
+            // 同一 D13 文案，逐字釘樁——防止「VOIDED 來源專屬訊息」偏離統一文案的 mutant。
+            expect(err.userMessage).toBe(ALREADY_FINAL_MESSAGE);
           } else {
             // from = DRAFT 但 to 不是本 Phase 支援的目的狀態（DRAFT 或 VOIDED）
             expect(err.code).toBe("VALIDATION_ERROR");
@@ -179,6 +183,11 @@ describe("AC-02 逐字驗收 — 四種非法轉換逐一（錯誤碼分流不�
       const err = caught as AppError;
       expect(err.code).toBe(expectedCode);
       expect(err.httpStatus).toBe(expectedHttpStatus);
+      if (expectedCode === "FORBIDDEN") {
+        // SF-1（T2R-LITE，reviewer M6）：VOIDED→COMPLETED／VOIDED→DRAFT／COMPLETED→DRAFT
+        // 三者皆屬「來源已鎖定」族，逐字釘樁同一 D13 文案（含 VOIDED 來源）。
+        expect(err.userMessage).toBe(ALREADY_FINAL_MESSAGE);
+      }
       assertUserReadableZhTwMessage(err.userMessage);
     }
   });
@@ -244,6 +253,15 @@ describe("assertApplicationMutable — 可變性守門 (AC-06/56/59, D13)", () =
 // `status: "DRAFT"` 之程式碼出現位置（跳過 JSDoc／行註解），逐一比對白名單；
 // 白名單外必紅，強制人工複核任何新出現的寫入位置是否真的守住了
 // VOIDED→COMPLETED／VOIDED→DRAFT（AC-05(a)）。
+//
+// SF-2（T2R-LITE，reviewer P6/P7）：原版 pattern 只認字串字面值且逐行掃描，
+// 對兩種等價寫法視而不見——(P6) enum 成員形式 `status: ApplicationStatus.COMPLETED`
+// （無引號）；(P7) `status:` 與值分寫兩行（跨行）。兩者現已納入偵測範圍：
+// pattern 同時涵蓋字串字面值與 enum 成員形式；掃描改為先去除註解（保留換行以
+// 維持行號正確）後對「整檔內容」以全域 regex 比對（`\s` 本就跨行，故涵蓋 P7）。
+// P8（變數間接形式，例如 `status: someVar`，值僅在執行期決定）非文字掃描可
+// 觸及——這是靜態掃描的本質限制，非本次修補範圍；由 `assertTransition` 單一
+// 事實來源（本檔前段矩陣）與 AC-05(b) 端點層（PHASE-009-T4）之執行期守門承接。
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "src");
@@ -262,23 +280,36 @@ function listTsFilesRecursive(dir: string): string[] {
   return files;
 }
 
-const STATUS_LITERAL_PATTERN = /status:\s*["'](COMPLETED|DRAFT)["']/;
+/** 涵蓋字串字面值（`status: "COMPLETED"`）與 enum 成員形式
+ * （`status: ApplicationStatus.COMPLETED`）；`\s*` 本就匹配換行，故單一
+ * pattern 對整檔內容比對時天然涵蓋跨行寫法（SF-2, P6/P7）。 */
+const STATUS_LITERAL_PATTERN =
+  /status:\s*(?:["'](COMPLETED|DRAFT)["']|ApplicationStatus\.(COMPLETED|DRAFT))/g;
 
-/** 逐行掃描 `backend/src/**\/*.ts`，回傳 `status: "COMPLETED"`／`status: "DRAFT"`
- * 之程式碼出現位置（`相對路徑:行號:值`，已排除 JSDoc／行註解），已排序。 */
-function listStatusLiteralOccurrences(): string[] {
+/** 去除區塊註解（`/* … *\/`）與行註解（`//…`），以等長空白取代——保留所有
+ * 換行字元的位置，使去除註解後的內容仍可用「換行數」精確還原行號。 */
+function stripComments(content: string): string {
+  const noBlockComments = content.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  return noBlockComments.replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+}
+
+/** 掃描 `backend/src/**\/*.ts`（`root` 可覆寫，供測試以 fixture 目錄自證），
+ * 回傳 `status: "COMPLETED"`／`status: "DRAFT"`／`status: ApplicationStatus.*`
+ * 之程式碼出現位置（`相對路徑:行號:值`，已排除 JSDoc／行註解、已排除跨行
+ * 盲點），已排序。 */
+function listStatusLiteralOccurrences(root: string = SRC_ROOT): string[] {
   const occurrences: string[] = [];
-  for (const file of listTsFilesRecursive(SRC_ROOT)) {
-    const relPath = path.relative(SRC_ROOT, file).split(path.sep).join("/");
-    const lines = fs.readFileSync(file, "utf8").split("\n");
-    lines.forEach((line, idx) => {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("*") || trimmed.startsWith("//")) return; // 跳過 JSDoc/行註解
-      const match = STATUS_LITERAL_PATTERN.exec(line);
-      if (match) {
-        occurrences.push(`${relPath}:${idx + 1}:${match[1]}`);
-      }
-    });
+  for (const file of listTsFilesRecursive(root)) {
+    const relPath = path.relative(root, file).split(path.sep).join("/");
+    const cleaned = stripComments(fs.readFileSync(file, "utf8"));
+    const pattern = new RegExp(STATUS_LITERAL_PATTERN.source, "g");
+    let match: RegExpExecArray | null = pattern.exec(cleaned);
+    while (match !== null) {
+      const value = match[1] ?? match[2];
+      const lineNumber = cleaned.slice(0, match.index).split("\n").length;
+      occurrences.push(`${relPath}:${lineNumber}:${value}`);
+      match = pattern.exec(cleaned);
+    }
   }
   return occurrences.sort();
 }
@@ -324,11 +355,39 @@ describe("AC-05(a) 結構性守門 — backend/src 全域零 VOIDED→COMPLETED�
     expect(listStatusLiteralOccurrences()).toEqual(AC05A_WHITELIST);
   });
 
-  it("鑑別力自證：若某檔案內容確實含有未列於白名單的位置，掃描邏輯必須抓到（證明上式非恆真）", () => {
-    const fakeContent = 'await tx.application.update({ data: { status: "COMPLETED" } });';
-    expect(STATUS_LITERAL_PATTERN.test(fakeContent)).toBe(true);
-    const fakeOccurrences = [...AC05A_WHITELIST, "applications/some-new-path.ts:1:COMPLETED"];
-    expect(fakeOccurrences).not.toEqual(AC05A_WHITELIST);
+  it("鑑別力自證（SF-3, T2R-LITE：真實 fixture 目錄實跑，非恆真式）：listStatusLiteralOccurrences 對 scratchpad fixture 目錄實際掃描，涵蓋字串字面值／enum 成員／跨行三種寫入形式，且正確排除行註解與 JSDoc", () => {
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac05a-fixture-"));
+    try {
+      fs.mkdirSync(path.join(fixtureRoot, "nested"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixtureRoot, "nested", "probe.ts"),
+        [
+          'export const a = { status: "COMPLETED" }; // 字串字面值（既有形式）',
+          "export const b = {",
+          "  status:",
+          '    "DRAFT",', // 跨行（SF-2, P7）——值另起一行
+          "};",
+          "export const c = { status: ApplicationStatus.COMPLETED }; // enum 成員（SF-2, P6）",
+          '// export const d = { status: "DRAFT" }; — 行註解內，不應被抓到',
+          "/**",
+          ' * status: "COMPLETED" — JSDoc 內，不應被抓到',
+          " */",
+        ].join("\n")
+      );
+
+      // 真實呼叫待測函式（非手造陣列比對）——這才是「非恆真」的關鍵：斷言的是
+      // listStatusLiteralOccurrences 這條真實掃描路徑的實際輸出，而非另行手刻
+      // 一個「理應不同」的假陣列。
+      const result = listStatusLiteralOccurrences(fixtureRoot);
+
+      expect(result).toEqual([
+        "nested/probe.ts:1:COMPLETED",
+        "nested/probe.ts:3:DRAFT",
+        "nested/probe.ts:6:COMPLETED",
+      ]);
+    } finally {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('三筆 COMPLETED 寫入（travel／maintenance／depreciation）皆含同函式的 assertTransition(existing.status, "COMPLETED") 呼叫（VOIDED 來源必先 403，不可能執行到該 update）', () => {
