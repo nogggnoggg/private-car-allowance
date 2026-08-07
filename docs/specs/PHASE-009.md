@@ -172,7 +172,9 @@ Phase 結束時，人類可對**任一類已完成申請**（差旅／保養／�
 
 ### C. 修正版（FE-US-25、AD-US-09、BE-US-21）
 
-**AC-09 建立修正版之基本形狀**——對已完成申請呼叫修正版端點 → **201**，建立一筆新 `Application`：`status='DRAFT'`、`type` 與原申請相同、**`ownerId` ＝原申請之 `ownerId`**（管理員代建時亦然）、**`createdById` ＝實際操作者**（本人操作時為本人；管理員代建時為管理員）、`primaryDate` 依既有三型 `derive*PrimaryDate` 規則由**複製後之業務欄位**推導、`totalAmount`／`completedAt`／四個作廢欄皆為 `NULL`。
+**AC-09 建立修正版之基本形狀**——對已完成申請呼叫修正版端點 → **201**，建立一筆新 `Application`：`status='DRAFT'`、`type` 與原申請相同、**`ownerId` ＝原申請之 `ownerId`**（管理員代建時亦然）、**`createdById` ＝實際操作者**（本人操作時為本人；管理員代建時為管理員）、`primaryDate` 依既有三型 `derive*PrimaryDate` 規則由**複製後之業務欄位**推導、`totalAmount`／`completedAt` 皆為 `NULL`，且**三個作廢持久化欄**（`voidReason`／`voidedAt`／`voidedById`）皆為 `NULL`。
+
+> **措辭統一（`SPEC-REV-9T7`）**：原文作「四個作廢欄皆為 `NULL`」，與 §7.4 共通列之「三個作廢欄」不一致。正確表述如上——`status` 為**復位**至 `DRAFT`（非 `NULL`），第四個新欄 `supersedesId` 於修正版上**恆非 `NULL`**（＝原申請 id），本即不屬「作廢欄」。本次僅統一記載，**驗收語意零變更**（沿 T5 已交付測試之實作解讀；§12 AC-09 列之「作廢三欄皆 NULL」自始即為此意）。
 
 **AC-10 三型業務欄位逐欄複製對照（快照欄零複製）**——依 §7.4 之逐欄對照表，**逐欄**斷言複製結果：
 - **差旅**：`tripDate`／`purpose`；**全部 `TripSegment`**（`sortOrder` 保持原序、`origin`／`destination`／`totalKm`／`highwayKm`）；**段快照四欄（`snapshot*`）一律不複製**（新段恆為 `NULL`）。
@@ -186,7 +188,7 @@ Phase 結束時，人類可對**任一類已完成申請**（差旅／保養／�
 
 **AC-13 修正版之來源守門**——(a) 來源為草稿 → **409 `CONFLICT`** ＋ `details.status="DRAFT"`；(b) 來源為已作廢 → **409 `CONFLICT`** ＋ `details.status="VOIDED"`（依 §16 **D8**）；(c) 【依 §16 **D7**】原申請**已有**修正版 → **409 `CONFLICT`** ＋ `details.existingRevisionId`；(d) 三者皆零寫入、零附件複製、零 storage 寫入。
 
-**AC-14 修正版之證明附件處置**【依 §16 **D6**】——推薦 (c) 成立時：(a) 原申請每一筆 `status='LINKED'` 之附件，於修正版產生**一筆新 `Attachment` 列**（新 `id`、**新 `storageKey`**、`ownerId` ＝原擁有人、`uploaderId` ＝實際操作者、`status='LINKED'`、`refType`／`refId` 指向**新**容器）；(b) 新舊 `storageKey` **互異**且新檔位元組與原檔**逐位元組相同**（SHA-256 比對），縮圖同步複製（`thumbnailKey` 有值時）；(c) **差旅段對應**：原段 N 之附件恰複製至新段 N（依 `sortOrder` 對位，不跨段錯置）；(d) 附件上限（差旅每段 5、保養 5、折舊 5）於複製後仍成立；(e) 複製失敗（storage 讀寫錯誤）→ **整筆修正版交易回滾**、零殘留（DB 零新增列、storage 已寫之新 key 補償刪除），回應 500 且**日誌零 storage key**。
+**AC-14 修正版之證明附件處置**【依 §16 **D6**】——推薦 (c) 成立時：(a) 原申請每一筆 `status='LINKED'` 之附件，於修正版產生**一筆新 `Attachment` 列**（新 `id`、**新 `storageKey`**、`ownerId` ＝原擁有人、`uploaderId` ＝實際操作者、`status='LINKED'`、`refType`／`refId` 指向**新**容器）；(b) 新舊 `storageKey` **互異**且新檔位元組與原檔**逐位元組相同**（SHA-256 比對），縮圖同步複製（`thumbnailKey` 有值時）；(c) **差旅段對應**：原段 N 之附件恰複製至新段 N（依 `sortOrder` 對位，不跨段錯置）；(d) 附件上限（**差旅每段 3**、保養 5、折舊 5）於複製後仍成立——**`SPEC-REV-9T7` 由「差旅每段 5」更正**：權威為 PHASE-004 **AC-22**（`docs/specs/PHASE-004.md`「每段上限 3 張」）＋ §10.4／§16 之「附件上限：後端常數 3」，落地為 `travel-service.ts` 之 `SEGMENT_ATTACHMENT_LIMIT = 3`（受 PHASE-004 **D19** 保護，**不得弱化或改動該常數**；測試一律 `import` 該常數，不得寫死字面值）；(e) 複製失敗（storage 讀寫錯誤）→ **整筆修正版交易回滾**、零殘留（DB 零新增列、storage 已寫之新 key 補償刪除），回應 500 且**日誌零 storage key**。
 
 **AC-15 修正版完成 → 新報表編號與新 PDF（PHASE-008 §17.2 之零程式變更實證）**——(a) 修正版完成後呼叫產生報表端點 → **201**，取得**與原申請不同**之 `reportNumber`（且序號為同月同型之下一號）；(b) 新 `Report.storageKey` 與原申請之 `storageKey` **互異**，新 PDF 位元組之 SHA-256 與原 PDF **不同**；(c) 原 `Report` 列與其 PDF 位元組 **SHA-256 前後不變**（BE-US-21④ 之逐位元組實證）；(d) 本 AC **不得**以修改 `report-number.ts`／`report-service.ts` 之編號或冪等邏輯達成——`backend/src/reports/report-number.ts` 於本 Phase **零 diff**（結構性斷言）。
 
@@ -365,8 +367,8 @@ GET /applications/:id/report/pdf     ← 無狀態守門（既有）
 | B-21 | 修正版之修正版（鏈） | 允許；`supersedesId` 指向**直接前身**，不壓平為原始祖先 |
 | B-22 | 原申請**零附件** | 修正版建立成功、零 storage 操作 |
 | B-23 | 原申請附件之 storage 檔遺失 | 整筆修正版回滾 500；日誌零 storage key（AC-14(e)） |
-| B-24 | 差旅原申請有 3 段、各段附件數不同 | 逐段對位複製，段—圖零錯置；各段上限 5 仍成立 |
-| B-25 | 原申請附件恰 5 張（上限） | 複製後仍為 5 張且不觸發 `TOO_MANY_ATTACHMENTS` |
+| B-24 | 差旅原申請有 3 段、各段附件數不同 | 逐段對位複製，段—圖零錯置；**各段上限 3**（`SEGMENT_ATTACHMENT_LIMIT`）仍成立——`SPEC-REV-9T7` 由「上限 5」更正 |
+| B-25 | 原申請之某容器附件數**恰達上限**（**差旅每段 3**／保養 5／折舊 5——`SPEC-REV-9T7` 由「恰 5 張」更正） | 複製後該容器仍為**同一張數**且不觸發 `TOO_MANY_ATTACHMENTS` |
 | B-26 | 已作廢申請開列印版 | 200 ＋ 作廢標示（D5） |
 | B-27 | 已作廢申請**產生**報表（尚未產生過） | 409 ＋ `details.status="VOIDED"`（D13，維持既有 `COMPLETED` 守門） |
 | B-28 | 已作廢申請下載 PDF（尚未產生過） | 404「尚未產生正式報表」（既有語意不變） |
@@ -455,10 +457,22 @@ export interface RevisionLinkDto {
   primaryDate: string;          // YYYY-MM-DD
 }
 
+/**
+ * supersedes 側之投影（SPEC-REV-9T7 補記；以 AC-12(b) 原文為準）——**四鍵**：
+ * RevisionLinkDto 之三鍵 ＋ reportNumber（原申請之報表編號；未產生報表時
+ * null）。supersededBy 側**維持三鍵**（無 reportNumber）。
+ * 本形狀已依 AC-12(b) 由 T7 實作（routes.ts 之 resolveRevisionLinks 與同名
+ * interface），本補記僅補齊 Spec 記載——初版 §7.2 僅宣告單一三鍵型別，與
+ * AC-12(b) 之四鍵原文分歧（T7 W-4）。補齊以防 T16 前端型別分歧。
+ */
+export interface SupersedesLinkDto extends RevisionLinkDto {
+  reportNumber: string | null;
+}
+
 // 三型詳情 DTO 新增三鍵：
 //   void:         VoidInfoDto | null
-//   supersedes:   RevisionLinkDto | null   （本筆為修正版時指向原申請）
-//   supersededBy: RevisionLinkDto | null   （本筆已有修正版時指向該修正版）
+//   supersedes:   SupersedesLinkDto | null （本筆為修正版時指向原申請；四鍵）
+//   supersededBy: RevisionLinkDto | null   （本筆已有修正版時指向該修正版；三鍵）
 // 列表 DTO 新增一鍵（列表徽章用）：
 //   isRevision:   boolean                  （supersedesId != null）
 ```
@@ -486,9 +500,9 @@ POST /applications/:id/revision
 | 型別 | **複製**（業務欄位） | **不複製**（快照／引用／狀態） |
 |---|---|---|
 | 共通 `Application` | `type`／`ownerId`（＝原擁有人）；`primaryDate` **重新推導**（不直接複製） | `status`（恆 `DRAFT`）／`totalAmount`／`completedAt`／三個作廢欄／`createdById`（＝**操作者**，非原建立者）／`supersedesId`（＝原申請 id，非複製而來） |
-| **差旅** | `tripDate`／`purpose`；每個 `TripSegment` 之 `sortOrder`／`origin`／`destination`／`totalKm`／`highwayKm` | `fuelUnitPrice`／`etcUnitPrice`／`snapshotTotalKm`／`snapshotRawAmount`／`calculatedAt`／五個版本引用欄／`snapshotFuelType`／`snapshotFuelPricePerLiter`／`snapshotFuelConsumption`；段之 `snapshotFuelAmount`／`snapshotEtcAmount`／`snapshotRawAmount`／`snapshotAmount` |
+| **差旅** | `tripDate`／`purpose`；每個 `TripSegment` 之 `sortOrder`／`origin`／`destination`／`totalKm`／`highwayKm` | `fuelUnitPrice`／`etcUnitPrice`／`snapshotTotalKm`／`snapshotRawAmount`／`calculatedAt`／**四個**版本引用欄（`fuelParameterVersionId`／`etcParameterVersionId`／`fuelPriceVersionId`／`fuelConsumptionVersionId`——`schema.prisma` `TravelApplication` 實查；`SPEC-REV-9T7` 由「五個」更正）／`snapshotFuelType`／`snapshotFuelPricePerLiter`／`snapshotFuelConsumption`；段之 `snapshotFuelAmount`／`snapshotEtcAmount`／`snapshotRawAmount`／`snapshotAmount` |
 | **保養** | `lastMaintenanceDate`／`currentMaintenanceDate`／`lastOdometerKm`／`currentOdometerKm`／`actualCost` | `snapshotIntervalKm`／`snapshotOfficialKm`／`snapshotRatio`／`snapshotRawAmount`／`calculatedAt` |
-| **折舊** | `applicationYear`／`annualTotalKm`（§17.2 移交項；完成時**重算**年度公務里程與參數） | 九個 `snapshot*` 欄／`calculatedAt`／`depreciationParameterVersionId`／兩個凍結唯讀欄 |
+| **折舊** | `applicationYear`／`annualTotalKm`（§17.2 移交項；完成時**重算**年度公務里程與參數） | 九個 `snapshot*` 欄（**已含兩個凍結唯讀欄** `snapshotEstimatedAnnualKm`／`snapshotPerKmUnitPrice`）／`calculatedAt`／`depreciationParameterVersionId`——**去重後恰 11 鍵**（`SPEC-REV-9T7` 由「12」更正：原表述於九個 `snapshot*` 之外另列「兩個凍結唯讀欄」，該二欄本即在九個之內，致重複計數；外延（鍵集本身）自始正確，AC-10 之封閉斷言不受影響） |
 | **附件**（依 D6(c)） | `mimeType`／`byteSize`／`originalFilename`／`ownerId`／**位元組內容**；`refType`＋`refId` 指向新容器 | `id`／`storageKey`／`thumbnailKey`（皆新產生）／`uploaderId`（＝操作者）／`linkedAt`（＝現在） |
 
 ### 7.5 錯誤合約（本 Phase **零新增 `ErrorCode`**）
@@ -499,7 +513,8 @@ POST /applications/:id/revision
 | 需強制改密 | 403 | `PASSWORD_CHANGE_REQUIRED` | 既有 |
 | 他人資料 | 403 | `FORBIDDEN` | 回應零業務值 |
 | 申請不存在 | 404 | `NOT_FOUND` | 兩端點一致，不洩漏型別 |
-| 原因驗證失敗 | 400 | `VALIDATION_ERROR` | `fields[{field:"reason"}]` |
+| 原因驗證失敗（**作廢端點**） | 400 | `VALIDATION_ERROR` | `fields[{field:"reason"}]` |
+| 申請擁有人**已停用**（**僅修正版端點**） | 400 | `VALIDATION_ERROR` | 訊息「指定的使用者已停用」——**B-16**（§5 :360）之錯誤格，沿既有代建立草稿之 **B-26** 先例（新草稿屬新建資料）。`SPEC-REV-9T7` 補格：B-16 自 Spec Gate 起即在 §5，惟 §7.5 漏列且 §12 無映射列（T7 **W-5** 實查揭露），屬**記載缺口**非新增行為。**作廢端點不受此限**——B-15：管理員對已停用使用者之申請作廢仍 200（作廢為資料修正） |
 | 狀態不符（草稿／已作廢） | 409 | `CONFLICT` | `details.status` |
 | 已有修正版 | 409 | `CONFLICT` | `details.existingRevisionId` |
 | 作廢版 PDF 產生失敗（D4(b1)） | 500 | `REPORT_GENERATION_FAILED` | `details.stage ∈ {RENDER,STORE,VERIFY,PERSIST}`（既有四值封閉，**不擴充**） |
@@ -652,7 +667,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | 作廢端點回應時間（**有**報表且 D4(b1)） | 目標 10 s（與 PDF 產生同帶） | NFR-US-14④；量測值記入 Handoff |
 | 修正版端點回應時間（含 ≤5 張附件複製） | 目標 5 s | 附件複製為位元組搬移，無影像處理 |
 | 併發 | ~20 人規模；作廢以行鎖排隊，無需佇列 | PHASE-008 §10 同一評估 |
-| 儲存成本 | 修正版附件複製 ≤ 5 × 10 MB／次；作廢版 PDF ≤ 1 份／報表 | §17.1 已知限制 |
+| 儲存成本 | 修正版附件複製量 ＝ **容器數 × 每容器上限（差旅每段 3／保養 5／折舊 5）× ≤10 MiB**／次（`SPEC-REV-9T7` 由「≤ 5 × 10 MB／次」更正）；**差旅無總量上界**（PHASE-004 B-14 未設段數上限）——見 §17.1 #5；作廢版 PDF ≤ 1 份／報表 | §17.1 已知限制 |
 | 可用性 | 本 Phase 零新增外部依賴、零容器變更 | 全 Phase 複用既有 Playwright／sharp／storage |
 
 ---
@@ -737,7 +752,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | AC-06 | integration | `phase9-void.test.ts` | `AC-06: 已作廢再作廢 → 409 CONFLICT + details.status="VOIDED"，零寫入零稽核（非冪等成功）` | T3 | PENDING |
 | AC-07 | integration | `phase9-void.test.ts` | `AC-07: 草稿作廢 → 409 + details.status="DRAFT"`；`AC-07 側信道: 他人草稿 vs 他人已完成 vs 他人已作廢 → 403 回應逐字相同` | T3 | PENDING |
 | **AC-08(a)**（三型 `PUT`／`DELETE` 面） | integration | `phase9-void.test.ts` | `AC-08: 已作廢之三型 PUT／DELETE 端點皆 403 且零寫入（assertApplicationMutable 之真實回歸）`——**含** body 夾帶 `attachmentIds`／`segments` 之情形（`routes.ts` 於解析 body 前即 403 短路，不經 `deriveContainerState`） | T3 | PENDING |
-| **AC-08(b)**（附件端點面） | integration | `phase9-void.test.ts`（新增區塊） | `AC-08(b): 已作廢申請之附件新增／刪除皆 403 且零寫入（三個 refType 分支）`——**現況實紅**：`attachment/lifecycle-service.ts` 之 `deriveContainerState` 三分支皆以 `application.status === "COMPLETED" ? "completed" : "draft"` 判定，`VOIDED` 被誤判為 `draft`，使 `DELETE /attachments/:id` 對已作廢申請之附件仍會成功（應 403）。T3 依 Stop Conditions 據實不修（該檔非 T3 之 Files Allowed），**大總管裁定併入 T4**。**⚠ AC-08 不得於 T3 結案時整條標 `GREEN`**——(a) 綠不蘊含 (b) 綠 | **T4** | PENDING |
+| **AC-08(b)**（附件**刪除**端點面） | integration | `phase4-attachment-ard.test.ts`（**`SPEC-REV-9T7` 更正**——原列 `phase9-void.test.ts`（新增區塊）為 Spec 失準：§15.1／15.2 明文之落點即本檔，且 `phase9-void.test.ts` 屬 T3 已結案範圍，寫入該檔反屬越界；T4b 即審已裁定「落 `phase4-attachment-ard.test.ts` 正確」） | **實名（`grep` 逐字回填）**：`AC-08(b) — VOIDED 申請之附件鎖定（三個 refType 分支）` › `TRIP_SEGMENT：已作廢申請之附件 DELETE → 403，附件仍 LINKED（零寫入）`／`MAINTENANCE：已作廢申請之附件 DELETE → 403，附件仍 LINKED（零寫入）`／`DEPRECIATION：已作廢申請之附件 DELETE → 403，附件仍 LINKED（零寫入）`。**修復前紅燈實證**：三分支各一 `expected 200 to be 403`（`deriveContainerState` 原以 `application.status === "COMPLETED" ? "completed" : "draft"` 判定，`VOIDED` 被誤判為 `draft`，使 `DELETE /attachments/:id` 對已作廢申請之附件仍會成功；最小修為 `!== "DRAFT"`，`ContainerState` 型別與呼叫端契約零變更）。**「新增」面不在本列**：附件關聯（`PUT …/attachmentIds`）**不經** `deriveContainerState`，由 `assertApplicationMutable` 於解析 body 前守門，故歸 **AC-08(a)**——T4 FW-1 兩變體已落 `phase9-void.test.ts`（`FW-1 保養 PUT 夾帶 attachmentIds:[TEMP 附件] → 403，該附件仍為 TEMP（零關聯寫入）`／`FW-1 折舊 PUT 夾帶 attachmentIds:[TEMP 附件] → 403，該附件仍為 TEMP（零關聯寫入）`）。**⚠ AC-08 不得於單側綠時整條標 `GREEN`**——(a) 綠不蘊含 (b) 綠；AC-08(a) 之實名回填仍屬結案 DOC-SYNC | **T4b**（`SPEC-REV-9T3` 原指派 T4；大總管依 §15.2 貼上限警示之明文正解拆出 T4b 先行） | **GREEN** |
 | AC-09 | integration | `phase9-revision.test.ts` | `AC-09: 建立修正版 → 201；新列 status=DRAFT、ownerId=原擁有人、createdById=操作者、totalAmount／completedAt／作廢三欄皆 NULL` | T5 | PENDING |
 | AC-10 | unit ＋ integration | `revision-copy.test.ts`；`phase9-revision.test.ts` | `AC-10: 三型「複製鍵集」與「禁複製鍵集」toEqual 封閉（多複製一欄必紅）`；`AC-10: 差旅逐段複製且 sortOrder 保序，段快照四欄恆 NULL`；`AC-10: 折舊複製 applicationYear 與 annualTotalKm，九個快照欄與參數版本引用欄恆 NULL` | T5 | PENDING |
 | AC-11 | integration | `phase9-revision.test.ts` | `AC-11(a): 原 Application／三型子列／TripSegment 逐欄逐位元組不變（含 updatedAt 未被 touch）`；`AC-11(b): 原附件列五欄逐欄不變`；`AC-11(c): 原 Report 七欄不變且其 PDF 位元組 SHA-256 前後相同` | T5 | PENDING |
@@ -752,16 +767,18 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | AC-20 | unit | `report-html.test.ts` | `AC-20(a)(b): 已作廢列印版首屏 .void-banner 含「已作廢」＋原因／操作者／時間逐字`；`AC-20(c): 未作廢列印版零 .void-banner、零「已作廢」字樣`；`AC-20(d): 作廢原因 3 payload 跳脫（移除跳脫必紅）`；`AC-20(e): renderReportHtml 純函式性不變（同輸入 toEqual、零時鐘）`；`AC-20(f): .void-banner 具 avoid-break 且不套用 @media print 隱藏` | T11 | PENDING |
 | AC-21 | integration | `phase9-void-report.test.ts` | `AC-21(a): 作廢版 PDF 同交易產生並校驗；任一階段失敗 → 整筆回滾、狀態仍 COMPLETED、零殘留、500 + details.stage`；`AC-21(b): 作廢後下載回作廢版且報表編號與檔名不變`；`AC-21(c): 原 Report PDF 位元組雜湊前後不變`；`AC-21(d): 作廢後重複下載位元組全等且渲染器零呼叫`；`AC-21(e): 未產生報表者作廢 → 零渲染零 storage 寫入`；`AC-21(f): reports/ 零 report.update／delete／upsert 之既有結構斷言零改動且全綠` | T12 | PENDING（D4=b1 已裁定解鎖） |
 | AC-22 | integration | `phase8-report-print.test.ts` | `AC-22: 已作廢申請列印端點 200 且含作廢標示；草稿仍 409 + details.status（既有斷言零弱化）`；`AC-22: VOIDED 狀態下之列印端點授權五格逐格重驗` | T13 | PENDING（D5=a 照推薦已裁定解鎖） |
-| AC-23 | integration | `phase9-contract.test.ts` | `AC-23: 授權矩陣 10 格逐格（狀態碼 + 回應鍵集）`；`AC-23: 報表四端點於 VOIDED 之回歸四格`；`AC-23: 403 回應零業務值掃描` | T4 ＋ T7 | PENDING |
+| AC-23 | integration | `phase9-contract.test.ts` | `AC-23: 授權矩陣 10 格逐格（狀態碼 + 回應鍵集）`；`AC-23: 報表四端點於 VOIDED 之回歸四格`；`AC-23: 403 回應零業務值掃描`——**`SPEC-REV-9T7` 加註（T4 即審 SF-1 銷帳裁定／FW-A）**：報表四端點回歸四格中之「**下載 → 200（依 D4）**」一格，須待作廢版 PDF 落地方可成立，故**歸 T12**（T12 補該格並回頭更新 `phase9-contract.test.ts` 檔頭之留白清單）；T4／T7 交付時該格**未覆蓋屬預期留白，非漏測**——終審覆蓋檢查時不得據此判 T4／T7 有缺 | T4 ＋ T7（＋「下載 → 200」一格歸 **T12**） | PENDING |
 | AC-24 | integration | `phase9-void.test.ts` | `AC-24: 作廢成功寫入恰一筆 AuditLog(APPLICATION_VOIDED)，欄位與 summary 形狀逐鍵`；`AC-24 同交易自證: 稽核 hook 拋錯 → 業務寫入一併回滾（零孤兒稽核列、狀態未變）`；`AC-24: 本人作廢亦寫稽核（正向斷言）` | T4 | PENDING |
 | AC-25 | integration | `phase9-contract.test.ts` | `AC-25: AuditLog.summary 與 logStream 七類敏感字串零命中`；`AC-25: 作廢原因入稽核但零入日誌（含反向探針證明掃描非恆真）` | T4 | PENDING |
 | AC-26 | integration | `phase9-void.test.ts`；`phase9-revision.test.ts` | `AC-26(a): 管理員代作廢 → actorId=管理員、targetId=擁有人`；`AC-26(b): 管理員代建修正版 → APPLICATION_CREATED_ON_BEHALF + summary.revisionOf（不新增第二個 enum 值）`；`AC-26(c): 本人建修正版 → 零稽核列`；`AC-26(d): 管理員作廢自己的申請仍寫 APPLICATION_VOIDED` | T4 ＋ T7 | PENDING |
 | AC-27 | integration | `phase9-contract.test.ts` | `AC-27: ErrorCode 聯集與 PHASE-008 結案基線逐字相同（BOGUS mutant 必紅；本 Phase 零新增碼）`；`AC-27: 兩端點錯誤表逐格（401／403／404／409+details／400+fields／500）` | T4 | PENDING |
+| **AC-27／B-16**（修正版端點之停用擁有人守門；`SPEC-REV-9T7` 補列） | integration | `phase9-revision.test.ts` | `B-16: 管理員對已停用使用者建修正版 → 400 VALIDATION_ERROR「指定的使用者已停用」，零寫入`；`B-16 對照: 管理員對已停用使用者之申請作廢 → 200（B-15，作廢端點不受此限）`——**現況為覆蓋缺口**：B-16 自 Spec Gate 起即在 §5 :360，惟 §7.5 漏列該格、§12 無映射列、無 Task 擁有；T7 實查（**W-5**）確認端點現況回 **201**（agent 據實不實作屬正確）。**風險判定＝低**（T7 即審 AR-5：停用擁有人無法登入、完成端點 owner-only，屬合約一致性非安全問題），**落地時附帶裁定「只擋新建、不追溯清理既有修正版」** | **T7b** | PENDING |
 | AC-28 | integration | `phase9-contract.test.ts` | `AC-28: 七類日誌掃描擴及作廢／修正版／附件複製／upload-service 補償路徑`；`AC-28 反向探針: 直接寫入七類敏感字串證明掃描非恆真`；`AC-28: 錯誤日誌行含 requestId` | T18 | PENDING |
 | AC-29 | frontend | `VoidApplicationDialog.test.tsx` | `AC-29: 空原因／僅空白 → 確認鈕停用且零 POST`；`AC-29: 送出中按鈕停用（防重複提交）`；`AC-29: 400 逐字顯示欄位錯誤；409 顯示狀態衝突並提供重新載入`；`AC-29: 取消 → 零請求零狀態變更` | T14 | PENDING |
 | AC-30 | frontend | 三型頁測試檔；`ApplicationListSection.test.tsx` | `AC-30(a): 列表狀態欄逐字「已作廢」`；`AC-30(b): 狀態篩選「已作廢」可查得該筆`；`AC-30(c): 詳情頁逐字顯示作廢原因／操作者／時間` | T15 | PENDING |
 | AC-31 | frontend | 三型頁測試檔；`ReportSection.test.tsx` | `AC-31(a): VOIDED 渲染唯讀分支（非草稿編輯表單）——三型各一`；`AC-31(b): 唯讀頁零儲存／完成／刪除／作廢／建立修正版按鈕`；`AC-31(c): 零任何恢復為已完成之控制項`；`AC-31(d): ReportSection 於 VOIDED 顯示下載與列印入口、零產生按鈕；未產生報表者顯示說明文字` | T14 ＋ T15 | PENDING |
 | AC-32 | frontend | 三型頁測試檔 | `AC-32(a): 已完成頁出現「建立修正版」按鈕（取代佔位文案）`；`AC-32(c): 原頁顯示指向修正版之連結、修正版頁顯示指向原申請之連結`；`AC-32(d): 附件區提示含「如需修正附件，請建立修正版」` | T16 | PENDING |
+| **AC-32／§7.2 列表 DTO `isRevision`**（`SPEC-REV-9T7` 補列） | integration（後端鍵）＋ frontend（徽章） | `phase9-contract.test.ts`（列表 DTO 鍵集 17→18）；`ApplicationListSection.test.tsx`（徽章呈現） | `§7.2: 列表 DTO 含 isRevision（supersedesId != null 為 true，否則 false）——既有 17 鍵逐字不變`；`AC-32: 列表對修正版顯示徽章，非修正版零徽章（負向）`——**現況零覆蓋**：`isRevision` 於 §7.2 :463 已明列為列表 DTO 新增鍵，惟**全 repo 零實作**（`backend/src`／`frontend/src`／全測試樹 `grep` 零命中）、§12 原無映射列、§15 無 Task 擁有（T7 即審 **FW** 揭露）。**⚠ 派工前置**：後端側落點為 `application-query.ts` 之 `ApplicationListItemDto`／`toApplicationListItemDto`，**不在 §15 T16 列之 Files Allowed（現為 FE-only 六檔）**——大總管須於 T16 派工時擴列該檔與列表鍵集基線測試檔，否則 implementer 將依 Stop Conditions BLOCKED | **T16** | PENDING |
 | AC-33 | frontend | `VoidApplicationDialog.test.tsx` | `AC-33: 五態` › `Loading：作廢中停用`／`Empty：未作廢不渲染作廢資訊區塊`／`Error：400／409／500 各一`／`Success：轉為唯讀檢視並顯示三項作廢資訊`／`Permission denied：403 零後續請求` | T14 | PENDING |
 | AC-34 | e2e | `e2e/void-application.spec.ts` | `AC-34: 375px 下作廢對話框／作廢資訊區塊／版本關係區塊／已作廢列印版皆無水平溢位` | T17 | PENDING |
 | AC-35 | e2e | `e2e/void-application.spec.ts` | `AC-35: 兩型端到端（完成→產生報表→作廢→列表已作廢→詳情三項→列印版標示→下載→統計不含該筆）`；`AC-35: 草稿無作廢入口（負向）` | T17 | PENDING |
@@ -771,7 +788,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | AC-39 | integration | `phase9-void-report.test.ts` | `AC-39(a) 結構: report-data.ts 之 orderBy 含 { id: "asc" } 恰兩處（移除任一處必紅）`；`AC-39(b): 保養／折舊路徑之同 linkedAt 三附件恆依 id 遞增序輸出（寫入序與 id 序刻意相反）` | T10 ＋ T18 | PENDING |
 | AC-40 | e2e ＋ integration | `e2e/report-print-layout.spec.ts`（檔頭）；`phase8-contract.test.ts` | `AC-40(a): 檔頭字型敘述更正為子集字型 Tj／ToUnicode（記載型，無斷言變更）`；`AC-40(b): REPORT_GENERATION_FAILED 改經 AppError 後 wire 格式逐字不變（鍵集與值全等）` | T18 | PENDING（D14 照推薦已裁定解鎖） |
 
-> **本表統計**：**40 條 AC**；映射表 **45 列**（AC-01 拆為 (a)(c)(d)(h)／(b)／(e)／(f)／(g) **五列**、**AC-08 拆為 (a)(b) 兩列**（`SPEC-REV-9T3`），其餘各一列）。其中 **8 列標記 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）`**——**6 條完整 AC**（AC-14／AC-18／AC-21／AC-22／AC-38／AC-40）＋ **AC-01 之兩個子項**（(b) 依 D4、(e) 依 D10）。
+> **本表統計**：**40 條 AC**；映射表 **47 列**（`SPEC-REV-9T7` 由 45 列增為 47：AC-01 拆為 (a)(c)(d)(h)／(b)／(e)／(f)／(g) **五列**、**AC-08 拆為 (a)(b) 兩列**（`SPEC-REV-9T3`）、**新增 `AC-27／B-16` 與 `AC-32／§7.2 isRevision` 兩列**（皆為既有條文之覆蓋缺口補列，**非新增 AC**），其餘各一列）。其中 **8 列標記 `PENDING（Spec Gate 2026-08-07 裁定後解鎖）`**——**6 條完整 AC**（AC-14／AC-18／AC-21／AC-22／AC-38／AC-40）＋ **AC-01 之兩個子項**（(b) 依 D4、(e) 依 D10）。**狀態欄現況**：**1 列 `GREEN`**（AC-08(b)，T4b 即審 APPROVE），其餘 46 列 `PENDING`（T1~T7 已交付部分之實名回填與狀態轉綠仍併結案 DOC-SYNC 批次辦理）。
 
 ---
 
@@ -821,6 +838,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | **T5** | 修正版複製 service（三型欄位逐欄複製 ＋ 版本關聯 ＋ 原申請零改動） | BE | AC-09, AC-10, AC-11 | `backend/src/applications/application-revision.ts`（新）、`travel-service.ts`、`maintenance-service.ts`、`depreciation-service.ts`、`backend/test/unit/revision-copy.test.ts`、`backend/test/integration/phase9-revision.test.ts` | **High**（歷史不可變 ＋ 資料複製正確性） | T1 | 大接線之 service 段／**~200-300k** | — | 複製／禁複製鍵集 `toEqual` 封閉且多複製一欄必紅；原申請逐欄 ＋ 原 PDF 雜湊前後不變；三型各一正向；**既有 `create*Draft` 之簽章與行為零改變** |
 | **T6** | 修正版之附件複製（位元組複製 ＋ 段對位 ＋ 失敗補償） | BE | AC-14 | `backend/src/applications/application-revision.ts`、`backend/src/attachment/attachment-service.ts`（或新 `attachment-copy.ts`）、`backend/test/integration/phase9-revision-attachment.test.ts` | **High**（附件權限 ＋ storage 寫入 ＋ 補償語意） | T5, **D6 批准** | 重 Lite／複合修復型／**~140-200k** | — | 位元組 SHA-256 相同、key 互異；段對位零錯置；上限仍成立；失敗回滾零殘留；日誌零 storage key；新列 `ownerId` ＝原擁有人 |
 | **T7** | 修正版端點 ＋ 版本關聯查詢 ＋ 來源守門 ＋ 代操作稽核 | BE | AC-12, AC-13, AC-23（修正版列）, AC-26 | `backend/src/applications/routes.ts`、`backend/src/applications/application-revision.ts`、`backend/test/integration/phase9-revision.test.ts`、`backend/test/integration/phase9-contract.test.ts` | **High**（授權 ＋ 稽核） | T5（T6 若批准則亦依賴） | 接線端點（授權矩陣型）／**~230-330k** | — | 授權五格逐格綠；三種 409 逐一且零寫入零 storage 寫入；雙向版本關聯正負向綠；代操作／本人之稽核差異綠 |
+| **T7b** | **合約一致性批次**（`SPEC-REV-9T7` 補列；大總管 2026-08-07 裁定，源自 T7 **W-5**／**W-3**）：①**B-16** 之 400 守門——修正版端點對**已停用**擁有人回 400 `VALIDATION_ERROR`「指定的使用者已停用」（§7.5 新格；沿代建立草稿之 B-26 先例，**只擋新建、不追溯清理**）；②**W-3**——`admin` 三個代建端點之詳情回應補掛 `supersedes`／`supersededBy` 兩鍵（AC-12(b) 之投影應套用於**每一個**回傳詳情 DTO 之端點） | BE | AC-27（B-16 格）, AC-12(b)（W-3 面） | `backend/src/applications/routes.ts`、`backend/src/admin/routes.ts`（或代建端點實際落點——派工時實查）、`backend/test/integration/phase9-revision.test.ts`、`backend/test/integration/phase9-contract.test.ts` | **High**（授權面之使用者狀態守門） | T7 | 小型接線／**~110-160k** | — | B-16 之 400 逐字綴合約（含 `fields[]` 形狀）＋零寫入；**B-15 對照仍 200**（作廢端點不受停用限制）；三個代建端點之兩鍵正負向逐一；既有 `admin` 測試零弱化。**皆屬使用者可見行為變更，不適用 Lite Packet** |
 | **T8** | 參數引用保護之 `VOIDED` 語意 | BE | AC-18 | `backend/src/parameters/reference-guard.ts`、`backend/test/integration/phase9-reference-guard.test.ts` | **High**（資料保存／歷史不可覆寫） | T3, **D2 批准** | 重 Lite 型／**~115-200k** | — | 五型別逐一綠；`COMPLETED`-only mutant 必紅；草稿仍判「未引用」；既有正向零弱化 |
 | **T9** | 統計排除之真實流程回歸 ＋ 修正版新編號實證 | BE（測試為主） | AC-15, AC-16, AC-17 | `backend/test/integration/phase9-void-statistics.test.ts`、`backend/test/integration/phase9-revision.test.ts` | **High**（金額與里程正確性之最終守門） | T4, T7 | 揭露面／矩陣密度型下緣／**~160-230k** | — | 三個統計消費端皆排除；`mileage/` 零 diff 結構斷言綠；已完成快照不因後續作廢而變；新舊報表編號與 PDF 雜湊之四項斷言綠；`report-number.ts` 零 diff |
 | **T10** | `ReportData` 作廢欄位擴充 ＋ tiebreaker 守門 | BE | AC-19, AC-39 | `backend/src/reports/report-data.ts`、`backend/test/integration/phase9-void-report.test.ts`、`backend/test/integration/phase8-report-data.test.ts`（鍵集基線） | **High**（敏感資料揭露面 ＋ 封閉鍵集） | T3 | 純函式／資料層／**~140-200k** | ✅ `ReportCommon` 鍵集七→八；（若新增 `reports/*.ts` 檔則）`PHASE_008_SRC_FILES` 九檔清單 | 鍵集 `toEqual` 封閉且多一鍵必紅；三型 body 鍵集逐字不變；零算式掃描維持；`orderBy` `id asc` 恰兩處之結構斷言綠 |
@@ -829,7 +847,7 @@ GET .../report        → 無狀態守門（既有），VOIDED 亦回既有報�
 | **T13** | 列印端點對 `VOIDED` 放行 ＋ 授權矩陣回歸 | BE | AC-22 | `backend/src/reports/routes.ts`、`backend/test/integration/phase8-report-print.test.ts` | **High**（授權面 ＋ 側信道） | T11, **D5 批准** | 接線端點下緣／**~160-230k** | — | `VOIDED` 200 且含標示；草稿 409 之既有斷言零弱化；五格授權於 `VOIDED` 逐格綠 |
 | **T14** | 前端元件層：作廢對話框 ＋ API client ＋ `ReportSection` 之 `VOIDED` 放行 | FE | AC-29, AC-31(d), AC-33 | `frontend/src/api/applications.ts`、`frontend/src/components/VoidApplicationDialog.tsx`（新）、`frontend/src/components/ReportSection.tsx`、`frontend/src/index.css`、`frontend/test/VoidApplicationDialog.test.tsx`、`frontend/test/ReportSection.test.tsx` | Medium | T4 | FE 頁面型／**~140-195k** | — | 空原因零 `POST`；送出中停用；取消零請求；403 零重試；`VOIDED` 顯示兩入口且零產生按鈕；既有 `ReportSection` 測試零弱化 |
 | **T15** | 前端三型詳情頁：作廢入口 ＋ `VOIDED` 唯讀分支 ＋ 作廢資訊 ＋ 列表徽章 | FE | AC-30, AC-31(a)~(c) | `TravelApplicationPage.tsx`、`MaintenanceApplicationPage.tsx`、`DepreciationApplicationPage.tsx`、三型頁測試檔（**合計 6 檔**） | Medium | T14 | FE 頁面型／**~140-195k** | — | 三型各有 `VOIDED` 唯讀分支（**現況缺陷之修復**）；唯讀頁五類按鈕逐一負向；三項作廢資訊逐字；既有三頁測試零弱化 |
-| **T16** | 前端修正版：入口按鈕 ＋ 版本關係區塊 ＋ 文案更新（含 FE-US-21④／AD-US-08③） | FE | AC-32, AC-34（DOM 面） | 三型頁 ＋ 三型頁測試檔（**合計 6 檔**） | Medium | T15, T7 | FE 頁面型／**~140-195k** | — | 佔位文案「功能將於後續版本提供」**逐字移除**且以真實入口取代；雙向連結逐一；附件區提示逐字；既有測試零弱化 |
+| **T16** | 前端修正版：入口按鈕 ＋ 版本關係區塊 ＋ 文案更新（含 FE-US-21④／AD-US-08③） | FE | AC-32, AC-34（DOM 面） | 三型頁 ＋ 三型頁測試檔（**合計 6 檔**） | Medium | T15, T7 | FE 頁面型／**~140-195k** | — | 佔位文案「功能將於後續版本提供」**逐字移除**且以真實入口取代；雙向連結逐一；附件區提示逐字；既有測試零弱化。**⚠ 派工前置（`SPEC-REV-9T7`）**：§7.2 之列表 DTO 鍵 `isRevision` 全 repo 零實作、原無 Task 擁有，已於 §12 補列並指派本 Task；其**後端落點**（`application-query.ts` 之 `ApplicationListItemDto`／`toApplicationListItemDto` ＋ 列表鍵集基線測試）**不在本列現有六檔內**——大總管須於派工時擴列，或另拆一個小型 BE Task，**由大總管裁量**（本 Spec 不代為決定；未處理則 implementer 應依 Stop Conditions BLOCKED） |
 | **T17** | E2E Gate：作廢與修正版端到端 ＋ 375px | E2E | AC-34, AC-35, AC-36 | `e2e/void-application.spec.ts`（新）、`e2e/revision.spec.ts`（新） | Medium | T13, T16 | E2E Gate 型／**~185-265k** | — | 兩型作廢情境全綠（大總管親跑於 dev 拓撲）；修正版端到端全綠；播種冪等；草稿無入口負向；375px 零溢位 |
 | **T18** | chore：AR-7 洩漏修復 ＋ tiebreaker 行為測試 ＋ 檔頭更正 ＋ `buildErrorBody` 回歸 | BE ＋ E2E（檔頭） | AC-28, AC-38, AC-39(b), AC-40 | `backend/src/attachment/upload-service.ts`、`backend/src/reports/routes.ts`、`backend/test/integration/phase9-contract.test.ts`、`backend/test/integration/phase8-contract.test.ts`、`e2e/report-print-layout.spec.ts`（僅檔頭註解） | Medium | T12, **D14 批准** | 多項合併修復（≥4 項移交）→ **逐項累加，勿套單項帶**／**~150-250k** | — | AR-7 修復前必紅之紅燈證據；日誌掃描擴上傳路徑 ＋ 反向探針；保養／折舊 tiebreaker 行為測試綠；`buildErrorBody` 改道後 wire 格式逐字不變；檔頭敘述與實測相符 |
 
@@ -849,7 +867,9 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
                                        T12 ──▶ T18
 ```
 
-**TDD 順序建議**：T1（安全網先建立）→ T2（狀態機單一事實來源）→ T3／T5（兩條主線之 service，可先後不可併跑 vitest）→ T4／T7（端點與授權）→ T6（附件複製）→ T8（引用保護）→ T9（統計回歸）→ T10／T11（報表資料與版型）→ T12／T13（PDF 與列印端點）→ T14/T15/T16（前端）→ T17（E2E Gate）→ T18（chore 收尾）。
+> **T7b 之位置（`SPEC-REV-9T7` 補記）**：`T7 ──▶ T7b`（僅依賴 T7 之修正版端點與投影函式），與 T8／T9 無相依，可與 T8／T9 併行；**須排在 T16 之前**（W-3 之兩鍵附掛為前端版本關係區塊之資料前提）。
+
+**TDD 順序建議**：T1（安全網先建立）→ T2（狀態機單一事實來源）→ T3／T5（兩條主線之 service，可先後不可併跑 vitest）→ T4／T7（端點與授權）→ **T7b（合約一致性批次，可與 T8／T9 併行）**→ T6（附件複製）→ T8（引用保護）→ T9（統計回歸）→ T10／T11（報表資料與版型）→ T12／T13（PDF 與列印端點）→ T14/T15/T16（前端）→ T17（E2E Gate）→ T18（chore 收尾）。
 
 ### 15.2 規模上限自查
 
@@ -862,6 +882,7 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
 | T5 | 3 | 6 | BE only | ✅ |
 | T6 | 1 | 3 | BE only | ✅ |
 | T7 | 4 | 4 | BE only | ✅ |
+| **T7b** | 2（皆為既有 AC 之子項切片：AC-27 之 B-16 格、AC-12(b) 之端點覆蓋面） | 4 | BE only | ✅（`SPEC-REV-9T7` 補列） |
 | T8 | 1 | 2 | BE only | ✅ |
 | T9 | 3 | 2 | BE only（測試為主） | ✅ |
 | T10 | 2 | 3 | BE only | ✅ |
@@ -1200,7 +1221,11 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
 2. **已完成快照不因後續作廢而回溯更新**：保養／折舊之已完成快照中所含之期間／年度公務里程，是**完成當下**的值；若其中某筆差旅事後被作廢，該快照**不變**（BE-US-18「歷史可重現」之直接後果）。此為刻意設計，非缺陷——但意味著「已完成的保養分攤比例」可能與「今天重算的結果」不同。
 3. **引用保護一經放寬即為長期承諾**（D2(a)）：資料層無法回復已被覆寫之參數版本，故 D2 之裁定不宜反覆。
 4. **作廢版 PDF 之產生依賴渲染器**（D4(b1) 成立時）：渲染器不可用時**作廢動作會失敗**（可重試）。若人類無法接受，正解是改採 D4(a)，**不得**由 implementer 自行降級為「作廢成功但 PDF 略過」。
-5. **修正版附件複製之儲存成本**（D6(c) 成立時）：每次修正版最多複製 5 張 × 10 MB；孤兒清理屬 PHASE-011。
+5. **修正版附件複製之儲存成本與持鎖時長**（D6(c) 成立時）【**已改寫（`SPEC-REV-9T7`）**——原文「每次修正版最多複製 5 張 × 10 MB」之上界在 B-14 疊加後實質失效】：
+   - **複製量公式**＝**容器數 × 每容器上限（差旅每段 3／保養 5／折舊 5）× ≤10 MiB**。保養與折舊各恰一個容器，故有硬上界（5 × 10 MiB）。
+   - **差旅無總量上界**：PHASE-004 **B-14** 未對 `TripSegment` 之段數設上限，故「段數 × 3 × 10 MiB」在資料層無封頂。**本 Phase 不新增段數上限**——設限屬使用者可見行為之擴充，須人類批准；緩解僅為前端與 Gate 目視。
+   - **持鎖風險（交叉引用 T6 之交易邊界；T6 即審 AR-2 落點）**：附件複製於 `application-revision.ts` 之**單一交易內**進行，顯式 `timeout: 60_000`／`maxWait: 10_000`（沿 PHASE-008 T8R2 MF-2 先例）。段數極端之資料可使 `FOR UPDATE` 列鎖持有數十秒並撞上 **60 s** 上限而**整筆回滾**——回滾後**零殘留仍成立**（AC-14(e) 之補償語意不因逾時而失效），但該申請於期間內無法被作廢或再次建修正版。
+   - **「位元組搬移移出交易外」屬 Spec 決策**（涉及補償與孤兒語意），與 PHASE-011 之孤兒清理併案評估；**不得**由 implementer 自行改採。孤兒清理（含 B-20 之修正版草稿刪除後複本）屬 PHASE-011。
 6. **無版本鏈之聚合視圖**：`supersedesId` 只表達**直接前身**；「一路追到最初版本」需遞迴查詢，本 Phase 不提供該 API 或 UI。
 7. **作廢原因無內容審查與長度以外之驗證**：使用者可填任意文字（已跳脫，無注入風險），但系統不判斷其合理性。
 8. **PHASE-008 §11.4 之 Type0/CID 敘述更正**不在本 Task 之 Allowed 檔案內（唯一可寫為 `docs/specs/PHASE-009.md`），僅 `e2e` 檔頭部分於 T18 更正——**PHASE-008 本體之更正仍待大總管另派**（§19 #4）。
@@ -1235,6 +1260,7 @@ T1 ──┬──▶ T2 ──▶ T3 ──┬──▶ T4 ──┐
 | 2026-08-07 | `SPEC-REV-9T1` | **用詞勘誤（Lite）**：§2 **AC-01(a)**（:144）之 `voidedAt` 型別敘述由「timestamptz」更正為「**`timestamp(3)`**（沿全專案 `DateTime` 慣例，**非** timestamptz）」。**錯在 Spec 用詞、實作正確**——T1 已落地之 DDL 為 `ADD COLUMN "voidedAt" TIMESTAMP(3)`（`backend/prisma/migrations/20260807140000_phase9_void_revision_model/migration.sql` :6），與 `Application.completedAt`／`createdAt`／`Report.generatedAt` 等全部既有 `DateTime` 欄同型；spec-writer 本次**實查全 repo `prisma/migrations` 對 `timestamptz`／`WITH TIME ZONE` 之命中數為 0**，故若依原敘述做成 timestamptz，反而會成為全專案**第一個**不一致欄位。**同型字樣之全檔實查（據實列出）**：`timestamptz` 於本 Spec **僅此一處**——§8.1／§8.2 之 Prisma 區塊皆為 `DateTime?`、§8.3 推導表亦為 `DateTime?`（`VoidedReportFile.createdAt` 同理，實際 DDL 亦為 `TIMESTAMP(3)`），三處**皆正確**，本次零改動。**一律不變**：AC-01(a) 其餘三欄之敘述、可空性與「無 `DEFAULT`、不回填」義務、§8.1~§8.3 全部內容、§12 映射表（含狀態欄）、§16 全部決策、其他章節。**性質**：文件用詞勘誤（記錄型），**未改變任何 AC 之驗收語意、未縮減守門強度、未擴大 Scope、未改變任何已批准 US 原意**；**實作與測試無需任何變更**（`phase9-migration-safety.test.ts` 之逐欄型別斷言本即以實際 DDL 為準，零 diff）。**未修改** `userstory.md`／`docs/PRD.md`／任何程式或測試。Spec 狀態維持 `ACTIVE`。 | T1 即審 **SF-2**（reviewer `PHASE-009-T1-REVIEW`）；`PROJECT_STATE.md` T1 即審記錄列；大總管 2026-08-07 `SPEC-REV-9T1` Packet |
 | 2026-08-07 | `SPEC-REV-9T2` | **映射與措辭修正（Lite）——三處失準逐處收口，AC 語意零變更**：**(a) §12 AC-02 列**——原列之第三個預定測試名 `AC-02 結構: Application 無任何與 status 正交之作廢布林欄（D8(a) 硬約束）` **於全 repo 不存在**（spec-writer 實查 `backend/test/` 零命中）；改為指向 **T1 已交付**之等效且更強守門 `AC-01(a): Application 之四個新欄 — 型別／可空性／無 default 逐欄符合 §8.1（14 欄封閉集合）`（`phase9-migration-safety.test.ts` :888——欄位集合封閉即涵蓋「零 `isVoided`／`voided` 布林欄」），並**註記 T1 即審 FW-3 之裁定：不得重造第二個較弱守門**（「寫入路徑列舉≠布林守門重造」界線判讀成立）；同列 unit 側兩條測試名依實際 `describe › it` 巢狀結構補全（含 `兩元素逐字為 [DRAFT, COMPLETED] 與 [COMPLETED, VOIDED]…`、`DRAFT→COMPLETED 與 COMPLETED→VOIDED 是僅有的兩個不拋格子（矩陣鑑別力總結，AC-02）`），Task 欄改 `T2（轉換集合）＋ T1（D8(a) 結構面）`。**(b) §12 AC-05 列**——原列「層級 ＝ integration／檔案 ＝ `phase9-void.test.ts`；`phase9-contract.test.ts`」與實際交付衝突：**AC-05(a) 實際由 T2 以 unit 交付於 `backend/test/unit/application-state-machine.test.ts`**；修正為 `unit（(a)）＋ integration（(b)）` 之分列，(a) 之四條測試名**以 `grep` 逐字回填**（含 T2R 後新增之自證 it `鑑別力自證（SF-3, T2R-LITE：真實 fixture 目錄實跑，非恆真式）…`），(b) 維持 T4 之預定名，Task 欄改 `T2（(a)）＋ T4（(b)）`。**(c) §11.1 狀態機列（:673）與 §15 T2 列 Done When（:816）**——原表述「既有測試零改寫（只增）」「既有，**只增不改**」與 AC-02 要求之 `ALLOWED_TRANSITIONS` **1→2** 內在不相容（照字面不可能同時成立）；改為「**既有鑑別性斷言零弱化；轉換集合之基線斷言得依 AC-02 重錨定（1→2），此為 AC-02 明文要求之受控擴充，非弱化**」。**一律不變**：AC-02／AC-05 之**字面與驗收語意**、全部 mutant 必紅義務、§12 兩列之**狀態欄**（維持 `PENDING`，實名回填仍併結案 DOC-SYNC）、其他 AC 與 §16 全部決策、其他章節之「只增不改」表述（`report-html`／`phase8-report-print`／三型 FE 頁四處，該四處無同型不相容問題，經實查後**刻意不動**）。**性質**：映射表準確性與措辭修正（記錄型），**未改變任何 AC 驗收語意、未縮減任何守門強度、未擴大 Scope、未改變任何已批准 US 原意**；**未修改** `userstory.md`／`docs/PRD.md`／任何程式或測試。Spec 狀態維持 `ACTIVE`。**併記（流程紀律）**：(c) 之不相容為 T2 開工時即可觀察之 Spec 內在矛盾，**implementer 依 AC-02 重錨定基線屬正確判讀，但未於當下請示即偏離 Packet 之「只增不改」字面**——此偏差據實記錄於本列，供大總管與後續 Task 引以為戒（正解為「發現 Spec 內在矛盾時回報，由 Spec 修訂先行」）。 | T2 即審 **SF-4**（reviewer `PHASE-009-T2-REVIEW`）；`PROJECT_STATE.md` T2 即審記錄列（含 FW-3 界線判讀成立之裁定）；大總管 2026-08-07 `SPEC-REV-9T2` Packet |
 | 2026-08-07 | `SPEC-REV-9T3` | **T3 鏈三處勘誤 ＋ T4 前置範圍修訂**：**①§7.2 鍵集紀律之證偽**——初版「三型詳情 DTO 之既有實作**無**封閉 `toEqual` 鍵集斷言」**對折舊型為誤**：`phase7-depreciation-draft.test.ts` :915／:920（`DepreciationApplicationDto 之鍵集全等於 §20.6 宣告（含新增之 annualTotalKm）`）確為封閉斷言（PHASE-007 §20.6 固化）；原句**逐字保留**於引註之上，其下加註更正並載明差旅／保養兩型經實查確無同型斷言（全 repo `Object.keys(application).sort()` 僅此一處命中）。**②§8.5 機械連動補列第六類**（折舊詳情 DTO 鍵集封閉，**一處**）：`void` 一鍵已由 **T3b-LITE**（`d94cc62`，該檔 `+1/-0`）落地同步（引註記載），`supersedes`／`supersededBy` 兩鍵之同步歸 **T7**；§8.5 預授權句由「五類」改「六類」。**③§12 AC-03 列落點更正**——原列 `void-reason.test.ts`（unit）於全 repo **不存在**（實查），且與 §15 T3 列之檔案清單衝突；依實際落地改為**單一落點** `phase9-void.test.ts` 之**頂層 `describe`**（15 個純函式 `it`，不需 DB 亦執行），並以 `grep` **逐字回填** 15 條實名取代原預定名；**同一失準於 §11.1「作廢原因驗證純函式」列亦存在**（同樣指向不存在之 `void-reason.test.ts`），**經實查後同批更正**（同一缺陷之第二處，非新增變更範圍）。**④§12 AC-08 拆為 (a)(b) 兩列**：**(a)** 三型 `PUT`／`DELETE` 面（**T3**，含 body 夾帶 `attachmentIds`／`segments` 之 403 短路）；**(b)** 附件端點面（**T4**）——**現況實紅**：`attachment/lifecycle-service.ts` 之 `deriveContainerState` 三個 `refType` 分支皆以 `status === "COMPLETED" ? "completed" : "draft"` 判定，`VOIDED` 被誤判為 `draft`，使已作廢申請之附件仍可被刪除（應 403）；T3 依 Stop Conditions 據實回報且未修（該檔非其 Files Allowed），大總管裁定併入 T4。該列明記 **⚠「AC-08 不得於 T3 結案時整條標 `GREEN`」**。**⑤§15 T4 列擴列**：Files Allowed 加 **`backend/src/attachment/lifecycle-service.ts`** 與 **`phase4-attachment-ard.test.ts`**（`deriveContainerState` 之既有守門檔；`phase6-maintenance-attachment.test.ts`／`phase7-depreciation-attachment.test.ts` 為只讀回歸、非修改對象）；AC 欄加 AC-08(b)；Risk 描述加「附件權限」；Done When 增補「**`VOIDED` 之附件鎖定與 `COMPLETED` 同等（三分支逐一）＋ 修復前紅燈實證 ＋ 既有 `COMPLETED`／`DRAFT` 行為零改變**」。**連帶（機械一致性，非新決策）**：§12 統計由「44 列」改「**45 列**」（AC-08 拆列所致）；**§15.2 自查 T4 列據實更新為「6 條目／檔數 6」並標 ⚠ 貼上限**，附明文正解——**逾規模時拆出 `T4b`（附件鎖定面），不得壓縮測試換合規**，拆分與否由大總管派工時裁量。**一律不變**：AC-03／AC-08 之**字面與驗收語意**（AC-08 本即要求「作廢後業務欄位與附件不可修改」，本次僅**落點拆分與檔案授權**，未新增任何義務）、全部 mutant 必紅義務、§12 全部**狀態欄**（維持 `PENDING`，實名回填仍併結案 DOC-SYNC）、§16 全部決策、其他章節。**性質**：勘誤 ＋ Task 範圍（Files Allowed）修訂，**未改變任何 AC 驗收語意、未縮減守門強度、未擴大 Phase Scope**（AC-08(b) 本即在 AC-08 字面內）、**未改變任何已批准 US 原意**；**未修改** `userstory.md`／`docs/PRD.md`／任何程式或測試。Spec 狀態維持 `ACTIVE`。 | T3 即審與 T3 Handoff 實查（reviewer `PHASE-009-T3-REVIEW`）；`PROJECT_STATE.md` **T3 BLOCKED 記錄列**（`a9d21fd`：第六類鍵集連動／§7.2 證偽／`deriveContainerState` VOIDED 缺口裁定併 T4）與 **T3 即審記錄列**（`fdb7931`：第三處 Spec 勘誤 AC-08 拆分）；大總管 2026-08-07 `SPEC-REV-9T3` Packet |
+| 2026-08-07 | `SPEC-REV-9T7` | **T1~T7 全鏈累積之十項勘誤與補全一次落地（皆為「使 Spec 與已裁定事實一致」；零 AC 語意變更、零 Scope 擴大、零使用者可見行為變更）**：**①§12 AC-08(b) 列回填**（T4b **AR-2**）——測試檔由 `phase9-void.test.ts` 更正為 **`phase4-attachment-ard.test.ts`**（T4b 即審裁定該落點正確：§15.1／15.2 明文，且 `phase9-void.test.ts` 屬 T3 已結案範圍，寫入反屬越界）、Task 由 T4 改 **T4b**、三個 `it` **實名 `grep` 逐字回填**、加註「**新增**面歸 AC-08(a)」（`PUT …/attachmentIds` 不經 `deriveContainerState`，T4 **FW-1** 兩變體已落 `phase9-void.test.ts`）；**狀態欄轉 `GREEN`**（唯一有 APPROVE 依據者）。**②§12 AC-23 列加註**（T4 即審 **SF-1** 銷帳裁定／FW-A）——報表四端點回歸四格中之「下載 → 200（依 D4）」一格**歸 T12**（作廢版 PDF 落地時補格並更新 contract 檔頭留白清單），T4／T7 交付時未覆蓋屬**預期留白非漏測**。**③§7.4 兩計數勘誤**（T5 即審 **AR-3**）——折舊禁複製鍵由重複計數之「12」更正為**去重 11**（兩凍結唯讀欄 `snapshotEstimatedAnnualKm`／`snapshotPerKmUnitPrice` 本即在九個 `snapshot*` 之內）；差旅「五個版本引用欄」更正為 **4**（`fuelParameterVersionId`／`etcParameterVersionId`／`fuelPriceVersionId`／`fuelConsumptionVersionId`——`schema.prisma` 實查）。**兩者外延（鍵集本身）自始正確**，AC-10 之封閉斷言不受影響。**④AC-09 措辭統一**（T5 即審 AR-3）——「四個作廢欄皆為 `NULL`」與 §7.4「三個作廢欄」不一，統一為「`status` 復位為 `DRAFT` ＋ **三個作廢持久化欄**（`voidReason`／`voidedAt`／`voidedById`）皆 `NULL`」；第四個新欄 `supersedesId` 於修正版**恆非 `NULL`**，本不屬作廢欄（沿 T5 已交付測試之實作解讀，§12 AC-09 列自始即為此意）。**⑤「差旅每段 5」→「差旅每段 3」五處**（T6 即審 **SF-3** 之擴散實查）——**AC-14(d)**／**B-24**／**B-25**／**§10 NFR 表儲存成本列**／**§17.1 #5**；權威為 PHASE-004 **AC-22**（`docs/specs/PHASE-004.md` :118「每段上限 3 張」）＋ §10.4／§16「附件上限：後端常數 3」，落地為 `travel-service.ts` :106 `SEGMENT_ATTACHMENT_LIMIT = 3`（受 PHASE-004 **D19** 保護不得弱化）。**保養 5／折舊 5 不變**（`MAINTENANCE_ATTACHMENT_LIMIT`／`DEPRECIATION_ATTACHMENT_LIMIT` 實查皆 5）。**⑥§17.1 #5 改寫**（T6 即審 SF-3）——由「每次修正版最多複製 5 張 × 10 MB」改為「複製量 ＝ 容器數 × 每容器上限（差旅每段 3／保養 5／折舊 5）× ≤10 MiB」，並明記**差旅因 PHASE-004 B-14 未設段數上限而無總量上界**（本 Phase 不新增段數上限——屬使用者可見行為擴充須人類批准）；**交叉引用 T6 之交易邊界**（`application-revision.ts` 顯式 `timeout: 60_000`／`maxWait: 10_000`，沿 PHASE-008 T8R2 MF-2 先例）與**持鎖風險**（段數極端可持 `FOR UPDATE` 數十秒撞 60 s 而整筆回滾，零殘留仍成立）；「位元組搬移移出交易外」明列為 **Spec 決策**，不得由 implementer 自行改採。§10 NFR 表同步對齊（⑤之第四處）。**⑦§7.2 `supersedes` 投影補記**（T7 **W-4**）——初版僅宣告單一三鍵 `RevisionLinkDto`，與 **AC-12(b)** 之四鍵原文分歧；補 `SupersedesLinkDto extends RevisionLinkDto`（增一鍵 `reportNumber: string ｜ null`；**以 AC-12(b) 原文為準**，`supersededBy` 維持三鍵）。**已依 AC 實作**（`routes.ts` `resolveRevisionLinks` 與同名 interface），本次僅補齊記載，**防 T16 前端型別分歧**。**⑧B-16 補全**（T7 **W-5**，大總管裁定）——B-16 自 Spec Gate 起即在 §5，惟 §7.5 漏格、§12 無映射列、無 Task 擁有（**記載缺口非新增行為**）：§7.5 補 400 格「指定的使用者已停用」（沿 B-26 先例；並明記**作廢端點不受此限**＝B-15 之 200）、§12 補映射列（`phase9-revision.test.ts`／Task **T7b**／`PENDING`）、**§15 補 T7b 列**（B-16 ＋ **W-3**（`admin` 三代建端點補掛 `supersedes`／`supersededBy`）之合約一致性批次；High；**皆屬行為變更不適用 Lite**）、§15.1 補依賴位置（`T7 ──▶ T7b`，須排在 T16 前）、§15.2 補自查列。**⑨`isRevision` 映射補全**（T7 即審 **FW**）——§7.2 :463 已明列列表 DTO 新增鍵 `isRevision`，惟**全 repo 零實作**（`backend/src`／`frontend/src`／全測試樹 `grep` 零命中）、§12 零映射列、§15 零 Task 擁有：補 §12 映射列（Task **T16**／`PENDING`）並於 §12 與 §15 T16 列**雙處標記派工前置**——後端落點 `application-query.ts` 之 `ApplicationListItemDto`／`toApplicationListItemDto` **不在 T16 現有 FE-only 六檔內**，須由**大總管**於派工時擴列或另拆小型 BE Task（**本 Spec 不代為決定**）。**⑩本列**：§18 新增本修訂紀錄。**連帶（機械一致性，非新決策）**：§12 統計由「45 列」改「**47 列**」並補記狀態欄現況（1 列 `GREEN`／46 列 `PENDING`）。**一律不變**：全部 40 條 AC 之**驗收語意與守門強度**（③④⑦為記載精確化、⑤為對齊既有權威常數、⑧⑨為覆蓋缺口補列，**皆未新增任何義務亦未縮減任何義務**）、§16 全部決策（D1~D16）、其餘 §12 狀態欄（除 AC-08(b) 外一律維持 `PENDING`，實名回填仍併結案 DOC-SYNC）、其他章節。**性質**：勘誤 ＋ 覆蓋缺口補全 ＋ Task 記載（記錄型），**未改變任何已批准 US 原意、未擴大 Scope、未改變任何使用者可見行為**；**未修改** `userstory.md`／`docs/PRD.md`／任何程式或測試。Spec 狀態維持 `ACTIVE`。**§11 交付前自查（治理 2026-08-07.1）結果**：跨 AC 一致性掃描 4 組交叉引用（B-24／B-25 ⇔ AC-14(d)、§17.1 #5 ⇔ §10 NFR 表、§7.2 ⇔ AC-12(b)、§5 B-16 ⇔ §7.5 ⇔ §12）**修訂後全部一致，零新增矛盾**；**殘留兩項據實回報大總管**（本次未改，避免逾範圍）：(i) **AC-03** 之「四個作廢欄仍為 `NULL`」與 ④ 同型措辭不精確（該處語境為作廢**拒絕**時之零寫入，`supersedesId` 於本身即修正版之申請上非 `NULL`）；(ii) **§10 NFR 表**「修正版端點回應時間（含 ≤5 張附件複製）」之「≤5 張」為**量測工作量前提**而非上限主張，與 ⑥ 之「差旅無總量上界」不構成矛盾，惟該回應時間目標在段數極端時不成立。 | **①** T4b 即審 **APPROVE**（`54f72d2` 結案列；AR-2「§12 :740 檔名／Task／實名回填」）；**②** T4 即審 **APPROVE** SF-1 銷帳／FW-A；**③④** T5 即審 **AR-3**（＋T5 第一輪揭露①）／FW-6；**⑤⑥** T6 即審 **SF-3**（＋T6 揭露②③、AR-2 持鎖）；**⑦** T7 **W-4**；**⑧** T7 **W-5** ＋ 大總管裁併 T7b 之裁定；**⑨** T7 即審 **FW**（T16 項）。均固化於 `PROJECT_STATE.md` 2026-08-07 之 T4b／T4／T5／T6／T7 即審記錄列（含 T7R 關閉列之十項批次清單）；大總管 2026-08-07 `PHASE-009-SPEC-REV-9T7` Packet |
 
 ---
 
