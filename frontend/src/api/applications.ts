@@ -351,3 +351,31 @@ export async function apiCompleteApplication(
   });
   return parseApiResponse<{ application: TravelApplicationDto }>(res);
 }
+
+// ---------------------------------------------------------------------------
+// POST /applications/:id/void (PHASE-009 §7.3, AC-29)
+//
+// Body 恆為 `{ reason }`（其餘鍵後端一律忽略）。錯誤形狀由後端權威：
+//   400 VALIDATION_ERROR + fields[{ field: "reason", reason }]
+//   409 CONFLICT + details.status ∈ {"DRAFT","VOIDED"}
+// 皆由 `parseApiResponse` 轉成 thrown `ApiError`，呈現責任在呼叫端
+// （VoidApplicationDialog）。
+//
+// 回應之 `application` 為**型別分派**之詳情 DTO（差旅／保養／折舊三型之一），
+// 故以型別參數表達而不寫死 `TravelApplicationDto`——三型詳情頁各自以自己的
+// DTO 型別呼叫（T15）。此處刻意不做 trim：後端 `void-reason.ts` 為驗證與
+// trim 的唯一事實來源（B-03），前端 trim 會讓兩處各有一份規則。
+// ---------------------------------------------------------------------------
+
+export async function apiVoidApplication<TApplication = unknown>(
+  id: string,
+  reason: string
+): Promise<{ application: TApplication }> {
+  const res = await fetch(`/api/applications/${id}/void`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ reason }),
+  });
+  return parseApiResponse<{ application: TApplication }>(res);
+}
