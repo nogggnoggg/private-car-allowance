@@ -42,11 +42,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApplicationRevision } from "../../src/applications/application-revision.js";
 import { hashPassword } from "../../src/auth/password.js";
+import { getReportNumberPeriod } from "../../src/reports/report-number.js";
 import { buildServer } from "../../src/server.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
 
@@ -2134,5 +2136,430 @@ describeWithDb("PHASE-009-T7b 合約一致性（B-16 停用擁有人守門／W-3
         primaryDate: draftRow.primaryDate.toISOString().slice(0, 10),
       });
     });
+  });
+});
+
+// ===========================================================================
+// PHASE-009-T9 — AC-15：修正版完成 → 新報表編號與新 PDF
+//                （PHASE-008 §17.2 之「零程式變更」實證）
+//
+// 規範原文（`docs/specs/PHASE-009.md` :191，逐字）：
+//   「**AC-15 修正版完成 → 新報表編號與新 PDF（PHASE-008 §17.2 之零程式變更實
+//   證）**——(a) 修正版完成後呼叫產生報表端點 → **201**，取得**與原申請不同**
+//   之 `reportNumber`（且序號為同月同型之下一號）；(b) 新 `Report.storageKey`
+//   與原申請之 `storageKey` **互異**，新 PDF 位元組之 SHA-256 與原 PDF **不
+//   同**；(c) 原 `Report` 列與其 PDF 位元組 **SHA-256 前後不變**（BE-US-21④
+//   之逐位元組實證）；(d) 本 AC **不得**以修改 `report-number.ts`／
+//   `report-service.ts` 之編號或冪等邏輯達成——`backend/src/reports/
+//   report-number.ts` 於本 Phase **零 diff**（結構性斷言）。」
+//
+// ── 實作決策揭露（誠實揭露，供複審逐條核對）──────────────────────────────
+// 1. **全鏈皆走真實端點**：草稿建立 → PUT 段／出差日期／事由 → 上傳附件 →
+//    `POST /:id/complete` → `POST /:id/report` → `POST /:id/revision` →
+//    修正版 `POST /:id/complete` → 修正版 `POST /:id/report`。修正版之附件由
+//    T6 之複製流程自動帶入（故修正版可直接完成，不需再次上傳）。
+// 2. **PDF 為真實 Chromium 渲染，未以合成位元組替身**（與
+//    `phase8-report-generate.test.ts` 之 AC-06 同一作法）：AC-15(b) 要求「新
+//    PDF 位元組之 SHA-256 與原 PDF **不同**」——若以測試自行合成之位元組替
+//    身，位元組差異將由測試自己製造，該斷言即失去意義。故本區塊接受兩次真實
+//    渲染之時間成本（timeout 放寬至 90s），使「兩份 PDF 不同」是產品行為的
+//    結果（編號不同 → HTML 不同 → PDF 不同），而非測試佈景。
+// 3. **AC-15(a) 之「不同編號」以 `Report` 列直讀比對**，不使用詳情 DTO 之
+//    `supersedes.reportNumber` 投影（T7 即審 FW-1：該投影在原申請已有報表時
+//    回填字串，以它代替直接比對會使斷言的鑑別對象偏移）。
+// 4. **序號採「相對下一號」**：`generatedAt` 為真實時鐘，`numberPeriod` 恆為
+//    執行當下之 Asia/Taipei `YYYYMM`，序號自該 (prefix, period) 之既有
+//    `max(sequence)` 續號（`phase8-report-generate.test.ts` 檔頭「實作決策揭
+//    露 #1」已就此立下先例）。故斷言為「修正版序號 ＝ 原申請序號 ＋ 1」，此與
+//    AC-15(a)「序號為同月同型之下一號」逐字等價，且兩次產生於同一測試內連續
+//    發生、同一 worker schema 內序列執行，中間不會插入其他配號。
+// ===========================================================================
+
+/** `backend/` 絕對路徑（AC-15(d) 結構性斷言之來源檔定位）。 */
+const BACKEND_ROOT_T9 = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+describeWithDb("PHASE-009-T9 AC-15 修正版完成 → 新報表編號與新 PDF", () => {
+  const T9_PREFIX = "p9t9r_";
+  /** 差旅年度：避讓既有測試檔之年度（T7 用 2026、T8 用 2190-2193）。 */
+  const YEAR = 2214;
+
+  let prisma: PrismaClient;
+  let app: FastifyInstance;
+  let attachmentRoot: string;
+  let reportRoot: string;
+  let reportStorage: LocalVolumeStorage;
+
+  let ownerId: string;
+  let ownerCookie: string;
+
+  const t9ApplicationIds: string[] = [];
+  const t9UserIds: string[] = [];
+  const t9AttachmentIds: string[] = [];
+  const t9ConsumptionIds: string[] = [];
+  const t9PriceIds: string[] = [];
+  const t9EtcIds: string[] = [];
+
+  function trackT9(id: string): string {
+    t9ApplicationIds.push(id);
+    return id;
+  }
+
+  async function loginT9(loginName: string): Promise<string> {
+    const resp = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: { loginName, password: PASSWORD },
+    });
+    if (resp.statusCode !== 200) throw new Error(`login failed: ${resp.statusCode} ${resp.body}`);
+    const raw = resp.headers["set-cookie"];
+    const str = Array.isArray(raw) ? raw[0] : (raw as string);
+    return str.split(";")[0];
+  }
+
+  function buildMultipartBody(
+    filename: string,
+    content: Buffer
+  ): { body: Buffer; contentType: string } {
+    const boundary = `----FormBoundary${Date.now()}${Math.random().toString(36).slice(2)}`;
+    const CRLF = "\r\n";
+    const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`;
+    const footer = `${CRLF}--${boundary}--${CRLF}`;
+    return {
+      body: Buffer.concat([Buffer.from(header), content, Buffer.from(footer)]),
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+
+  /** 上傳一張合成 JPEG（真實 multipart 端點；位元組落地 storage，供 T6 複製）。 */
+  async function uploadTemp(filename: string): Promise<string> {
+    const jpeg = Buffer.alloc(96, 0xaa);
+    jpeg[0] = 0xff;
+    jpeg[1] = 0xd8;
+    jpeg[2] = 0xff;
+    const { body, contentType } = buildMultipartBody(filename, jpeg);
+    const resp = await app.inject({
+      method: "POST",
+      url: "/attachments",
+      headers: { cookie: ownerCookie, "content-type": contentType },
+      payload: body,
+    });
+    expect(resp.statusCode, resp.body).toBe(201);
+    const id = resp.json<{ attachment: { id: string } }>().attachment.id;
+    t9AttachmentIds.push(id);
+    return id;
+  }
+
+  /** 經真實端點建立一筆**可完成**之差旅草稿（一段 ＋ 一張附件）。 */
+  async function createCompletableTravelDraft(suffix: string): Promise<string> {
+    const createResp = await app.inject({
+      method: "POST",
+      url: "/applications/travel",
+      headers: { cookie: ownerCookie },
+      payload: {},
+    });
+    expect(createResp.statusCode, createResp.body).toBe(201);
+    const id = trackT9(createResp.json<{ application: { id: string } }>().application.id);
+
+    const attachmentId = await uploadTemp(`p9t9r-${suffix}.jpg`);
+    const putSeg = await app.inject({
+      method: "PUT",
+      url: `/applications/travel/${id}`,
+      headers: { cookie: ownerCookie },
+      payload: {
+        segments: [
+          {
+            origin: "T9 起點",
+            destination: "T9 迄點",
+            totalKm: "80.00",
+            highwayKm: "40.00",
+            attachmentIds: [attachmentId],
+          },
+        ],
+      },
+    });
+    expect(putSeg.statusCode, putSeg.body).toBe(200);
+
+    const putMeta = await app.inject({
+      method: "PUT",
+      url: `/applications/travel/${id}`,
+      headers: { cookie: ownerCookie },
+      payload: { tripDate: `${YEAR}-06-01`, purpose: `T9 AC-15 出差-${suffix}` },
+    });
+    expect(putMeta.statusCode, putMeta.body).toBe(200);
+    return id;
+  }
+
+  async function completeT9(id: string): Promise<void> {
+    const resp = await app.inject({
+      method: "POST",
+      url: `/applications/${id}/complete`,
+      headers: { cookie: ownerCookie },
+    });
+    expect(resp.statusCode, `complete 未回 200：${resp.body}`).toBe(200);
+  }
+
+  async function generateReport(id: string) {
+    return app.inject({
+      method: "POST",
+      url: `/applications/${id}/report`,
+      headers: { cookie: ownerCookie },
+    });
+  }
+
+  /** `Report` 之七個關鍵欄（沿 AC-11(c) 之 `REPORT_KEY_COLUMNS` 同一鍵集）。 */
+  const T9_REPORT_KEY_COLUMNS = {
+    reportNumber: true,
+    storageKey: true,
+    fileName: true,
+    byteSize: true,
+    contentHash: true,
+    generatedAt: true,
+    generatedById: true,
+  } as const;
+
+  function sha256(bytes: Buffer): string {
+    return crypto.createHash("sha256").update(bytes).digest("hex");
+  }
+
+  beforeAll(async () => {
+    if (!DB_URL) return;
+    prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
+    await prisma.$connect();
+
+    attachmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "phase9-t9-att-"));
+    reportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "phase9-t9-rpt-"));
+    reportStorage = new LocalVolumeStorage(reportRoot, { prefixes: ["rpt"] });
+
+    app = await buildServer({
+      databaseUrl: DB_URL,
+      storageRoot: attachmentRoot,
+      reportStorageRoot: reportRoot,
+      logLevel: "error",
+    });
+    await app.ready();
+
+    const loginName = `${T9_PREFIX}owner_${RUN_ID}`;
+    const owner = await prisma.user.create({
+      data: {
+        loginName,
+        displayName: "T9 AC-15 擁有人",
+        passwordHash: await hashPassword(PASSWORD),
+        role: "USER",
+        isActive: true,
+        mustChangePassword: false,
+      },
+    });
+    t9UserIds.push(owner.id);
+    ownerId = owner.id;
+    ownerCookie = await loginT9(loginName);
+
+    // 差旅完成所需之三類參數（油耗／油價／ETC），生效日早於出差日期。
+    const consumption = await prisma.userFuelConsumptionVersion.create({
+      data: {
+        userId: ownerId,
+        fuelType: "GASOLINE_92",
+        kmPerLiter: new Prisma.Decimal("10.0000"),
+        effectiveFrom: new Date(`${YEAR}-01-01T00:00:00.000Z`),
+        basisNote: "T9 AC-15 測試 fixture",
+        createdById: ownerId,
+      },
+    });
+    t9ConsumptionIds.push(consumption.id);
+    const price = await prisma.fuelPriceVersion.create({
+      data: {
+        fuelType: "GASOLINE_92",
+        pricePerLiter: new Prisma.Decimal("30.0000"),
+        effectiveFrom: new Date(`${YEAR}-01-01T00:00:00.000Z`),
+        createdById: ownerId,
+      },
+    });
+    t9PriceIds.push(price.id);
+    const etc = await prisma.etcParameterVersion.create({
+      data: {
+        unitPrice: new Prisma.Decimal("2.0000"),
+        effectiveFrom: new Date(`${YEAR}-01-01T00:00:00.000Z`),
+        createdById: ownerId,
+      },
+    });
+    t9EtcIds.push(etc.id);
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    if (app) await app.close();
+    if (t9UserIds.length > 0) {
+      await prisma.attachment.deleteMany({ where: { ownerId: { in: t9UserIds } } });
+    }
+    await prisma.report.deleteMany({ where: { applicationId: { in: t9ApplicationIds } } });
+    // 修正版（supersedesId → 原申請，onDelete: Restrict）必須先於原申請刪除。
+    for (const id of [...t9ApplicationIds].reverse()) {
+      const revisions = await prisma.application.findMany({
+        where: { supersedesId: id },
+        select: { id: true },
+      });
+      if (revisions.length > 0) {
+        await prisma.report.deleteMany({
+          where: { applicationId: { in: revisions.map((r) => r.id) } },
+        });
+        await prisma.application.deleteMany({ where: { supersedesId: id } });
+      }
+    }
+    for (const id of [...t9ApplicationIds].reverse()) {
+      await prisma.application.deleteMany({ where: { id } });
+    }
+    if (t9ConsumptionIds.length > 0) {
+      await prisma.userFuelConsumptionVersion.deleteMany({
+        where: { id: { in: t9ConsumptionIds } },
+      });
+    }
+    if (t9PriceIds.length > 0) {
+      await prisma.fuelPriceVersion.deleteMany({ where: { id: { in: t9PriceIds } } });
+    }
+    if (t9EtcIds.length > 0) {
+      await prisma.etcParameterVersion.deleteMany({ where: { id: { in: t9EtcIds } } });
+    }
+    if (t9UserIds.length > 0) {
+      await prisma.auditLog.deleteMany({ where: { actorId: { in: t9UserIds } } });
+      await prisma.auditLog.deleteMany({ where: { targetId: { in: t9UserIds } } });
+      await prisma.session.deleteMany({ where: { userId: { in: t9UserIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: t9UserIds } } });
+    }
+    await prisma.$disconnect();
+    for (const root of [attachmentRoot, reportRoot]) {
+      try {
+        fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // AC-15(d) — 結構性斷言
+  //
+  // 手法沿 `phase5a-travel-complete.test.ts:154`（`travel-calculation.ts` 之
+  // sha256 釘選：「若日後修改該檔哪怕一個字元，本測試必紅」）。
+  // 釘選值出處（可由人類複驗）：
+  //   `git show ac56f20:backend/src/reports/report-number.ts | sha256sum`
+  // （`ac56f20` ＝「docs: PHASE-009 開工記錄」commit ＝ 本 Phase 之基準；已實
+  // 測 git blob 與工作區磁碟位元組全等，無 CRLF 轉換差異，故「磁碟雜湊 ＝ 基
+  // 準雜湊」即等價於「該檔本 Phase 零 diff」）。
+  // -------------------------------------------------------------------------
+  describe("AC-15(d) 結構: report-number.ts 本 Phase 零 diff", () => {
+    it("backend/src/reports/report-number.ts 之原始碼 SHA-256 等於 PHASE-009 基準 commit ac56f20 之值（改動任一位元組即紅——AC-15 不得以修改編號邏輯達成）", () => {
+      const bytes = fs.readFileSync(path.resolve(BACKEND_ROOT_T9, "src/reports/report-number.ts"));
+      expect(sha256(bytes)).toBe(
+        "227a0a6ce3f11e0e4589e8251ddff67af3c018b8491c39d425f6f74f886647db"
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // AC-15(a)(b)(c) — 全鏈真實流程（真實 Chromium ×2）
+  // -------------------------------------------------------------------------
+  describe("AC-15(a)(b)(c): 修正版完成後產生報表 → 新編號／新 PDF，且原報表逐位元組不變", () => {
+    it(
+      "(a) 201 ＋ 新 reportNumber 與原申請不同且序號為同月同型下一號；(b) storageKey 互異且 PDF 位元組 SHA-256 不同；(c) 原 Report 七欄與其 PDF 位元組 SHA-256 前後不變",
+      async () => {
+        // ── ① 原申請：真實完成 ＋ 真實產生報表 ─────────────────────────
+        const sourceId = await createCompletableTravelDraft("source");
+        await completeT9(sourceId);
+
+        const sourceReportResp = await generateReport(sourceId);
+        expect(sourceReportResp.statusCode, sourceReportResp.body).toBe(201);
+
+        const sourceReportBefore = await prisma.report.findUniqueOrThrow({
+          where: { applicationId: sourceId },
+          select: {
+            ...T9_REPORT_KEY_COLUMNS,
+            numberPrefix: true,
+            numberPeriod: true,
+            sequence: true,
+          },
+        });
+        const sourcePdfBefore = await reportStorage.get(sourceReportBefore.storageKey);
+        const sourcePdfHashBefore = sha256(sourcePdfBefore);
+        // 真實 PDF（非合成替身）之最小形狀驗證，確保 (b) 比較的是真實產物。
+        expect(sourcePdfBefore.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+        expect(sourcePdfBefore.length).toBeGreaterThan(1024);
+        expect(sourceReportBefore.contentHash).toBe(sourcePdfHashBefore);
+
+        // ── ② 修正版：真實建立 → 真實完成 → 真實產生報表 ────────────────
+        const revisionResp = await app.inject({
+          method: "POST",
+          url: `/applications/${sourceId}/revision`,
+          headers: { cookie: ownerCookie },
+        });
+        expect(revisionResp.statusCode, revisionResp.body).toBe(201);
+        const revisionId = revisionResp.json<{ application: { id: string } }>().application.id;
+        // 修正版由 supersedesId 於 afterAll 追蹤刪除；此處不 trackT9（避免刪
+        // 除順序錯置：修正版必須早於其來源被刪除）。
+        expect(revisionId).not.toBe(sourceId);
+
+        await completeT9(revisionId);
+
+        const revisionReportResp = await generateReport(revisionId);
+        // (a) 201
+        expect(revisionReportResp.statusCode, revisionReportResp.body).toBe(201);
+
+        const revisionReport = await prisma.report.findUniqueOrThrow({
+          where: { applicationId: revisionId },
+          select: {
+            ...T9_REPORT_KEY_COLUMNS,
+            numberPrefix: true,
+            numberPeriod: true,
+            sequence: true,
+          },
+        });
+
+        // ── (a) 新編號與原申請不同，且序號為同月同型之下一號 ──────────────
+        // 逐字要求以 `Report` 列直讀比對（T7 即審 FW-1：不以詳情 DTO 之
+        // `supersedes.reportNumber` 投影代替）。
+        expect(revisionReport.reportNumber).not.toBe(sourceReportBefore.reportNumber);
+        expect(revisionReport.numberPrefix).toBe("TRV");
+        expect(revisionReport.numberPrefix).toBe(sourceReportBefore.numberPrefix);
+        // 同月：兩者之 numberPeriod 皆為執行當下之 Asia/Taipei YYYYMM
+        // （與生產程式碼同一函式計算，不硬編月份）。
+        expect(revisionReport.numberPeriod).toBe(getReportNumberPeriod(new Date()));
+        expect(revisionReport.numberPeriod).toBe(sourceReportBefore.numberPeriod);
+        // 下一號：序號恰 +1（兩次配號於本測試內連續發生，中間無其他配號）。
+        expect(revisionReport.sequence).toBe(sourceReportBefore.sequence + 1);
+        // 編號字串亦逐字為 <prefix>-<period>-<sequence 四位零填>。
+        expect(revisionReport.reportNumber).toBe(
+          `${revisionReport.numberPrefix}-${revisionReport.numberPeriod}-${String(
+            revisionReport.sequence
+          ).padStart(4, "0")}`
+        );
+
+        // ── (b) storageKey 互異；新 PDF 位元組 SHA-256 與原 PDF 不同 ───────
+        expect(revisionReport.storageKey).not.toBe(sourceReportBefore.storageKey);
+        const revisionPdf = await reportStorage.get(revisionReport.storageKey);
+        const revisionPdfHash = sha256(revisionPdf);
+        expect(revisionPdf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+        expect(revisionPdfHash).toBe(revisionReport.contentHash);
+        expect(revisionPdfHash).not.toBe(sourcePdfHashBefore);
+        // fileName 亦互異（編號已凍結入檔名）。
+        expect(revisionReport.fileName).not.toBe(sourceReportBefore.fileName);
+        expect(revisionReport.fileName).toContain(revisionReport.reportNumber);
+
+        // ── (c) 原 Report 列七欄與其 PDF 位元組 SHA-256 前後不變 ───────────
+        const sourceReportAfter = await prisma.report.findUniqueOrThrow({
+          where: { applicationId: sourceId },
+          select: T9_REPORT_KEY_COLUMNS,
+        });
+        const {
+          numberPrefix: _prefix,
+          numberPeriod: _period,
+          sequence: _sequence,
+          ...sourceSevenBefore
+        } = sourceReportBefore;
+        expect(sourceReportAfter).toEqual(sourceSevenBefore);
+        // 逐位元組實證（BE-US-21④）：非以「列未變」替代。
+        const sourcePdfAfter = await reportStorage.get(sourceReportBefore.storageKey);
+        expect(sha256(sourcePdfAfter)).toBe(sourcePdfHashBefore);
+        expect(sourcePdfAfter.equals(sourcePdfBefore)).toBe(true);
+      },
+      { timeout: 90000 }
+    );
   });
 });
