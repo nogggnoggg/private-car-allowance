@@ -72,7 +72,7 @@
  *     流程，將預算集中在本 Task 的實際變更面。
  */
 import fs from "node:fs";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -469,10 +469,19 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
   ): Array<[string, string | null]> {
     return Object.entries(row)
       .filter(([key]) => !excludeKeys.includes(key))
-      .map(([key, value]): [string, string | null] => [
-        key,
-        value === null || value === undefined ? null : String(value),
-      ])
+      .map(([key, value]): [string, string | null] => {
+        if (value === null || value === undefined) return [key, null];
+        // AR-5 修復：Date 一律 toISOString() 保留毫秒（M13——String(Date) 會
+        // 截斷至秒，同秒內毫秒位移之竄改因而不可鑑別）；Decimal（decimal.js
+        // 實例，非一般物件）維持原本 String() 數值序列化行為不變；其餘物件
+        // （含陣列，如巢狀 segments）改用 JSON.stringify 取代 String() 的
+        // `[object Object]` 惰性，避免內容差異被掩蓋。
+        if (value instanceof Date) return [key, value.toISOString()];
+        if (typeof value === "object" && !(value instanceof Prisma.Decimal)) {
+          return [key, JSON.stringify(value)];
+        }
+        return [key, String(value)];
+      })
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   }
 
