@@ -465,7 +465,7 @@ model VoidedReportFile {
   id          String   @id @default(cuid())
   reportId    String   @unique                            // 冪等鍵：一份 Report 至多一份作廢版
   report      Report   @relation(fields: [reportId], references: [id], onDelete: Restrict)
-  storageKey  String   @unique                            // "rpt/<uuid>/void.pdf"（系統產生）
+  storageKey  String   @unique                            // "rpt/<uuid>/void"（系統產生）
   fileName    String                                       // 與原 Report.fileName 相同（編號不變）
   byteSize    Int
   contentHash String                                       // SHA-256 hex

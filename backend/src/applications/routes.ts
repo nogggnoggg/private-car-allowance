@@ -1579,10 +1579,13 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         }
       } catch (err) {
         // §7.5：作廢版 PDF 產生失敗 → 500 REPORT_GENERATION_FAILED ＋
-        // `details.stage`（四值封閉，不擴充）。轉譯形狀逐字沿 `reports/
-        // routes.ts` 之產生端點：只記 `stage` ＋ `applicationId`，**不**記錄
-        // 原始錯誤訊息（storage 錯誤訊息逐字含 key、Chromium 失敗訊息逐字含
-        // executablePath——§7.5／AC-25 之日誌紀律）。
+        // `details.stage`（四值封閉，不擴充）。【PHASE-009-T18 更正】本段
+        // 「轉譯形狀逐字沿 reports/routes.ts」已失準——T18 後 reports/
+        // routes.ts 改經 `AppError` 承載，本檔仍直接呼叫 `buildErrorBody`，
+        // 實作形狀已分叉；wire 輸出（status 500、REPORT_GENERATION_FAILED、
+        // 同一組 details 鍵）仍全等。只記 `stage` ＋ `applicationId`，**不**
+        // 記錄原始錯誤訊息（storage 錯誤訊息逐字含 key、Chromium 失敗訊息
+        // 逐字含 executablePath——§7.5／AC-25 之日誌紀律）。
         if (err instanceof ReportGenerationError) {
           const requestId = String(request.id);
           request.log.error(

@@ -19,7 +19,9 @@
  * via `UploadOptions.ownerId`. `uploaderId` is ALWAYS the authenticated caller
  * — never client-supplied, never overridden here.
  *
- * Log safety (§9.4): errors logged via sanitizeForLog; no volume paths or raw bytes.
+ * Log safety (§9.4): errors logged via sanitizeForLog (thumbnail production
+ * path only — see PHASE-009 AC-38／AR-7 note below for the other two paths);
+ * no volume paths or raw bytes.
  *
  * ── 日誌紀律（PHASE-009 AC-38／AR-7 修復；比照 `attachment-copy.ts` 之 AR-4
  *    既有修法）─────────────────────────────────────────────────────────────

@@ -706,7 +706,8 @@ function isBorderColor(rgb: [number, number, number] | null): boolean {
  * `border: 1px solid #f59e0b`）之 PDF `RG` 三元值 ≈ `0.961 0.620 0.043`。
  * AC-34 之既有 ToUnicode 文字擷取斷言對此提示文字之鑑別力恆真（reviewer
  * 合併複審實測：提示渲染進 PDF 時 `HINT_FOUND` 仍為 false，見該提示所在
- * `Type3` 字型子集 `ToUnicode` CMap 覆蓋不完整，同 T14b 檔頭說明之限制）；
+ * 子集字型 `Tj`／`TJ` 之 `ToUnicode` CMap 覆蓋不完整，同 T14b 檔頭說明之
+ * 限制——非 `Type3`，內容流中為正常文字運算子）；
  * 本值改採字型無關之幾何訊號——`.print-hint` 為 `display:none`（列印媒
  * 體）時，其邊框描邊色理應**完全不出現**於任何頁面內容流。
  */
@@ -1055,8 +1056,9 @@ test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () =>
     // --- PHASE-008-T14R SF-1：PDF 幾何層（字型無關，主防線）——正常 PDF
     //     全文件不應出現 .print-hint 邊框色之描邊路徑。上方 ToUnicode 文
     //     字擷取斷言經 reviewer 合併複審實測為恆真（提示渲染進 PDF 時
-    //     HINT_FOUND 仍為 false，見 extractPdfTextPerPage 之 Type3 字型子
-    //     集 ToUnicode CMap 覆蓋不完整限制，同 T14b 檔頭說明），故以此幾何
+    //     HINT_FOUND 仍為 false，見 extractPdfTextPerPage 之子集字型 Tj／
+    //     ToUnicode CMap 覆蓋不完整限制，非 Type3，同 T14b 檔頭說明），故
+    //     以此幾何
     //     訊號補上真正之鑑別力（`@media print { .print-hint { display:
     //     none } }` 失效之 mutant 必紅，見 Task Handoff）。 ---
     expect(travelPdfGeometry.some((g) => g.hintBorderStrokeSeen)).toBe(false);

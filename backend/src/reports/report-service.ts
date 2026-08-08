@@ -135,6 +135,12 @@
  * `buildErrorBody("REPORT_GENERATION_FAILED", ...)` 組出 wire 格式
  * （`buildErrorBody` 之 `code` 參數型別為 `string`，非收斂之 `ErrorCode`，
  * 故不需修改 `errors.ts` 即可組出正確、與其餘端點形狀一致的錯誤回應）。
+ * 【PHASE-009-T18 更新】此段「routes.ts 之 catch 區塊直接以 buildErrorBody
+ * 組出 wire 格式」已為歷史敘述——T18 依 §16 D14(b) 改為 routes.ts 捕捉本檔
+ * `ReportGenerationError` 後拋出 `AppError("REPORT_GENERATION_FAILED", ...)`，
+ * 由 error-handler 之 `AppError` 分支以同一個 `buildErrorBody` 組出回應（wire
+ * 格式逐字不變；詳見 routes.ts 檔頭）。本檔之 `ReportGenerationError` 語意
+ * （僅含 `stage`、結構性不持有原始錯誤）不受影響。
  * `ErrorCode` 聯集現已收錄此碼，此處與 routes.ts 之呼叫端原樣沿用
  * （`buildErrorBody` 的 `code` 參數本就接受 union 的任何成員），不需修改。
  * 各階段之 catch 區塊刻意**不**保留原始 `err`（連內部欄位也不留）——
