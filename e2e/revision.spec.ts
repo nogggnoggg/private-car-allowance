@@ -41,7 +41,14 @@
  *
  *   FW-7（播種冪等）：合成使用者名以 `RUN_ID`（時間戳 ＋ 亂數）為後綴，每次
  *     執行皆為全新使用者；全域參數一律「先查後建」（`ensure*Covers`）。
- *     `afterAll` 刪除該使用者。本檔重跑不與前次殘留互撞。
+ *     `afterAll` 刪除該使用者——但本檔之合成使用者名下恆有**已完成**申請
+ *     （原申請與修正版兩筆皆完成；不可刪除，AC-06／CLAUDE.md「已完成申請不
+ *     可修改」），`userHasHistory` 使 `DELETE /admin/users/:id` **恆 409**，
+ *     故該清理為 **best-effort**（`.catch(() => {})`），實務上使用者列必然殘
+ *     留。此為既有不可逆業務規則、非本檔缺陷（沿 `mileage-statistics.spec.ts`
+ *     :307-310 與 `admin-applications.spec.ts` 之 cleanup 註解同義）；本檔重
+ *     跑不與前次殘留互撞**由 `RUN_ID` 隔離保證**，而非由刪除保證，殘留素材
+ *     之最終清理靠 **Phase 邊界之 dev DB 重置**。
  *
  *   FW-8（既有 44 條基準線）：見 `void-application.spec.ts` 檔頭與 Handoff。
  *
@@ -424,7 +431,9 @@ test.describe("修正版端到端 Gate — PHASE-009-T17（AC-36／AC-34）", ()
       await expect(page.getByText("草稿已儲存。")).toBeVisible({ timeout: 10000 });
 
       await page.getByRole("button", { name: "完成申請", exact: true }).click();
-      const confirmDialog = page.getByRole("dialog", { name: "確認完成申請" });
+      // T17R **S-1**（即審）：本行原缺 `exact: true`，與檔頭 FW-1「本檔所有
+      // `getByRole` 之 `name` 一律 exact」之全覆蓋宣稱不符（銷帳主張失真）。
+      const confirmDialog = page.getByRole("dialog", { name: "確認完成申請", exact: true });
       await expect(confirmDialog).toBeVisible();
       await confirmDialog.getByRole("button", { name: "確認完成", exact: true }).click();
       await expect(page.locator("h1")).toHaveText("差旅補助申請（已完成）", { timeout: 15000 });

@@ -77,7 +77,14 @@
  *
  *   FW-7（播種冪等）：合成使用者名以 `RUN_ID`（時間戳 ＋ 亂數）為後綴，每次
  *     執行皆為全新使用者；全域參數一律「先查後建」（`ensure*Covers`），重跑
- *     不互撞、不重複寫入。`afterAll` 刪除該使用者。
+ *     不互撞、不重複寫入。`afterAll` 刪除該使用者——但本檔之合成使用者名下
+ *     恆有**已完成／已作廢**申請（不可刪除，AC-06／CLAUDE.md「已完成申請不
+ *     可修改」），`userHasHistory` 使 `DELETE /admin/users/:id` **恆 409**，
+ *     故該清理為 **best-effort**（`.catch(() => {})`），實務上使用者列必然殘
+ *     留。此為既有不可逆業務規則、非本檔缺陷（沿 `mileage-statistics.spec.ts`
+ *     :307-310 與 `admin-applications.spec.ts` 之 cleanup 註解同義）；重跑之
+ *     互不干擾**由 `RUN_ID` 隔離保證**，而非由刪除保證，殘留素材之最終清理
+ *     靠 **Phase 邊界之 dev DB 重置**。
  *
  *   FW-8（既有 44 條基準線）：本 Task 動工前已於同一 dev 拓撲實跑 `npx
  *     playwright test`，44 passed（見 Handoff `Test Results`），零紅、零既有
@@ -574,13 +581,28 @@ test.describe("作廢端到端 Gate — PHASE-009-T17（AC-35／AC-34）", () =>
     });
 
     // FW-6：作廢**後**同一區間之統計不含本筆（AC-15~AC-17 之 E2E 面）。
+    //
+    // T17R **S-2**（即審）：本段首斷言原為 `toContainText("0.00 公里")`，經探
+    // 針證實**近恆真**——未作廢時之顯示字串為「公務總里程 50.00 公里」，而
+    // `"公務總里程 50.00 公里".includes("0.00 公里") === true`（`50.00` 之
+    // `0.00` 尾段即被子字串命中）。改為 `toHaveText`（**全等**，非子字串）並
+    // 補一道 Empty 態文案斷言：`totalKm === "0.00"` 時 `MileageSummarySection`
+    // :218-222 才渲染 `.empty-block` ＋「此區間無已完成的差旅紀錄」，未作廢
+    // 時走的是 `.mileage-summary-value-block` 分支，該區塊結構性不存在。
+    // 原 `not.toContainText(TRAVEL_TOTAL_KM)` 保留為第三道。
     await test.step("作廢後：區間里程統計不含本筆", async () => {
       await page.goto(`${BASE}/`, { waitUntil: "load" });
       await queryMileageSummary(page, RANGE_FROM, RANGE_TO);
-      await expect(page.locator(".mileage-summary-value")).toContainText("0.00 公里", {
+      const mileageSection = page.locator("section[aria-labelledby='mileage-summary-heading']");
+      await expect(mileageSection.locator(".mileage-summary-value")).toHaveText("0.00 公里", {
         timeout: 10000,
       });
-      await expect(page.locator(".mileage-summary-value")).not.toContainText(TRAVEL_TOTAL_KM);
+      await expect(mileageSection.locator(".empty-block")).toContainText(
+        "此區間無已完成的差旅紀錄"
+      );
+      await expect(mileageSection.locator(".mileage-summary-value")).not.toContainText(
+        TRAVEL_TOTAL_KM
+      );
     });
   });
 
