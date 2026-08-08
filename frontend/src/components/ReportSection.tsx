@@ -27,6 +27,12 @@ interface Props {
   status: ApplicationStatusDto;
 }
 
+/**
+ * 會渲染本區塊的狀態（AC-30 之 `COMPLETED` ＋ PHASE-009 AC-31(d) 之
+ * `VOIDED`）。`DRAFT` 不在列：草稿尚無報表可言，且產生端點對草稿 409。
+ */
+const SHOWN_STATUSES: ApplicationStatusDto[] = ["COMPLETED", "VOIDED"];
+
 type LoadState =
   | { kind: "loading" }
   | { kind: "load-error"; message: string }
@@ -60,13 +66,18 @@ export default function ReportSection({ applicationId, status }: Props): React.R
   }, [applicationId]);
 
   useEffect(() => {
-    if (status !== "COMPLETED") return;
+    if (!SHOWN_STATUSES.includes(status)) return;
     load();
   }, [status, load]);
 
-  // AC-30：`status !== "COMPLETED"` 時整個區塊不渲染（負向斷言：本函式回傳
-  // null，元件連 heading 都不掛載——見上方 useEffect 亦不觸發任何 fetch）。
-  if (status !== "COMPLETED") return null;
+  // AC-30／AC-31(d)：`DRAFT` 時整個區塊不渲染（負向斷言：本函式回傳 null，
+  // 元件連 heading 都不掛載——見上方 useEffect 亦不觸發任何 fetch）。
+  // PHASE-009-T14：`VOIDED` 自「不渲染」改為**渲染唯讀入口**（AC-31(d)）——
+  // 已作廢申請的報表仍可下載／檢視（`GET .../report`、`.../report/pdf`、
+  // `.../report/print` 三端點對 `VOIDED` 皆放行；T12b／T13）。
+  if (!SHOWN_STATUSES.includes(status)) return null;
+
+  const voided = status === "VOIDED";
 
   async function handleGenerate() {
     if (generating) return;
@@ -105,7 +116,16 @@ export default function ReportSection({ applicationId, status }: Props): React.R
         </div>
       )}
 
-      {loadState.kind === "loaded" && loadState.report === null && (
+      {/* AC-31(d)：VOIDED 且未產生報表——僅說明文字，零產生入口（產生端點對
+          VOIDED 仍 409，B-27／D13）。文案與 COMPLETED 之 Empty 態刻意不同：
+          「尚未」帶有「稍後可以產生」的暗示，已作廢申請永遠不會再有報表。 */}
+      {voided && loadState.kind === "loaded" && loadState.report === null && (
+        <div className="empty-block">
+          <p>未產生正式報表</p>
+        </div>
+      )}
+
+      {!voided && loadState.kind === "loaded" && loadState.report === null && (
         <div className="empty-block">
           <p>尚未產生正式報表</p>
           {generateError ? (
@@ -153,7 +173,10 @@ export default function ReportSection({ applicationId, status }: Props): React.R
               href={toFrontendUrl(loadState.report.downloadUrl)}
               className="btn btn-secondary btn-sm"
             >
-              下載 PDF
+              {/* PHASE-009-T14：VOIDED 之下下載端點回傳的是**含作廢標示**的
+                  作廢版位元組（AC-21(b)），文案必須明示，否則使用者會誤以為
+                  拿到的是原始正式報表。 */}
+              {voided ? "下載 PDF（作廢版）" : "下載 PDF"}
             </a>
           </dd>
         </dl>

@@ -59,6 +59,7 @@ function makeCommon(overrides: Partial<ReportCommon> = {}): ReportCommon {
     statusLabel: "已完成",
     createdAt: "2026-08-01T09:00:00.000Z",
     totalAmount: 1234,
+    void: null, // PHASE-009-T10R：ReportCommon 受控擴充連動
     ...overrides,
   };
 }

@@ -230,6 +230,9 @@ export default function ApplicationListSection({
             <option value="">全部</option>
             <option value="DRAFT">草稿</option>
             <option value="COMPLETED">已完成</option>
+            {/* PHASE-009-T15b（AC-30(b)）：後端 `APPLICATION_STATUSES` 早已含
+                `VOIDED`，缺口純在本下拉——無此選項則已作廢申請無法被篩出。 */}
+            <option value="VOIDED">已作廢</option>
           </select>
         </div>
         <div className="form-group">
@@ -325,6 +328,13 @@ export default function ApplicationListSection({
                     <td>{item.primaryDate}</td>
                     <td>
                       <span className="type-badge">{TYPE_LABELS[item.type]}</span>
+                      {/* PHASE-009-T16（AC-32／§7.2）：修正版徽章。純顯示，
+                          只讀列表 DTO 之 `isRevision`（後端 `supersedesId
+                          != null` 之投影，T16pre 落地）——列表刻意不外露
+                          `supersedesId`，跳轉需求走詳情頁之 `supersedes`
+                          投影（T16pre FW-2）。沿既有 `.type-badge` 樣式，
+                          不新增 CSS class（AC-34 響應式沿既有慣例）。 */}
+                      {item.isRevision && <span className="type-badge">修正版</span>}
                     </td>
                     <td>
                       <span className={`status-badge status-${item.status.toLowerCase()}`}>

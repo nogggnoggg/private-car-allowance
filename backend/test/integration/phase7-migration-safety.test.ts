@@ -305,18 +305,20 @@ describeWithDb("PHASE-007-T1 migration safety net — existing DB", () => {
       },
     });
 
-    await client.application.create({
-      data: {
-        id: APPLICATION_ID,
-        type: "TRAVEL",
-        status: "COMPLETED",
-        ownerId: OWNER_ID,
-        createdById: OWNER_ID,
-        primaryDate: TRIP_DATE,
-        totalAmount: 1234,
-        completedAt: new Date(),
-      },
-    });
+    // PHASE-009-T1: `Application` 一律 raw SQL 寫入（沿 FW-8/9——現行
+    // schema 產生之型別化 Client 的 `create()` RETURNING 子句會嘗試選取
+    // PHASE-009 新增的四個欄位，該四欄在此 baseline DB 尚不存在）。
+    {
+      const now = new Date();
+      await client.$executeRaw`
+        INSERT INTO "Application"
+          (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+           "completedAt", "createdAt", "updatedAt")
+        VALUES
+          (${APPLICATION_ID}, 'TRAVEL'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+           ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 1234, ${now}, ${now}, ${now})
+      `;
+    }
 
     await client.travelApplication.create({
       data: {
@@ -370,18 +372,15 @@ describeWithDb("PHASE-007-T1 migration safety net — existing DB", () => {
     // MaintenanceApplication (the 8th table, added to AC-01(b)'s list by this
     // Phase): a COMPLETED row with every snapshot column populated, so a
     // rewrite of any of them would be caught.
-    await client.application.create({
-      data: {
-        id: MAINTENANCE_APPLICATION_ID,
-        type: "MAINTENANCE",
-        status: "COMPLETED",
-        ownerId: OWNER_ID,
-        createdById: OWNER_ID,
-        primaryDate: TRIP_DATE,
-        totalAmount: 4321,
-        completedAt: new Date(),
-      },
-    });
+    // PHASE-009-T1: raw SQL（見上方 Application 寫入之說明）。
+    await client.$executeRaw`
+      INSERT INTO "Application"
+        (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+         "completedAt", "createdAt", "updatedAt")
+      VALUES
+        (${MAINTENANCE_APPLICATION_ID}, 'MAINTENANCE'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+         ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 4321, ${new Date()}, ${new Date()}, ${new Date()})
+    `;
     await client.maintenanceApplication.create({
       data: {
         applicationId: MAINTENANCE_APPLICATION_ID,
@@ -500,12 +499,26 @@ describeWithDb("PHASE-007-T1 migration safety net — existing DB", () => {
   });
 
   it("AC-01(b): every pre-existing column, across all eight representative tables, is byte-for-byte unchanged after migration", async () => {
-    const appRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
-      `SELECT * FROM "Application" WHERE id = $1`,
-      APPLICATION_ID
-    );
+    // PHASE-009-T1: Application 之欄位集合此後多了四個 nullable 新欄，且
+    // 沿用 migration 前那條連線重讀會撞 `cached plan must not change result
+    // type`（沿 PHASE-007-R1 M2 段已驗證之陷阱）——一律以新連線讀取。
+    const appClientAfter = new PrismaClient({ datasources: { db: { url: existingUrl } } });
+    let appRows: Record<string, unknown>[];
+    try {
+      appRows = await appClientAfter.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "Application" WHERE id = $1`,
+        APPLICATION_ID
+      );
+    } finally {
+      await appClientAfter.$disconnect();
+    }
     expect(appRows).toHaveLength(1);
-    assertRowUnchanged("Application", beforeApplicationRow, canonicalizeRow(appRows[0]));
+    assertRowUnchangedWithAddedColumns(
+      "Application",
+      beforeApplicationRow,
+      canonicalizeRow(appRows[0]),
+      ["voidReason", "voidedAt", "voidedById", "supersedesId"]
+    );
 
     const travelRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
       `SELECT * FROM "TravelApplication" WHERE "applicationId" = $1`,
@@ -618,12 +631,23 @@ describeWithDb("PHASE-007-T1 migration safety net — existing DB", () => {
     );
     expect(Number(rows[0]?.count ?? -1)).toBe(0);
 
-    const appRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
-      `SELECT * FROM "Application" WHERE id = $1`,
-      APPLICATION_ID
-    );
+    const idempotentAppClient = new PrismaClient({ datasources: { db: { url: existingUrl } } });
+    let appRows: Record<string, unknown>[];
+    try {
+      appRows = await idempotentAppClient.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "Application" WHERE id = $1`,
+        APPLICATION_ID
+      );
+    } finally {
+      await idempotentAppClient.$disconnect();
+    }
     expect(appRows).toHaveLength(1);
-    assertRowUnchanged("Application/idempotent", beforeApplicationRow, canonicalizeRow(appRows[0]));
+    assertRowUnchangedWithAddedColumns(
+      "Application/idempotent",
+      beforeApplicationRow,
+      canonicalizeRow(appRows[0]),
+      ["voidReason", "voidedAt", "voidedById", "supersedesId"]
+    );
   });
 });
 
@@ -677,13 +701,14 @@ describeWithDb("PHASE-007-T1 migration safety net — clean DB", () => {
   });
 
   it("AC-01(f) 表數 14→15 — DepreciationApplication is the 15th business table", async () => {
-    // PHASE-008-T1: 表數 15→16（新增 Report）——標題內之數字為 PHASE-007 之
-    // 歷史事實（Spec docs/specs/PHASE-008.md §8.5 明令不得改寫），僅改斷言值。
+    // PHASE-008-T1: 表數 15→16（新增 Report）。PHASE-009-T1: 表數 16→17
+    // （新增 VoidedReportFile）——標題內之數字為 PHASE-007 之歷史事實（Spec
+    // docs/specs/PHASE-008.md §8.5 明令不得改寫），僅改斷言值。
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(16);
+    expect(tableRows.length).toBe(17);
     expect(tableRows.map((r) => r.table_name)).toContain("DepreciationApplication");
   });
 
@@ -1060,6 +1085,7 @@ describeWithDb("PHASE-007-T1 migration safety net — clean DB", () => {
         "APPLICATION_CREATED_ON_BEHALF",
         "APPLICATION_UPDATED_ON_BEHALF",
         "USER_FUEL_CONSUMPTION_VERSION_CREATED",
+        "APPLICATION_VOIDED", // PHASE-009-T1
       ].sort()
     );
   });
@@ -1263,18 +1289,17 @@ describeWithDb(
           createdById: OWNER_ID,
         },
       });
-      await client.application.create({
-        data: {
-          id: APPLICATION_ID,
-          type: "TRAVEL",
-          status: "COMPLETED",
-          ownerId: OWNER_ID,
-          createdById: OWNER_ID,
-          primaryDate: TRIP_DATE,
-          totalAmount: 1234,
-          completedAt: new Date(),
-        },
-      });
+      // PHASE-009-T1: `Application` 一律 raw SQL 寫入（沿 FW-8/9——現行
+      // schema 產生之型別化 Client 的 `create()` RETURNING 子句會嘗試選取
+      // PHASE-009 新增的四個欄位，該四欄在此 baseline DB 尚不存在）。
+      await client.$executeRaw`
+        INSERT INTO "Application"
+          (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+           "completedAt", "createdAt", "updatedAt")
+        VALUES
+          (${APPLICATION_ID}, 'TRAVEL'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+           ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 1234, ${new Date()}, ${new Date()}, ${new Date()})
+      `;
       await client.travelApplication.create({
         data: {
           applicationId: APPLICATION_ID,
@@ -1322,18 +1347,15 @@ describeWithDb(
           snapshotAmount: 326,
         },
       });
-      await client.application.create({
-        data: {
-          id: MAINTENANCE_APPLICATION_ID,
-          type: "MAINTENANCE",
-          status: "COMPLETED",
-          ownerId: OWNER_ID,
-          createdById: OWNER_ID,
-          primaryDate: TRIP_DATE,
-          totalAmount: 4321,
-          completedAt: new Date(),
-        },
-      });
+      // PHASE-009-T1: raw SQL（見上方說明）。
+      await client.$executeRaw`
+        INSERT INTO "Application"
+          (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+           "completedAt", "createdAt", "updatedAt")
+        VALUES
+          (${MAINTENANCE_APPLICATION_ID}, 'MAINTENANCE'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+           ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 4321, ${new Date()}, ${new Date()}, ${new Date()})
+      `;
       await client.maintenanceApplication.create({
         data: {
           applicationId: MAINTENANCE_APPLICATION_ID,
@@ -1383,18 +1405,16 @@ describeWithDb(
       );
 
       // 折舊子表（M2 之 ALTER 目標之二）——**FW-8：必須 raw SQL**。
-      await client.application.create({
-        data: {
-          id: LEGACY_DEP_APPLICATION_ID,
-          type: "DEPRECIATION",
-          status: "COMPLETED",
-          ownerId: OWNER_ID,
-          createdById: OWNER_ID,
-          primaryDate: new Date("2034-12-31T00:00:00.000Z"),
-          totalAmount: 24752,
-          completedAt: new Date(),
-        },
-      });
+      // PHASE-009-T1: Application 父表本身現在也須 raw SQL（見上方說明）。
+      await client.$executeRaw`
+        INSERT INTO "Application"
+          (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+           "completedAt", "createdAt", "updatedAt")
+        VALUES
+          (${LEGACY_DEP_APPLICATION_ID}, 'DEPRECIATION'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+           ${OWNER_ID}, ${OWNER_ID}, ${new Date("2034-12-31T00:00:00.000Z")}, 24752,
+           ${new Date()}, ${new Date()}, ${new Date()})
+      `;
       await insertLegacyDepreciationRowRaw(client, {
         applicationId: LEGACY_DEP_APPLICATION_ID,
         applicationYear: 2034,
@@ -1408,16 +1428,16 @@ describeWithDb(
         depreciationParameterVersionId: DEP_VERSION_ID,
       });
 
-      await client.application.create({
-        data: {
-          id: DRAFT_DEP_APPLICATION_ID,
-          type: "DEPRECIATION",
-          status: "DRAFT",
-          ownerId: OWNER_ID,
-          createdById: OWNER_ID,
-          primaryDate: new Date("2033-12-31T00:00:00.000Z"),
-        },
-      });
+      // PHASE-009-T1: raw SQL（見上方說明）。
+      await client.$executeRaw`
+        INSERT INTO "Application"
+          (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+           "completedAt", "createdAt", "updatedAt")
+        VALUES
+          (${DRAFT_DEP_APPLICATION_ID}, 'DEPRECIATION'::"ApplicationType", 'DRAFT'::"ApplicationStatus",
+           ${OWNER_ID}, ${OWNER_ID}, ${new Date("2033-12-31T00:00:00.000Z")}, NULL,
+           NULL, ${new Date()}, ${new Date()})
+      `;
       await insertDraftDepreciationRowRaw(client, DRAFT_DEP_APPLICATION_ID);
 
       // Step 3: 擷取 before 快照（一律 raw `SELECT *`，鍵集才可比對）。
@@ -1506,10 +1526,14 @@ describeWithDb(
     });
 
     it("AC-01: 八表逐欄零改寫 — every pre-existing column across all eight tables is byte-for-byte unchanged after M2", async () => {
-      assertRowUnchanged(
+      // PHASE-009-T1: Application 本身此後亦多了四個 nullable 新欄（本區塊
+      // 之 `runMigrateDeploy(REAL_SCHEMA_PATH, ...)` 套用「目前完整」migrations
+      // 目錄，天然含 PHASE-009）——改用 ALTER 型比較器。
+      assertRowUnchangedWithAddedColumns(
         "Application",
         beforeApplicationRow,
-        await selectOne(`SELECT * FROM "Application" WHERE id = $1`, APPLICATION_ID)
+        await selectOne(`SELECT * FROM "Application" WHERE id = $1`, APPLICATION_ID),
+        ["voidReason", "voidedAt", "voidedById", "supersedesId"]
       );
       assertRowUnchanged(
         "TravelApplication",
@@ -1718,10 +1742,11 @@ describeWithDb(
       );
       expect(Number(migrationRows[0]?.count ?? -1)).toBe(countMigrationDirs());
 
-      assertRowUnchanged(
+      assertRowUnchangedWithAddedColumns(
         "Application/idempotent",
         beforeApplicationRow,
-        await selectOne(`SELECT * FROM "Application" WHERE id = $1`, APPLICATION_ID)
+        await selectOne(`SELECT * FROM "Application" WHERE id = $1`, APPLICATION_ID),
+        ["voidReason", "voidedAt", "voidedById", "supersedesId"]
       );
       assertRowUnchangedWithAddedColumns(
         "DepreciationApplication/idempotent",
@@ -1795,12 +1820,14 @@ describeWithDb("PHASE-007-R1 M2 migration safety net — clean DB", () => {
   // 斷言值，標題依「僅表數斷言連動；標題零改寫」規則不改寫，見 Task Handoff）：
   // 表數 15→16（新增 Report；本測試驗證的是「M2 零建表、零刪表」相對於 M1 的
   // 表數守恆，該守恆本身仍成立，只是絕對值隨後續 Phase 的新表而移動）。
+  // PHASE-009-T1: 表數 16→17（新增 VoidedReportFile）——同一守恆邏輯，僅改
+  // 斷言值，標題依同一規則不改寫。
   it("AC-01: 業務表總數仍為 15（M2 零建表、零刪表）", async () => {
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(16);
+    expect(tableRows.length).toBe(17);
     const names = tableRows.map((r) => r.table_name);
     expect(names).toContain("DepreciationApplication");
     expect(names).toContain("DepreciationParameterVersion");
@@ -2175,6 +2202,7 @@ describeWithDb("PHASE-007-R1 M2 migration safety net — clean DB", () => {
         "APPLICATION_CREATED_ON_BEHALF",
         "APPLICATION_UPDATED_ON_BEHALF",
         "USER_FUEL_CONSUMPTION_VERSION_CREATED",
+        "APPLICATION_VOIDED", // PHASE-009-T1
       ].sort()
     );
   });

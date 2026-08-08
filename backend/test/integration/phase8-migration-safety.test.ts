@@ -218,6 +218,32 @@ function assertRowUnchanged(
   }
 }
 
+/**
+ * PHASE-009-T1: ALTER 型 migration 專用比較器（沿 PHASE-007-R1 M2 段先例）——
+ * `Application` 本 Phase 起首度被 ALTER，既有列之原有欄位逐欄零改寫，新增欄位
+ * 集合恰為 `addedColumns`、其值於既有列一律 NULL（零回填）。
+ */
+function assertRowUnchangedWithAddedColumns(
+  label: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  addedColumns: readonly string[]
+): void {
+  expect(
+    Object.keys(after).sort(),
+    `${label}: column set is not exactly (before ∪ addedColumns)`
+  ).toEqual([...Object.keys(before), ...addedColumns].sort());
+  for (const col of addedColumns) {
+    expect(
+      after[col],
+      `${label}: newly added column "${col}" must be NULL on pre-existing rows (零回填)`
+    ).toBeNull();
+  }
+  for (const [key, value] of Object.entries(before)) {
+    expect(after[key], `${label}: column "${key}" changed across migration`).toEqual(value);
+  }
+}
+
 async function dropSchema(admin: PrismaClient, schema: string): Promise<void> {
   await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
 }
@@ -257,6 +283,14 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
   let admin: PrismaClient;
   let baselineDir: string;
   let client: PrismaClient;
+  /**
+   * PHASE-009-T1: `Application` 本 Phase 起首度被 ALTER——沿用 migration 前
+   * 那條連線（`client`）重讀 `Application` 會撞 Postgres
+   * `0A000: cached plan must not change result type`（沿 PHASE-007-R1 M2
+   * 段已驗證之陷阱）。所有 migration **之後**對 `Application` 的讀取一律走
+   * 這條新連線。
+   */
+  let clientAfter: PrismaClient;
 
   const OWNER_ID = `p8_t1_owner_${RUN_ID}`;
   const LOGIN_NAME = `p8_t1_owner_${RUN_ID}`;
@@ -335,18 +369,17 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
       },
     });
 
-    await client.application.create({
-      data: {
-        id: TRAVEL_APPLICATION_ID,
-        type: "TRAVEL",
-        status: "COMPLETED",
-        ownerId: OWNER_ID,
-        createdById: OWNER_ID,
-        primaryDate: TRIP_DATE,
-        totalAmount: 1234,
-        completedAt: new Date(),
-      },
-    });
+    // PHASE-009-T1: `Application` 一律 raw SQL 寫入（沿 FW-8/9——現行
+    // schema 產生之型別化 Client 的 `create()` RETURNING 子句會嘗試選取
+    // PHASE-009 新增的四個欄位，該四欄在此 baseline DB 尚不存在）。
+    await client.$executeRaw`
+      INSERT INTO "Application"
+        (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+         "completedAt", "createdAt", "updatedAt")
+      VALUES
+        (${TRAVEL_APPLICATION_ID}, 'TRAVEL'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+         ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 1234, ${new Date()}, ${new Date()}, ${new Date()})
+    `;
     await client.travelApplication.create({
       data: {
         applicationId: TRAVEL_APPLICATION_ID,
@@ -380,18 +413,15 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
       },
     });
 
-    await client.application.create({
-      data: {
-        id: MAINTENANCE_APPLICATION_ID,
-        type: "MAINTENANCE",
-        status: "COMPLETED",
-        ownerId: OWNER_ID,
-        createdById: OWNER_ID,
-        primaryDate: TRIP_DATE,
-        totalAmount: 4321,
-        completedAt: new Date(),
-      },
-    });
+    // PHASE-009-T1: raw SQL（見上方說明）。
+    await client.$executeRaw`
+      INSERT INTO "Application"
+        (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+         "completedAt", "createdAt", "updatedAt")
+      VALUES
+        (${MAINTENANCE_APPLICATION_ID}, 'MAINTENANCE'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+         ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 4321, ${new Date()}, ${new Date()}, ${new Date()})
+    `;
     await client.maintenanceApplication.create({
       data: {
         applicationId: MAINTENANCE_APPLICATION_ID,
@@ -408,18 +438,15 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
       },
     });
 
-    await client.application.create({
-      data: {
-        id: DEPRECIATION_APPLICATION_ID,
-        type: "DEPRECIATION",
-        status: "COMPLETED",
-        ownerId: OWNER_ID,
-        createdById: OWNER_ID,
-        primaryDate: TRIP_DATE,
-        totalAmount: 5678,
-        completedAt: new Date(),
-      },
-    });
+    // PHASE-009-T1: raw SQL（見上方說明）。
+    await client.$executeRaw`
+      INSERT INTO "Application"
+        (id, type, status, "ownerId", "createdById", "primaryDate", "totalAmount",
+         "completedAt", "createdAt", "updatedAt")
+      VALUES
+        (${DEPRECIATION_APPLICATION_ID}, 'DEPRECIATION'::"ApplicationType", 'COMPLETED'::"ApplicationStatus",
+         ${OWNER_ID}, ${OWNER_ID}, ${TRIP_DATE}, 5678, ${new Date()}, ${new Date()}, ${new Date()})
+    `;
     await client.depreciationApplication.create({
       data: {
         applicationId: DEPRECIATION_APPLICATION_ID,
@@ -550,11 +577,13 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
     // migrations dir, i.e. the new Report migration) on top of the same
     // schema — the actual "existing DB gets upgraded" path.
     await runMigrateDeploy(REAL_SCHEMA_PATH, existingUrl);
+    clientAfter = new PrismaClient({ datasources: { db: { url: existingUrl } } });
   });
 
   afterAll(async () => {
     if (!DB_URL) return;
     if (client) await client.$disconnect();
+    if (clientAfter) await clientAfter.$disconnect();
     await dropSchema(admin, schema);
     await admin.$disconnect();
     if (baselineDir) fs.rmSync(baselineDir, { recursive: true, force: true });
@@ -575,14 +604,15 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
   });
 
   it("AC-01(b): every pre-existing column, across all nine representative tables, is byte-for-byte unchanged after migration", async () => {
+    // PHASE-009-T1: the three "Application/*" rows are handled separately
+    // below via `assertRowUnchangedWithAddedColumns` — `Application` now
+    // carries four new nullable columns (voidReason/voidedAt/voidedById/
+    // supersedesId) after this migration, so the plain closed-set comparator
+    // used for the other eight (genuinely untouched) tables no longer
+    // applies to it. All reads go through `clientAfter` (fresh connection —
+    // avoids Postgres `cached plan must not change result type`).
     const checks: Array<[string, string, Record<string, unknown>, unknown]> = [
       ["User", `SELECT * FROM "User" WHERE id = $1`, beforeUserRow, OWNER_ID],
-      [
-        "Application/Travel",
-        `SELECT * FROM "Application" WHERE id = $1`,
-        beforeTravelAppRow,
-        TRAVEL_APPLICATION_ID,
-      ],
       [
         "TravelApplication",
         `SELECT * FROM "TravelApplication" WHERE "applicationId" = $1`,
@@ -596,22 +626,10 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
         TRIP_SEGMENT_ID,
       ],
       [
-        "Application/Maintenance",
-        `SELECT * FROM "Application" WHERE id = $1`,
-        beforeMaintenanceAppRow,
-        MAINTENANCE_APPLICATION_ID,
-      ],
-      [
         "MaintenanceApplication",
         `SELECT * FROM "MaintenanceApplication" WHERE "applicationId" = $1`,
         beforeMaintenanceRow,
         MAINTENANCE_APPLICATION_ID,
-      ],
-      [
-        "Application/Depreciation",
-        `SELECT * FROM "Application" WHERE id = $1`,
-        beforeDepreciationAppRow,
-        DEPRECIATION_APPLICATION_ID,
       ],
       [
         "DepreciationApplication",
@@ -640,9 +658,29 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
     ];
 
     for (const [label, sql, before, id] of checks) {
-      const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(sql, id);
+      const rows = await clientAfter.$queryRawUnsafe<Record<string, unknown>[]>(sql, id);
       expect(rows, label).toHaveLength(1);
       assertRowUnchanged(label, before, canonicalizeRow(rows[0]));
+    }
+
+    const addedApplicationColumns = ["voidReason", "voidedAt", "voidedById", "supersedesId"];
+    const appChecks: Array<[string, Record<string, unknown>, unknown]> = [
+      ["Application/Travel", beforeTravelAppRow, TRAVEL_APPLICATION_ID],
+      ["Application/Maintenance", beforeMaintenanceAppRow, MAINTENANCE_APPLICATION_ID],
+      ["Application/Depreciation", beforeDepreciationAppRow, DEPRECIATION_APPLICATION_ID],
+    ];
+    for (const [label, before, id] of appChecks) {
+      const rows = await clientAfter.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT * FROM "Application" WHERE id = $1`,
+        id
+      );
+      expect(rows, label).toHaveLength(1);
+      assertRowUnchangedWithAddedColumns(
+        label,
+        before,
+        canonicalizeRow(rows[0]),
+        addedApplicationColumns
+      );
     }
   });
 
@@ -685,12 +723,17 @@ describeWithDb("PHASE-008-T1 migration safety net — existing DB", () => {
     expect(Number(rows[0]?.count ?? -1)).toBe(0);
 
     // Existing rows still intact after the idempotent re-run too.
-    const appRows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
+    const appRows = await clientAfter.$queryRawUnsafe<Record<string, unknown>[]>(
       `SELECT * FROM "Application" WHERE id = $1`,
       TRAVEL_APPLICATION_ID
     );
     expect(appRows).toHaveLength(1);
-    assertRowUnchanged("Application/idempotent", beforeTravelAppRow, canonicalizeRow(appRows[0]));
+    assertRowUnchangedWithAddedColumns(
+      "Application/idempotent",
+      beforeTravelAppRow,
+      canonicalizeRow(appRows[0]),
+      ["voidReason", "voidedAt", "voidedById", "supersedesId"]
+    );
   });
 });
 
@@ -744,11 +787,13 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
   });
 
   it("AC-01(f) 表數 15→16 — Report is the 16th business table", async () => {
+    // PHASE-009-T1: 表數 16→17（新增 VoidedReportFile）——標題內之數字為
+    // PHASE-008 之歷史事實，沿既有先例不改寫，僅改斷言值。
     const tableRows = await client.$queryRawUnsafe<Array<{ table_name: string }>>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    expect(tableRows.length).toBe(16);
+    expect(tableRows.length).toBe(17);
     expect(tableRows.map((r) => r.table_name)).toContain("Report");
   });
 
@@ -1241,12 +1286,20 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
   });
 
   it("AC-01(d): `Application.report Report?` is a zero-DDL virtual relation — the Application column set is unchanged from PHASE-007", async () => {
-    const columnRows = await client.$queryRawUnsafe<Array<{ column_name: string }>>(
-      `SELECT column_name FROM information_schema.columns
+    // PHASE-009-T1: Application 之欄位集合基線由十欄擴為十四欄（新增
+    // voidReason／voidedAt／voidedById／supersedesId，皆 nullable、無
+    // default——`supersededBy` 之反向關聯仍為零 DDL，不在此集合內）。本測試
+    // 標題沿既有規則不改寫（PHASE-008 之歷史事實），僅擴充斷言值與新增一則
+    // 負向（四個新欄皆 nullable 且無 column_default）。
+    const columnRows = await client.$queryRawUnsafe<
+      Array<{ column_name: string; is_nullable: string; column_default: string | null }>
+    >(
+      `SELECT column_name, is_nullable, column_default FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'Application'`
     );
-    // Closed-set: PHASE-007's Application scalar columns, unchanged (no
-    // "reportId" or similar DDL added by the new relation field).
+    // Closed-set: PHASE-007's Application scalar columns, plus PHASE-009-T1's
+    // four new columns — unchanged otherwise (no "reportId" or similar DDL
+    // added by the new relation field, no DDL added by `supersededBy`).
     expect(columnRows.map((r) => r.column_name).sort()).toEqual(
       [
         "id",
@@ -1259,8 +1312,18 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
         "completedAt",
         "createdAt",
         "updatedAt",
+        "voidReason",
+        "voidedAt",
+        "voidedById",
+        "supersedesId",
       ].sort()
     );
+
+    const byName = Object.fromEntries(columnRows.map((r) => [r.column_name, r]));
+    for (const col of ["voidReason", "voidedAt", "voidedById", "supersedesId"] as const) {
+      expect(byName[col].is_nullable, `${col}: is_nullable`).toBe("YES");
+      expect(byName[col].column_default, `${col}: column_default`).toBeNull();
+    }
   });
 
   it("AC-01(e) enum union baseline — all seven enums exactly match the pre-T1 set (no silent additions)", async () => {
@@ -1301,6 +1364,7 @@ describeWithDb("PHASE-008-T1 migration safety net — clean DB", () => {
         "APPLICATION_CREATED_ON_BEHALF",
         "APPLICATION_UPDATED_ON_BEHALF",
         "USER_FUEL_CONSUMPTION_VERSION_CREATED",
+        "APPLICATION_VOIDED", // PHASE-009-T1
       ].sort()
     );
   });

@@ -319,4 +319,60 @@ describe("ReportSection", () => {
       expect(router.countCalls("POST", isPostReport)).toBe(0);
     });
   });
+
+  // ---- PHASE-009-T14：AC-31(d) VOIDED 放行 ----
+  describe("AC-31(d): VOIDED 放行（PHASE-009-T14）", () => {
+    it("VOIDED 且已產生報表：顯示報表編號與「檢視列印版」「下載」兩入口，且**零**「產生正式報表」按鈕", async () => {
+      const router = installFetchRouter();
+      const report = reportFixture();
+      router.on("GET", isGetReport, () => jsonRes({ report }));
+
+      render(<ReportSection applicationId="app-1" status="VOIDED" />);
+
+      expect(await screen.findByRole("heading", { name: "報表" })).toBeInTheDocument();
+      expect(screen.getByText(report.reportNumber)).toBeInTheDocument();
+
+      const printLink = screen.getByRole("link", { name: "檢視列印版" });
+      expect(printLink).toHaveAttribute("href", "/api/applications/app-1/report/print");
+      expect(printLink).toHaveAttribute("target", "_blank");
+      expect(printLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
+
+      // FW-1（T12b 即審）：VOIDED 之下使用者拿到的是含作廢標示的位元組，
+      // 文案必須明示「作廢版」，不得寫成誤導的「下載正式報表」。
+      const downloadLink = screen.getByRole("link", { name: "下載 PDF（作廢版）" });
+      expect(downloadLink).toHaveAttribute("href", "/api/applications/app-1/report/pdf");
+
+      // FW-3（T13 即審）：產生端點對 VOIDED 仍 409（B-27／D13），入口必須隱藏。
+      expect(screen.queryByRole("button", { name: "產生正式報表" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "產生中…" })).not.toBeInTheDocument();
+      expect(router.countCalls("POST", isPostReport)).toBe(0);
+    });
+
+    it("VOIDED 且未產生報表：顯示「未產生正式報表」說明文字，且零產生按鈕、零入口", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      render(<ReportSection applicationId="app-1" status="VOIDED" />);
+
+      expect(await screen.findByText("未產生正式報表")).toBeInTheDocument();
+      // COMPLETED 之 Empty 文案（「尚未產生正式報表」）不得在場——兩態文案不同。
+      expect(screen.queryByText("尚未產生正式報表")).not.toBeInTheDocument();
+
+      expect(screen.queryByRole("button", { name: "產生正式報表" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "檢視列印版" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/下載/)).not.toBeInTheDocument();
+      expect(router.countCalls("POST", isPostReport)).toBe(0);
+    });
+
+    it("COMPLETED 之下載文案不得帶作廢版字樣（零弱化對照：兩態文案不互相污染）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetReport, () => jsonRes({ report: reportFixture() }));
+
+      render(<ReportSection applicationId="app-1" status="COMPLETED" />);
+
+      expect(await screen.findByRole("link", { name: "下載 PDF" })).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "下載 PDF（作廢版）" })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視列印版" })).toBeInTheDocument();
+    });
+  });
 });

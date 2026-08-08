@@ -426,6 +426,19 @@ export interface ApplicationListItemDto {
   onBehalf: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * PHASE-009-T16pre／§7.2（`SPEC-REV-9T7` 補列）：本筆是否為某申請之修正版
+   * ——`supersedesId != null` 之布林投影，供列表徽章（AC-32）消費。
+   *
+   * 刻意**不外露** `supersedesId` 本身：列表徽章只需「是不是修正版」，原申請
+   * id 屬詳情面（`supersedes` 四鍵投影，§7.2）之揭露範圍，列表多露一個可直接
+   * 拿去打端點的 id 屬無謂擴大揭露面。
+   *
+   * 亦刻意**不以 `status` 推導**：修正版建立時固為 `DRAFT`（§7.4），但
+   * `DRAFT` 不蘊含「是修正版」（一般草稿亦為 `DRAFT`），且修正版完成後會轉
+   * `COMPLETED`——`supersedesId` 是唯一權威。
+   */
+  isRevision: boolean;
 }
 
 /**
@@ -485,5 +498,9 @@ export function toApplicationListItemDto(app: ApplicationListRow): ApplicationLi
     onBehalf: app.createdById !== app.ownerId,
     createdAt: app.createdAt.toISOString(),
     updatedAt: app.updatedAt.toISOString(),
+    // PHASE-009-T16pre／§7.2：`supersedesId != null` 之布林投影。
+    // `applicationListInclude` 用的是 `include`（只加關聯，不裁切純量欄），故
+    // `supersedesId` 本就在 `findMany` 的回傳列上，無須為此新增 `select`。
+    isRevision: app.supersedesId !== null,
   };
 }

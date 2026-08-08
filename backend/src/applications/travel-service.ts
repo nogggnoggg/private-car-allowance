@@ -79,6 +79,7 @@ import { formatUtcDate } from "../parameters/parameter-service.js";
 import { AppError } from "../platform/errors.js";
 import type { FieldError } from "../platform/errors.js";
 import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
+import { type VoidInfoDto, resolveVoidInfo } from "./application-void.js";
 import type { Blocker } from "./completion-blockers.js";
 import { computeCompletionBlockers } from "./completion-blockers.js";
 import { computeSegmentDiff } from "./segment-diff.js";
@@ -1546,6 +1547,8 @@ export interface TravelApplicationDto {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** PHASE-009-T3（§7.2）：未作廢恆為 null。 */
+  void: VoidInfoDto | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1824,6 +1827,12 @@ export async function toTravelApplicationDto(
         }
       : null;
 
+  // PHASE-009-T3（§7.2）：`toTravelApplicationDto` 本就 async／DB-touching
+  // （見上方 `resolveTravelParameters`/`getSegmentAttachments` 呼叫），故
+  // 直接在此內聯解析，不另拆一層「build」包裝（與 maintenance/depreciation
+  // 兩檔之 to*/build* 兩層分工不同——沿本檔既有架構，不強行對齊）。
+  const voidInfo = await resolveVoidInfo(prisma, application);
+
   return {
     id: application.id,
     type: "TRAVEL",
@@ -1842,5 +1851,6 @@ export async function toTravelApplicationDto(
     createdAt: application.createdAt.toISOString(),
     updatedAt: application.updatedAt.toISOString(),
     completedAt: application.completedAt ? application.completedAt.toISOString() : null,
+    void: voidInfo,
   };
 }

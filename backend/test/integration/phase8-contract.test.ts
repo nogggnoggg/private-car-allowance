@@ -29,11 +29,15 @@
  * 1. §A：`errors.ts` 之 `ErrorCode` 聯集新增 `REPORT_GENERATION_FAILED`；聯
  *    集全等測試（基線＋新碼；多/少一碼必紅；BOGUS mutant 必紅——見 Task
  *    Handoff 附驗證階段暫改復原之紅燈證據，沿 `phase7-contract.test.ts`
- *    既有慣例，不將暫改烙入本檔最終內容）。§A 第二則測試複核 T8/T9/T10
- *    routes.ts／report-service.ts 之 `buildErrorBody("REPORT_GENERATION_
- *    FAILED", ...)` 繞道字面——確認新增聯集成員後該繞道原樣可用（`code`
- *    參數型別為 `string`，不需修改呼叫端；本檔驗證階段已另行執行 `tsc
- *    --noEmit` 確認零型別錯誤，見 Task Handoff）。
+ *    既有慣例，不將暫改烙入本檔最終內容）。§A 第二則測試複核 `reports/` 之
+ *    錯誤碼字面（`new AppError("XXX"` ＋ `buildErrorBody("XXX"` 兩種形
+ *    式），確認全部落在既有聯集內且 `REPORT_GENERATION_FAILED` 確實被使用。
+ *    【PHASE-009-T18／AC-40(b) 更新】T11 當時該碼在 `reports/routes.ts` 係
+ *    以 `buildErrorBody` **繞道**承載（撰寫 T8 時聯集尚未收錄該碼）；T18 依
+ *    §16 D14(b) 已改為 `new AppError("REPORT_GENERATION_FAILED", 500, …,
+ *    undefined, { stage })`，wire 逐位元組不變（§D-6 之 AC-40(b) 回歸）。
+ *    §A 之掃描同時涵蓋兩種形式，故該測試不因改道而變動；另新增一則結構斷
+ *    言釘住「不得回退為繞道」。
  * 2. §D-2：四端點 404 契約（不存在申請 id）——T10 即審 AR-1「B-03 產生／
  *    列印零測試（M11/M12 穿透）」之直接關閉：四端點對不存在之申請 id 皆
  *    404 NOT_FOUND，逐格斷言。
@@ -57,13 +61,21 @@
  *    `Report` 列）／B-28「報表檔案遺失」（`Report` 列在、storage 檔案缺）
  *    各一正例，逐字比對（非僅比對 `code`）。
  * 6. §B：`PHASE_008_SRC_FILES` 結構清單（T4 即審 FW-5「T11 PHASE_008_
- *    SRC_FILES 清單＋日誌掃描擴 storageKey 與折舊字面」之落地）——八檔
+ *    SRC_FILES 清單＋日誌掃描擴 storageKey 與折舊字面」之落地）——**九檔**
  *    （`report-number.ts`／`report-filename.ts`／`report-data.ts`／
- *    `report-html.ts`／`report-images.ts`／`pdf-renderer.ts`／
- *    `report-service.ts`／`routes.ts`）之固定清單與 `backend/src/reports/`
- *    目錄之實際 `.ts` 檔案清單 `toEqual` 自證（新增／刪除 src 檔而未同步
- *    更新本清單即紅）。**不觸碰** `phase7-contract.test.ts` 之
- *    `PHASE_007_SRC_FILES`（Forbidden，零 diff）。
+ *    `report-html.ts`／`report-images.ts`／**`report-labels.ts`**／
+ *    `pdf-renderer.ts`／`report-service.ts`／`routes.ts`）之固定清單與
+ *    `backend/src/reports/` 目錄之實際 `.ts` 檔案清單 `toEqual` 自證（新增
+ *    ／刪除 src 檔而未同步更新本清單即紅）。**不觸碰**
+ *    `phase7-contract.test.ts` 之 `PHASE_007_SRC_FILES`（Forbidden，零
+ *    diff）。
+ *
+ *    【PHASE-009-T18 更正（大總管順帶授權；記載型）】本項原記「八檔」並漏
+ *    列 `report-labels.ts`，與 §B 之常數（自始即為九檔，`toEqual` ＋
+ *    `expect(actualFiles.length).toBe(9)`）**不符**。該失準已先後誤導兩個
+ *    agent（PHASE-009 T10 即審 **AR-5**／T12a 第一輪），故此處逐字更正。
+ *    **注意與 §A 之 `PHASE_008_REPORTS_SRC_FILES` 區分**：後者為**八**項，
+ *    刻意不含 `report-labels.ts`（該檔零錯誤碼字面），非本項之筆誤。
  *
  * ---------------------------------------------------------------------------
  * §7.5 表格對齊（409 列限產生／列印；下載／查詢不適用之負向確認）
@@ -79,7 +91,9 @@
  * TDD 與紀律（Spec §11.0）
  * ---------------------------------------------------------------------------
  * 本檔開工前 `errors.ts` 之 `ErrorCode` 聯集尚未收錄 `REPORT_GENERATION_
- * FAILED`（T8/T9/T10 皆繞道 `buildErrorBody` 字面量，見各檔檔頭）——§A 第
+ * FAILED`（T8/T9/T10 當時皆繞道 `buildErrorBody` 字面量，見各檔檔頭；
+ * `reports/routes.ts` 一側已由 PHASE-009-T18／AC-40(b) 改回 `AppError`，見
+ * 上方項目 1 之更新註）——§A 第
  * 一則測試在 `errors.ts` 修改前執行必為紅燈（斷言 14 碼聯集，實際僅 13
  * 碼）；修改後轉綠。BOGUS mutant／聯集增減 mutant 之紅燈證據見 Task
  * Handoff（暫改 `errors.ts` 或本檔 `KNOWN_ERROR_CODES` 並復原，不進入最終
@@ -258,10 +272,14 @@ describe("AC-28 結構性 — ErrorCode 聯集全等 + PHASE-008 reports/ src �
     expect(members).toEqual(KNOWN_ERROR_CODES);
   });
 
-  // 本 Phase（PHASE-008）之 `src/reports/` 八檔——逐檔掃描 `new AppError(
-  // "XXX"` 與 `buildErrorBody("XXX"`（後者為 T8/T9/T10 之既有繞道字面量，
-  // 見各檔檔頭「錯誤碼與日誌安全」），斷言全部落在既有聯集內，且
+  // 本 Phase（PHASE-008）之 `src/reports/` **八**檔（刻意不含
+  // `report-labels.ts`——該檔零錯誤碼字面；與 §B 之九檔目錄清單為不同用途之
+  // 兩份清單，見檔頭項目 6 之區分註）——逐檔掃描 `new AppError("XXX"` 與
+  // `buildErrorBody("XXX"` 兩種形式，斷言全部落在既有聯集內，且
   // REPORT_GENERATION_FAILED 確實被使用（非僅存在於聯集卻無呼叫端）。
+  // 【PHASE-009-T18／AC-40(b)】`reports/routes.ts` 之該碼已改由 `new
+  // AppError(` 承載，故本則之命中來源由繞道形式轉為 `AppError` 形式——**斷
+  // 言逐字不變、鑑別力不減**（兩種形式皆在掃描範圍內）。
   const PHASE_008_REPORTS_SRC_FILES = [
     "src/reports/report-number.ts",
     "src/reports/report-filename.ts",
@@ -294,6 +312,21 @@ describe("AC-28 結構性 — ErrorCode 聯集全等 + PHASE-008 reports/ src �
     for (const code of usedCodes) {
       expect(KNOWN_ERROR_CODES).toContain(code);
     }
+  });
+
+  // 【PHASE-009-T18／AC-40(b)（§16 D14(b)）】結構性守門：`reports/routes.ts`
+  // 之 `REPORT_GENERATION_FAILED` 由 `buildErrorBody` 繞道改為經 `AppError`
+  // 承載——繞道之歷史理由（撰寫當時 `ErrorCode` 聯集尚未收錄此碼）已於 T11
+  // （`51cc459`）消失，`errors.ts` 之編譯期收斂檢查自此涵蓋本碼。本則釘住
+  // 「不得回退為繞道」；wire 面之不變性由 §D-6 之逐位元組回歸承擔。
+  //
+  // 範圍**限 `reports/routes.ts` 一檔**：`applications/routes.ts`（作廢版
+  // PDF 之同型 500 轉譯，PHASE-009-T12a）不在本 Task 之 Files Allowed，其
+  // 繞道形狀本次維持原樣（形狀分歧已據實交審，見 Task Handoff）。
+  it("AC-40(b) 結構: reports/routes.ts 之 REPORT_GENERATION_FAILED 經 AppError 承載，零 buildErrorBody 繞道", () => {
+    const src = fs.readFileSync(path.join(BACKEND_ROOT, "src/reports/routes.ts"), "utf-8");
+    expect(src).toMatch(/new AppError\(\s*"REPORT_GENERATION_FAILED"/);
+    expect(src).not.toMatch(/buildErrorBody\(/);
   });
 });
 
@@ -666,6 +699,64 @@ describeWithDb(
         // 零殘留：本輪失敗未寫入 Report 列。
         const row = await prisma.report.findUnique({ where: { applicationId: id } });
         expect(row).toBeNull();
+      });
+
+      // ---------------------------------------------------------------------
+      // 【PHASE-009-T18／AC-40(b)（§16 D14(b)）】`buildErrorBody` 繞道改經
+      // `AppError` 承載之 **wire 逐字不變**回歸
+      //
+      // AC-40(b) 逐字：「`reports/routes.ts` 之 `REPORT_GENERATION_FAILED` 由
+      // `buildErrorBody` 繞道改為經 `AppError` 承載，**wire 格式逐字不變**之
+      // 回歸斷言（`{ error: { code, message, requestId, details:{ stage } } }`
+      // 鍵集與值全等），且既有 `phase8-contract.test.ts` 之相關斷言零弱化。」
+      //
+      // 本則為**不變式回歸**（invariance regression）：改道前後皆應為綠——這
+      // 正是它要保證的性質。其鑑別力由 mutant 承擔（改道後若 `details.stage`
+      // 漏傳、或 `message`／`httpStatus` 有一字之差，本則必紅；見 Task
+      // Handoff 之 mutant 自證）。期望值一律**字面硬編碼**，不由實作反算。
+      // ---------------------------------------------------------------------
+      it("AC-40(b): 500 REPORT_GENERATION_FAILED 之 wire body 逐鍵全等（頂層恰一鍵 error；error 恰四鍵 code/message/requestId/details；details 恰一鍵 stage）", async () => {
+        const id = await createCompletedTravelApp("d6-wire");
+        vi.mocked(renderReportHtml).mockImplementationOnce(() => {
+          throw new Error("T18 injected render failure — wire invariance probe");
+        });
+
+        const resp = await app.inject({
+          method: "POST",
+          url: `/applications/${id}/report`,
+          headers: { cookie: ownerCookie },
+        });
+
+        expect(resp.statusCode).toBe(500);
+        expect(resp.headers["content-type"]).toContain("application/json");
+
+        const parsed = JSON.parse(resp.body) as Record<string, unknown>;
+        // 頂層鍵集封閉：恰一鍵 `error`（多一鍵即紅）。
+        expect(Object.keys(parsed)).toEqual(["error"]);
+
+        const err = parsed.error as Record<string, unknown>;
+        // `error` 鍵集封閉且順序無關（`fields` 不得出現——非 VALIDATION_ERROR）。
+        expect(Object.keys(err).sort()).toEqual(["code", "details", "message", "requestId"]);
+
+        // 值全等（`requestId` 為每請求相異之非空字串，單獨驗型別與非空）。
+        expect(err.code).toBe("REPORT_GENERATION_FAILED");
+        expect(err.message).toBe("報表產生失敗，請稍後再試或聯絡管理員。");
+        expect(typeof err.requestId).toBe("string");
+        expect((err.requestId as string).length).toBeGreaterThan(0);
+        expect(err.details).toEqual({ stage: "RENDER" });
+
+        // 逐位元組全等：以 `requestId` 遮蔽後之序列化字串比對固定字面
+        // （鍵**順序**亦被釘住——`buildErrorBody` 之組裝順序改變即紅）。
+        const redacted = resp.body.replace(
+          `"requestId":${JSON.stringify(err.requestId)}`,
+          '"requestId":"<redacted>"'
+        );
+        expect(redacted).toBe(
+          '{"error":{"code":"REPORT_GENERATION_FAILED","message":"報表產生失敗，請稍後再試或聯絡管理員。","requestId":"<redacted>","details":{"stage":"RENDER"}}}'
+        );
+
+        expect(resp.body).not.toContain("T18 injected render failure");
+        expectNoLeakage(parsed as ErrorBody);
       });
     });
 

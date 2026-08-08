@@ -38,7 +38,12 @@
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiDeleteApplication } from "../api/applications.js";
+import {
+  type RevisionLinkDto,
+  type SupersedesLinkDto,
+  apiCreateRevision,
+  apiDeleteApplication,
+} from "../api/applications.js";
 import { type AttachmentDto, toFrontendUrl } from "../api/attachments.js";
 import {
   type MaintenanceApplicationDto,
@@ -52,9 +57,84 @@ import {
 } from "../api/maintenance.js";
 import AttachmentUploader from "../components/AttachmentUploader.js";
 import ReportSection from "../components/ReportSection.js";
+import VoidApplicationDialog from "../components/VoidApplicationDialog.js";
 import type { ApiError } from "../types/api.js";
 
 const PREVIEW_DEBOUNCE_MS = 300; // D8
+
+/** 本頁之詳情路由前綴——版本關聯之另一端恆為同型申請（AC-10：`type` 為複製欄）。 */
+const DETAIL_BASE_PATH = "/applications/maintenance";
+
+/**
+ * AC-32(d)／FE-US-21④：已完成申請之附件區提示。逐字含「如需修正附件，請建立
+ * 修正版」（Spec 給的是**含**字串，前綴為自擬文案）。僅 `COMPLETED` 顯示：
+ * 已作廢申請不能再建修正版（後端 409，§7.5），顯示此提示等於指向死路。
+ * 三型頁逐字相同（PHASE-009-T16）。
+ */
+const ATTACHMENT_REVISION_HINT = "已完成申請的附件無法直接刪除或替換。如需修正附件，請建立修正版。";
+
+/**
+ * AC-32(c)／D15 之「重複計入」提醒（`SPEC-REV-9T16` 補入 AC）。逐字文案於
+ * Mock Gate 由人類目視定案；文案可微調，但三點語意（仍為已完成／未作廢則
+ * 重複計入統計／作廢入口在本頁）不得縮減。三型頁逐字相同。
+ */
+const DUPLICATE_COUNT_WARNING =
+  "本申請仍為已完成狀態。若未作廢，本申請與修正版將同時計入里程與金額統計；如需避免重複計入，請於本頁作廢本申請。";
+
+/**
+ * 版本關係區塊（PHASE-009-T16；AC-32(c)、AC-34 之 DOM 面）。與
+ * `TravelApplicationPage.tsx`／`DepreciationApplicationPage.tsx` 同型——三頁
+ * 各自持有一份（本 Phase 之 Files Allowed 為三頁 ＋ api client，不新建共用
+ * 元件檔；共用化如有需要屬後續 Task）。詳細設計理由見 TravelApplicationPage
+ * 同名函式之註解。
+ */
+function VersionRelationSection({
+  supersedes,
+  supersededBy,
+  voided,
+}: {
+  supersedes: SupersedesLinkDto | null;
+  supersededBy: RevisionLinkDto | null;
+  /**
+   * T16R2 **S-2**：本筆是否已作廢。**只影響提醒文案，不影響雙向連結**——版本
+   * 關係本身在 VOIDED 下仍須可見（AC-32(c) 未以狀態設限）。
+   */
+  voided: boolean;
+}): React.ReactElement | null {
+  if (!supersedes && !supersededBy) return null;
+  return (
+    <section aria-labelledby="version-relation-heading">
+      <h2 id="version-relation-heading">版本關係</h2>
+      {supersedes && (
+        <p>
+          <span>{`本申請為 ${supersedes.reportNumber ?? supersedes.primaryDate} 之修正版`}</span>{" "}
+          <Link to={`${DETAIL_BASE_PATH}/${supersedes.id}`}>檢視原申請</Link>
+        </p>
+      )}
+      {supersededBy && (
+        <>
+          <p>
+            <span>已建立修正版</span>{" "}
+            <Link to={`${DETAIL_BASE_PATH}/${supersededBy.id}`}>檢視修正版</Link>
+          </p>
+          {/* AC-32(c)／D15（`SPEC-REV-9T16`）：人類 Spec Gate 批准「不自動作廢」
+              之**前提**即為本則前端強提示——建立修正版**不會**自動作廢原申請，
+              未作廢時兩筆都會進統計。三點語意不可省：①仍為已完成 ②未作廢則
+              重複計入里程與金額統計 ③作廢入口即在本頁（同頁下方之「作廢」鈕）。
+              **僅 `supersededBy` 側**——作廢動作之落點在原申請頁，修正版頁加此
+              提示會把使用者導向錯誤的那一筆。
+
+              T16R2 **S-2**（複審 probe 實證）：另須 `!voided`——已作廢＋已有修正
+              版之組合**可達**（作廢端點對已有修正版之申請無限制，正是 D15(a)
+              期望使用者走完的終局）。該狀態下三點語意全部不成立：①已非「仍為
+              已完成」②已作廢即不計入統計（AC-15~AC-17）③本頁零作廢按鈕
+              （AC-31(b)）。照顯即為畫面自相矛盾並指向不存在的操作。 */}
+          {!voided && <p className="warn-text">{DUPLICATE_COUNT_WARNING}</p>}
+        </>
+      )}
+    </section>
+  );
+}
 
 /** AC-21：保養證明上限 5 張（後端為權威來源，本常數僅供前端提示文案/UI）。 */
 const MAINTENANCE_ATTACHMENT_LIMIT = 5;
@@ -188,6 +268,15 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
   const [previewState, setPreviewState] = useState<PreviewState>({ kind: "idle" });
 
   const [attachments, setAttachments] = useState<AttachmentDto[]>([]);
+
+  // PHASE-009-T15（AC-29(a)）：作廢確認對話框之開關；對話框本體與其五態
+  // 皆由 VoidApplicationDialog 負責（T14），本頁只負責入口與作廢後之呈現。
+  const [showVoidDialog, setShowVoidDialog] = useState(false);
+
+  // PHASE-009-T16（AC-32(b)／AC-33）：建立修正版之送出中旗標與錯誤呈現。
+  const [creatingRevision, setCreatingRevision] = useState(false);
+  const [revisionError, setRevisionError] = useState<string | null>(null);
+  const [existingRevisionId, setExistingRevisionId] = useState<string | null>(null);
 
   const createdRef = useRef(false);
 
@@ -349,6 +438,33 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
     }
   }
 
+  // ---- Create revision（PHASE-009-T16；AC-32(a)(b)、AC-33 Success）----
+  //
+  // 錯誤呈現以 `apiErr.message` 為主（T7b 即審 AR-2）：本端點之 400 其
+  // `fields[].field` 為 `"userId"`，對不到本頁任何輸入欄——逐欄標紅會靜默
+  // 吞錯。409「已有修正版」另附 `details.existingRevisionId`。
+  async function handleCreateRevision() {
+    if (!application || creatingRevision) return;
+    setCreatingRevision(true);
+    setRevisionError(null);
+    setExistingRevisionId(null);
+    try {
+      const { application: revision } = await apiCreateRevision<MaintenanceApplicationDto>(
+        application.id
+      );
+      navigate(`${DETAIL_BASE_PATH}/${revision.id}`);
+    } catch (err) {
+      const apiErr = err as ApiError;
+      const details = apiErr.details as { existingRevisionId?: string } | undefined;
+      if (apiErr.code === "CONFLICT" && typeof details?.existingRevisionId === "string") {
+        setExistingRevisionId(details.existingRevisionId);
+      }
+      setRevisionError(apiErr.message ?? "建立修正版失敗，請稍後再試。");
+    } finally {
+      setCreatingRevision(false);
+    }
+  }
+
   // ===========================================================================
   // Render — 五態
   // ===========================================================================
@@ -424,13 +540,21 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
     );
   }
 
-  // ---- COMPLETED：唯讀檢視 ----
-  if (application.status === "COMPLETED") {
+  // ---- COMPLETED／VOIDED：唯讀檢視 ----
+  //
+  // PHASE-009-T15（AC-31(a)）**現況缺陷修復**：`VOIDED` 原本落到本分支之後的
+  // 草稿分支，因而渲染出可編輯表單。已作廢與已完成之呈現需求幾乎相同（同一組
+  // 唯讀欄位＋證明清單＋報表區），差異僅在標題／提示文案、作廢入口（僅
+  // `COMPLETED` 有）與作廢資訊區塊（僅 `VOIDED` 有），故沿用同一唯讀分支並以
+  // `voided` 分歧（比照 TravelApplicationPage 同型處置）。
+  if (application.status === "COMPLETED" || application.status === "VOIDED") {
     const snapshot = application.snapshot;
+    const voided = application.status === "VOIDED";
+    const voidInfo = application.void;
     return (
       <div className="page-container">
         <header className="page-header">
-          <h1>保養費用申請（已完成）</h1>
+          <h1>保養費用申請（{voided ? "已作廢" : "已完成"}）</h1>
           <div className="header-actions">
             <Link to="/" className="btn btn-secondary">
               返回列表
@@ -438,9 +562,48 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
           </div>
         </header>
         <main className="page-main">
-          <div className="success-block">
-            此申請已完成，資料已鎖定不可修改。如需異動，請聯絡管理員建立修正版（功能將於後續版本提供）。
-          </div>
+          {voided ? (
+            // AC-31(c)／FE-US-26⑤：文案明示不可恢復，且本分支不提供任何
+            // 恢復途徑（負向斷言：整頁零「恢復／還原／取消作廢」控制項）。
+            <div className="warn-text">此申請已作廢，資料已鎖定不可修改，且無法恢復為已完成。</div>
+          ) : (
+            // PHASE-009-T16（AC-32(a)）：佔位文案「功能將於後續版本提供」逐字
+            // 移除，改以本段導向真實入口（本頁下方之「建立修正版」按鈕）。
+            <div className="success-block">
+              此申請已完成，資料已鎖定不可修改。如需異動，請建立修正版。
+            </div>
+          )}
+
+          {/* AC-32(c)：版本關係（雙向皆為 supersedesId 之投影；兩向皆 null
+              時整區不渲染）。 */}
+          <VersionRelationSection
+            supersedes={application.supersedes}
+            supersededBy={application.supersededBy}
+            voided={voided}
+          />
+
+          {/* AC-30(c)：作廢原因／操作者／時間三項逐字呈現。時間格式沿用本頁
+              既有「計算時間」之 `toLocaleString("zh-TW")`（不另立第二種格式）。
+              AC-33 Empty：`void` 未作廢恆為 null（§7.2），故未作廢時整個區塊
+              不渲染——條件必須是 `voidInfo` 而非 `voided`。
+              PHASE-009-T15d（AC-41／Mock Gate 定案③）：末列新增「作廢當時
+              金額」，整數原樣；`null` 判定用 `!== null`（`||` 會把合法的 0
+              誤顯示為「—」）。 */}
+          {voidInfo && (
+            <section aria-labelledby="void-info-heading">
+              <h2 id="void-info-heading">作廢資訊</h2>
+              <dl className="detail-list">
+                <dt>作廢原因</dt>
+                <dd>{voidInfo.reason}</dd>
+                <dt>作廢操作者</dt>
+                <dd>{voidInfo.voidedByDisplayName}</dd>
+                <dt>作廢時間</dt>
+                <dd>{new Date(voidInfo.voidedAt).toLocaleString("zh-TW")}</dd>
+                <dt>作廢當時金額</dt>
+                <dd>{voidInfo.totalAmount !== null ? voidInfo.totalAmount : "—"}</dd>
+              </dl>
+            </section>
+          )}
 
           <section aria-labelledby="maintenance-info-heading">
             <h2 id="maintenance-info-heading">基本資料</h2>
@@ -482,6 +645,9 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
               既有慣例），不掛載 AttachmentUploader。 */}
           <section aria-labelledby="maintenance-attachments-heading">
             <h2 id="maintenance-attachments-heading">保養證明</h2>
+            {/* AC-32(d)／FE-US-21④：已作廢不顯示——見 ATTACHMENT_REVISION_HINT
+                之註解。 */}
+            {!voided && <p className="warn-text">{ATTACHMENT_REVISION_HINT}</p>}
             {application.attachments.length > 0 ? (
               <ul className="attachment-list" aria-label="保養證明清單">
                 {application.attachments.map((att) => (
@@ -502,10 +668,66 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
             )}
           </section>
 
-          {/* AC-30（PHASE-008-T13）：已完成申請顯示報表區塊；元件內建
-              status !== "COMPLETED" 不渲染之守門，此處恆為 COMPLETED。 */}
+          {/* AC-30（PHASE-008-T13）／AC-31(d)（PHASE-009-T14）：已完成與已作廢
+              皆顯示報表區塊。`status` 逐字透傳——作廢成功後本頁 state 會換成
+              後端回傳的 VOIDED DTO，此 prop 隨之變為 "VOIDED"，元件才會把下載
+              入口文案改為「下載 PDF（作廢版）」（T14 即審 FW-1）。 */}
           <ReportSection applicationId={application.id} status={application.status} />
+
+          {/* AC-29(a)／AC-32(a)：作廢與建立修正版兩入口僅在已完成申請出現；
+              已作廢頁零這兩個按鈕（AC-31(b) 五類負向，T15 已固化）。 */}
+          {!voided && (
+            <>
+              {revisionError && (
+                <div className="error-block" role="alert">
+                  <p>{revisionError}</p>
+                  {existingRevisionId && (
+                    <Link
+                      to={`${DETAIL_BASE_PATH}/${existingRevisionId}`}
+                      className="btn btn-secondary"
+                    >
+                      檢視既有修正版
+                    </Link>
+                  )}
+                </div>
+              )}
+              <div className="btn-row">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleCreateRevision}
+                  disabled={creatingRevision}
+                >
+                  {creatingRevision ? "建立中…" : "建立修正版"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => setShowVoidDialog(true)}
+                  disabled={creatingRevision}
+                >
+                  作廢
+                </button>
+              </div>
+            </>
+          )}
         </main>
+
+        {showVoidDialog && (
+          <VoidApplicationDialog
+            applicationId={application.id}
+            onCancel={() => setShowVoidDialog(false)}
+            onVoided={(voidedApplication) => {
+              // 後端回傳型別分派之詳情 DTO（§7.3）；本頁以自己的型別窄化。
+              setApplication(voidedApplication as MaintenanceApplicationDto);
+              setShowVoidDialog(false);
+            }}
+            onReload={() => {
+              setShowVoidDialog(false);
+              loadApplication(application.id);
+            }}
+          />
+        )}
       </div>
     );
   }
@@ -534,6 +756,14 @@ export default function MaintenanceApplicationPage(): React.ReactElement {
       </header>
 
       <main className="page-main">
+        {/* AC-32(c)：修正版剛建立時狀態為 DRAFT，故草稿分支亦須呈現版本關係。 */}
+        <VersionRelationSection
+          supersedes={application.supersedes}
+          supersededBy={application.supersededBy}
+          // 本分支恆為 DRAFT（COMPLETED／VOIDED 已由上方唯讀分支攔截）。
+          voided={false}
+        />
+
         {application.completionBlockers && application.completionBlockers.length > 0 && (
           <div className="warn-text" aria-live="polite" aria-label="尚未完成項目">
             <p>尚未完成項目：</p>

@@ -10,11 +10,12 @@
  * 插隊而錯位。
  */
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
+import type { VoidInfoDto } from "../src/api/applications.js";
 import type { AttachmentDto } from "../src/api/attachments.js";
 import type { MaintenanceApplicationDto, MaintenanceComputedDto } from "../src/api/maintenance.js";
 import MaintenanceApplicationPage from "../src/pages/MaintenanceApplicationPage.js";
@@ -65,6 +66,10 @@ function draftFixture(
     ],
     computed: null,
     snapshot: null,
+    void: null, // PHASE-009 §7.2：未作廢恆為 null
+    // PHASE-009 §7.2（T16）：版本關聯之雙向投影；無關聯恆為 null。
+    supersedes: null,
+    supersededBy: null,
     ...overrides,
   };
 }
@@ -102,6 +107,69 @@ function filledDraftFixture(
     completionBlockers: [],
     ...overrides,
   });
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-009-T15 fixtures（作廢面）
+// ---------------------------------------------------------------------------
+
+function voidInfoFixture(overrides: Partial<VoidInfoDto> = {}): VoidInfoDto {
+  return {
+    reason: "保養單據金額登打錯誤",
+    voidedAt: "2026-03-05T02:34:56.000Z",
+    voidedByDisplayName: "管理員甲",
+    totalAmount: 1234, // PHASE-009-T15c（AC-41）：型別鏡像之補鍵，呈現斷言屬 T15d
+    ...overrides,
+  };
+}
+
+function completedFixture(
+  overrides: Partial<MaintenanceApplicationDto> = {}
+): MaintenanceApplicationDto {
+  return draftFixture({
+    status: "COMPLETED",
+    lastMaintenanceDate: "2026-01-01",
+    currentMaintenanceDate: "2026-02-01",
+    lastOdometerKm: "1000.00",
+    currentOdometerKm: "1100.00",
+    actualCost: "2000.00",
+    completionBlockers: null,
+    computed: null,
+    snapshot: {
+      intervalKm: "100.00",
+      officialKm: "50.00",
+      ratio: "0.500000",
+      ratioPercent: "50.0000",
+      actualCost: "2000.00",
+      rawAmount: "1000.0000",
+      totalAmount: 1000,
+      calculatedAt: "2026-02-01T00:00:00.000Z",
+    },
+    ...overrides,
+  });
+}
+
+/**
+ * 已作廢之詳情 fixture。`snapshot: null` 為**後端實況**（實查
+ * `backend/src/applications/maintenance-service.ts` :838 之
+ * `application.status !== "COMPLETED"` 守門；差旅／折舊亦同——三型對稱），
+ * 故唯讀頁之快照區在 VOIDED 下不渲染。
+ */
+function voidedFixture(
+  overrides: Partial<MaintenanceApplicationDto> = {}
+): MaintenanceApplicationDto {
+  return completedFixture({
+    status: "VOIDED",
+    snapshot: null,
+    void: voidInfoFixture(),
+    ...overrides,
+  });
+}
+
+/** 沿 DepreciationApplicationPage.test.tsx 既有 `dtDdText` 慣例（值綁標籤）。 */
+function dtDdText(dtLabel: string): string | null {
+  const dt = screen.getByText(dtLabel, { selector: "dt" });
+  return dt.nextElementSibling?.textContent ?? null;
 }
 
 function previewFixture(overrides: Partial<MaintenanceComputedDto> = {}): MaintenanceComputedDto {
@@ -187,6 +255,31 @@ const isComplete = (p: string) => p === "/api/applications/app-1/complete";
 const isDelete = (p: string) => p === "/api/applications/app-1";
 const isAttachmentsPost = (p: string) => p === "/api/attachments";
 const isGetReport = (p: string) => p === "/api/applications/app-1/report";
+const isVoid = (p: string) => p === "/api/applications/app-1/void";
+
+/** AC-31(c)／FE-US-26⑤：任何「把已作廢恢復為已完成」語意之控制項字樣。 */
+const RESTORE_CONTROL_PATTERN = /恢復|還原|復原|取消作廢|重新完成|解除作廢/;
+
+/** 唯讀頁不得出現之五類按鈕（AC-31(b) 逐一負向）。 */
+const FORBIDDEN_VOIDED_BUTTONS = ["儲存草稿", "完成申請", "刪除草稿", "作廢", "建立修正版"];
+
+/**
+ * AC-31(b)(c)：唯讀頁零寫入型控制項。逐一具名負向（五類）＋全頁掃描
+ * （避免「換個字樣就繞過具名斷言」）。「下載 PDF（作廢版）」等唯讀入口
+ * 含「作廢」二字但非作廢入口，故以全等比對而非包含比對排除。
+ */
+function expectNoWriteControls(): void {
+  for (const name of FORBIDDEN_VOIDED_BUTTONS) {
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+  }
+  const controls = [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")];
+  for (const el of controls) {
+    const label = el.textContent ?? "";
+    expect(label).not.toMatch(/儲存|完成申請|刪除|建立修正版/);
+    expect(label).not.toMatch(RESTORE_CONTROL_PATTERN);
+    expect(label).not.toBe("作廢");
+  }
+}
 
 // Helper: create a synthetic File with given size and type (比照
 // AttachmentUploader.test.tsx 既有 makeFile 慣例)
@@ -938,6 +1031,473 @@ describe("MaintenanceApplicationPage", () => {
       await waitFor(() => {
         expect(screen.getByText("附件數量已達上限")).toBeInTheDocument();
       });
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-009-T15：作廢入口／VOIDED 唯讀分支／作廢資訊
+  // （AC-29(a)、AC-30(c)、AC-31(a)(b)(c)、AC-33 頁面層 Empty／Success）
+  // ===========================================================================
+  describe("作廢（PHASE-009-T15）", () => {
+    it("AC-31(a)：VOIDED 走唯讀分支，不再渲染草稿編輯表單", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "保養費用申請（已作廢）" })).toBeInTheDocument();
+      });
+
+      // 現況缺陷之回歸鎖：VOIDED 曾落入草稿分支而渲染可編輯表單。
+      expect(screen.queryByLabelText("上次保養日期")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("本次實際保養費用")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "保養費用申請（草稿）" })
+      ).not.toBeInTheDocument();
+      await sleep(400);
+      expect(router.countCalls("POST", isPreview)).toBe(0);
+    });
+
+    it("AC-31(b)(c)：VOIDED 唯讀頁零五類按鈕、零可恢復為已完成之控制項", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ attachments: [attachmentFixture()] }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "保養費用申請（已作廢）" })).toBeInTheDocument();
+      });
+      await screen.findByRole("heading", { name: "報表" });
+
+      expectNoWriteControls();
+      expect(screen.queryByRole("button", { name: "產生正式報表" })).not.toBeInTheDocument();
+      // 附件僅唯讀縮圖，無上傳入口（沿 COMPLETED 既有紀律之同型負向）。
+      expect(screen.getByText("receipt.jpg")).toBeInTheDocument();
+      expect(screen.queryByLabelText(/選擇圖片/)).not.toBeInTheDocument();
+    });
+
+    it("AC-30(c)：VOIDED 詳情頁逐字顯示作廢原因／作廢操作者／作廢時間", async () => {
+      const info = voidInfoFixture();
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢原因")).toBe(info.reason);
+      expect(dtDdText("作廢操作者")).toBe(info.voidedByDisplayName);
+      // 時間長相與既有「計算時間」同一格式；TZ-FIX：兩側同義空白正規化。
+      expect(dtDdText("作廢時間")?.replace(/\s+/g, " ").trim()).toBe(
+        new Date(info.voidedAt).toLocaleString("zh-TW").replace(/\s+/g, " ").trim()
+      );
+      expect(screen.queryByText(info.voidedAt)).not.toBeInTheDocument();
+    });
+
+    // -----------------------------------------------------------------------
+    // PHASE-009-T15d（AC-41 呈現面／Mock Gate 定案③）
+    // -----------------------------------------------------------------------
+
+    it("AC-41(a)：已作廢詳情頁「作廢當時金額」逐字標籤 ＋ 整數原樣值 — 保養", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("1234");
+      // AC-41(a)「末列」之結構斷言。
+      const dt = screen.getByText("作廢當時金額", { selector: "dt" });
+      expect(dt.parentElement?.lastElementChild).toBe(dt.nextElementSibling);
+      // AC-30(c) 既有三項零弱化。
+      expect(dtDdText("作廢原因")).toBe("保養單據金額登打錯誤");
+    });
+
+    it("AC-41(c)：void.totalAmount 為 null 時該列顯示「—」（整區不得消失、不得拋錯）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ void: voidInfoFixture({ totalAmount: null }) }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("—");
+      expect(dtDdText("作廢操作者")).toBe("管理員甲");
+    });
+
+    it("AC-41(a) 邊界：totalAmount 為 0 → 顯示「0」而非「—」（禁 falsy 回退）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ void: voidInfoFixture({ totalAmount: 0 }) }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("0");
+    });
+
+    it("AC-41(d) 呈現：已作廢唯讀頁零單價／比例／計算明細（只放行單一金額欄）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("作廢當時金額", { selector: "dt" })).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "計算依據（完成時快照）" })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("公務使用比例")).not.toBeInTheDocument();
+      expect(screen.queryByText("公司分攤金額")).not.toBeInTheDocument();
+      expect(screen.queryByText("計算時間")).not.toBeInTheDocument();
+    });
+
+    it("AC-33 Empty：COMPLETED（未作廢）詳情頁零作廢資訊區塊", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "保養費用申請（已完成）" })).toBeInTheDocument();
+      });
+
+      expect(screen.queryByRole("heading", { name: "作廢資訊" })).not.toBeInTheDocument();
+      expect(screen.queryByText("作廢原因")).not.toBeInTheDocument();
+      expect(screen.queryByText("作廢操作者")).not.toBeInTheDocument();
+      expect(screen.queryByText("作廢時間")).not.toBeInTheDocument();
+      // AC-41(b) 負向（防恆真）：未作廢頁零「作廢當時金額」字樣。
+      expect(screen.queryByText("作廢當時金額")).not.toBeInTheDocument();
+    });
+
+    it("AC-29(a)：COMPLETED 詳情頁有作廢入口，點擊開啟確認對話框；取消零請求", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("POST", isVoid, () => jsonRes({ application: voidedFixture() }));
+
+      renderPage();
+      const voidBtn = await screen.findByRole("button", { name: "作廢" });
+
+      fireEvent.click(voidBtn);
+      expect(screen.getByRole("dialog", { name: "確認作廢申請" })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "取消" }));
+      await waitFor(() => {
+        expect(screen.queryByRole("dialog", { name: "確認作廢申請" })).not.toBeInTheDocument();
+      });
+      expect(router.countCalls("POST", isVoid)).toBe(0);
+      expect(screen.getByRole("heading", { name: "保養費用申請（已完成）" })).toBeInTheDocument();
+    });
+
+    it("AC-33 Success：作廢成功後頁面轉唯讀、顯示三項作廢資訊，且報表區狀態變 VOIDED", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () =>
+        jsonRes({
+          report: {
+            reportNumber: "MNT-202603-0001",
+            generatedAt: "2026-03-02T01:23:45.678Z",
+            fileName: "保養_使用者一_2026-02-01_MNT-202603-0001.pdf",
+            byteSize: 123456,
+            downloadUrl: "/applications/app-1/report/pdf",
+            printUrl: "/applications/app-1/report/print",
+          },
+        })
+      );
+      router.on("POST", isVoid, () => jsonRes({ application: voidedFixture() }));
+
+      renderPage();
+      expect(await screen.findByRole("link", { name: "下載 PDF" })).toBeInTheDocument();
+
+      fireEvent.click(await screen.findByRole("button", { name: "作廢" }));
+      fireEvent.change(screen.getByLabelText("作廢原因"), {
+        target: { value: "保養單據金額登打錯誤" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "確認作廢" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "保養費用申請（已作廢）" })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("dialog", { name: "確認作廢申請" })).not.toBeInTheDocument();
+      expect(dtDdText("作廢原因")).toBe("保養單據金額登打錯誤");
+      expect(dtDdText("作廢操作者")).toBe("管理員甲");
+
+      // T14 即審 FW-1：ReportSection 之 status prop 必須真變 VOIDED。
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: "下載 PDF（作廢版）" })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("link", { name: "下載 PDF" })).not.toBeInTheDocument();
+
+      expectNoWriteControls();
+    });
+  });
+
+  // ===========================================================================
+  // PHASE-009-T16：修正版入口 ＋ 版本關係區塊 ＋ 文案（AC-32／AC-33 Success）
+  // ===========================================================================
+  describe("修正版（PHASE-009-T16）", () => {
+    const isRevisionEndpoint = (p: string) => p === "/api/applications/app-1/revision";
+    const isGetRevisionDraft = (p: string) => p === "/api/applications/maintenance/rev-1";
+
+    function revisionDraftFixture(
+      overrides: Partial<MaintenanceApplicationDto> = {}
+    ): MaintenanceApplicationDto {
+      return draftFixture({
+        id: "rev-1",
+        supersedes: {
+          id: "app-1",
+          status: "COMPLETED",
+          primaryDate: "2026-03-01",
+          reportNumber: "MNT-202603-0001",
+        },
+        ...overrides,
+      });
+    }
+
+    it("AC-32(a)：COMPLETED 詳情頁出現「建立修正版」按鈕，且佔位文案逐字不在場", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已完成）" });
+
+      expect(screen.getByRole("button", { name: "建立修正版" })).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("功能將於後續版本提供");
+      expect(document.body.textContent).not.toContain("請聯絡管理員建立修正版");
+    });
+
+    it("AC-32(a) 守門：VOIDED 唯讀頁零「建立修正版」按鈕（T15 負向相容）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已作廢）" });
+
+      expect(screen.queryByRole("button", { name: "建立修正版" })).not.toBeInTheDocument();
+      expectNoWriteControls();
+    });
+
+    it("AC-32(b)／AC-33 Success：點擊建立修正版 → POST /revision → 導向新草稿頁並顯示版本關係", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("GET", isGetRevisionDraft, () => jsonRes({ application: revisionDraftFixture() }));
+      router.on("POST", isPreview, () => jsonRes({ preview: previewFixture() }));
+      router.on("POST", isRevisionEndpoint, () =>
+        jsonRes({ application: revisionDraftFixture() }, 201)
+      );
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+
+      await screen.findByRole("heading", { name: "保養費用申請（草稿）" });
+      expect(router.countCalls("POST", isRevisionEndpoint)).toBe(1);
+      // §7.3「Body：無（一律忽略）」——前端不得送 body。
+      expect(router.lastBody("POST", isRevisionEndpoint)).toBeNull();
+
+      expect(screen.getByText("本申請為 MNT-202603-0001 之修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視原申請" })).toHaveAttribute(
+        "href",
+        "/applications/maintenance/app-1"
+      );
+    });
+
+    it("AC-32(c) 原申請側：已有修正版時顯示「已建立修正版」與指向修正版之連結", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: completedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.getByText("已建立修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視修正版" })).toHaveAttribute(
+        "href",
+        "/applications/maintenance/rev-1"
+      );
+    });
+
+    // T16R M-1（`SPEC-REV-9T16`）：D15 之人類批准前提「不自動作廢 ＋ **前端強
+    // 提示**」。原申請頁之 `supersededBy` 側必含「重複計入」提醒（三點語意：
+    // ①仍為已完成 ②未作廢則兩筆同時計入統計 ③作廢入口即在本頁）。
+    //
+    // 本頁自持一份 VersionRelationSection（三頁各一份，見 T16 Handoff W-3），
+    // 故正向／負向皆須逐頁具備——差旅頁的負向無法證明本頁沒有把提醒寫死。
+    const DUPLICATE_COUNT_WARNING =
+      "本申請仍為已完成狀態。若未作廢，本申請與修正版將同時計入里程與金額統計；如需避免重複計入，請於本頁作廢本申請。";
+
+    it("AC-32(c)／D15：原申請已有修正版時，版本關係區塊含「重複計入」提醒文案（逐字）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: completedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      expect(screen.getByText(DUPLICATE_COUNT_WARNING)).toBeInTheDocument();
+      // ③「作廢入口即在本頁」不能只是文案宣稱——同頁必須真的有作廢按鈕。
+      expect(screen.getByRole("button", { name: "作廢" })).toBeInTheDocument();
+    });
+
+    it("AC-32(c)／D15 負向：已完成但未建立修正版時零提醒文案（防恆真）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已完成）" });
+
+      expect(screen.queryByText(DUPLICATE_COUNT_WARNING)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
+    });
+
+    it("AC-32(c)／D15 負向（T16R2 S-2）：VOIDED＋已有修正版 → 零提醒文案，但版本關係區塊其餘內容仍在場", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({
+          application: voidedFixture({
+            supersededBy: { id: "rev-1", status: "DRAFT", primaryDate: "2026-03-01" },
+          }),
+        })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已作廢）" });
+      await screen.findByRole("heading", { name: "版本關係" });
+
+      // 提醒之三點語意在 VOIDED 下**全部不成立**：①已非「仍為已完成」
+      // ②已作廢即不計入統計 ③本頁零作廢按鈕（AC-31(b)）——照顯即為自相矛盾
+      // 且指向不存在的操作。
+      expect(screen.queryByText(DUPLICATE_COUNT_WARNING)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("同時計入里程與金額統計");
+      expect(screen.queryByRole("button", { name: "作廢" })).not.toBeInTheDocument();
+
+      // 正向對照（防「整個區塊消失」之誤修）：雙向連結內容不受守門影響。
+      expect(screen.getByText("已建立修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視修正版" })).toHaveAttribute(
+        "href",
+        "/applications/maintenance/rev-1"
+      );
+    });
+
+    it("AC-32(c) 負向：無任何版本關聯時零版本關係區塊", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已完成）" });
+
+      expect(screen.queryByRole("heading", { name: "版本關係" })).not.toBeInTheDocument();
+    });
+
+    it("AC-32(d)：COMPLETED 保養證明區提示逐字含「如需修正附件，請建立修正版」；VOIDED 零該提示", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: completedFixture({ attachments: [attachmentFixture()] }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      const { unmount } = renderPage();
+      await screen.findByRole("heading", { name: "保養證明" });
+      expect(document.body.textContent).toContain("如需修正附件，請建立修正版");
+      unmount();
+
+      const router2 = installFetchRouter();
+      router2.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ attachments: [attachmentFixture()] }) })
+      );
+      router2.on("GET", isGetReport, () => jsonRes({ report: null }));
+      renderPage();
+      await screen.findByRole("heading", { name: "保養費用申請（已作廢）" });
+      expect(document.body.textContent).not.toContain("如需修正附件，請建立修正版");
+    });
+
+    it("AC-33 Error：409 已有修正版 → 顯示訊息並提供指向既有修正版之連結，且零導向", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("POST", isRevisionEndpoint, () =>
+        jsonRes(
+          {
+            error: {
+              code: "CONFLICT",
+              message: "此申請已有修正版",
+              details: { existingRevisionId: "rev-1" },
+            },
+          },
+          409
+        )
+      );
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+
+      expect(await screen.findByText("此申請已有修正版")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "檢視既有修正版" })).toHaveAttribute(
+        "href",
+        "/applications/maintenance/rev-1"
+      );
+      expect(screen.getByRole("heading", { name: "保養費用申請（已完成）" })).toBeInTheDocument();
+    });
+
+    it("AC-33 Error：400 逐字顯示 error.message（不得靜默吞錯）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+      router.on("POST", isRevisionEndpoint, () =>
+        jsonRes(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              message: "指定的使用者已停用，無法代其建立申請",
+              fields: [{ field: "userId", reason: "指定的使用者已停用" }],
+            },
+          },
+          400
+        )
+      );
+
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: "建立修正版" }));
+
+      expect(await screen.findByText("指定的使用者已停用，無法代其建立申請")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "檢視既有修正版" })).not.toBeInTheDocument();
     });
   });
 });

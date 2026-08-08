@@ -75,9 +75,9 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    // PHASE-008-T1: 表數 15→16（新增 Report）——沿 PHASE-007-T1R-LITE 之既有
-    // 作法，僅改斷言值，鑑別性（其後逐表空表檢查）不變。
-    expect(tableRows.length).toBe(16);
+    // PHASE-009-T1: 表數 16→17（新增 VoidedReportFile）——沿 PHASE-008-T1 之
+    // 既有作法，僅改斷言值，鑑別性（其後逐表空表檢查）不變。
+    expect(tableRows.length).toBe(17);
     for (const { table_name } of tableRows) {
       const rows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
         `SELECT count(*)::bigint AS count FROM "${table_name}"`
@@ -157,8 +157,8 @@ describeIsolation("INFRA-001-T1/T2 — per-worker schema isolation self-check", 
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name <> '_prisma_migrations'`
     );
-    // PHASE-008-T1: 表數 15→16（新增 Report）。
-    expect(tableRows.length).toBe(16);
+    // PHASE-009-T1: 表數 16→17（新增 VoidedReportFile）。
+    expect(tableRows.length).toBe(17);
 
     for (const enumName of BUSINESS_ENUM_NAMES) {
       const rows = await prisma.$queryRawUnsafe<Array<{ oid: string; nspname: string }>>(

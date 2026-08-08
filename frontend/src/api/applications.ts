@@ -111,6 +111,50 @@ export interface TravelSnapshotDto {
   calculatedAt: string; // ISO
 }
 
+/**
+ * 作廢資訊（PHASE-009 §7.2）——三型詳情 DTO 共用之新增鍵 `void` 之型別。
+ * **未作廢恆為 `null`**，此即 AC-33 Empty 態「未作廢詳情頁零作廢資訊區塊」
+ * 之呈現依據（詳情頁以 `application.void && (...)` 條件渲染）。
+ *
+ * 與後端 `backend/src/applications/application-void.ts` 之同名 interface
+ * 同形（前端獨立副本，本 repo 無 backend/frontend 共用 package）。
+ * `voidedByDisplayName` 於後端解析不到該使用者時為 `"—"`；`voidedById`
+ * **恆不外露**（§8.3），故本型別刻意沒有該欄。
+ */
+export interface VoidInfoDto {
+  reason: string;
+  voidedAt: string; // ISO8601
+  voidedByDisplayName: string;
+  /**
+   * PHASE-009-T15c（AC-41／Mock Gate 定案③）：作廢當時金額＝該申請**完成時
+   * 保存**之最終整筆金額（新臺幣整數）。呈現面（詳情頁「作廢資訊」區塊末列，
+   * 整數原樣、`null` → `—`）屬 T15d，本鍵僅為型別鏡像。
+   */
+  totalAmount: number | null;
+}
+
+/**
+ * 版本關聯之最小投影（PHASE-009 §7.2；AC-12(b)(c)）——**雙向皆由後端單一
+ * `supersedesId` 欄位推導**，前端不得自行拼湊第二條關聯來源。
+ *
+ * `supersededBy` 側為本三鍵；`supersedes` 側為 `SupersedesLinkDto`（四鍵，
+ * 多 `reportNumber`）。此不對稱為 AC-12(b) 原文，非疏漏——修正版頁需以
+ * 「原編號或原日期」標示來源（AC-32(c)），原申請頁只需指向修正版。
+ *
+ * 與後端 `backend/src/applications/routes.ts` 之同名 interface 同形（前端
+ * 獨立副本，本 repo 無 backend/frontend 共用 package）。
+ */
+export interface RevisionLinkDto {
+  id: string;
+  status: ApplicationStatusDto;
+  primaryDate: string; // YYYY-MM-DD
+}
+
+/** §7.2：`supersedes` 側之四鍵投影（原申請未產生報表時 `reportNumber` 為 null）。 */
+export interface SupersedesLinkDto extends RevisionLinkDto {
+  reportNumber: string | null;
+}
+
 export interface TravelApplicationDto {
   id: string;
   type: "TRAVEL";
@@ -126,6 +170,9 @@ export interface TravelApplicationDto {
   completionBlockers: BlockerDto[]; // DRAFT 有值；COMPLETED 為 []
   computed: TravelComputedDto | null; // DRAFT：即算預覽；COMPLETED：null
   snapshot: TravelSnapshotDto | null; // COMPLETED：快照；DRAFT：null
+  void: VoidInfoDto | null; // PHASE-009 §7.2：VOIDED 才非 null
+  supersedes: SupersedesLinkDto | null; // 本筆為修正版時指向原申請
+  supersededBy: RevisionLinkDto | null; // 本筆已有修正版時指向該修正版
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -146,6 +193,13 @@ export interface ApplicationListItemDto {
   onBehalf: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * PHASE-009 §7.2（T16pre 後端落地：`application-query.ts` 之
+   * `toApplicationListItemDto`，`supersedesId != null`）。列表徽章用之**純顯示**
+   * 旗標——列表刻意**不**外露 `supersedesId`（T16pre FW-2：徽章不需要跳轉能力，
+   * 跳轉走詳情端點之 `supersedes` 投影），故本鍵為 boolean 而非 id。
+   */
+  isRevision: boolean;
 }
 
 export interface ApplicationListResponse {
@@ -350,4 +404,64 @@ export async function apiCompleteApplication(
     credentials: "include",
   });
   return parseApiResponse<{ application: TravelApplicationDto }>(res);
+}
+
+// ---------------------------------------------------------------------------
+// POST /applications/:id/void (PHASE-009 §7.3, AC-29)
+//
+// Body 恆為 `{ reason }`（其餘鍵後端一律忽略）。錯誤形狀由後端權威：
+//   400 VALIDATION_ERROR + fields[{ field: "reason", reason }]
+//   409 CONFLICT + details.status ∈ {"DRAFT","VOIDED"}
+// 皆由 `parseApiResponse` 轉成 thrown `ApiError`，呈現責任在呼叫端
+// （VoidApplicationDialog）。
+//
+// 回應之 `application` 為**型別分派**之詳情 DTO（差旅／保養／折舊三型之一），
+// 故以型別參數表達而不寫死 `TravelApplicationDto`——三型詳情頁各自以自己的
+// DTO 型別呼叫（T15）。此處刻意不做 trim：後端 `void-reason.ts` 為驗證與
+// trim 的唯一事實來源（B-03），前端 trim 會讓兩處各有一份規則。
+// ---------------------------------------------------------------------------
+
+export async function apiVoidApplication<TApplication = unknown>(
+  id: string,
+  reason: string
+): Promise<{ application: TApplication }> {
+  const res = await fetch(`/api/applications/${id}/void`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ reason }),
+  });
+  return parseApiResponse<{ application: TApplication }>(res);
+}
+
+// ---------------------------------------------------------------------------
+// POST /applications/:id/revision (PHASE-009 §7.3, AC-32)
+//
+// §7.3 逐字：「Body：無（一律忽略）」。因此本函式**不送 body、亦不宣告
+// `Content-Type`**——沿 `apiCompleteApplication` 之 PHASE-004-R8 修復先例：
+// 宣告 JSON 卻送空 body 會讓 Fastify 的預設 JSON parser 在 auth preHandler
+// 之前丟 wire-level 錯誤，落入全域 error handler 的未知例外分支變成 500
+// INTERNAL_ERROR（見 backend/test/integration/
+// phase4-r8-wire-level-empty-json-body.test.ts）。沒有 body 就不該宣告 body
+// 型別；不得改為送假 body 繞過。
+//
+// 錯誤形狀由後端權威（§7.5），皆由 `parseApiResponse` 轉成 thrown `ApiError`：
+//   400 VALIDATION_ERROR（擁有人已停用；`fields[{ field:"userId" }]` —— 該
+//       `field` 對不到本頁任何輸入欄，故呼叫端必須顯示 `message` 本身，不得
+//       只做逐欄標紅而靜默吞錯，T7b 即審 AR-2）
+//   409 CONFLICT + details.status ∈ {"DRAFT","VOIDED"}
+//   409 CONFLICT + details.existingRevisionId（已有修正版）
+//
+// 回應之 `application` 為**型別分派**之新草稿詳情 DTO（§7.3 之 201），故以
+// 型別參數表達而不寫死 `TravelApplicationDto`（沿 `apiVoidApplication` 形狀）。
+// ---------------------------------------------------------------------------
+
+export async function apiCreateRevision<TApplication = unknown>(
+  id: string
+): Promise<{ application: TApplication }> {
+  const res = await fetch(`/api/applications/${id}/revision`, {
+    method: "POST",
+    credentials: "include",
+  });
+  return parseApiResponse<{ application: TApplication }>(res);
 }

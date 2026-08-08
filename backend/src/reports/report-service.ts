@@ -135,6 +135,12 @@
  * `buildErrorBody("REPORT_GENERATION_FAILED", ...)` 組出 wire 格式
  * （`buildErrorBody` 之 `code` 參數型別為 `string`，非收斂之 `ErrorCode`，
  * 故不需修改 `errors.ts` 即可組出正確、與其餘端點形狀一致的錯誤回應）。
+ * 【PHASE-009-T18 更新】此段「routes.ts 之 catch 區塊直接以 buildErrorBody
+ * 組出 wire 格式」已為歷史敘述——T18 依 §16 D14(b) 改為 routes.ts 捕捉本檔
+ * `ReportGenerationError` 後拋出 `AppError("REPORT_GENERATION_FAILED", ...)`，
+ * 由 error-handler 之 `AppError` 分支以同一個 `buildErrorBody` 組出回應（wire
+ * 格式逐字不變；詳見 routes.ts 檔頭）。本檔之 `ReportGenerationError` 語意
+ * （僅含 `stage`、結構性不持有原始錯誤）不受影響。
  * `ErrorCode` 聯集現已收錄此碼，此處與 routes.ts 之呼叫端原樣沿用
  * （`buildErrorBody` 的 `code` 參數本就接受 union 的任何成員），不需修改。
  * 各階段之 catch 區塊刻意**不**保留原始 `err`（連內部欄位也不留）——
@@ -799,4 +805,288 @@ export function buildReportContentDisposition(reportNumber: string, fileName: st
     throw new Error("content-disposition header value contains raw CR/LF");
   }
   return header;
+}
+
+// ===========================================================================
+// §3.1 (6)／(7)d：作廢版 PDF 之產生與保存（PHASE-009-T12a；AC-21(a)(c)(e)(f)、
+// §16 D4(b1)、§8.2 `VoidedReportFile`）
+//
+// ---------------------------------------------------------------------------
+// 位置約束（`SPEC-REV-9T12` 下游約束 #1，Spec §15 表後 blockquote 逐字）
+// ---------------------------------------------------------------------------
+// 本節**必須整段附加於上方 §9.1 產生流程之後**：
+// `phase8-report-generate.test.ts` :225-247 之結構斷言以
+// `src.indexOf("renderReportHtml(")` 之**首現位置**判定「渲染呼叫巢狀於
+// `$transaction(...)` 回呼內部、且配號早於渲染」（`txCallIdx < renderCallIdx <
+// readCommittedIdx`）。若把本節之 `renderReportHtml(` 插入既有流程之前，首現
+// 位置即改指本節，該既有斷言會在零行為缺陷下轉紅。此為位置約束，非風格偏好。
+//
+// 同一約束之另一面（下游約束 #2）：作廢版邏輯一律落於本檔，**不得**新建
+// `backend/src/reports/*.ts`——`phase8-contract.test.ts` :304-327 之
+// `PHASE_008_SRC_FILES` 為 `readdirSync` 之 `toEqual` 目錄實列（九檔，含
+// `report-labels.ts`），新增檔案必紅。
+//
+// ---------------------------------------------------------------------------
+// 為何不動 `Report` 列（AC-21(f)；§8.2 之「為何不擴充 Report」）
+// ---------------------------------------------------------------------------
+// 作廢版以獨立之 `VoidedReportFile` 承載，原 `Report` 列與其 `storageKey` 之
+// 位元組**永不被觸碰**（AC-21(c)）。本節因而只有 `tx.voidedReportFile.create(`
+// 一處寫入，PHASE-008 之「`reports/` 對 `report` delegate 零 update／delete／
+// upsert 呼叫」既有結構斷言零改動且全綠。
+//
+// **撰寫注意**：該既有斷言以**原始碼字串**掃描（不剝除註解——見
+// `phase8-report-generate.test.ts` :174-190），故本檔任何一處（含註解與
+// JSDoc）都**不得**出現那三個呼叫字面；上一段因此以文字描述取代逐字引用。
+// 本 Task 撰寫過程中確實踩到此點（註解內的逐字引用使該斷言轉紅），已由
+// `phase9-void-report.test.ts` §D-0 之同型就地守門攔下。
+//
+// ---------------------------------------------------------------------------
+// 交易邊界與職責分工（**本節不自開交易**）
+// ---------------------------------------------------------------------------
+// 作廢交易之擁有者是 `applications/application-void.ts`（§3.1 步驟 7）。本節
+// 沿 T6 `attachment/attachment-copy.ts` 之既有形狀，提供一個**一次性生命週期
+// 物件** {@link VoidedReportPlan}：
+//   · `onVoided`：掛入該交易之 PDF 步驟（7d），收呼叫端之
+//     `Prisma.TransactionClient`，於同一交易內 `INSERT VoidedReportFile`——唯
+//     有同一交易，AC-21(a) 之「任一階段失敗 → 整筆作廢回滾」才成立。
+//   · `compensate`：補償刪除本次已 `put` 之 key。storage 是交易外資源，DB 回
+//     滾不會回收已寫入之檔案，補償刪檔是其唯一還原手段（§3.1 不變式②）。
+//
+// **雙層補償**（沿 T6／AC-14(e) 之同型分工）：
+//   ① 內層——`onVoided` 自身之任一階段失敗（RENDER／STORE／VERIFY／PERSIST）
+//      於**拋出前**先補償，故即使呼叫端忘了外層補償，該四條路徑仍零殘留。
+//   ② 外層——呼叫端（`applications/routes.ts`）於 `voidApplication` 拋錯時呼
+//      叫 `compensate()`，涵蓋「PDF 步驟成功、其後才失敗」之路徑（稽核 hook
+//      拋錯、commit 失敗、Prisma 交易逾時）。少了這一層，「稽核寫入失敗」會留
+//      下一份無主 PDF。
+// `compensate()` 無「已定案」旗標（沿 T6 之同一取捨，見 `attachment-copy.ts`
+// 之 `RevisionAttachmentCopier` 說明）：成功路徑**永不**呼叫它——commit 之後
+// 呼叫會無條件刪除線上作廢版之位元組。呼叫端紀律：只在拋錯路徑上呼叫。
+//
+// in-doubt 之殘留（交易在 commit 前後失聯，DB 已提交但補償誤刪／或 DB 回滾但
+// 補償未及執行）不在本 Task 之解決範圍——沿 T6 關閉輪 AR-6 之同一裁定，歸
+// PHASE-011 之孤兒清理（Spec §17.2「PHASE-011」列已明文涵蓋
+// `VoidedReportFile` 之 `rpt/` 物件）。
+// ===========================================================================
+
+/**
+ * 作廢版 PDF 之 storage key 後綴。
+ *
+ * **與 §8.2 之欄位註解字面不同（`"rpt/<uuid>/void.pdf"`），已於 Handoff 回
+ * 報**：`LocalVolumeStorage` 之 key 白名單為
+ * `^(?:rpt)\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$`（`local-volume-storage.ts`
+ * :59-61），**後綴不接受 `.`**，故 `void.pdf` 會在 `put` 時被拒。§7.5 :526 之
+ * 規範性要求為「`storageKey` 一律 `rpt/` 前綴」，此處逐字成立；§8.2 之
+ * `void.pdf` 為 schema 註解中之示意字面，與 PHASE-003 起已批准之 key 白名單
+ * 不相容。沿既有正式版之 `rpt/<uuid>/pdf` 慣例取 `void`，兩者結構上互異。
+ * storageKey 恆不外流（`ReportDto` 不含此欄，§7.2）。
+ */
+const VOIDED_REPORT_KEY_SUFFIX = "void";
+
+/**
+ * §3.1 步驟 6 之交易外投影用佔位值——`buildReportData` 之三個作廢欄「同生共
+ * 死」判定要求三者皆非 `null` 才會產出 `common.void`，但真正的 `reason`／
+ * `voidedAt` 要到交易內（7c）才存在。故交易外先以佔位值取得結構完整的
+ * `ReportData`，交易內再由 {@link withVoidInfo} 覆寫這**兩個純量**——與
+ * {@link withReportMeta} 覆寫 `reportNumber`／`generatedAt` 完全同型。
+ *
+ * 這麼做的目的是**不新增第二個事實來源**：`statusLabel`（「已作廢」）之映射與
+ * `byDisplayName`（`voidedById` → 顯示名稱，含查無使用者時之 `"—"`）之解析，
+ * 皆留在 `report-data.ts` 既有的唯一實作內，本檔一個字面也不複製。
+ */
+const VOID_REASON_PLACEHOLDER = "";
+const VOID_AT_PLACEHOLDER = new Date(0);
+
+/** {@link prepareVoidedReport} 之產物——一次作廢請求之生命週期物件，不可重用。 */
+export interface VoidedReportPlan {
+  /**
+   * 掛入 `voidApplication` 之 PDF 步驟（§3.1 步驟 7d），於**同一交易**內、四欄
+   * 寫入（7c）之後、稽核 hook（7e）之前執行。
+   *
+   * 參數型別刻意只宣告本步驟實際讀取的兩個欄位（而非 import
+   * `applications/application-void.ts` 之 `VoidedApplicationRow`）——`reports/`
+   * 對 `applications/` 維持零依賴（沿 `report-data.ts` :293-296 之同一裁量）；
+   * 函式參數之逆變使本值仍可直接指派給該檔宣告的 hook 型別。
+   */
+  onVoided: (
+    tx: Prisma.TransactionClient,
+    voided: { voidReason: string; voidedAt: Date }
+  ) => Promise<void>;
+  /** 補償刪除本次已寫入之 key；冪等（刪除後即自清單移除，重複呼叫為 no-op）。 */
+  compensate: () => Promise<void>;
+}
+
+/**
+ * §3.1 步驟 6：**交易外**組裝作廢版 `ReportData`（讀快照 ＋ 嵌圖，零重算、零
+ * DB 寫入），並回傳掛入作廢交易所需的 {@link VoidedReportPlan}。
+ *
+ * **AC-21(e)**：申請**未產生報表**時回傳 `null` 且**在此之前不做任何渲染或
+ * storage 呼叫**——`Report` 之冪等查詢是本函式的第一個陳述式，未命中即返回，
+ * 作廢因而是純 DB 操作（零渲染、零 storage 寫入）。此為結構性保證，不是「有記
+ * 得跳過」的條件式。
+ *
+ * **同一份快照**（AC-21(a) 逐字）：`buildReportData` 讀的是三型子表之
+ * `snapshot*` 欄，作廢只改 `status` 與三個作廢欄（§8.4／AC-04），故作廢版與正
+ * 式版所依據的快照必然同一份；`reportNumber`／`generatedAt` 亦逐字沿用原
+ * `Report` 列（AC-21(b) 之「編號不變」在資料面於此成立），`fileName` 同理沿用
+ * 原列（§8.2 欄位註解逐字）。
+ *
+ * @param actorId 作廢操作者——寫入 `VoidedReportFile.createdById`，並作為交易
+ *   外投影之 `voidedById`（使 `byDisplayName` 由 `report-data.ts` 之唯一解析
+ *   路徑產出）。
+ * @throws {ReportGenerationError} `RENDER`——交易外之快照組裝或嵌圖失敗（沿
+ *   {@link generateReport} 對 §9.1 (2)(3) 之同一分類）。此時作廢交易尚未開
+ *   始，DB 天然零寫入、storage 天然零殘留。
+ */
+export async function prepareVoidedReport(
+  deps: ReportServiceDeps,
+  applicationId: string,
+  actorId: string
+): Promise<VoidedReportPlan | null> {
+  // AC-21(e)：未產生報表 → 零渲染、零 storage 寫入（第一個陳述式即收斂）。
+  const report = await deps.prisma.report.findUnique({ where: { applicationId } });
+  if (!report) return null;
+
+  let baseData: ReportData;
+  try {
+    const application = await deps.prisma.application.findUniqueOrThrow({
+      where: { id: applicationId },
+      include: reportApplicationInclude,
+    });
+
+    // 「作廢後之投影」——只在**記憶體**中把四個欄位換成作廢後之值（零 DB 寫
+    // 入）。§3.1 不變式③要求「渲染所用之 ReportData 恆帶正確作廢資訊」，而組
+    // 裝必須在交易外（步驟 6）；投影使 statusLabel 與 byDisplayName 於此刻即
+    // 正確，reason／at 兩純量待交易內覆寫（見 VOID_*_PLACEHOLDER 說明）。
+    const projected: ReportApplicationRecord = {
+      ...application,
+      status: "VOIDED",
+      voidReason: VOID_REASON_PLACEHOLDER,
+      voidedAt: VOID_AT_PLACEHOLDER,
+      voidedById: actorId,
+    };
+
+    const rawData = await buildReportData(deps.prisma, projected, {
+      reportNumber: report.reportNumber,
+      generatedAt: report.generatedAt,
+    });
+    baseData = await embedImages(deps.attachmentStorage, rawData, deps.imageMaxPx, deps.log);
+  } catch {
+    throw new ReportGenerationError("RENDER");
+  }
+
+  const written: string[] = [];
+
+  async function compensate(): Promise<void> {
+    // 逐一刪除並自清單移除——中途某個 delete 失敗時其餘仍會被嘗試，已成功者
+    // 不會被重複刪除（`safeDelete` 本身亦吞下失敗，不得掩蓋呼叫端正在拋出的
+    // 原始失敗）。
+    while (written.length > 0) {
+      const key = written.pop() as string;
+      await safeDelete(deps.reportStorage, key);
+    }
+  }
+
+  const onVoided: VoidedReportPlan["onVoided"] = async (tx, voided) => {
+    try {
+      // §3.1 步驟 7d：渲染（作廢資訊已於 7c 寫入，此處覆寫兩個純量）。
+      const data = withVoidInfo(baseData, voided.voidReason, voided.voidedAt);
+
+      let html: string;
+      try {
+        html = renderReportHtml(data);
+      } catch {
+        throw new ReportGenerationError("RENDER");
+      }
+
+      let pdfBytes: Buffer;
+      try {
+        pdfBytes = await renderPdf(html, { timeoutMs: deps.pdfTimeoutMs });
+      } catch {
+        throw new ReportGenerationError("RENDER");
+      }
+
+      // put——自此刻起將 key 記入 `written`，供補償刪除（內層於下方 catch、外
+      // 層由呼叫端）。SF-3 同型：即使 put 自身失敗亦 best-effort 收尾。
+      const storageKey = `rpt/${crypto.randomUUID()}/${VOIDED_REPORT_KEY_SUFFIX}`;
+      try {
+        await deps.reportStorage.put(storageKey, pdfBytes, "application/pdf");
+        written.push(storageKey);
+      } catch {
+        await safeDelete(deps.reportStorage, storageKey);
+        throw new ReportGenerationError("STORE");
+      }
+
+      // 讀回校驗（位元組數 ＋ SHA-256）——與 §9.1 (4)f 逐字同型。
+      let contentHash: string;
+      try {
+        const readBack = await deps.reportStorage.get(storageKey);
+        const readBackBytes = Buffer.isBuffer(readBack) ? readBack : await streamToBuffer(readBack);
+        if (readBackBytes.length !== pdfBytes.length) {
+          throw new Error("readback byte size mismatch");
+        }
+        const expectedHash = crypto.createHash("sha256").update(pdfBytes).digest("hex");
+        const actualHash = crypto.createHash("sha256").update(readBackBytes).digest("hex");
+        if (actualHash !== expectedHash) {
+          throw new Error("readback hash mismatch");
+        }
+        contentHash = expectedHash;
+      } catch {
+        throw new ReportGenerationError("VERIFY");
+      }
+
+      // INSERT——**呼叫端之 `tx`**（不是 `deps.prisma`）：唯有同一交易，任一
+      // 後續失敗（稽核 hook、commit）才會連同本列一併回滾。`reportId` 之唯一
+      // 約束（§8.2）為冪等鍵，重複作廢之最後防線 → P2002 → PERSIST。
+      try {
+        await tx.voidedReportFile.create({
+          data: {
+            reportId: report.id,
+            storageKey,
+            // §8.2：與原 `Report.fileName` 相同（報表編號不變）。
+            fileName: report.fileName,
+            byteSize: pdfBytes.length,
+            contentHash,
+            createdById: actorId,
+          },
+        });
+      } catch {
+        throw new ReportGenerationError("PERSIST");
+      }
+    } catch (err) {
+      // 內層補償（見本節檔頭「雙層補償」①）：先讓 storage 零殘留，再把錯誤往
+      // 上拋使整筆作廢交易回滾。
+      await compensate();
+      throw err;
+    }
+  };
+
+  return { onVoided, compensate };
+}
+
+/**
+ * 以交易內取得之真實作廢原因與作廢時間，覆寫交易外投影所用之兩個佔位純量。
+ *
+ * 與 {@link withReportMeta} 完全同型：**不重新查詢 DB**，`common` 之其餘欄位
+ * （含 `statusLabel`、`void.byDisplayName`）與三型 body 主體皆原樣沿用，故仍屬
+ * §9.1「零重算」。
+ */
+function withVoidInfo(data: ReportData, reason: string, at: Date): ReportData {
+  const existing = data.common.void;
+  if (existing === null) {
+    // 不可達：交易外投影恆給滿三個作廢欄。保留為結構性防線——寧可失敗，也不
+    // 得產出一份「沒有作廢標示的作廢版 PDF」。
+    throw new ReportGenerationError("RENDER");
+  }
+  const common: ReportCommon = {
+    ...data.common,
+    void: { ...existing, reason, at: at.toISOString() },
+  };
+  if (data.kind === "TRAVEL") {
+    return { kind: "TRAVEL", common, travel: data.travel };
+  }
+  if (data.kind === "MAINTENANCE") {
+    return { kind: "MAINTENANCE", common, maintenance: data.maintenance };
+  }
+  return { kind: "DEPRECIATION", common, depreciation: data.depreciation };
 }

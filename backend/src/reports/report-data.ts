@@ -35,6 +35,10 @@
  * 4 位小數之 `rawAmount`（AC-18(c)）。三型 body 與 `ReportImage` 皆為封閉介
  * 面（無 index signature），任何欄位新增須經 Spec 修訂（§7.3）。
  *
+ * PHASE-009 AC-19（受控擴充，經 Spec 修訂）：`ReportCommon` 新增**恰一個**欄位
+ * `void`（七鍵 → 八鍵）；**三型 body 鍵集逐字不變**——作廢資訊只落於 `common`，
+ * 不污染任何一型 body。
+ *
  * ---------------------------------------------------------------------------
  * 圖片欄位（`ReportImage`）── 與 T6（`report-images.ts`）之分工
  * ---------------------------------------------------------------------------
@@ -83,6 +87,24 @@ export interface ReportImage {
   missing: boolean;
 }
 
+/**
+ * 作廢資訊（PHASE-009 AC-19）；未作廢恆為 `null`。
+ *
+ * 與 `applications/application-void.ts` 之 `VoidInfoDto` 為**不同鍵名**之姊妹
+ * 型別（該處為 `voidedAt`／`voidedByDisplayName`，此處依 AC-19 原文為 `at`／
+ * `byDisplayName`），故無法直接複用其型別；「解析失敗以 `"—"` 呈現、恆不外洩
+ * `voidedById`」之語意則逐字同型（見 {@link resolveReportVoid}）。
+ *
+ * `at` 為 ISO8601 字串——與同一介面之 `generatedAt`／`createdAt` 同型。台北時
+ * 區中文格式化屬列印版之責（AC-20 明文要求沿 `formatTaipeiDateTime` 為**唯一**
+ * 格式化來源），資料層不預先格式化。
+ */
+export interface ReportVoidInfo {
+  reason: string;
+  at: string;
+  byDisplayName: string;
+}
+
 export interface ReportCommon {
   reportNumber: string | null;
   generatedAt: string | null;
@@ -91,6 +113,7 @@ export interface ReportCommon {
   statusLabel: string;
   createdAt: string;
   totalAmount: number;
+  void: ReportVoidInfo | null;
 }
 
 export interface TravelSegmentReport {
@@ -259,10 +282,50 @@ async function fetchApplicationAttachments(
 // 共通區塊
 // ---------------------------------------------------------------------------
 
-function buildCommon(
+/**
+ * 由 `Application` 列組裝 {@link ReportVoidInfo}（AC-19(c)）。
+ *
+ * 三個作廢欄（`voidReason`／`voidedAt`／`voidedById`）同生共死（§8.1）——任一
+ * 為 `null` 即視為未作廢，回傳 `null`。`voidedById` **無 FK**（§8.3，沿
+ * `Report.generatedById` 慣例），故以獨立查詢解析顯示名稱；查無該使用者（帳號
+ * 其後被刪除等情形）時以 `"—"` 呈現、**不**拋錯、**不**外洩 `voidedById`。
+ *
+ * 依賴方向：本檔（`reports/` 域）刻意**不** import `applications/
+ * application-void.ts` 之 `resolveVoidInfo`——`reports/` 目前對 `applications/`
+ * 零依賴（僅型別性地依賴 `mileage/mileage-engine.ts` 之 `PrismaLike`），為單一
+ * 鍵名重映射而新建一條跨域執行期依賴不划算；且兩者鍵名不同（見
+ * {@link ReportVoidInfo} 說明），複用亦無法省去映射。此處為六行之同型實作，
+ * 語意（含 `"—"` 之字面）與該函式逐字一致。
+ */
+async function resolveReportVoid(
+  db: PrismaLike,
+  application: ReportApplicationRecord
+): Promise<ReportVoidInfo | null> {
+  if (
+    application.voidReason === null ||
+    application.voidedAt === null ||
+    application.voidedById === null
+  ) {
+    return null;
+  }
+
+  const voidedBy = await db.user.findUnique({
+    where: { id: application.voidedById },
+    select: { displayName: true },
+  });
+
+  return {
+    reason: application.voidReason,
+    at: application.voidedAt.toISOString(),
+    byDisplayName: voidedBy?.displayName ?? "—",
+  };
+}
+
+async function buildCommon(
+  db: PrismaLike,
   application: ReportApplicationRecord,
   report: ReportMeta | null
-): ReportCommon {
+): Promise<ReportCommon> {
   return {
     reportNumber: report?.reportNumber ?? null,
     generatedAt: report ? report.generatedAt.toISOString() : null,
@@ -271,6 +334,7 @@ function buildCommon(
     statusLabel: REPORT_STATUS_LABEL[application.status],
     createdAt: application.createdAt.toISOString(),
     totalAmount: required(application.totalAmount, "totalAmount", application.id),
+    void: await resolveReportVoid(db, application),
   };
 }
 
@@ -432,7 +496,7 @@ export async function buildReportData(
   application: ReportApplicationRecord,
   report: ReportMeta | null
 ): Promise<ReportData> {
-  const common = buildCommon(application, report);
+  const common = await buildCommon(db, application, report);
   if (application.type === "TRAVEL") {
     return { kind: "TRAVEL", common, travel: await buildTravelBody(db, application) };
   }

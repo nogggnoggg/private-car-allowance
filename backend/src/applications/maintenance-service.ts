@@ -68,6 +68,7 @@ import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.j
 import type { FieldError } from "../platform/errors.js";
 import { AppError } from "../platform/errors.js";
 import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
+import { type VoidInfoDto, resolveVoidInfo } from "./application-void.js";
 import type { Blocker } from "./maintenance-blockers.js";
 import {
   computeMaintenanceBlockers,
@@ -808,6 +809,8 @@ export interface MaintenanceApplicationDto {
   completionBlockers: Blocker[] | null;
   computed: MaintenanceComputedDto | null;
   snapshot: MaintenanceSnapshotDto | null;
+  /** PHASE-009-T3（§7.2）：未作廢恆為 null。 */
+  void: VoidInfoDto | null;
 }
 
 /**
@@ -885,7 +888,8 @@ function buildSnapshotDto(
 export function toMaintenanceApplicationDto(
   application: MaintenanceApplicationRecord,
   computed: MaintenanceComputedResult | null = null,
-  attachments: AttachmentDto[] = []
+  attachments: AttachmentDto[] = [],
+  voidInfo: VoidInfoDto | null = null
 ): MaintenanceApplicationDto {
   const maintenance = application.maintenance;
   const isDraft = application.status === "DRAFT";
@@ -925,6 +929,7 @@ export function toMaintenanceApplicationDto(
     completionBlockers,
     computed: isDraft && computed?.hasAllFields ? computed.dto : null,
     snapshot: buildSnapshotDto(application),
+    void: voidInfo,
   };
 }
 
@@ -949,9 +954,12 @@ export async function buildMaintenanceApplicationDto(
     where: { refType: "MAINTENANCE", refId: application.id, status: "LINKED" },
   });
   const attachments = attachmentRows.map(toAttachmentDto);
+  // PHASE-009-T3：作廢資訊之解析需查 DB（`voidedById` 無 FK）——本函式本就
+  // 是「查 DB 的那一層」，`toMaintenanceApplicationDto` 保持純函式不變。
+  const voidInfo = await resolveVoidInfo(db, application);
 
   if (application.status !== "DRAFT") {
-    return toMaintenanceApplicationDto(application, null, attachments);
+    return toMaintenanceApplicationDto(application, null, attachments, voidInfo);
   }
 
   const maintenance = application.maintenance;
@@ -964,7 +972,7 @@ export async function buildMaintenanceApplicationDto(
     actualCost: maintenance?.actualCost ?? null,
   });
 
-  return toMaintenanceApplicationDto(application, computed, attachments);
+  return toMaintenanceApplicationDto(application, computed, attachments, voidInfo);
 }
 
 // ---------------------------------------------------------------------------
