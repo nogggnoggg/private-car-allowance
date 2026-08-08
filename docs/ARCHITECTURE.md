@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：2026-08-05（最後同步至 PHASE-007 **折舊模型修訂段**已落地現實；DOC-SYNC `PHASE-007-DOC-SYNC-A`、`PHASE-007-DOC-SYNC-B`、`PHASE-007-DOC-SYNC`、`PHASE-007-DOC-SYNC-REV`）
+- 更新日期：2026-08-09（最後同步至 **PHASE-009（作廢與修正版）**已落地現實；DOC-SYNC `PHASE-009-DOC-SYNC-B`。前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
 - 上游：`userstory.md`、`docs/PRD.md`、`CLAUDE.md`（技術棧已由人類確認）
 - 說明：本文件為概念層架構草案，不含實際套件版本細節、API 完整路徑、DB 欄位與索引、部署程式碼。這些於各 Phase Spec 與實作 Task 定案。
 
@@ -65,18 +65,23 @@
 | `users` | 使用者清單/新增/啟用停用/重設密碼/條件式刪除 | AD-US-01..05 |
 | `users/fuel-consumption` | 使用者車輛油耗版本（油種 ＋ 每公升公里數 ＋ 依據備註）之建立與列表（管理員）、本人唯讀檢視；append-only（無改/刪端點），依 `effectiveFrom` 選版並複用 `parameters` 之 `checkNoOverlap`／`findEffectiveVersion`／`parseParameterDecimalField`；稽核 `USER_FUEL_CONSUMPTION_VERSION_CREATED`。**PHASE-005a 落地，落點 `backend/src/users/fuel-consumption-service.ts`／`fuel-consumption-routes.ts`**；路徑依 D7(a)：`POST\|GET /users/:userId/fuel-consumption`（管理員）＋ `GET /me/fuel-consumption`（恆為自己，結構上不存在他人識別值參數） | AD-US-15, FE-US-28, BE-US-19, 31 |
 | `parameters` | 三類補助參數版本之建立/列表端點、不重疊驗證（退化為同類 `effectiveFrom` 唯一，PHASE-003a）、依日期查找純函式 `findEffectiveVersion`、折舊推導引擎（**PHASE-007 修訂段起**：`deriveAnnualDepreciation`＝每年折舊費用 2 位小數，為申請路徑之唯一推導來源；`deriveDepreciation`＝每公里單價 4 位小數**行為凍結**，僅供舊模型歷史快照與歷史參數版本之唯讀顯示，申請路徑**零呼叫**）、參數異動稽核（複用 `audit`／PHASE-002 `AuditLog`）；只增不改（無改/刪版本端點）以保引用保護。**PHASE-005a 起，油資由 `FuelPriceVersion`（按油種 `GASOLINE_92`／`GASOLINE_95`／`GASOLINE_98`／`DIESEL`）維護，端點 `POST\|GET /parameters/fuel-price`，落點 `fuel-price-service.ts`＋單價推導純函式 `fuel-price-engine.ts`；`FuelParameterVersion` 依 D1(a) 定案處置——表與歷史引用保留、`POST /parameters/fuel` 凍結（三身分皆 404、零寫入）、`GET /parameters/fuel` 保留唯讀（供稽核追溯與舊快照顯示）** | AD-US-11..13, BE-US-14, 19, 32 |
-| `applications` | 申請共通：狀態機、草稿、綜合查詢（分頁/篩選/授權）、修正版、作廢、快照容器。**PHASE-006 起亦為保養實作之落點**（下列 `maintenance` 概念模組之程式落於 `backend/src/applications/`）：`maintenance-service.ts`（草稿 CRUD／預覽／完成流程編排）、`maintenance-calculation.ts`（分攤計算純函式）、`maintenance-blockers.ts`（完成阻擋碼純函式）。**PHASE-007 起亦為折舊實作之落點**（下列 `depreciation` 概念模組之程式同樣落於此目錄，四檔見該列） | FE-US-04, 05, 21, 25, 26, BE-US-05, 18, 20, 21, 22, 29 |
+| `applications` | 申請共通：狀態機、草稿、綜合查詢（分頁/篩選/授權）、修正版、作廢、快照容器。**PHASE-006 起亦為保養實作之落點**（下列 `maintenance` 概念模組之程式落於 `backend/src/applications/`）：`maintenance-service.ts`（草稿 CRUD／預覽／完成流程編排）、`maintenance-calculation.ts`（分攤計算純函式）、`maintenance-blockers.ts`（完成阻擋碼純函式）。**PHASE-007 起亦為折舊實作之落點**（下列 `depreciation` 概念模組之程式同樣落於此目錄，四檔見該列）。**PHASE-009 落地（作廢與修正版）**，三個新檔：`void-reason.ts`（作廢原因驗證純函式——trim 後 1..500，含全形空白／Tab／換行）／`application-void.ts`（作廢編排：型別無關，只讀寫 `Application` 單列；`SELECT … FOR UPDATE` ＋ **READ COMMITTED**，刻意不用 `SERIALIZABLE`＋重試——單列寫入之列鎖已足以序列化併發雙作廢）／`application-revision.ts`（修正版複製：三型業務欄位逐欄複製 ＋ `supersedesId` ＋ 單一交易與列鎖，交易 `timeout: 60_000`／`maxWait: 10_000`）。**兩個新端點掛於既有 `routes.ts`**（`POST /applications/:id/void`、`POST /applications/:id/revision`），未另開 plugin；版本關聯之 DTO 投影 `withRevisionLinks` 亦於 `routes.ts` 並 export 供 `admin/routes.ts` 三個代建端點複用（同一 DTO 不因端點而異形） | FE-US-04, 05, 21, 25, 26, BE-US-05, 18, 20, 21, 22, 29 |
 | `trips` | 差旅專屬：多段行程、里程驗證、差旅完成流程 | FE-US-07..12, BE-US-06, 07, 08, 09 |
 | `maintenance` | 保養專屬：區間里程、期間公務里程、分攤、保養完成流程 | FE-US-13..16, BE-US-10..13 |
 | `depreciation` | 折舊專屬：年度公務里程（引擎複用）、**使用者申報之年度總里程**、參數套用、補貼計算、折舊完成流程。**PHASE-007 落地，落點 `backend/src/applications/`**，四檔各司其職：`depreciation-calculation.ts`（補貼計算與容量判定純函式，無 DB／無 IO）、`depreciation-blockers.ts`（完成阻擋碼純函式，結構性／計算性兩段式）、`depreciation-parameters.ts`（依申請年度 1/1 選版 ＋ 呼叫 PHASE-003a `deriveAnnualDepreciation` 推導每年折舊費用；**修訂段起不再 import `deriveDepreciation`**）、`depreciation-service.ts`（草稿 CRUD／預覽／完成流程編排與快照寫入） | FE-US-17..20, BE-US-15, 16, 17 |
 | `mileage`（統計） | 區間/年度公務里程統計引擎（共用給差旅統計、保養、折舊）。**PHASE-005 落地，落點 `backend/src/mileage/`**，三檔各司其職：`mileage-range.ts`（純函式：區間驗證 `parseMileageRange`、過濾條件建構 `buildOfficialMileageWhere`，不碰 DB、不知道「今天」）、`mileage-engine.ts`（唯讀 DB 聚合 `sumOfficialMileage`，簽章接受 `PrismaClient \| Prisma.TransactionClient`）、`routes.ts`（薄層編排：授權 → 結構收斂 → 驗證 → 引擎 → DTO，本身不含任何業務判定）。對外**僅一個唯讀端點**；對內提供 `sumOfficialMileage(db, params)` 供 `maintenance`／`depreciation` **於交易內複用**（不重算、不繞道 HTTP） | FE-US-06, BE-US-30 |
-| `attachments` | storage 抽象、上傳/格式大小/內容檢測、數量限制、生命週期（暫存→關聯→鎖定→清理）、授權存取 | FE-US-21, BE-US-23, 24, 25, NFR-US-07, 10 |
-| `reports` | 報表編號產生、列印版 HTML 組裝、Playwright PDF 產生/保存、安全檔名、授權下載。**PHASE-008 落地，落點 `backend/src/reports/`**，**九檔**各司其職：`report-number.ts`（編號純函式：三型前綴 ＋ Asia/Taipei `YYYYMM` ＋ 序號補零）／`report-filename.ts`（安全檔名純函式：不安全字元清理、姓名段 30／整體 120 上限、`Content-Disposition` 雙形式）／`report-data.ts`（**只讀快照**之封閉白名單組裝，零重算、零計算引擎呼叫）／`report-html.ts`（列印版版型**純函式**：零時鐘、零隨機、零外部資源）／`report-labels.ts`（**顯示標籤之單一來源**：油種中文名稱窮舉 `Record<FuelType, string>`、台北時區中文時間格式化——PHASE-008 Mock Gate 裁-1／裁-3）／`report-images.ts`（附件位元組 → 降尺寸／EXIF 轉正／**取小者** → data URI）／`pdf-renderer.ts`（Playwright 封裝：啟動參數、逾時、`%PDF-`／`%%EOF` 校驗、`preferCSSPageSize` A4）／`report-service.ts`（編排、交易、冪等、補償刪檔）／`routes.ts`（四端點：產生／列印／下載／查詢）。**九檔清單有結構性測試釘住**（新增或刪除 `.ts` 而未同步清單即紅） | FE-US-22..24, BE-US-26, 27, 28 |
+| `attachments` | storage 抽象、上傳/格式大小/內容檢測、數量限制、生命週期（暫存→關聯→鎖定→清理）、授權存取。**PHASE-009 落地 `backend/src/attachment/attachment-copy.ts`**：修正版之附件**位元組複製**（原圖與縮圖各自新 `storageKey`，逐位元組相同；容器對位＝差旅逐段、保養／折舊單一容器；沿既有「先 `put` 後 `INSERT`」順序，失敗時補償刪除已寫新 key 並讓整筆修正版交易回滾）。**本檔於交易客戶端（`Prisma.TransactionClient`）上直接 `create`**，未改 `attachment-service.ts` 之 `createAttachment` 簽章（其只收頂層 `PrismaClient`，改簽章會波及 PHASE-003 起既有呼叫端） | FE-US-21, BE-US-23, 24, 25, NFR-US-07, 10 |
+| `reports` | 報表編號產生、列印版 HTML 組裝、Playwright PDF 產生/保存、安全檔名、授權下載。**PHASE-008 落地，落點 `backend/src/reports/`**，**九檔**各司其職：`report-number.ts`（編號純函式：三型前綴 ＋ Asia/Taipei `YYYYMM` ＋ 序號補零）／`report-filename.ts`（安全檔名純函式：不安全字元清理、姓名段 30／整體 120 上限、`Content-Disposition` 雙形式）／`report-data.ts`（**只讀快照**之封閉白名單組裝，零重算、零計算引擎呼叫）／`report-html.ts`（列印版版型**純函式**：零時鐘、零隨機、零外部資源）／`report-labels.ts`（**顯示標籤之單一來源**：油種中文名稱窮舉 `Record<FuelType, string>`、台北時區中文時間格式化——PHASE-008 Mock Gate 裁-1／裁-3）／`report-images.ts`（附件位元組 → 降尺寸／EXIF 轉正／**取小者** → data URI）／`pdf-renderer.ts`（Playwright 封裝：啟動參數、逾時、`%PDF-`／`%%EOF` 校驗、`preferCSSPageSize` A4）／`report-service.ts`（編排、交易、冪等、補償刪檔）／`routes.ts`（四端點：產生／列印／下載／查詢）。**九檔清單有結構性測試釘住**（新增或刪除 `.ts` 而未同步清單即紅）。**PHASE-009 之作廢版 PDF 亦落於本目錄且仍為九檔**——`prepareVoidedReport`／`VoidedReportPlan` 附加於 `report-service.ts` 既有產生流程**之後**（位置為約束非風格：既有結構斷言以 `renderReportHtml(` 之**首現位置**判定「配號早於渲染」，插入於前會在零行為缺陷下轉紅），**不得**新建 `reports/*.ts`；`routes.ts` 之四端點於 `VOIDED` 之行為見 §4.7 末三條 | FE-US-22..24, BE-US-26, 27, 28 |
 | `audit` | 稽核事件寫入與查詢（操作者/擁有人/時間/類型/前後摘要；密碼不入） | AD-US-14, BE-US-31 |
 | `calculation engine` | 金額計算純函式：單段/整筆差旅、保養分攤、折舊補貼、統一四捨五入取整 | BE-US-06, 07, 12, 14, 17 |
 | `platform` | 健康檢查、結構化錯誤處理、設定/env 載入、DB 連線 | NFR-US-15, 16, 05 |
 
 模組依賴方向（高階）：`trips/maintenance/depreciation` → `applications`（狀態/草稿/查詢）+ `calculation engine` + `parameters` + `mileage` + `attachments`；所有受保護模組 → `auth` + `authz`；寫入操作 → `audit`。
+
+**PHASE-009 新增之兩條依賴（記載，非既有方向之推翻）**：
+
+- `attachment` → `applications`：`attachment/attachment-copy.ts` **import** `applications/application-revision.ts` 之 `createApplicationRevision`，以其既有 hook `OnApplicationRevisionCreated` 掛入**同一交易**（AC-14(e) 之「整筆回滾」唯有同一交易成立）。此為既有「`applications` → `attachments`」之**反向**依賴，故明文記載：對位規則屬附件域、交易擁有權屬申請域，本檔是兩域的接縫，**不得**再由 `applications/` 反向 import 本檔（會成環）。
+- `applications` → `reports`：`applications/routes.ts` 之作廢端點 import `reports/report-service.ts` 之 `prepareVoidedReport`／`ReportGenerationError`。方向為單向——`reports/` 對 `applications/` 維持**零依賴**（`VoidedReportPlan.onVoided` 之參數型別刻意只宣告實際讀取的兩個欄位，而非 import 申請域型別）。
 
 ## 4. 共用元件與跨模組規則
 
@@ -106,11 +111,15 @@
 
 - 狀態：草稿 / 已完成 / 已作廢。允許：新建→草稿、草稿→已完成、草稿→刪除、已完成→已作廢、已完成→建立修正版草稿。禁止：已完成→草稿、已作廢→已完成、已作廢→草稿、已完成永久刪除。
 - 由 `applications` 模組集中守門，各申請類型共用（BE-US-05）。完成需通過各類型完整性驗證。
+- **已落地（PHASE-009，取代上二條之規劃語氣）**：`application-state-machine.ts` 之 `ALLOWED_TRANSITIONS` **恰兩條**——`DRAFT → COMPLETED`（PHASE-004）與 `COMPLETED → VOIDED`（PHASE-009）。長度以 `ALLOWED_TRANSITIONS.length === 2` 之測試釘住，任何再放寬須先經 Gate 決策批准並於該檔加註引用。
+- **`VOIDED` 為終態，無任何回復路徑（結構性守門）**：`VOIDED → COMPLETED`／`VOIDED → DRAFT`／`VOIDED → VOIDED` 皆不在集合內而被 `assertTransition` 拒絕（403 FORBIDDEN，逐字文案「已完成的申請不可修改，請建立修正版」）；「回復」不是被某段條件式擋下，而是**集合裡沒有那條邊**。
+- **「已完成→建立修正版草稿」不是狀態轉換**：修正版為**新建**一列 `Application`（`DRAFT`），原列狀態逐字不變；兩者以 `Application.supersedesId`（`@unique`）單向連結，故不經 `ALLOWED_TRANSITIONS`。「原申請已有修正版」之重複建立由 `FOR UPDATE` 列鎖 ＋ `supersededBy` 守門攔為 409，`supersedesId @unique` 為最後防線（`P2002` 轉譯為同形狀 409，避免同一使用者情境時而 409 時而 500）。
 
 ### 4.4 計算快照（不可變）
 
 - 申請完成時保存「使用的參數 + 取整前後金額」快照（差旅：油資/ETC 單價、取整前後金額；保養：區間里程/公務里程/比例/實際費用/最終金額；**折舊（修訂後）：車價/年限/每年折舊費用/年度公務里程/年度總里程/公務比例/取整前後金額**）（BE-US-18）。
 - 快照一旦寫入不可變；事後修改參數不影響歷史申請與已保存 PDF（AD-US-11/13、FE-US-20、BE-US-09/16 一致）。
+- **作廢不改寫任何金額或快照（PHASE-009）**：作廢只寫 `Application` 之 `status` ＋ 三個作廢欄，`totalAmount`、`completedAt` 與三型子表之全部快照欄**逐欄不變**（有整合測試逐欄比對）。已作廢申請之詳情因而仍能呈現「作廢當時金額」＝完成時快照之最終整筆金額（`VoidInfoDto.totalAmount`，三型共用同一投影）。
 - **保養快照之落地形狀（PHASE-006，D11(a)）**：`MaintenanceApplication` 另存**取整前金額 `snapshotRawAmount`** 與 `calculatedAt`（連同 `snapshotIntervalKm`／`snapshotOfficialKm`／`snapshotRatio` 共五個快照欄位）；**實際費用之快照即 `actualCost` 欄位本身**（完成後由狀態機凍結，**不另存冗餘副本**）；最終金額落於既有 `Application.totalAmount`（`Int`），不重複持久化。
 - **折舊快照之落地形狀（PHASE-007 修訂段，已落地）**：`DepreciationApplication` 存**九個快照欄**——`snapshotVehiclePrice`（`Decimal(12,2)`）／`snapshotUsefulLifeYears`（`Int`）／`snapshotAnnualDepreciation`（`Decimal(12,2)`，每年折舊費用 2 位小數之來源值）／`snapshotOfficialKm`（`Decimal(12,2)`，年度公務里程）／`snapshotAnnualTotalKm`（`Decimal(9,1)`，年度總里程）／`snapshotRatio`（`Decimal(9,6)`，公務比例）／`snapshotRawAmount`（`Decimal(14,4)`，取整前金額）／`calculatedAt` ／`depreciationParameterVersionId`（版本引用，供 `parameterHasReferences` 與稽核追溯）；最終金額同樣落於既有 `Application.totalAmount`（`Int`），不重複持久化。九欄一律**顯式定精度**後寫入（`toFixed(scale)` 再以字串建構 `Decimal`），不依賴 DB 之靜默捨入。
 - **折舊快照之凍結唯讀二欄與新舊模型判別（PHASE-007 修訂段）**：`snapshotEstimatedAnnualKm`（`Int?`）與 `snapshotPerKmUnitPrice`（`Decimal(14,4)`）為**舊模型欄，保留但不再寫入**——新模型列一律明文寫 `null`（**絕不**以 0 或任何佔位值填充）。**判別欄為 `snapshotAnnualTotalKm`**：`!= null` ⇒ 新模型；`snapshotPerKmUnitPrice != null` 且 `snapshotAnnualTotalKm == null` ⇒ 舊模型（原值唯讀呈現、**零重算**）；兩者皆 `null` ⇒ 草稿。此判別與 PHASE-005a 之 `fuelPriceVersionId` 判別為同型義務。`parameterHasReferences("DEPRECIATION")` 依 `depreciationParameterVersionId` 判定，**兩模型皆適用、零變更**。
@@ -124,6 +133,8 @@
 - 附件對申請容器於 PHASE-003 採**弱關聯**（refType+refId，避免提前建立申請表）；「完成鎖定」語意權威在申請狀態機，附件不冗餘持久化 locked。（修訂 2026-08-01，SPEC-003 決策點 D1/D2。）
 - **`deriveContainerState` 支援 `refType=MAINTENANCE`（PHASE-006 D2(a)，已落地）**：自 PHASE-006 起，保養附件之容器狀態經 `MaintenanceApplication → Application.status` 推導（`refId` ＝ `Application.id` ＝ `MaintenanceApplication.applicationId`），已完成保養之證明附件即受鎖定保護（BE-US-25 第 4 條）；`deleteApplication` 於刪除保養草稿時一併 detach 其 `MAINTENANCE` 附件，避免孤兒 `LINKED` 附件。維持上列「弱關聯 ＋ 不冗餘持久化 locked」之既有定案（未改為強 FK、未新增 locked 旗標）。
 - **storage 抽象之封閉前綴白名單（PHASE-008 D6(a)，已落地）**：`LocalVolumeStorage` 改為**可設定之封閉前綴集合**，全案僅有**兩個實例**——附件實例（`att`）與報表實例（`rpt`），各自掛載獨立 volume。**跨實例互拒**：附件實例拒 `rpt/` 金鑰、報表實例拒 `att/` 金鑰（`server.ts` 對兩實例皆明寫 `{ prefixes: [...] }`，有結構性斷言釘住）；未指定選項時預設仍為 `["att"]`，**既有附件行為零改動**。前綴比對之字面 `.` 不得被當作正則萬用字元（`escapeRegExp` 守門）。路徑穿越矩陣（21 列）對 `rpt` 前綴重跑全數拒絕。
+- **兩實例由 `server.ts` 建構並跨 plugin 共用（PHASE-009 落地）**：報表 storage 之 root 解析區塊由原本的「`reportsPlugin` 註冊前」**前移至 `applicationsPlugin` 註冊之前**——作廢端點需同一份報表 storage 寫入作廢版 PDF。前移**只改建構時機**，不改解析優先序（`options.reportStorageRoot` ＞ env `REPORT_STORAGE_ROOT` ＞ production fail-fast ＞ 非 production 動態 tmpdir）、不改 production fail-fast 形狀、不改 `{ prefixes: ["rpt"] }` 之字面。`applicationsPlugin` 與 `reportsPlugin` 拿到的是**同一個** `LocalVolumeStorage` 實例（附件實例亦然）；**不得**為第二個消費者另建實例——storage root 之解析是 `server.ts` 的單一事實來源，兩份一旦分歧即出現「作廢端點寫進 A、下載端點讀 B」的靜默資料錯置。
+- **`rpt/` 之兩種物件（PHASE-009）**：正式版 `rpt/<uuid>/pdf` 與作廢版 `rpt/<uuid>/void`。作廢版後綴取 `void` 而**非** `void.pdf`——`LocalVolumeStorage` 之 key 白名單為 `^(?:rpt)\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$`，後綴不接受 `.`。兩者結構上互異，`storageKey` 恆不外流（`ReportDto` 不含此欄）。
 - **正式 PDF 沿用附件之同一紀律（PHASE-008）**：PDF **一律經授權端點回傳**，volume **不得由 nginx 靜態直出**——此為上一條既有紀律之延伸，並新增**結構性守門**：以解析 `nginx.conf` 之 `location`／`server` 區塊斷言無任何 `root`／`alias` 指向 storage／report volume 路徑（含裸 `root`、帶正則或前綴修飾子之 `location`、`if` 巢狀大括號三種繞過型態之鑑別力自證）。`storageKey` 由系統產生、不含使用者輸入。
 - **`deriveContainerState` 支援 `refType=DEPRECIATION`（PHASE-007 D10(a)，已落地）**：折舊證明附件之容器狀態直接經 `Application.status` 推導（`refId` ＝ `Application.id` ＝ `DepreciationApplication.applicationId`），已完成折舊之證明附件即受鎖定保護（BE-US-25 第 4 條）；容器不存在（孤兒）時視為 `'draft'` 並記警告日誌。`deleteApplication`（generic 端點）於刪除折舊草稿時一併 detach 其 `DEPRECIATION` 附件，避免永遠停在 `LINKED`、清理排程掃不到的孤兒。同樣維持弱關聯定案，未新增 locked 旗標。**PHASE-007 修訂段（已落地）：折舊證明改為「選填」**——零附件之草稿可完成（完成端點不再計數附件、`DEPRECIATION_ATTACHMENT_REQUIRED` 已退場），但**上限 5 張、完成鎖定與 detach 語意一律不變**（本列其餘敘述零變更）。
 
@@ -142,10 +153,15 @@
 - **交易形狀（D3 修訂後）**：**配號與帶編號渲染同在一個交易內，序號僅於提交時落庫（回滾天然不燒號）**——單一交易內依序為「顧問鎖 → 冪等再查 → 配號 → **帶編號渲染** → `put` → 讀回校驗 → `INSERT`」；**配號早於渲染**是列印版與 PDF 得以 wire 層字串全等（BE-US-27／同一版型）之結構前提。
 - **PDF 產生失敗一律零殘留（列與檔同生共死）**：四個失敗階段（`RENDER`／`STORE`／`VERIFY`／`PERSIST`）皆回 `500 REPORT_GENERATION_FAILED` 並攜 `details.stage`，交易回滾 ＋ 已寫入之檔案補償刪除，**零 `Report` 列、零 storage 檔、申請快照逐欄不變**。
 - **報表為不可變產物**：本 Phase **不存在**更新或刪除 `Report` 之程式路徑（以結構性掃描斷言 `report.update`／`delete`／`upsert`／`updateMany`／`deleteMany` 於 `reports/` 零出現）；內容有誤只能走 PHASE-009 之修正版（新 `Application` → 新編號、新 PDF，原報表位元組不被觸碰）。
+- **PHASE-009 落地後此性質**（D4(b1) 之落地形狀）**：`Report` 仍為零更新路徑**——上述結構性掃描於 PHASE-009 後**零改動且全綠**（該掃描讀原始碼字串而不剝除註解，故 `reports/` 內連註解與 JSDoc 都不得出現那三個呼叫字面）。作廢版 PDF 以**獨立之 `VoidedReportFile`** 承載（每個 `Report` 至多一份，冪等鍵 `reportId @unique`），`reports/` 對此新表只有 `voidedReportFile.create(` **一處**寫入；**原 PDF 之位元組永不被觸碰**，原 `Report` 列之編號／檔名／雜湊／產生時間亦逐欄不變。
+- **作廢版 PDF 之產生（PHASE-009，交易內四階段）**：渲染 → `put` → 讀回校驗 → `INSERT VoidedReportFile`，掛在**作廢交易**（擁有者為 `applications/application-void.ts`）之內，任一階段失敗即整筆作廢回滾、狀態仍為 `COMPLETED`。失敗階段沿用既有四值 `RENDER`／`STORE`／`VERIFY`／`PERSIST`，回應 500 `REPORT_GENERATION_FAILED` ＋ `details.stage`。**雙層補償**：內層（`onVoided` 自身失敗，於拋出前先補償刪檔）＋ 外層（呼叫端於 `voidApplication` 拋錯時 `plan.compensate()`，涵蓋稽核 hook 拋錯與 commit 失敗）；成功路徑**永不**呼叫補償。**未產生報表之申請**整段流程不執行（零渲染、零 storage 寫入），作廢為純 DB 操作。
+- **作廢後之四端點行為（PHASE-009）**：`GET …/report/print` 之狀態守門由 `COMPLETED` 單值放行為 **`COMPLETED ∪ VOIDED`**（白名單），列印版首屏渲染 `.void-banner`；`GET …/report/pdf` 於 `VOIDED` 且 `VoidedReportFile` 在場時回**作廢版位元組**、否則回原檔（**內容選擇而非守門**，兩分支皆純讀取、零渲染，狀態碼恆 200；ASCII fallback 檔名恆取自 `Report.reportNumber`，作廢不產生新編號）；`POST …/report`（產生）之守門**維持 `COMPLETED` 單值**（`VOIDED` → 409，已作廢申請不得產生新報表），與列印端點之守門字面**刻意不同**；`GET …/report`（查詢）維持零狀態讀取，`VOIDED` 亦回既有中繼資料。
 
 ### 4.8 稽核
 
 - 重要操作（帳號新增/停用/密碼重設/代操作/作廢/參數異動）寫稽核，含操作者/擁有人/時間/類型/前後摘要；**密碼與敏感憑證不入稽核與日誌**（BE-US-31, NFR-US-16）。
+- **作廢稽核定案（PHASE-009 D10(a)，已落地）**：`AuditAction` enum 新增**單一值 `APPLICATION_VOIDED`**（enum 由九值增為十值）。**本人與管理員皆寫**——與三型 PUT 之 `APPLICATION_UPDATED_ON_BEHALF` 不同，本 hook 恆傳入、不以 `actorId !== ownerId` 分野（BE-US-31② 逐字「使用者**或**管理員作廢申請 → 應記錄作廢原因、操作者及時間」；與 PHASE-004「本人自建草稿不寫稽核」之差異為刻意）。稽核 `INSERT` 於作廢之**同一交易**內、四欄寫入之後執行：hook 拋錯即連同狀態變更一併回滾（零孤兒稽核列、零狀態變更）。`summary` 為封閉四鍵並含**作廢原因**；`voidedById`／`ownerId` 等內部識別值刻意不入 `summary`（操作者已由 `actorId` 欄承載）。
+- **修正版之稽核（PHASE-009）**：沿用既有 `APPLICATION_CREATED_ON_BEHALF`，**不新增第二個 enum 值**；僅代操作（管理員為他人建立）時寫入，與既有代建端點同一紀律。
 - **參數建立稽核定案（PHASE-003a D6）**：三類參數版本建立之稽核**複用 PHASE-002 `AuditLog`** 機制（不另起爐灶）；`AuditAction` enum 新增**單一值 `PARAMETER_VERSION_CREATED`**，以 `summary.parameterType`（`FUEL`／`ETC`／`DEPRECIATION`）區分三類，`summary` 存重要設定摘要（單價或車價/年限/年里程 + `effectiveFrom`），不含密碼與敏感憑證。
 
 ### 4.9 結構化錯誤處理
@@ -156,6 +172,16 @@
 
 - **里程來源（D2(a)）**：區間公務里程取自 `TravelApplication` 之完成快照總里程（單表聚合），**不逐段重算**——與 4.4「完成即凍結、讀快照不重算」一致；「總里程 = Σ 各段總里程、不重複加高速里程」之語意由申請完成時寫入快照的定義保證（見 4.1）。**故障模式與守則**：已完成申請若快照為 `null`，`SUM` 會忽略該列而不報錯、統計靜默偏低，故「已完成 ⇒ 快照非 null」列為不變式並以測試守護。
 - **過濾條件**：擁有人等值 ∧ 類型＝差旅 ∧ 狀態＝已完成 ∧ 出差日期落於區間（起訖含當日，以 `gte`/`lte` 表達）。「未作廢」以**狀態字面值等值比對**表達，不用負向條件（D8(a)）；**作廢語意必須維持「已作廢取代已完成」之終態，不得改為與已完成正交的旗標**，否則本過濾將靜默失效且既有測試不會變紅。
+- **作廢已真實可達（PHASE-009）**：在此之前 `VOIDED` 為不可達狀態，故本過濾之正確性從未被真實資料檢驗；PHASE-009 之作廢端點落地後，`mileage/` **零 diff**（過濾條件一字未改）並以**走真實作廢端點**之回歸測試證明作廢筆自統計中消失（PHASE-005 當時以 `prisma.application.update` 直寫作廢的權宜作法於本 Phase 正式退場）。
+- **兩個 `status` 集合刻意不同——統計面 vs 引用保護面（PHASE-009 D2(a)，人類 2026-08-07 Spec Gate 批准）**：
+
+  | 面向 | 落點 | `status` 條件 | 問的問題 |
+  |---|---|---|---|
+  | 統計 | `mileage/mileage-range.ts` 之 `buildOfficialMileageWhere` | `= 'COMPLETED'`（**單值**） | 這筆申請今天還算不算數？ |
+  | 引用保護 | `parameters/reference-guard.ts` 之 `REFERENCING_STATUSES` | `∈ {'COMPLETED', 'VOIDED'}` | 這個參數版本有沒有歷史紀錄在引用它？ |
+
+  **差異理由**：作廢改變的是一筆申請的**統計有效性**，不是它的**歷史存在性**。已作廢申請仍保有完整快照、仍可下載其正式 PDF、仍在稽核軌跡內；若引用保護沿用 `COMPLETED` 單值，該申請所引用的參數版本會被回報為「無人引用、可覆寫」，覆寫後那筆歷史紀錄即**不可解釋**（違反 BE-US-19④ 對*歷史內容*之保護）。故**兩者不得「統一」**，各有獨立測試守門（統計側 AC-16／AC-17，引用側 AC-18 之 `COMPLETED`-only mutant 必紅）。D2 之選項 (c)（整段拿掉 `status` 條件）雖在今日語意等價（草稿從不寫快照欄）仍被否決：那會移除唯一一處意圖之明文陳述。
+- **引用保護之放寬為單向承諾**：改回 `COMPLETED`-only 是純程式變更，但期間若已有參數版本被覆寫，**資料層無法回復**——故 D2 一經批准即為長期承諾。
 - **精度定案（D3(a)，視同金額類）**：全程 `Decimal` / DB `numeric`，**禁止任何浮點中介**；**本層對里程不做任何取整**（取整只發生於下游金額計算，且為整筆一次四捨五入）；對外**以字串傳輸、固定 2 位小數、未取整**（無資料為 `"0.00"`），沿用 PHASE-003a/004「金額與里程一律以字串表示 `Decimal`」之 DTO 慣例，下游以 `Decimal(字串)` 還原無損。**改變上述任一條須人類批准。**
 - **複用介面**：`sumOfficialMileage(db, { ownerId, dateFrom, dateTo })` 唯讀且接受交易 client。**`maintenance`（期間公務里程）已於 PHASE-006 落地**——預覽路徑以 `prisma` 唯讀呼叫（零寫入），完成路徑於同一 `SERIALIZABLE` 交易 `tx` 內呼叫；`ownerId` 一律取自 `Application.ownerId`（**代操作時亦為擁有人，絕不為操作者**），區間為 `[上次保養日期, 本次保養日期]` 起訖含當日。**`depreciation`（年度公務里程）亦已於 PHASE-007 落地**——預覽路徑以 `prisma` 唯讀呼叫（零寫入），完成路徑於同一 `SERIALIZABLE` 交易 `tx` 內呼叫；`ownerId` 同樣一律取自 `Application.ownerId`（**代操作時亦為擁有人，絕不為操作者**；預覽端點以 `resolveOwnerId` 判定，一般使用者帶他人 → 403，不靜默降級），區間為 `[YYYY-01-01, YYYY-12-31]` 起訖含當日。里程過濾與加總**全案只有這一份實作**，PHASE-006／007 均未重寫（以 import 接線斷言 ＋ 突變自證守護，`mileage-engine.ts`／`mileage-range.ts` 於兩 Phase 皆零 diff）。
 - **D2(a) `count`／`SUM` 不對稱之保養處置（PHASE-006 AC-15，已落地）**：若期間內某已完成差旅之快照總里程為 `null`，引擎之 `applicationCount` **計入**該列而 `totalKm` **忽略**該列（外觀為「筆數 ≥ 1 但里程 `0.00`」）——此為既有引擎行為，PHASE-006 **不改**。保養之**任何金額計算一律只使用 `totalKm`**，`applicationCount` 純供顯示，不得參與分子、分母或任何推導；偏差方向為**保守**（分子偏低 → 比例偏低 → 分攤偏低），不會溢付；DTO 如實回傳兩值，前端不得據此自行推導或補值。
@@ -166,6 +192,14 @@
 
 - **油耗資料之寫入授權（PHASE-005a）**：使用者車輛油耗（`UserFuelConsumptionVersion`）為**使用者屬性**，但**僅管理員可寫**——一般使用者**含本人**皆不可寫；本人僅得經 `GET /me/fuel-consumption` 唯讀檢視。差旅單價解析一律以**擁有人**之油耗為準，管理員代操作時絕不取操作者之油耗。
 - **折舊推導過程之揭露面（PHASE-007 修訂段，人類 2026-08-05 批准；取代原 D8(a) 之揭露段，已落地）**：對一般使用者**可見**者為**五值**——每年折舊費用（2 位小數）／年度公務里程（2 位小數）／年度總里程（1 位小數）／公務比例（6 位小數與百分比 4 位小數）／補貼金額（整數）；隨預覽、草稿與快照 DTO 回傳並顯示於畫面。**車價 `vehiclePrice`、折舊年限 `usefulLifeYears`、預估年度行駛公里數 `estimatedAnnualKm` 與參數版本 id 一律不出現於任何折舊 DTO**——草稿、預覽、已完成快照皆然，且**全身分一致**（管理員亦不由折舊 DTO 取得，需要時走既有管理員限定之 `GET /parameters/depreciation`）。**折舊年限之遮蔽為契約層義務而非疏漏**：每年折舊費用 × 年限 ＝ 車價，僅遮蔽車價無法達成裁定意圖。**每公里單價已自新模型退場**（新模型不存在該值；舊模型列之快照原值仍原樣回傳，不重算）。此為 API 契約層之**真實隔離**，不是「前端不顯示」的 UI 遮蔽（沿 PHASE-004 D6 修訂「不得以一般使用者不知道為安全前提」之紀律），以 DTO 鍵集封閉斷言守門。取整前金額 `rawAmount` **不屬**推導過程（為金額本身之中間值，沿 PHASE-006 既有先例），照常回傳供對帳。年度總里程為**使用者自己申報之申請資料**，回傳予本人與管理員不構成授權擴張。
+
+### 4.12 作廢與修正版之授權與交易邊界（PHASE-009 定案，已落地）
+
+- **授權面刻意不對稱**：作廢端點依 AD-US-10 之逐字授權**放行管理員**（`assertOwnershipOrAdmin`）；**完成端點維持 owner-only**（管理員亦 403，D17／D7(a)／D9(a)），管理員代操作僅及於草稿。修正版端點同作廢，擁有人或管理員皆可，管理員操作時擁有人仍為原使用者、操作者為管理員並寫稽核。
+- **判定順序（無側信道）**：`401` → `404`（存在性，不洩漏申請型別）→ `403`（授權，以 DB 查得之 `ownerId` 為準）→ `409`（狀態）→ `400`（欄位）。**授權必須早於狀態守門**：若移到 service 之後，他人對草稿／已完成／已作廢會得到互異回應而洩漏狀態；此不變式有側信道測試守門。作廢之 409（狀態）恆早於 400（原因），故「草稿 ＋ 空原因」之請求回 409 而非 400。
+- **作廢之交易邊界**：狀態守門與原因驗證皆收斂於**交易內**（列鎖後之新鮮讀取），故併發雙作廢由列鎖排隊後手確定性得 409——不靠重試碰運氣。交易內序為：列鎖 → 狀態守門 → 原因驗證 → 四欄寫入（`status` ＋ `voidReason`／`voidedAt`／`voidedById`）→〔作廢版 PDF 四階段〕→ 稽核 `INSERT` → COMMIT。**狀態寫入早於渲染**，使渲染所用之 `ReportData` 恆帶正確作廢資訊；順序不可對調。
+- **修正版之交易邊界**：讀原業務欄位（含 `TripSegment`、`LINKED` 附件清單）→ 建新 `Application`(DRAFT) ＋ 三型子列 → `supersedesId` → 附件位元組複製 →〔代操作〕稽核 → COMMIT。附件複製在**同一交易**內完成，故失敗即整筆回滾；storage 側以補償刪除回收已寫之新 key。交易顯式 `timeout: 60_000`／`maxWait: 10_000`——差旅段數極端之資料可能撞上該上限而整筆回滾（零殘留仍成立），見 `docs/KNOWN_ISSUES.md`。
+- **`VOID_TX_TIMEOUT_MS = 60_000` 為硬編常數，與 `REPORT_PDF_TIMEOUT_MS` 無程式耦合**——構成一條運維約束：後者之設定值須顯著小於 60 s（預設 30000 ms，須保留 `put`／讀回校驗／`INSERT` 之餘裕），調高至接近或超過 60 s 會使「其實只是慢」的正常作廢被 Prisma 交易逾時（P2028）搶先中止而變成 500。
 
 ## 5. 設計原則（不可違背）
 
