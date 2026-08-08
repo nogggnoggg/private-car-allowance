@@ -125,6 +125,12 @@ export interface VoidInfoDto {
   reason: string;
   voidedAt: string; // ISO8601
   voidedByDisplayName: string;
+  /**
+   * PHASE-009-T15c（AC-41／Mock Gate 定案③）：作廢當時金額＝該申請**完成時
+   * 保存**之最終整筆金額（新臺幣整數）。呈現面（詳情頁「作廢資訊」區塊末列，
+   * 整數原樣、`null` → `—`）屬 T15d，本鍵僅為型別鏡像。
+   */
+  totalAmount: number | null;
 }
 
 /**

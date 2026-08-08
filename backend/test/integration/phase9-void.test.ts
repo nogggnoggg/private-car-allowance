@@ -1017,6 +1017,9 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       expect(afterDto.void?.reason).toBe("DTO 測試原因");
       expect(afterDto.void?.voidedByDisplayName).toBe("T3 擁有人");
       expect(typeof afterDto.void?.voidedAt).toBe("string");
+      // PHASE-009-T15c／AC-41：逐鍵斷言同批補入新鍵（值＝完成時之
+      // `Application.totalAmount`）。
+      expect(afterDto.void?.totalAmount).toBe(500);
     });
 
     it("保養：未作廢 → void=null；作廢後 → void 非 null", async () => {
@@ -1039,6 +1042,9 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
         reason: "保養 DTO 測試",
         voidedAt: after.voidedAt?.toISOString(),
         voidedByDisplayName: "T3 擁有人",
+        // PHASE-009-T15c／AC-41：閉集三鍵 → 四鍵之受控擴充（非弱化——多一鍵
+        // 或少一鍵仍必紅）。值＝完成時之 `Application.totalAmount`。
+        totalAmount: 300,
       });
     });
 
@@ -1062,6 +1068,8 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
         reason: "折舊 DTO 測試",
         voidedAt: after.voidedAt?.toISOString(),
         voidedByDisplayName: "T3 擁有人",
+        // PHASE-009-T15c／AC-41：閉集三鍵 → 四鍵之受控擴充（非弱化）。
+        totalAmount: 900,
       });
     });
 
@@ -1089,6 +1097,123 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
       });
       const dto = await toTravelApplicationDto(prisma, application);
       expect(dto.void?.voidedByDisplayName).toBe("—");
+    });
+  });
+
+  // =========================================================================
+  // PHASE-009-T15c — AC-41 投影面（Mock Gate 定案③：「作廢當時金額」）
+  // 呈現面（三型頁 UI）屬 T15d，本區塊零呈現斷言。
+  // =========================================================================
+
+  describe("AC-41 投影：已作廢詳情之作廢當時金額", () => {
+    /** 三型之「完成時 totalAmount」——與上方三個 fixture helper 之直寫值一致。 */
+    const EXPECTED_TOTAL = { travel: 500, maintenance: 300, depreciation: 900 } as const;
+
+    it("AC-41 投影: 三型 VOIDED 詳情之 void.totalAmount ＝ 完成時 Application.totalAmount（作廢前後同值）", async () => {
+      // ── 差旅 ──
+      const travelId = await createCompletedTravel("ac41-travel");
+      const travelBefore = await prisma.application.findUniqueOrThrow({ where: { id: travelId } });
+      await voidApplication(prisma, travelId, "AC-41 差旅", ownerId);
+      const travelRow = await prisma.application.findUniqueOrThrow({
+        where: { id: travelId },
+        include: {
+          owner: { select: { displayName: true, loginName: true } },
+          createdBy: { select: { displayName: true } },
+          travel: { include: { segments: { orderBy: { sortOrder: "asc" } } } },
+        },
+      });
+      const travelDto = await toTravelApplicationDto(prisma, travelRow);
+      expect(travelDto.status).toBe("VOIDED");
+      expect(travelDto.void?.totalAmount).toBe(EXPECTED_TOTAL.travel);
+      // 作廢前後同值（AC-04：作廢不清空 `totalAmount`）。
+      expect(travelDto.void?.totalAmount).toBe(travelBefore.totalAmount);
+
+      // ── 保養 ──
+      const maintenanceId = await createCompletedMaintenance("ac41-maintenance");
+      const maintenanceBefore = await prisma.application.findUniqueOrThrow({
+        where: { id: maintenanceId },
+      });
+      await voidApplication(prisma, maintenanceId, "AC-41 保養", ownerId);
+      const maintenanceRow = await prisma.application.findUniqueOrThrow({
+        where: { id: maintenanceId },
+        include: { owner: { select: { displayName: true, loginName: true } }, maintenance: true },
+      });
+      const maintenanceDto = await buildMaintenanceApplicationDto(prisma, maintenanceRow);
+      expect(maintenanceDto.status).toBe("VOIDED");
+      expect(maintenanceDto.void?.totalAmount).toBe(EXPECTED_TOTAL.maintenance);
+      expect(maintenanceDto.void?.totalAmount).toBe(maintenanceBefore.totalAmount);
+
+      // ── 折舊 ──
+      const depreciationId = await createCompletedDepreciation("ac41-depreciation", 2211);
+      const depreciationBefore = await prisma.application.findUniqueOrThrow({
+        where: { id: depreciationId },
+      });
+      await voidApplication(prisma, depreciationId, "AC-41 折舊", ownerId);
+      const depreciationRow = await prisma.application.findUniqueOrThrow({
+        where: { id: depreciationId },
+        include: { owner: { select: { displayName: true, loginName: true } }, depreciation: true },
+      });
+      const depreciationDto = await buildDepreciationApplicationDto(prisma, depreciationRow);
+      expect(depreciationDto.status).toBe("VOIDED");
+      expect(depreciationDto.void?.totalAmount).toBe(EXPECTED_TOTAL.depreciation);
+      expect(depreciationDto.void?.totalAmount).toBe(depreciationBefore.totalAmount);
+    });
+
+    it("AC-41 投影 負向: 未作廢 → void 恆 null（既有斷言零弱化，金額無從外露）", async () => {
+      const travelId = await createCompletedTravel("ac41-neg-travel");
+      const travelRow = await prisma.application.findUniqueOrThrow({
+        where: { id: travelId },
+        include: {
+          owner: { select: { displayName: true, loginName: true } },
+          createdBy: { select: { displayName: true } },
+          travel: { include: { segments: { orderBy: { sortOrder: "asc" } } } },
+        },
+      });
+      expect((await toTravelApplicationDto(prisma, travelRow)).void).toBeNull();
+
+      const maintenanceId = await createCompletedMaintenance("ac41-neg-maintenance");
+      const maintenanceRow = await prisma.application.findUniqueOrThrow({
+        where: { id: maintenanceId },
+        include: { owner: { select: { displayName: true, loginName: true } }, maintenance: true },
+      });
+      expect((await buildMaintenanceApplicationDto(prisma, maintenanceRow)).void).toBeNull();
+
+      const depreciationId = await createCompletedDepreciation("ac41-neg-depreciation", 2212);
+      const depreciationRow = await prisma.application.findUniqueOrThrow({
+        where: { id: depreciationId },
+        include: { owner: { select: { displayName: true, loginName: true } }, depreciation: true },
+      });
+      expect((await buildDepreciationApplicationDto(prisma, depreciationRow)).void).toBeNull();
+    });
+
+    it("AC-41(d) 結構: VOIDED 之 snapshot 仍恆為 null — 三型（定案③「不恢復整個快照區塊」；三型 service 檔零 diff）", async () => {
+      const travelId = await createCompletedTravel("ac41-snap-travel");
+      await voidApplication(prisma, travelId, "AC-41(d) 差旅", ownerId);
+      const travelRow = await prisma.application.findUniqueOrThrow({
+        where: { id: travelId },
+        include: {
+          owner: { select: { displayName: true, loginName: true } },
+          createdBy: { select: { displayName: true } },
+          travel: { include: { segments: { orderBy: { sortOrder: "asc" } } } },
+        },
+      });
+      expect((await toTravelApplicationDto(prisma, travelRow)).snapshot).toBeNull();
+
+      const maintenanceId = await createCompletedMaintenance("ac41-snap-maintenance");
+      await voidApplication(prisma, maintenanceId, "AC-41(d) 保養", ownerId);
+      const maintenanceRow = await prisma.application.findUniqueOrThrow({
+        where: { id: maintenanceId },
+        include: { owner: { select: { displayName: true, loginName: true } }, maintenance: true },
+      });
+      expect((await buildMaintenanceApplicationDto(prisma, maintenanceRow)).snapshot).toBeNull();
+
+      const depreciationId = await createCompletedDepreciation("ac41-snap-depreciation", 2213);
+      await voidApplication(prisma, depreciationId, "AC-41(d) 折舊", ownerId);
+      const depreciationRow = await prisma.application.findUniqueOrThrow({
+        where: { id: depreciationId },
+        include: { owner: { select: { displayName: true, loginName: true } }, depreciation: true },
+      });
+      expect((await buildDepreciationApplicationDto(prisma, depreciationRow)).snapshot).toBeNull();
     });
   });
 
@@ -1244,6 +1369,9 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
         voidReason: null,
         voidedAt: null,
         voidedById: null,
+        // PHASE-009-T15c（AC-41）：新增之投影來源欄（三欄同生共死之判定不受其
+        // 影響——三欄皆 null 時恆早退回傳 null，金額無從外露）。
+        totalAmount: 500,
       });
       expect(result).toBeNull();
     });

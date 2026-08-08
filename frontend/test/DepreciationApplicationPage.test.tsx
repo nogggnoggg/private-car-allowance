@@ -147,6 +147,7 @@ function voidInfoFixture(overrides: Partial<VoidInfoDto> = {}): VoidInfoDto {
     reason: "年度總里程申報錯誤",
     voidedAt: "2026-03-05T02:34:56.000Z",
     voidedByDisplayName: "管理員甲",
+    totalAmount: 1234, // PHASE-009-T15c（AC-41）：型別鏡像之補鍵，呈現斷言屬 T15d
     ...overrides,
   };
 }

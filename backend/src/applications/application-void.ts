@@ -67,6 +67,23 @@ export interface VoidInfoDto {
   reason: string;
   voidedAt: string; // ISO8601
   voidedByDisplayName: string; // 解析失敗時 "—"；恆不含 voidedById（§8.3）
+  /**
+   * PHASE-009-T15c（AC-41／Mock Gate 定案③）：作廢當時金額＝該申請**完成時
+   * 保存**之最終整筆金額（`Application.totalAmount`，新臺幣整數；AC-04 保證作
+   * 廢**不清空**該欄，故經正常流程之已作廢列恆非 `null`）。
+   *
+   * 放在 `void` 內而非三型 DTO 之 top-level，是為了讓**未作廢之回應逐鍵不
+   * 變**（`void` 未作廢恆 `null`）——AC-41(b) 之負向因此由**結構**保證，而非
+   * 僅倚賴 UI 的條件渲染；且 `resolveVoidInfo` 為三型共用單一函式，三型
+   * service 檔零改動。**零新增揭露**：同一整數早已由列表 DTO 無條件投影
+   * （`application-query.ts` :422／:494，不受 `status` 閘門）並對已作廢列直接
+   * 呈現，本鍵僅消除「列表看得到、詳情看不到」之不一致。
+   *
+   * **範圍守門（AC-41(d)）**：本鍵是唯一被放行的快照類數值——`VOIDED` 之
+   * `snapshot` 仍恆為 `null`（三型 service 檔之 `status === "COMPLETED"` 守門
+   * 本次零改動），單價／比例／計算明細一律不外露。
+   */
+  totalAmount: number | null;
 }
 
 /**
@@ -89,6 +106,10 @@ export async function resolveVoidInfo(
     voidReason: string | null;
     voidedAt: Date | null;
     voidedById: string | null;
+    // PHASE-009-T15c（AC-41）：三個呼叫端傳入之 `Application` 列本即帶此欄
+    // （`Int?` → `number | null`），故以結構化子型別相容，三型 service 檔零
+    // 改動。
+    totalAmount: number | null;
   }
 ): Promise<VoidInfoDto | null> {
   if (
@@ -108,6 +129,7 @@ export async function resolveVoidInfo(
     reason: application.voidReason,
     voidedAt: application.voidedAt.toISOString(),
     voidedByDisplayName: voidedBy?.displayName ?? "—",
+    totalAmount: application.totalAmount,
   };
 }
 
