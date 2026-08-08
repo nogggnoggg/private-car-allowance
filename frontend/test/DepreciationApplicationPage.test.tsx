@@ -1219,6 +1219,78 @@ describe("DepreciationApplicationPage", () => {
       expect(screen.queryByText(info.voidedAt)).not.toBeInTheDocument();
     });
 
+    // -----------------------------------------------------------------------
+    // PHASE-009-T15d（AC-41 呈現面／Mock Gate 定案③）
+    // -----------------------------------------------------------------------
+
+    it("AC-41(a)：已作廢詳情頁「作廢當時金額」逐字標籤 ＋ 整數原樣值 — 折舊", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("1234");
+      // AC-41(a)「末列」之結構斷言。
+      const dt = screen.getByText("作廢當時金額", { selector: "dt" });
+      expect(dt.parentElement?.lastElementChild).toBe(dt.nextElementSibling);
+      // AC-30(c) 既有三項零弱化。
+      expect(dtDdText("作廢原因")).toBe("年度總里程申報錯誤");
+    });
+
+    it("AC-41(c)：void.totalAmount 為 null 時該列顯示「—」（整區不得消失、不得拋錯）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ void: voidInfoFixture({ totalAmount: null }) }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("—");
+      expect(dtDdText("作廢操作者")).toBe("管理員甲");
+    });
+
+    it("AC-41(a) 邊界：totalAmount 為 0 → 顯示「0」而非「—」（禁 falsy 回退）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ void: voidInfoFixture({ totalAmount: 0 }) }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("0");
+    });
+
+    it("AC-41(d) 呈現：已作廢唯讀頁零單價／比例／計算明細（只放行單一金額欄）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("作廢當時金額", { selector: "dt" })).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "計算依據（完成時快照）" })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("每年折舊費用")).not.toBeInTheDocument();
+      expect(screen.queryByText("公務比例")).not.toBeInTheDocument();
+      expect(screen.queryByText("計算時間")).not.toBeInTheDocument();
+    });
+
     it("AC-33 Empty：COMPLETED（未作廢）詳情頁零作廢資訊區塊", async () => {
       const router = installFetchRouter();
       router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
@@ -1235,6 +1307,8 @@ describe("DepreciationApplicationPage", () => {
       expect(screen.queryByText("作廢原因")).not.toBeInTheDocument();
       expect(screen.queryByText("作廢操作者")).not.toBeInTheDocument();
       expect(screen.queryByText("作廢時間")).not.toBeInTheDocument();
+      // AC-41(b) 負向（防恆真）：未作廢頁零「作廢當時金額」字樣。
+      expect(screen.queryByText("作廢當時金額")).not.toBeInTheDocument();
     });
 
     it("AC-29(a)：COMPLETED 詳情頁有作廢入口，點擊開啟確認對話框；取消零請求", async () => {

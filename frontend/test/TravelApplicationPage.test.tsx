@@ -1156,6 +1156,84 @@ describe("TravelApplicationPage", () => {
       expect(screen.queryByText(info.voidedAt)).not.toBeInTheDocument();
     });
 
+    // -----------------------------------------------------------------------
+    // PHASE-009-T15d（AC-41 呈現面／Mock Gate 定案③）
+    // -----------------------------------------------------------------------
+
+    it("AC-41(a)：已作廢詳情頁「作廢當時金額」逐字標籤 ＋ 整數原樣值 — 差旅", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      // 整數原樣（零千分位／零幣別前綴／零單位字尾），與列印版／PDF 之
+      // 「最終金額（新臺幣整數）」同一整數、同一長相。
+      expect(dtDdText("作廢當時金額")).toBe("1234");
+      // AC-41(a)「末列」之結構斷言：本 dd 為作廢資訊 dl 之最後一個子節點。
+      const dt = screen.getByText("作廢當時金額", { selector: "dt" });
+      expect(dt.parentElement?.lastElementChild).toBe(dt.nextElementSibling);
+      // AC-30(c) 既有三項零弱化（同區塊仍在）。
+      expect(dtDdText("作廢原因")).toBe("里程填寫錯誤，需重新申報");
+    });
+
+    it("AC-41(c)：void.totalAmount 為 null 時該列顯示「—」（整區不得消失、不得拋錯）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ void: voidInfoFixture({ totalAmount: null }) }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      expect(dtDdText("作廢當時金額")).toBe("—");
+      // 整區不得消失：其餘三項仍在。
+      expect(dtDdText("作廢操作者")).toBe("管理員甲");
+    });
+
+    it("AC-41(a) 邊界：totalAmount 為 0 → 顯示「0」而非「—」（禁 falsy 回退）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () =>
+        jsonRes({ application: voidedFixture({ void: voidInfoFixture({ totalAmount: 0 }) }) })
+      );
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      // `voidInfo.totalAmount || "—"` 之 mutant 會在此格顯示「—」而必紅。
+      expect(dtDdText("作廢當時金額")).toBe("0");
+    });
+
+    it("AC-41(d) 呈現：已作廢唯讀頁零單價／比例／計算明細（只放行單一金額欄）", async () => {
+      const router = installFetchRouter();
+      router.on("GET", isGetDraft, () => jsonRes({ application: voidedFixture() }));
+      router.on("GET", isGetReport, () => jsonRes({ report: null }));
+
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByRole("heading", { name: "作廢資訊" })).toBeInTheDocument();
+      });
+
+      // 單一金額欄放行……
+      expect(screen.getByText("作廢當時金額", { selector: "dt" })).toBeInTheDocument();
+      // ……但快照區塊整體仍不得重現（DTO 之 snapshot 於 VOIDED 恆為 null）。
+      expect(
+        screen.queryByRole("heading", { name: "計算依據（完成時快照）" })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("油資單價")).not.toBeInTheDocument();
+      expect(screen.queryByText("ETC 單價")).not.toBeInTheDocument();
+      expect(screen.queryByText("計算時間")).not.toBeInTheDocument();
+    });
+
     it("AC-33 Empty：COMPLETED（未作廢）詳情頁零作廢資訊區塊", async () => {
       const router = installFetchRouter();
       router.on("GET", isGetDraft, () => jsonRes({ application: completedFixture() }));
@@ -1172,6 +1250,8 @@ describe("TravelApplicationPage", () => {
       expect(screen.queryByText("作廢原因")).not.toBeInTheDocument();
       expect(screen.queryByText("作廢操作者")).not.toBeInTheDocument();
       expect(screen.queryByText("作廢時間")).not.toBeInTheDocument();
+      // AC-41(b) 負向（防恆真）：未作廢頁零「作廢當時金額」字樣。
+      expect(screen.queryByText("作廢當時金額")).not.toBeInTheDocument();
     });
 
     it("AC-29(a)：COMPLETED 詳情頁有作廢入口，點擊開啟確認對話框；取消零請求", async () => {

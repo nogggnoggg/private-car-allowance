@@ -607,7 +607,10 @@ export default function DepreciationApplicationPage(): React.ReactElement {
           {/* AC-30(c)：作廢原因／操作者／時間三項逐字呈現。時間格式沿用本頁
               既有「計算時間」之 `toLocaleString("zh-TW")`（不另立第二種格式）。
               AC-33 Empty：`void` 未作廢恆為 null（§7.2），故未作廢時整個區塊
-              不渲染——條件必須是 `voidInfo` 而非 `voided`。 */}
+              不渲染——條件必須是 `voidInfo` 而非 `voided`。
+              PHASE-009-T15d（AC-41／Mock Gate 定案③）：末列新增「作廢當時
+              金額」，整數原樣；`null` 判定用 `!== null`（`||` 會把合法的 0
+              誤顯示為「—」）。 */}
           {voidInfo && (
             <section aria-labelledby="void-info-heading">
               <h2 id="void-info-heading">作廢資訊</h2>
@@ -618,6 +621,8 @@ export default function DepreciationApplicationPage(): React.ReactElement {
                 <dd>{voidInfo.voidedByDisplayName}</dd>
                 <dt>作廢時間</dt>
                 <dd>{new Date(voidInfo.voidedAt).toLocaleString("zh-TW")}</dd>
+                <dt>作廢當時金額</dt>
+                <dd>{voidInfo.totalAmount !== null ? voidInfo.totalAmount : "—"}</dd>
               </dl>
             </section>
           )}
