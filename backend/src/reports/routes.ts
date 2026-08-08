@@ -1,10 +1,23 @@
 /**
- * 報表路由 — PHASE-008-T8／T9／T10（BE-US-26／27／28）
+ * 報表路由 — PHASE-008-T8／T9／T10 ＋ PHASE-009-T12b／T13／T18
+ * （BE-US-26／27／28；BE-US-31）
  *
  * T8 落地 `POST /applications/:id/report`（產生，冪等）。T9 新增
  * `GET /applications/:id/report`（查詢）與 `GET .../report/pdf`（下載）。
- * **本檔（T10）新增** `GET .../report/print`（列印版 HTML）＋產生／列印兩
- * 端點之 409 狀態守門（AC-25）＋列印安全標頭（AC-16(c)）。
+ * T10 新增 `GET .../report/print`（列印版 HTML）＋產生／列印兩端點之 409
+ * 狀態守門（AC-25）＋列印安全標頭（AC-16(c)）。
+ *
+ * 【PHASE-009 之三次修訂（本檔沿革，避免上述 PHASE-008 敘述被誤讀為現況）】
+ *   · **T12b**（AC-21(b)(d)／§16 D4(b1)）：下載端點於 `VOIDED` 且有
+ *     `VoidedReportFile` 時回**作廢版**位元組——內容選擇，非狀態守門，狀態
+ *     碼語意逐字不變（見下方「查詢／下載端點不另立狀態守門」節之修訂註）。
+ *   · **T13**（AC-22／§16 D5）：**列印端點**之狀態守門由 `COMPLETED` 單值
+ *     放行為 **`COMPLETED ∪ VOIDED`**（白名單）——故上一段 T10 所述之「產
+ *     生／列印兩端點之 409 狀態守門」自 T13 起**僅對草稿**成立，且兩端點之
+ *     守門字面**刻意不同**（產生端點不放行 `VOIDED`，B-27／D13）；逐條理由
+ *     見該處行內註解。
+ *   · **T18**（AC-40(b)／§16 D14(b)）：`REPORT_GENERATION_FAILED` 由
+ *     `buildErrorBody` 繞道改經 `AppError` 承載（wire 逐字不變，見下）。
  *
  * Spec `docs/specs/PHASE-008.md` §7.1（端點總表）、§7.2（`ReportDto`）、
  * §7.4（列印版與 PDF 同一版型契約）、§7.5（錯誤合約）、§6.1（授權矩陣，判
@@ -53,18 +66,27 @@
  * 讀取。
  *
  * ---------------------------------------------------------------------------
- * `REPORT_GENERATION_FAILED`（500）——不經 `AppError`（見 report-service.ts
- * 檔頭「錯誤碼與日誌安全」）
+ * `REPORT_GENERATION_FAILED`（500）——經 `AppError` 承載
+ * （PHASE-009-T18／AC-40(b)，§16 D14(b)）
  * ---------------------------------------------------------------------------
- * 【歷史沿革】撰寫本節時 `platform/errors.ts` 之 `ErrorCode` 聯集尚未收錄此
- * 碼（T11 之 Files Allowed，非當時 Task 範圍）；T11（51cc459）已落地收錄。
- * 本檔改為捕捉 `report-service.ts` 之 `ReportGenerationError`，以既有
- * `buildErrorBody`（`code` 參數型別為 `string`）手動組出與其餘端點同形狀之
- * 錯誤回應——wire 格式（`{ error: { code, message, requestId, details } }`）
- * 與經由 `AppError` 產生者完全一致，僅是繞過 `ErrorCode` 之編譯期收斂檢查
- * （該檢查現已涵蓋此碼，本檔原樣沿用不需修改）。回應 `details` 僅含
- * `{ stage }`，日誌僅含 `{ stage, applicationId }`——皆不含原始錯誤訊息
- * （T7-FW2①）。
+ * 【歷史沿革】T8 撰寫本節時 `platform/errors.ts` 之 `ErrorCode` 聯集尚未收
+ * 錄此碼（屬 T11 之 Files Allowed，非當時 Task 範圍），故當時改以
+ * `buildErrorBody`（`code` 參數型別為 `string`）手動組出錯誤回應，繞過
+ * `ErrorCode` 之編譯期收斂檢查。T11（`51cc459`）已將此碼落地收錄，繞道之
+ * 唯一理由自此消失——**PHASE-009-T18 依 §16 D14(b) 改回經 `AppError` 承
+ * 載**：本檔捕捉 `report-service.ts` 之 `ReportGenerationError` 後拋出
+ * `AppError("REPORT_GENERATION_FAILED", 500, …, undefined, { stage })`，由
+ * error-handler 之 `AppError` 分支以**同一個 `buildErrorBody`** 組出回應。
+ * 故 wire 格式（`{ error: { code, message, requestId, details:{ stage } } }`）
+ * 與繞道時期**逐位元組相同**（`phase8-contract.test.ts` §D-6 之 AC-40(b) 回
+ * 歸釘住鍵集、鍵序與值；§A 之結構斷言釘住「不得回退為繞道」）。回應
+ * `details` 仍僅含 `{ stage }`，日誌仍僅含 `{ stage, applicationId }`——皆
+ * 不含原始錯誤訊息（T7-FW2①）。
+ *
+ * 併記（範圍界線）：`applications/routes.ts` 之作廢版 PDF 同型 500 轉譯
+ * （PHASE-009-T12a，沿本檔舊形狀複製）**不在** T18 之 Files Allowed，本次
+ * 維持 `buildErrorBody` 繞道形狀；兩處 wire 輸出仍完全一致，僅實作形狀分歧
+ * （已交審記錄）。
  *
  * ---------------------------------------------------------------------------
  * B-28：storage 檔案遺失 → 404 不 500，錯誤日誌不含 storage key
@@ -78,7 +100,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
-import { AppError, buildErrorBody } from "../platform/errors.js";
+import { AppError } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
 import { type ReportMeta, buildReportData, reportApplicationInclude } from "./report-data.js";
 import { renderReportHtml } from "./report-html.js";
@@ -177,20 +199,16 @@ export const reportsPlugin: FastifyPluginAsync<ReportsPluginOptions> = async (
           .send({ report: toReportDto(id, outcome.report) });
       } catch (err) {
         if (err instanceof ReportGenerationError) {
-          const requestId = String(request.id);
           // 僅記 stage + applicationId，不含原始錯誤訊息（見檔頭說明）。
           request.log.error({ stage: err.stage, applicationId: id }, "Report generation failed");
-          return reply
-            .status(500)
-            .send(
-              buildErrorBody(
-                "REPORT_GENERATION_FAILED",
-                "報表產生失敗，請稍後再試或聯絡管理員。",
-                requestId,
-                undefined,
-                { stage: err.stage }
-              )
-            );
+          // 【PHASE-009-T18／AC-40(b)】改經 `AppError` 承載（見檔頭）。
+          throw new AppError(
+            "REPORT_GENERATION_FAILED",
+            500,
+            "報表產生失敗，請稍後再試或聯絡管理員。",
+            undefined,
+            { stage: err.stage }
+          );
         }
         throw err;
       }

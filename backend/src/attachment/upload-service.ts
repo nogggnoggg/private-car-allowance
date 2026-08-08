@@ -20,6 +20,18 @@
  * — never client-supplied, never overridden here.
  *
  * Log safety (§9.4): errors logged via sanitizeForLog; no volume paths or raw bytes.
+ *
+ * ── 日誌紀律（PHASE-009 AC-38／AR-7 修復；比照 `attachment-copy.ts` 之 AR-4
+ *    既有修法）─────────────────────────────────────────────────────────────
+ * 補償刪檔（步驟 10）與非預期錯誤兩條路徑**永不**把 `err.message` 寫進日
+ * 誌：storage 層之錯誤訊息逐字含 storage key 與 volume 絕對路徑（
+ * `LocalVolumeStorage` 自拋之 `Storage key not found: "att/…/original"`、以
+ * 及 `fs` 之 `EPERM: operation not permitted, unlink '<root>/att/…'`），而
+ * `sanitizeForLog` 只遮蔽連線字串與 `password=` 形式之憑證，**不會**遮蔽
+ * storage key 或絕對路徑。故兩條路徑改記「錯誤類別名稱」這類零內容之標籤
+ * （`errorLabel`），與同專案 `attachment-copy.ts` :313 及 `health` 探針之
+ * `errName` 慣例同型。使用者可見回應本即為訊息固定之 `AppError`，故本次僅
+ * 改日誌內容，wire 行為零變更。
  */
 
 import { randomBytes } from "node:crypto";
@@ -71,6 +83,16 @@ export interface UploadOptions {
 
 /** Number of bytes to read from stream for magic-byte detection */
 const MAGIC_HEADER_BYTES = 12;
+
+/**
+ * 零內容之錯誤標籤——只取錯誤的類別名稱，**不含**訊息（storage／fs 之錯誤
+ * 訊息逐字含 key 與絕對路徑）。這是補償刪檔與非預期錯誤兩條路徑唯一允許進
+ * 入日誌的錯誤資訊（PHASE-009 AC-38；與 `attachment-copy.ts` :313 同型）。
+ */
+function errorLabel(err: unknown): string {
+  if (err instanceof Error) return err.constructor.name;
+  return "UnknownError";
+}
 
 // ---------------------------------------------------------------------------
 // Storage key generation
@@ -293,10 +315,9 @@ export async function processUpload(
       try {
         await storage.delete(key);
       } catch (deleteErr) {
-        // Log but do not mask the original error
-        const deleteMsg =
-          deleteErr instanceof Error ? sanitizeForLog(deleteErr.message) : "unknown error";
-        request.log.warn(`Compensation delete failed for key (log-safe): ${deleteMsg}`);
+        // Log but do not mask the original error. AC-38/AR-7: only the error
+        // class name — the message carries the storage key and volume path.
+        request.log.warn(`Compensation delete failed for key (log-safe): ${errorLabel(deleteErr)}`);
       }
     }
 
@@ -305,9 +326,11 @@ export async function processUpload(
       throw err;
     }
 
-    // Unexpected failures become INTERNAL_ERROR
-    const errMsg = err instanceof Error ? sanitizeForLog(err.message) : "unknown error";
-    request.log.error({ errMsg }, "Unexpected error during attachment upload");
+    // Unexpected failures become INTERNAL_ERROR. AC-38/AR-7: the thrown error
+    // is most often a storage failure whose message embeds the key and the
+    // absolute volume path — log the class name only (`errLabel`), never the
+    // message.
+    request.log.error({ errLabel: errorLabel(err) }, "Unexpected error during attachment upload");
     throw new AppError("INTERNAL_ERROR", 500, "系統發生錯誤，請稍後再試");
   }
 }

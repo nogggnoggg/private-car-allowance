@@ -91,7 +91,7 @@ import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
@@ -889,6 +889,104 @@ describeWithDb("PHASE-009-T4 — 作廢端點授權矩陣／錯誤合約（AC-05
       expect(after.status).toBe("VOIDED");
       expect(await prisma.voidedReportFile.count({ where: { reportId: report.id } })).toBe(1);
     });
+
+    // -----------------------------------------------------------------------
+    // 【PHASE-009-T18】T12b 即審 **AR-2** 之指紋補格（大總管順帶授權）
+    //
+    // 上方 12 組指紋比對之 `VOIDED` 樣本**未產生報表**，故「他人視角」在下
+    // 載／查詢兩端點上比對的是「兩邊都還沒有 `Report`」之情形。T12b 之
+    // reviewer 已以一次性探針證明「他人 × `VOIDED` **且有報表**」之回應與
+    // `COMPLETED` 全等，但該證據未入套件——本則將其固化為回歸網。
+    //
+    // 鑑別意義：`VOIDED` ＋ 有 `Report` ＋ 有 `VoidedReportFile` 是**唯一**
+    // 會讓下載端點走進「內容選擇」分支（T12b 之 `voidedFile ?? report`）的
+    // 狀態組合。若哪天授權判定被移到該分支之後（或該分支自身洩漏了資源存
+    // 在性），本則之他人指紋即與 `COMPLETED` 分歧而紅——上方 12 組因樣本無
+    // 報表，結構上碰不到這條路徑。
+    // -----------------------------------------------------------------------
+
+    it("他人視角 × VOIDED【且有報表】: 四端點之回應指紋與同型 COMPLETED【且有報表】逐格全等（T12b 即審 AR-2 之回歸網固化）", async () => {
+      const reportStorage = new LocalVolumeStorage(reportStorageRoot, { prefixes: ["rpt"] });
+
+      /** 直寫一筆 `Report`（含 storage 位元組）；`withVoidedFile` 時另寫作廢版。 */
+      async function attachReport(
+        applicationId: string,
+        label: string,
+        withVoidedFile: boolean
+      ): Promise<void> {
+        const originalBytes = Buffer.from(`%PDF-1.4\n% T18 ${label}\n${"o".repeat(400)}\n%%EOF`);
+        const originalKey = `rpt/${crypto.randomUUID()}/pdf`;
+        await reportStorage.put(originalKey, originalBytes, "application/pdf");
+        const report = await prisma.report.create({
+          data: {
+            applicationId,
+            reportNumber: `TRV-299902-${label.toUpperCase()}`,
+            numberPrefix: "TRV",
+            numberPeriod: "299902",
+            sequence: label === "voided" ? 1 : 2,
+            storageKey: originalKey,
+            fileName: `差旅補助報表-TRV-299902-${label}.pdf`,
+            byteSize: originalBytes.length,
+            contentHash: crypto.createHash("sha256").update(originalBytes).digest("hex"),
+            generatedById: ownerId,
+          },
+        });
+        if (!withVoidedFile) return;
+        const voidedBytes = Buffer.from(`%PDF-1.4\n% T18 ${label} void\n${"v".repeat(500)}\n%%EOF`);
+        const voidedKey = `rpt/${crypto.randomUUID()}/void`;
+        await reportStorage.put(voidedKey, voidedBytes, "application/pdf");
+        await prisma.voidedReportFile.create({
+          data: {
+            reportId: report.id,
+            storageKey: voidedKey,
+            fileName: report.fileName,
+            byteSize: voidedBytes.length,
+            contentHash: crypto.createHash("sha256").update(voidedBytes).digest("hex"),
+            createdById: ownerId,
+          },
+        });
+      }
+
+      const completedId = await createCompletedTravel("ar2-completed-with-report");
+      await attachReport(completedId, "completed", false);
+      const voidedId = await createVoidedTravel("ar2-voided-with-report");
+      await attachReport(voidedId, "voided", true);
+
+      let comparisons = 0;
+      for (const ep of reportEndpoints(completedId)) {
+        const completedResp = await app.inject({
+          method: ep.method,
+          url: ep.url,
+          headers: { cookie: strangerCookie },
+        });
+        const voidedResp = await app.inject({
+          method: ep.method,
+          url: ep.url.replace(completedId, voidedId),
+          headers: { cookie: strangerCookie },
+        });
+        expect(
+          responseFingerprint(voidedResp),
+          `他人 × ${ep.label}（有報表）: VOIDED 與 COMPLETED 之回應不一致`
+        ).toBe(responseFingerprint(completedResp));
+        // 正向對照：確實是 403 收斂，而非「兩邊都 200」之恆真式全等。
+        expect(completedResp.statusCode).toBe(403);
+        comparisons++;
+      }
+      expect(comparisons).toBe(4);
+
+      // 授權失敗零寫入、零副作用：兩筆狀態與作廢版列數皆未變。
+      const rows = await prisma.application.findMany({
+        where: { id: { in: [completedId, voidedId] } },
+        select: { id: true, status: true },
+      });
+      expect(new Map(rows.map((r) => [r.id, r.status])).get(completedId)).toBe("COMPLETED");
+      expect(new Map(rows.map((r) => [r.id, r.status])).get(voidedId)).toBe("VOIDED");
+      expect(
+        await prisma.voidedReportFile.count({
+          where: { report: { applicationId: voidedId } },
+        })
+      ).toBe(1);
+    });
   });
 
   // =========================================================================
@@ -1185,6 +1283,25 @@ describeWithDb("PHASE-009-T4 — 作廢端點授權矩陣／錯誤合約（AC-05
 //
 // 掃描窗涵蓋之作廢路徑：成功（200）／原因驗證失敗（400）／狀態衝突（409）
 // ／他人（403）——四者皆帶著 `reason` 進入 handler。
+//
+// ---------------------------------------------------------------------------
+// 【PHASE-009-T18】掃描窗擴充（AC-28 逐字：「七類敏感字串掃描擴及：作廢端
+// 點、修正版端點、附件複製路徑、**`upload-service.ts` 之補償刪檔路徑（AR-7
+// 修復點）**；反向探針證明掃描非恆真；每條錯誤日誌行含 `requestId` 可追
+// 查。」）——本次於同一 `logStream` 之掃描窗新增三條路徑：
+//
+//   (5) **修正版端點 ＋ 附件複製路徑**：對一筆帶 `LINKED` 附件之已完成保養
+//       申請呼叫 `POST /applications/:id/revision`，使 `attachment-copy.ts`
+//       之讀取／`put` 全程進入本掃描窗（AR-4 修法之回歸面）。
+//   (6) **列印端點之 `VOIDED` 路徑**（T13 即審 **FW-1**）：AC-22／§16 D5 放
+//       行後之新可達路徑，AC-28 之「作廢端點」語意天然涵蓋其下游列印。
+//   (7) **上傳之補償刪檔 ＋ 非預期錯誤兩條路徑**（**AC-38**／AR-7 修復點）：
+//       以 `LocalVolumeStorage.prototype` 之 spy 注入 thumbnail `put` 失敗
+//       （觸發補償）＋ `delete` 失敗（觸發補償失敗之 warn 行）。兩個注入錯
+//       誤之訊息刻意仿真實 fs 錯誤之長相（`EPERM: … unlink
+//       '<root>/att/<id>/original'`）——含 storage key 與 volume 絕對路
+//       徑，故修復前 `err.message` 一旦入日誌，既有之 `att/`／絕對路徑掃描
+//       必紅（紅燈證據見 Task Handoff）。
 // ===========================================================================
 
 describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢原因零入日誌 ＋ 反向探針）", () => {
@@ -1207,6 +1324,15 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
   const REASON_MARKER = `作廢原因敏感標記-${RUN_ID}-92183746`;
   const VEHICLE_PRICE_MARKER = "918273.64";
   const USEFUL_LIFE_YEARS_MARKER = 84213579;
+
+  // 【T18／AC-38】上傳補償路徑之注入標記——刻意選用合成之 volume 絕對路徑
+  // 前綴（不用真實 root，使掃描命中時可直接指認來源為本注入而非其他路徑）。
+  const UPLOAD_VOLUME_MARKER = `/srv/att-volume-marker-${RUN_ID}`;
+  /** 注入時實際產生之 storage key（由 spy 就地擷取，供逐字負向掃描）。 */
+  let uploadOriginalKey = "";
+  let uploadThumbKey = "";
+  /** (5) 修正版端點之來源申請 id（掃描窗涵蓋性斷言用）。 */
+  let revisionSourceId = "";
 
   async function createUser(labelSuffix: string) {
     const loginName = `${LOGIN_PREFIX}log_${labelSuffix}_${RUN_ID}`;
@@ -1334,6 +1460,142 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
       headers: { cookie: ownerCookie },
       payload: { reason: `${REASON_MARKER}${"誤".repeat(600)}` },
     });
+
+    // ── 【T18／AC-28】掃描窗擴充三條路徑（見本 § 檔頭）────────────────────
+    const attachmentStorage = new LocalVolumeStorage(attachmentStorageRoot, {
+      prefixes: ["att"],
+    });
+
+    // (5) 修正版端點 ＋ 附件複製路徑：保養型（容器即 Application 本身，§16
+    //     D2(a)），帶一筆 LINKED 附件使 `attachment-copy.ts` 之讀取／`put`
+    //     全程進入掃描窗。
+    const maintenanceSource = await prisma.application.create({
+      data: {
+        type: "MAINTENANCE",
+        status: "COMPLETED",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2026-04-01T00:00:00.000Z"),
+        totalAmount: 300,
+        completedAt: new Date("2026-04-01T08:00:00.000Z"),
+        maintenance: {
+          create: {
+            lastMaintenanceDate: new Date("2026-01-01T00:00:00.000Z"),
+            currentMaintenanceDate: new Date("2026-04-01T00:00:00.000Z"),
+            lastOdometerKm: "1000.00",
+            currentOdometerKm: "1500.00",
+            actualCost: "1000.00",
+            snapshotIntervalKm: "500.00",
+            snapshotOfficialKm: "150.00",
+            snapshotRatio: "0.300000",
+            snapshotRawAmount: "300.0000",
+            calculatedAt: new Date("2026-04-01T08:00:00.000Z"),
+          },
+        },
+      },
+    });
+    createdApplicationIds.push(maintenanceSource.id);
+    revisionSourceId = maintenanceSource.id;
+
+    const sourceAttachmentKey = `att/p9t18${RUN_ID}src/original`;
+    const sourceBytes = Buffer.from("T18-ATTACHMENT-COPY-SOURCE", "utf8");
+    await attachmentStorage.put(sourceAttachmentKey, sourceBytes, "image/jpeg");
+    await prisma.attachment.create({
+      data: {
+        status: "LINKED",
+        storageKey: sourceAttachmentKey,
+        thumbnailKey: null,
+        mimeType: "image/jpeg",
+        byteSize: sourceBytes.length,
+        originalFilename: "t18-copy-source.jpg",
+        uploaderId: ownerId,
+        ownerId,
+        refType: "MAINTENANCE",
+        refId: maintenanceSource.id,
+        linkedAt: new Date("2026-04-01T01:02:03.456Z"),
+      },
+    });
+
+    const revisionResp = await logApp.inject({
+      method: "POST",
+      url: `/applications/${revisionSourceId}/revision`,
+      headers: { cookie: ownerCookie },
+    });
+    if (revisionResp.statusCode !== 201) {
+      throw new Error(`revision failed: ${revisionResp.statusCode} ${revisionResp.body}`);
+    }
+    createdApplicationIds.push(
+      (JSON.parse(revisionResp.body) as { application: { id: string } }).application.id
+    );
+
+    // (6) 列印端點之 VOIDED 路徑（T13 即審 FW-1；AC-22／§16 D5 放行後）。
+    const printResp = await logApp.inject({
+      method: "GET",
+      url: `/applications/${voidedApplicationId}/report/print`,
+      headers: { cookie: ownerCookie },
+    });
+    if (printResp.statusCode !== 200) {
+      throw new Error(`print(VOIDED) failed: ${printResp.statusCode} ${printResp.body}`);
+    }
+
+    // (7) 上傳之補償刪檔 ＋ 非預期錯誤兩條路徑（AC-38／AR-7 修復點）。
+    //     1×1 PNG 使 `sharp` 確實產出縮圖 → 走到 thumbnail 之 `put`（注入失
+    //     敗）→ 補償刪除 original（注入失敗）→ 兩條日誌路徑同時被觸發。
+    const onePixelPng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64"
+    );
+    const boundary = `----FormBoundaryT18${RUN_ID}`;
+    const CRLF = "\r\n";
+    const multipartBody = Buffer.concat([
+      Buffer.from(
+        `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="t18-probe.png"${CRLF}Content-Type: application/octet-stream${CRLF}${CRLF}`
+      ),
+      onePixelPng,
+      Buffer.from(`${CRLF}--${boundary}--${CRLF}`),
+    ]);
+
+    const realPut = LocalVolumeStorage.prototype.put;
+    const putSpy = vi.spyOn(LocalVolumeStorage.prototype, "put").mockImplementation(async function (
+      this: LocalVolumeStorage,
+      key: string,
+      bytes: Buffer,
+      contentType: string
+    ) {
+      if (key.endsWith("/thumb")) {
+        uploadThumbKey = key;
+        uploadOriginalKey = `${key.slice(0, -"thumb".length)}original`;
+        throw new Error(`ENOSPC: no space left on device, write '${UPLOAD_VOLUME_MARKER}/${key}'`);
+      }
+      return realPut.call(this, key, bytes, contentType);
+    });
+    const deleteSpy = vi
+      .spyOn(LocalVolumeStorage.prototype, "delete")
+      .mockImplementation(async (key: string) => {
+        throw new Error(`EPERM: operation not permitted, unlink '${UPLOAD_VOLUME_MARKER}/${key}'`);
+      });
+    try {
+      const uploadResp = await logApp.inject({
+        method: "POST",
+        url: "/attachments",
+        headers: {
+          cookie: ownerCookie,
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        payload: multipartBody,
+      });
+      if (uploadResp.statusCode !== 500) {
+        throw new Error(
+          `upload compensation injection expected 500, got ${uploadResp.statusCode} ${uploadResp.body}`
+        );
+      }
+    } finally {
+      deleteSpy.mockRestore();
+      putSpy.mockRestore();
+    }
+    if (uploadThumbKey === "") {
+      throw new Error("upload compensation injection did not reach the thumbnail put");
+    }
   });
 
   afterAll(async () => {
@@ -1345,6 +1607,9 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
     }
     await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
     if (createdUserIds.length > 0) {
+      // T18：(5) 之來源附件與其複本、(7) 之上傳注入殘留列（`Attachment` 之
+      // `uploaderId`／`ownerId` 皆為 FK，須先於 `User` 刪除）。
+      await prisma.attachment.deleteMany({ where: { ownerId: { in: createdUserIds } } });
       await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
       await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
     }
@@ -1403,6 +1668,48 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
     expect(joined).not.toContain(String(USEFUL_LIFE_YEARS_MARKER));
   });
 
+  // -------------------------------------------------------------------------
+  // 【PHASE-009-T18】AC-38 ＋ AC-28
+  // -------------------------------------------------------------------------
+
+  it("AC-28 掃描窗涵蓋性: 作廢四路徑 ＋ 修正版／附件複製 ＋ 列印(VOIDED) ＋ 上傳補償三條路徑皆已進入同一 logStream（防掃描窗萎縮成恆真）", () => {
+    const joined = logLines.join("\n");
+    expect(joined).toContain(`/applications/${voidedApplicationId}/void`);
+    expect(joined).toContain(`/applications/${draftApplicationId}/void`);
+    expect(joined).toContain(`/applications/${revisionSourceId}/revision`);
+    expect(joined).toContain(`/applications/${voidedApplicationId}/report/print`);
+    expect(joined).toContain('"url":"/attachments"');
+    // 上傳之兩條失敗路徑確實被走到（訊息字面硬編碼，非以實作字串反算）。
+    expect(joined).toContain("Compensation delete failed");
+    expect(joined).toContain("Unexpected error during attachment upload");
+  });
+
+  it("AC-38: 上傳之補償刪檔與非預期錯誤兩條路徑之日誌零 storage key、零 volume 絕對路徑（AR-7 修復點；修復前必紅）", () => {
+    const joined = logLines.join("\n");
+    // 注入面自證（非恆真）：兩把 key 確實在本輪產生。
+    expect(uploadOriginalKey).toMatch(/^att\/[a-f0-9]{24}\/original$/);
+    expect(uploadThumbKey).toMatch(/^att\/[a-f0-9]{24}\/thumb$/);
+
+    // 洩漏面：注入錯誤訊息之任一片段皆不得入日誌。期望值為字面硬編碼
+    // （T11R 反向探針紀律），不以 `sanitizeForLog` 反算。
+    expect(joined).not.toContain(uploadOriginalKey);
+    expect(joined).not.toContain(uploadThumbKey);
+    expect(joined).not.toContain(UPLOAD_VOLUME_MARKER);
+    expect(joined).not.toContain(toLogSearchable(UPLOAD_VOLUME_MARKER));
+    expect(joined).not.toContain("ENOSPC: no space left on device");
+    expect(joined).not.toContain("EPERM: operation not permitted");
+  });
+
+  it("AC-28: 每條 error 級（level 50）日誌行皆含 requestId 可追查", () => {
+    const errorLines = logLines
+      .flatMap((chunk) => chunk.split("\n"))
+      .filter((line) => line.includes('"level":50'));
+    expect(errorLines.length).toBeGreaterThan(0);
+    for (const line of errorLines) {
+      expect(line, `error 級日誌行缺 requestId：${line}`).toContain('"requestId":');
+    }
+  });
+
   it("AC-25 反向探針: 刻意將同一組敏感字串寫入同一 logStream，上述掃描全部能偵測（證明掃描機制非恆真）", () => {
     const probeLines: string[] = [];
     logApp.log.info(
@@ -1416,6 +1723,11 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
         probeRptRoot: reportStorageRoot,
         probeVehiclePrice: VEHICLE_PRICE_MARKER,
         probeUsefulLife: USEFUL_LIFE_YEARS_MARKER,
+        // 【T18】AC-38 之上傳注入標記——與上方 AC-38 掃描一一對應。
+        probeUploadOriginalKey: uploadOriginalKey,
+        probeUploadThumbKey: uploadThumbKey,
+        probeUploadVolumeRoot: UPLOAD_VOLUME_MARKER,
+        probeUploadFsMessage: `ENOSPC: no space left on device, write '${UPLOAD_VOLUME_MARKER}/${uploadThumbKey}'`,
       },
       "AC-25 reverse probe"
     );
@@ -1427,12 +1739,22 @@ describeWithDb("PHASE-009-T4 — AC-25 稽核與日誌零敏感資料（作廢�
     // 逐項確認「若真的洩漏，上方掃描必能偵測」——每一條與上方掃描一一對應。
     expect(probeJoined).toContain(toLogSearchable(REASON_MARKER));
     expect(probeJoined).toContain(PASSWORD);
+    // 【T18／T4 即審 AR 銷帳】cookie 值一條——上方掃描以
+    // `ownerCookie.split("=").slice(1).join("=")`（去除 cookie 名之純值）比
+    // 對，本探針缺對應項，補齊後掃描之七類與探針逐條一一對齊。
+    expect(probeJoined).toContain(ownerCookie.split("=").slice(1).join("="));
     expect(probeJoined).toMatch(/\batt\//);
     expect(probeJoined).toMatch(/\brpt\//);
     expect(probeJoined).toContain(toLogSearchable(attachmentStorageRoot));
     expect(probeJoined).toContain(toLogSearchable(reportStorageRoot));
     expect(probeJoined).toContain(VEHICLE_PRICE_MARKER);
     expect(probeJoined).toContain(String(USEFUL_LIFE_YEARS_MARKER));
+    // 【T18】AC-38 之四條對應——證明「若補償／非預期錯誤路徑真的洩漏，上方
+    // AC-38 掃描必能偵測」。
+    expect(probeJoined).toContain(uploadOriginalKey);
+    expect(probeJoined).toContain(uploadThumbKey);
+    expect(probeJoined).toContain(UPLOAD_VOLUME_MARKER);
+    expect(probeJoined).toContain("ENOSPC: no space left on device");
   });
 });
 
