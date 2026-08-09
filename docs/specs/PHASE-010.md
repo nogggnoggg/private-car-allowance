@@ -594,15 +594,15 @@ DELETE /admin/users/:id
 |---|---|---|---|---|---|
 | AC-01(a)(b)(c) | integration | `backend/test/integration/phase10-audit-query.test.ts` | `AC-01: GET /admin/audit-logs 回應三鍵封閉且零結果回 200 空陣列` | T2 | `PENDING` |
 | AC-01(d) | integration | 同上 | `AC-01(d): 查詢端點零寫入 — 三表列數與內容前後逐欄不變` | T2 | `PENDING` |
-| AC-02(a)~(e) | unit | `backend/test/unit/audit-log-query.test.ts` | `AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）` | T1 | `PENDING` |
-| AC-02(f) | unit | 同上 | `AC-02(f): 解析為純函式 — 零 DB／零 Prisma 型別相依` | T1 | `PENDING` |
+| AC-02(a)~(e) | unit | `backend/test/unit/audit-log-query.test.ts` | `AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）` | T1 | `GREEN`（T1 `d7b70ad`） |
+| AC-02(f) | unit | 同上 | `AC-02(f): 解析為純函式 — 零 DB／零 Prisma 型別相依` | T1 | `GREEN`（T1 `d7b70ad`） |
 | AC-03(a)(b) | integration | `phase10-audit-query.test.ts` | `AC-03: createdAt 同值三列跨頁不重不漏；移除 id 排序鍵之 mutant 必紅` | T2 | `PENDING` |
 | AC-03(c) | integration | 同上 | `AC-03(c): skip/take + 獨立 count 之原始碼結構斷言` | T2 | `PENDING` |
 | AC-04(a)(b)(c)(e) | integration | 同上 | `AC-04: AuditLogListItemDto 七鍵封閉；零內部識別值；targetDisplayName 可為 null` | T2 | `PENDING` |
 | AC-04(d) | integration | 同上 | `AC-04(d): 十個 AuditAction 值逐一皆可取回並通過鍵集斷言` | T2 | `PENDING` |
 | AC-05(a)(b)(c) | integration | 同上 | `AC-05: 授權五格逐格；403 早於 400 之側信道；403 零業務值` | T2 | `PENDING` |
-| AC-06(a)(b)(d)(e) | unit | `backend/test/unit/audit-summary-flatten.test.ts` | `AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant 必紅）` | T1 | `PENDING` |
-| AC-06(c)(f) | unit | 同上 | `AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object]` | T1 | `PENDING` |
+| AC-06(a)(b)(d)(e) | unit | `backend/test/unit/audit-summary-flatten.test.ts` | `AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant 必紅）` | T1 | `GREEN`（T1 `d7b70ad`） |
+| AC-06(c)(f) | unit | 同上 | `AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object]` | T1 | `GREEN`（T1 `d7b70ad`） |
 | AC-07(a)(b) | integration | `backend/test/integration/phase10-audit-completeness.test.ts` | `AC-07: 七類事件經真實端點觸發後稽核列齊備且可經檢視端點取回` | T3 | `PENDING` |
 | AC-07(c) | integration | 同上 | `AC-07(c): 本人自建草稿零稽核列（防恆真負向對照）` | T3 | `PENDING` |
 | AC-08(a)(b)(c) | integration | 同上 | `AC-08: 代操作稽核完整性 — 作廢與修正版兩類（含三向零稽核邊界）` | T3 | `PENDING` |
