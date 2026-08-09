@@ -733,16 +733,28 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
       expect((body.items ?? [])[0].changes).toEqual([]);
     });
 
-    it('B-12 巢狀混合形 summary → 三個頂層鍵皆現身且零 "[object Object]"', async () => {
+    it('B-12 巢狀混合形 summary → 逐子鍵拆列（3 列）且零 "[object Object]"', async () => {
       const resp = await get(
         { actorId: shapeActorId, action: "USER_FUEL_CONSUMPTION_VERSION_CREATED" },
         adminCookie
       );
       expect(resp.statusCode).toBe(200);
       const item = ((resp.json() as AuditLogListBody).items ?? [])[0];
+      // **PHASE-010-T-MG1-BE1**（2026-08-09 Mock Gate MG-1 裁定／`SPEC-REV-010-GATE`
+      // 之 AC-06(b-0)）：本形改走 `summary` 級預檢，頂層 `before`／`after` **不各自
+      // 成列**，改以兩物件之子鍵聯集逐子鍵拆列（本 fixture 兩側子鍵相同 → 2 子鍵）
+      // ＋ 純量 `basisNote` 一列，共 3 列。
       expect(item.changes.map((c) => c.field).sort()).toEqual(
-        ["after", "basisNote", "before"].sort()
+        ["basisNote", "fuelType", "kmPerLiter"].sort()
       );
+      // 「改前→改後」於 wire 面對得上（MG-1 裁定之終點）。
+      expect(item.changes.find((c) => c.field === "fuelType")).toEqual({
+        field: "fuelType",
+        before: "GASOLINE_95",
+        after: "DIESEL",
+      });
+      expect(item.changes.map((c) => c.field)).not.toContain("before");
+      expect(item.changes.map((c) => c.field)).not.toContain("after");
       expect(item.changes.find((c) => c.field === "basisNote")).toEqual({
         field: "basisNote",
         before: null,

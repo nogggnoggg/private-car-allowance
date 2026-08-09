@@ -17,6 +17,10 @@
  *       (b) wire 面（`GET /admin/audit-logs` 完整回應 body）同批掃描；
  *       (c) `USER_PASSWORD_RESET` 之 `summary` 封閉單鍵 `{mustChangePassword:true}`；
  *       (d) `USER_DELETED` 之 `targetId` 為 `null`、`targetLabel` 為刪除前快照。
+ *     〔**PHASE-010-T-MG1-BE1**（2026-08-09 Mock Gate MG-1 裁定）：AC-09 之
+ *     「巢狀混合形在場」自證判別式隨 AC-06(b-0) 同批更新——該形改以子鍵聯集
+ *     逐子鍵拆列，故判別式由「頂層 `before` 列」改為「子鍵 `fuelType` 列」，
+ *     並加驗頂層 `before`／`after` 不各自成列。掃描範圍與其餘斷言零變動。〕
  *   · **上游 FW-1（T2 即審）**：T2 之 AC-01(d) 三表快照中 `Application` 表全程
  *     為空（該分支恆真）。本檔建立真實申請，於此補一次「呼叫
  *     `GET /admin/audit-logs` 前後 `AuditLog`／`User`／`Application` 三表逐欄
@@ -1431,12 +1435,24 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
       }
       // 巢狀混合形（`{before:{...}, after:{...}, basisNote}`）確實在場——否則
       // 上面的 wire 掃描會漏掉本 Phase 最複雜的揭露面。
+      // **MG-1 修訂（`SPEC-REV-010-GATE`／AC-06(b-0)）後之等價判別式**：該形改走
+      // `summary` 級預檢，頂層 `before`／`after` **不各自成列**，而是以子鍵聯集
+      // 逐子鍵拆列，故原本以 `c.field === "before"` 找頂層列之寫法於 (b-0) 後
+      // 恆無命中（判別式會恆真）；改以**子鍵列**為準——巢狀在場之證據＝子鍵
+      // `fuelType` 成列且頂層兩鍵不成列，前後版本之有無＝該子鍵列之改前欄。
       const fuelItems = body.items.filter(
         (i) => i.action === "USER_FUEL_CONSUMPTION_VERSION_CREATED"
       );
       expect(fuelItems.length).toBe(2);
+      for (const item of fuelItems) {
+        const fields = item.changes.map((c) => c.field);
+        expect(fields, "AC-06(b-0)：巢狀子鍵未拆成列").toContain("fuelType");
+        expect(fields, "AC-06(b-0)：頂層 before 不得各自成列").not.toContain("before");
+        expect(fields, "AC-06(b-0)：頂層 after 不得各自成列").not.toContain("after");
+      }
+      // 兩列中恰一列有前一版（`fuelType` 之改前欄非 `null`），另一列為首版。
       const withBefore = fuelItems.filter(
-        (i) => i.changes.find((c) => c.field === "before")?.after !== null
+        (i) => i.changes.find((c) => c.field === "fuelType")?.before !== null
       );
       expect(withBefore.length).toBe(1);
       expect(fuelItems.every((i) => i.changes.some((c) => c.field === "basisNote"))).toBe(true);

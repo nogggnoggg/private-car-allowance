@@ -1,28 +1,54 @@
 /**
  * PHASE-010-T1 — `flattenAuditSummary`（`AuditLog.summary` → `changes[]` 扁平化）單元測試
+ * （**PHASE-010-T-MG1-BE1** 依 2026-08-09 Mock Gate MG-1 裁定重寫期望輸出：
+ * (b-0) 巢狀逐子欄拆列／(b-1) `{from,to}` 拆兩欄／(d) 鍵守恆改集合相等）
  *
  * 對象：`backend/src/audit/audit-summary.ts`（純函式：零 DB、零時鐘、零 I/O）。
  *
  * ---------------------------------------------------------------------------
- * 規範出處（`docs/specs/PHASE-010.md`，Gate 通過版逐字）
+ * 規範出處（`docs/specs/PHASE-010.md`，`SPEC-REV-010-GATE` 修訂版逐字）
  * ---------------------------------------------------------------------------
- * §2.B AC-06 — `changes[]` 之扁平化契約（依 §16 D3 裁定＝(c)：後端攤平三欄）
+ * §2.B AC-06 — `changes[]` 之扁平化契約【依 §16 D3；(b)(c)(d) 依 2026-08-09
+ *   Mock Gate MG-1 裁定「智能攤平」修訂（`SPEC-REV-010-GATE`）】
  *   (a) 每列輸出 `changes: Array<{ field: string; before: string | null;
  *       after: string | null }>`，由 `AuditLog.summary`（`Json?`）經**單一純函式**
  *       扁平化而得。
- *   (b) 形狀分派：`summary` 之值為物件且**恰含 `before`／`after` 兩鍵**者 → 拆為
- *       該兩欄；為純量（`string`／`number`／`boolean`／`null`）者 →
- *       `before: null` ＋ `after: 值之字串化`；`summary` 為 `null`／`{}` →
- *       `changes: []`。
- *   (c) 同一 `action` 之異形 `summary` 皆須成立（四種真實形狀，見下方 FIXTURES）。
- *   (d) 鍵守恆：扁平化不得遺失任何 `summary` 頂層鍵——以「輸入頂層鍵集合 ⊆ 輸出
- *       `field` 集合」之封閉斷言守門，刪一鍵之 mutant 必紅。
+ *   (b) 形狀分派（自上而下：先 `summary` 級預檢 (b-0)，再逐頂層鍵 (b-1)/(b-2)）：
+ *       **(b-0)** `summary` 為物件且**同時含 `before` 與 `after` 兩個頂層鍵**，且
+ *             兩者之值**至少一為物件**、另一為物件或 `null` → 該兩個頂層鍵**不各
+ *             自成列**，改以兩物件之**子鍵聯集**逐子鍵拆列：每一子鍵恰一列
+ *             `{ field: <子鍵>, before: <before[子鍵] 之字串化；該側為 null 或無
+ *             此子鍵時為 null>, after: <同上> }`。子鍵順序＝`before` 物件之鍵序，
+ *             再接 `after` 中未出現於 `before` 者（`before` 為 `null` 時即 `after`
+ *             之鍵序）；子鍵列插入於 `before` 頂層鍵之**原位置**。**其餘頂層鍵**
+ *             （如 `basisNote`）照 (b-1)/(b-2) 各自一列，位置沿其原插入序。
+ *       **(b-1)** 值為物件且**恰含 `before`／`after` 兩鍵** → 拆為該兩欄；值為物件
+ *             且**恰含 `from`／`to` 兩鍵** → 拆為 `before: from 之字串化`／
+ *             `after: to 之字串化`（**與 `{before,after}` 同等待遇**；MG-1 裁定
+ *             逐字：「`{from,to}` 拆進改前／改後兩欄」）。鍵序不拘；「**恰兩鍵**」
+ *             為字面條件（`{before,after,extra}` 三鍵或一鍵皆**不**走此分支）。
+ *       **(b-2)** 其餘一切值 → `before: null` ＋ `after: 值之字串化`。
+ *       **(b-3)** `summary` 為 `null`／非物件／`{}` → `changes: []`。
+ *       揭露面註記：(b-0)(b-1) 之拆欄**不擴大揭露面**——輸出內容仍恰為同一
+ *       `summary` 之既有值，僅呈現形式改變。
+ *   (c) 同一 `action` 之異形 `summary` 皆須成立（四種真實形狀，見下方 FIXTURES；
+ *       案例依 MG-1 修訂後之期望輸出重寫）。
+ *   (d) **鍵守恆（子欄拆列後之封閉基準）**：輸出之 `field` 集合**恰等於**
+ *       `( summary 頂層鍵集合 − { 觸發 (b-0) 之 before／after 兩鍵 } ) ∪ ( 該兩
+ *       物件之子鍵聯集 )`——以 `toEqual` 之**集合相等**（非僅 `⊆`）封閉斷言守門：
+ *       **刪任一頂層鍵之 mutant 必紅**，且**刪任一子鍵之 mutant 亦必紅**（防
+ *       「聯集取成交集」「只取 `after` 側子鍵」「漏 `before` 獨有子鍵」三類）。
  *   (e) 純函式：零 DB、零時鐘、零 I/O；同輸入恆同輸出（`toEqual` 可比）。
  *   (f) 值之字串化不得產生 `"[object Object]"`——(c) 之巢狀混合形為最高密度
  *       案例；正向斷言 ＋ 全 `changes` 之 `not.toContain("[object Object]")`
  *       負向掃描並存。
  * §5 邊界條件 B-11（`summary` 為 `null` → `changes: []`，不拋錯）、
- *   B-12（巢狀混合形：三個頂層鍵皆現身且零 `"[object Object]"`）。
+ *   B-12（巢狀混合形 → 走 (b-0)：恰 4 列＝三子鍵 ＋ `basisNote`，頂層 `before`／
+ *   `after` 不各自成列，且零 `"[object Object]"`）、
+ *   B-26（`{isActive: {from,to}}` → 走 (b-1)：一列 `before:"true"`／`after:"false"`，
+ *   輸出 `'{"from":true,"to":false}'` 之 mutant 必紅）、
+ *   B-27（巢狀首版 `before` 為 `null` → 同 4 列，三子鍵列之 `before` 皆為 `null`），
+ *   B-28（兩側子鍵不對稱 → 以**聯集**拆列，取成交集之 mutant 必紅）。
  * §12 映射表：本檔兩列 —— `AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵
  *   mutant 必紅）`／`AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object]`
  *   （describe 名逐字對應）。
@@ -45,32 +71,38 @@
  *       `USER_FUEL_CONSUMPTION_VERSION_CREATED` **巢狀混合形**：
  *       `{ before: {...} | null, after: {...}, basisNote }`——`before`／`after`
  *       各自為**物件**（而非純量），且與純量 `basisNote` 並存。**此為 AC-06(f)
- *       之最高密度案例**（天真 `String(value)` 會產生兩個 `"[object Object]"`）。
+ *       之最高密度案例**（天真 `String(value)` 會產生兩個 `"[object Object]"`），
+ *       亦為 MG-1 修訂後 AC-06(b-0) 之唯一真實觸發者（→ 恰 4 列）。
  *   · `parameters/routes.ts` :211／:285／:383  `PARAMETER_VERSION_CREATED`（全純量）。
  *   · `audit/audit.ts` :45（`writeAudit` 之唯一 `auditLog.create`）之五個帳號類
  *       呼叫端（`admin/routes.ts` :225／:272／:308／:368／:426；各自之 `detail:`
  *       酬載在 :231／:278／:314／:374／:432）：
  *       `USER_CREATED` `{role, employeeNumber?}`／
  *       `USER_DEACTIVATED`／`USER_ACTIVATED` `{isActive: {from, to}}`
- *       ——**兩鍵物件但鍵名為 `from`／`to`（非 `before`／`after`）**，屬 AC-06(b)
- *       之「非 before/after 兩鍵物件」分支，是 `[object Object]` 的第二個真實
- *       高風險點／
+ *       ——**兩鍵物件但鍵名為 `from`／`to`（非 `before`／`after`）**；MG-1 修訂後
+ *       走 AC-06(b-1) 之 `{from,to}` 分支（與 `{before,after}` **同等待遇**，拆進
+ *       改前／改後兩欄），修訂前則整包 `JSON.stringify` 落於改後欄／
  *       `USER_PASSWORD_RESET` `{mustChangePassword: true}`（布林純量）／
  *       `USER_DELETED` `{deletedLoginName, deletedDisplayName}`。
  *
  * ---------------------------------------------------------------------------
  * 鑑別力設計
  * ---------------------------------------------------------------------------
- * 1. AC-06(d) 鍵守恆以 `expectKeyConservation` 對**全部** fixture 逐一執行，且
- *    斷言為雙向封閉（輸入鍵集 ⊆ 輸出 field 集，且輸出 field 集 ⊆ 輸入鍵集、
- *    長度相等）——「刪一鍵」與「捏造一鍵」兩種 mutant 皆必紅。
- *    刪鍵 mutant 之紅燈實錄見 Task Handoff。
+ * 1. AC-06(d) 鍵守恆以 `expectKeyConservation` 對**全部** fixture 逐一執行，斷言
+ *    為 AC-06(d) 封閉式之**集合相等**（期望集合由 Spec 之公式在測試側獨立算出，
+ *    不呼叫受測模組的任何內部判別）——「刪一頂層鍵」「刪一子鍵」「聯集取成交集」
+ *    「捏造一鍵」四種 mutant 皆必紅。刪鍵 mutant 之紅燈實錄見 Task Handoff。
  * 2. AC-06(f) 之負向掃描（`not.toContain("[object Object]")`）與正向值斷言並存：
  *    只有負向掃描時，「一律回空陣列」的 mutant 會恆綠——鍵守恆與逐值正向斷言
  *    即為其鑑別力來源。
- * 3. AC-06(b) 之三分支以「相鄰輸入」成對釘死：`{before, after}`（恰兩鍵，拆欄）
+ * 3. AC-06(b-1) 之分支以「相鄰輸入」成對釘死：`{before, after}`（恰兩鍵，拆欄）
+ *    ／`{from, to}`（恰兩鍵、鍵名不同，**同樣拆欄**——MG-1 新語意）
  *    ／`{before, after, extra}`（三鍵，不拆）／`{before}`（一鍵，不拆）
- *    ／`{from, to}`（兩鍵但鍵名不同，不拆）。
+ *    ／`{from, to, extra}`（三鍵，不拆）。
+ * 4. AC-06(b-0) 之預檢以「相鄰輸入」成對釘死：兩側皆物件（拆）／一側 `null`
+ *    另一側物件（拆——**既有語意擴張半邊**）／一側純量（**不**拆，兩頂層鍵各自
+ *    一列）／兩側皆 `null`（**不**拆）／頂層無 `before`／`after`（不觸發，見
+ *    `APPLICATION_UPDATED_ON_BEHALF` 形）。
  */
 
 import { readFileSync } from "node:fs";
@@ -84,20 +116,49 @@ import { type AuditChangeDto, flattenAuditSummary } from "../../src/audit/audit-
 // ---------------------------------------------------------------------------
 
 /**
- * AC-06(d) 鍵守恆之封閉斷言（雙向）：
- *   · 輸入頂層鍵集合 ⊆ 輸出 `field` 集合（刪鍵 mutant 必紅）
- *   · 輸出 `field` 集合 ⊆ 輸入頂層鍵集合，且長度相等（捏造鍵／重複鍵 mutant 必紅）
+ * AC-06(d) 之期望 `field` 集合——**在測試側依 Spec 公式獨立算出**，不呼叫受測
+ * 模組之任何內部判別（否則「實作與期望同步走偏」之 mutant 會恆綠）：
+ *
+ * `( summary 頂層鍵集合 − { 觸發 (b-0) 之 before／after 兩鍵 } ) ∪ ( 該兩物件之子鍵聯集 )`
+ *
+ * 未觸發 (b-0) 時退化為「頂層鍵集合」，與 MG-1 修訂前語意相容。
+ */
+function expectedFieldSet(summary: Record<string, unknown>): Set<string> {
+  const topKeys = Object.keys(summary);
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+
+  const hasBothKeys = Object.hasOwn(summary, "before") && Object.hasOwn(summary, "after");
+  const before = summary.before;
+  const after = summary.after;
+  const sideOk = (v: unknown) => isRecord(v) || v === null;
+  const triggersNested =
+    hasBothKeys && sideOk(before) && sideOk(after) && (isRecord(before) || isRecord(after));
+
+  if (!triggersNested) return new Set(topKeys);
+
+  return new Set([
+    ...topKeys.filter((k) => k !== "before" && k !== "after"),
+    ...(isRecord(before) ? Object.keys(before) : []),
+    ...(isRecord(after) ? Object.keys(after) : []),
+  ]);
+}
+
+/**
+ * AC-06(d) 鍵守恆之封閉斷言（集合相等，非僅 `⊆`）：
+ *   · 期望集合之每一鍵皆在輸出（刪頂層鍵／刪子鍵／聯集取成交集之 mutant 必紅）
+ *   · 輸出 `field` 集合恰等於期望集合，且無重複（捏造鍵／重複鍵 mutant 必紅）
  */
 function expectKeyConservation(summary: Record<string, unknown>): AuditChangeDto[] {
   const changes = flattenAuditSummary(summary);
-  const inputKeys = Object.keys(summary);
+  const expectedFields = expectedFieldSet(summary);
   const outputFields = changes.map((c) => c.field);
 
-  for (const key of inputKeys) {
-    expect(outputFields).toContain(key);
+  for (const key of expectedFields) {
+    expect(outputFields, `AC-06(d)：期望 field ${key} 於 changes 遺失`).toContain(key);
   }
-  expect(new Set(outputFields)).toEqual(new Set(inputKeys));
-  expect(outputFields.length).toBe(inputKeys.length);
+  expect(new Set(outputFields)).toEqual(expectedFields);
+  expect(outputFields.length).toBe(expectedFields.size);
 
   return changes;
 }
@@ -160,11 +221,24 @@ const FUEL_CONSUMPTION_NESTED = {
   basisNote: "原廠油耗數據（合成資料）",
 } satisfies Record<string, unknown>;
 
-/** ④' 同形之 `before: null` 變體（首版建立時 `beforeRow` 為 null，實查同站點） */
+/**
+ * ④' 同形之 `before: null` 變體（首版建立時 `beforeRow` 為 null，實查同站點）
+ * ——B-27／AC-06(b-0) 之「一側為 `null`」半邊（既有語意擴張，§0.2 獨立列出）。
+ */
 const FUEL_CONSUMPTION_NESTED_FIRST_VERSION = {
   before: null,
   after: { fuelType: "GASOLINE_95", kmPerLiter: "12.3400", effectiveFrom: "2026-01-01" },
   basisNote: "首版（合成資料）",
+} satisfies Record<string, unknown>;
+
+/**
+ * ④" 巢狀兩側**子鍵不對稱**（B-28）：`before` 有 `fuelType`／`kmPerLiter`，
+ * `after` 有 `fuelType`／`effectiveFrom` → 以**聯集**拆列（3 列），缺側為 `null`。
+ * （非既有寫入站點之形狀，為 AC-06(d) 「聯集不得取成交集」之守門用合成輸入。）
+ */
+const FUEL_CONSUMPTION_NESTED_ASYMMETRIC = {
+  before: { fuelType: "GASOLINE_92", kmPerLiter: "10.0000" },
+  after: { fuelType: "GASOLINE_95", effectiveFrom: "2026-08-01" },
 } satisfies Record<string, unknown>;
 
 /** ⑤ `APPLICATION_VOIDED` — 封閉四鍵（applications/routes.ts :1518 形；含使用者自由文字） */
@@ -227,7 +301,7 @@ const ALL_REAL_FIXTURES: ReadonlyArray<readonly [string, Record<string, unknown>
 // ---------------------------------------------------------------------------
 
 describe("AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant 必紅）", () => {
-  describe("AC-06(b) summary 為 null／{} → changes: []（B-11：不拋錯）", () => {
+  describe("AC-06(b-3) summary 為 null／{} → changes: []（B-11：不拋錯）", () => {
     it("null → []", () => {
       expect(flattenAuditSummary(null)).toEqual([]);
     });
@@ -241,7 +315,7 @@ describe("AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant �
     });
   });
 
-  describe("AC-06(b) 純量值 → before: null ＋ after: 值之字串化", () => {
+  describe("AC-06(b-2) 純量值 → before: null ＋ after: 值之字串化", () => {
     it.each([
       ["string", "abc", "abc"],
       ["number（整數）", 42, "42"],
@@ -270,7 +344,7 @@ describe("AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant �
     });
   });
 
-  describe("AC-06(b) 值為物件且恰含 before／after 兩鍵 → 拆為該兩欄", () => {
+  describe("AC-06(b-1) 值為物件且恰含 before／after（或 from／to）兩鍵 → 拆為該兩欄", () => {
     it("{before, after} 純量對 → 拆欄", () => {
       expect(flattenAuditSummary({ purpose: { before: "舊", after: "新" } })).toEqual([
         { field: "purpose", before: "舊", after: "新" },
@@ -316,14 +390,36 @@ describe("AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant �
       expect(changes[0]?.after).not.toContain("[object Object]");
     });
 
-    it("{from, to} 兩鍵但鍵名非 before／after → 不拆欄，整體字串化且非 [object Object]", () => {
+    it("{from, to} 兩鍵物件 → 拆為改前／改後兩欄（AC-06(b-1)：與 {before,after} 同等待遇；B-26）", () => {
       const changes = flattenAuditSummary({ isActive: { from: true, to: false } });
       expect(changes).toHaveLength(1);
       expect(changes[0]?.field).toBe("isActive");
+      expect(changes[0]?.before).toBe("true");
+      expect(changes[0]?.after).toBe("false");
+      expect(changes[0]?.after).not.toContain("[object Object]");
+      // B-26 之 mutant 守門：輸出 `'{"from":true,"to":false}'` 者必紅。
+      expect(changes[0]?.after).not.toContain("from");
+      expect(changes[0]?.after).not.toContain("to");
+    });
+
+    it("{to, from} 鍵序顛倒亦視為同一形（拆欄，不因鍵序而異）", () => {
+      expect(flattenAuditSummary({ isActive: { to: false, from: true } })).toEqual([
+        { field: "isActive", before: "true", after: "false" },
+      ]);
+    });
+
+    it("{from, to} 之一端為 null → 該端為 null（不得字串化為 'null'）", () => {
+      expect(flattenAuditSummary({ isActive: { from: null, to: true } })).toEqual([
+        { field: "isActive", before: null, after: "true" },
+      ]);
+    });
+
+    it("三鍵 {from, to, extra} → 不拆欄（恰兩鍵之條件），整體字串化且非 [object Object]", () => {
+      const changes = flattenAuditSummary({ f: { from: 1, to: 2, extra: 3 } });
+      expect(changes).toHaveLength(1);
       expect(changes[0]?.before).toBeNull();
       expect(changes[0]?.after).not.toContain("[object Object]");
-      expect(changes[0]?.after).toContain("from");
-      expect(changes[0]?.after).toContain("to");
+      expect(changes[0]?.after).toContain("extra");
     });
 
     it("陣列值 → 不拆欄，字串化且非 [object Object]", () => {
@@ -336,13 +432,100 @@ describe("AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant �
     });
   });
 
+  describe("AC-06(b-0) summary 級預檢：巢狀前後版本以子鍵聯集逐子鍵拆列", () => {
+    it("兩側皆物件 → 子鍵逐一成列，頂層 before／after 不各自成列（B-12）", () => {
+      expect(
+        flattenAuditSummary({
+          before: { fuelType: "GASOLINE_92", kmPerLiter: "10.0000" },
+          after: { fuelType: "GASOLINE_95", kmPerLiter: "12.3400" },
+        })
+      ).toEqual([
+        { field: "fuelType", before: "GASOLINE_92", after: "GASOLINE_95" },
+        { field: "kmPerLiter", before: "10.0000", after: "12.3400" },
+      ]);
+    });
+
+    it("子鍵順序＝before 鍵序後接 after 獨有鍵；子鍵列插於 before 之原位置，其餘頂層鍵沿原插入序", () => {
+      const changes = flattenAuditSummary({
+        head: "H",
+        before: { b1: 1, shared: "s0" },
+        after: { shared: "s1", a1: 2 },
+        tail: "T",
+      });
+      expect(changes.map((c) => c.field)).toEqual(["head", "b1", "shared", "a1", "tail"]);
+      expect(changes).toEqual([
+        { field: "head", before: null, after: "H" },
+        { field: "b1", before: "1", after: null },
+        { field: "shared", before: "s0", after: "s1" },
+        { field: "a1", before: null, after: "2" },
+        { field: "tail", before: null, after: "T" },
+      ]);
+    });
+
+    it("after 頂層鍵在前、before 在後時，子鍵列仍插於 before 之原位置", () => {
+      const changes = flattenAuditSummary({
+        after: { x: 2 },
+        basisNote: "n",
+        before: { x: 1 },
+      });
+      expect(changes).toEqual([
+        { field: "basisNote", before: null, after: "n" },
+        { field: "x", before: "1", after: "2" },
+      ]);
+    });
+
+    it("一側為 null、另一側為物件 → 仍拆子鍵，缺側為 null（B-27；既有語意擴張半邊）", () => {
+      expect(flattenAuditSummary({ before: null, after: { fuelType: "GASOLINE_95" } })).toEqual([
+        { field: "fuelType", before: null, after: "GASOLINE_95" },
+      ]);
+      expect(flattenAuditSummary({ before: { fuelType: "GASOLINE_95" }, after: null })).toEqual([
+        { field: "fuelType", before: "GASOLINE_95", after: null },
+      ]);
+    });
+
+    it("相鄰輸入：一側為純量 → 預檢不成立，兩頂層鍵各自一列（走 (b-2)）", () => {
+      expect(flattenAuditSummary({ before: { x: 1 }, after: 5 })).toEqual([
+        { field: "before", before: null, after: '{"x":1}' },
+        { field: "after", before: null, after: "5" },
+      ]);
+    });
+
+    it("相鄰輸入：兩側皆 null → 預檢不成立（至少一為物件），兩頂層鍵各自一列", () => {
+      expect(flattenAuditSummary({ before: null, after: null })).toEqual([
+        { field: "before", before: null, after: null },
+        { field: "after", before: null, after: null },
+      ]);
+    });
+
+    it("相鄰輸入：只有 before 一個頂層鍵 → 預檢不成立（須兩鍵同時在場）", () => {
+      expect(flattenAuditSummary({ before: { x: 1 } })).toEqual([
+        { field: "before", before: null, after: '{"x":1}' },
+      ]);
+    });
+
+    it("相鄰輸入：頂層不含 before／after 鍵 → 不觸發預檢（APPLICATION_UPDATED_ON_BEHALF 形）", () => {
+      expect(
+        flattenAuditSummary({ tripDate: { before: "2026-08-01", after: "2026-08-02" } })
+      ).toEqual([{ field: "tripDate", before: "2026-08-01", after: "2026-08-02" }]);
+    });
+
+    it("子鍵值為巢狀物件 → 該欄以 JSON 字串化，仍零 [object Object]", () => {
+      const changes = flattenAuditSummary({
+        before: { seg: { a: 1 } },
+        after: { seg: { a: 2 } },
+      });
+      expect(changes).toEqual([{ field: "seg", before: '{"a":1}', after: '{"a":2}' }]);
+      expectNoObjectObject(changes);
+    });
+  });
+
   describe("AC-06(a) 每列鍵集封閉：恰 field／before／after 三鍵", () => {
     it.each(ALL_REAL_FIXTURES)("%s", (_label, summary) => {
       expectChangeDtoShape(flattenAuditSummary(summary));
     });
   });
 
-  describe("AC-06(d) 鍵守恆：輸入頂層鍵集合 ⊆ 輸出 field 集合（刪鍵 mutant 必紅）", () => {
+  describe("AC-06(d) 鍵守恆：輸出 field 集合恰等於（頂層鍵 − 觸發 (b-0) 之 before／after）∪ 子鍵聯集（刪頂層鍵／刪子鍵 mutant 皆必紅）", () => {
     it.each(ALL_REAL_FIXTURES)("%s", (_label, summary) => {
       expectKeyConservation(summary);
     });
@@ -463,29 +646,41 @@ describe("AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object
     expectNoObjectObject(changes);
   });
 
-  it("④ USER_FUEL_CONSUMPTION_VERSION_CREATED（巢狀混合形）：三個頂層鍵皆現身（B-12）", () => {
+  it("④ USER_FUEL_CONSUMPTION_VERSION_CREATED（巢狀混合形）：恰 4 列＝三子鍵 ＋ basisNote（B-12／AC-06(b-0)）", () => {
     const changes = expectKeyConservation(FUEL_CONSUMPTION_NESTED);
-    expect(changes.map((c) => c.field)).toEqual(["before", "after", "basisNote"]);
+    expect(changes.map((c) => c.field)).toEqual([
+      "fuelType",
+      "kmPerLiter",
+      "effectiveFrom",
+      "basisNote",
+    ]);
+    // 頂層 `before`／`after` **不**各自成列（MG-1 裁定之核心）。
+    expect(changes.map((c) => c.field)).not.toContain("before");
+    expect(changes.map((c) => c.field)).not.toContain("after");
   });
 
-  it("④ 巢狀混合形之逐欄值：before／after 兩物件皆完整可讀，零 [object Object]（AC-06(f) 最高密度案例）", () => {
+  it("④ 巢狀混合形之逐欄值：每一子鍵之改前→改後兩欄對得上，零 [object Object]（AC-06(f) 最高密度案例）", () => {
     const changes = flattenAuditSummary(FUEL_CONSUMPTION_NESTED);
     expectNoObjectObject(changes);
 
     const byField = new Map(changes.map((c) => [c.field, c]));
 
-    const beforeRow = byField.get("before");
-    expect(beforeRow?.before).toBeNull();
-    // 巢狀物件之內容必須逐項可讀（非 "[object Object]"、非空字串）
-    for (const token of ["fuelType", "GASOLINE_95", "kmPerLiter", "12.3400", "2026-01-01"]) {
-      expect(beforeRow?.after).toContain(token);
-    }
-
-    const afterRow = byField.get("after");
-    expect(afterRow?.before).toBeNull();
-    for (const token of ["GASOLINE_98", "13.5000", "2026-08-01"]) {
-      expect(afterRow?.after).toContain(token);
-    }
+    // 「油種：改前 92 無鉛 → 改後 95 無鉛」之後端面（值中文化屬前端 AC-18(d)）
+    expect(byField.get("fuelType")).toEqual({
+      field: "fuelType",
+      before: "GASOLINE_95",
+      after: "GASOLINE_98",
+    });
+    expect(byField.get("kmPerLiter")).toEqual({
+      field: "kmPerLiter",
+      before: "12.3400",
+      after: "13.5000",
+    });
+    expect(byField.get("effectiveFrom")).toEqual({
+      field: "effectiveFrom",
+      before: "2026-01-01",
+      after: "2026-08-01",
+    });
 
     const basisNoteRow = byField.get("basisNote");
     expect(basisNoteRow).toEqual({
@@ -495,10 +690,33 @@ describe("AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object
     });
   });
 
-  it("④' 巢狀混合形之 before: null 變體：before 鍵仍在且值為 null", () => {
+  it("④' 巢狀混合形之 before: null 變體（首版）：同 4 列，三子鍵列之 before 皆為 null（B-27）", () => {
     const changes = expectKeyConservation(FUEL_CONSUMPTION_NESTED_FIRST_VERSION);
-    expect(changes.map((c) => c.field)).toEqual(["before", "after", "basisNote"]);
-    expect(changes[0]).toEqual({ field: "before", before: null, after: null });
+    expect(changes.map((c) => c.field)).toEqual([
+      "fuelType",
+      "kmPerLiter",
+      "effectiveFrom",
+      "basisNote",
+    ]);
+    expect(changes).toEqual([
+      { field: "fuelType", before: null, after: "GASOLINE_95" },
+      { field: "kmPerLiter", before: null, after: "12.3400" },
+      { field: "effectiveFrom", before: null, after: "2026-01-01" },
+      { field: "basisNote", before: null, after: "首版（合成資料）" },
+    ]);
+    // **不得**退化為「`after` 整包 JSON 一列」（B-27 之 mutant 守門）
+    expect(changes.map((c) => c.field)).not.toContain("after");
+    expectNoObjectObject(changes);
+  });
+
+  it('④" 巢狀兩側子鍵不對稱：以聯集拆列（3 列），缺側之欄為 null（B-28；取成交集之 mutant 必紅）', () => {
+    const changes = expectKeyConservation(FUEL_CONSUMPTION_NESTED_ASYMMETRIC);
+    expect(changes).toEqual([
+      { field: "fuelType", before: "GASOLINE_92", after: "GASOLINE_95" },
+      { field: "kmPerLiter", before: "10.0000", after: null },
+      { field: "effectiveFrom", before: null, after: "2026-08-01" },
+    ]);
+    expect(changes).toHaveLength(3);
     expectNoObjectObject(changes);
   });
 
@@ -512,12 +730,14 @@ describe("AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object
     expectNoObjectObject(changes);
   });
 
-  it("⑥ USER_DEACTIVATED（{from,to} 兩鍵物件）：內容逐項可讀，零 [object Object]", () => {
+  it("⑥ USER_DEACTIVATED（{from,to} 兩鍵物件）：拆為一列兩欄，零 [object Object]（B-26）", () => {
     const changes = expectKeyConservation(USER_DEACTIVATED);
     expectNoObjectObject(changes);
-    expect(changes[0]?.after).toContain("from");
-    expect(changes[0]?.after).toContain("true");
-    expect(changes[0]?.after).toContain("false");
+    expect(changes).toEqual([{ field: "isActive", before: "true", after: "false" }]);
+    // 修訂前之 `{before:null, after:'{"from":true,"to":false}'}` 於此必紅。
+    expect(changes[0]?.after).not.toContain("from");
+    expect(changes[0]?.before).toBe("true");
+    expect(changes[0]?.after).toBe("false");
   });
 
   it("⑦⑧⑨⑩ 其餘真實形狀逐欄正確", () => {
