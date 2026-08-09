@@ -1,7 +1,7 @@
 # PHASE-010 — 稽核檢視與回歸
 
 - Governance-Version: 2026-08-09.1
-- 狀態：**`DRAFT`**（待人類 Spec Gate 裁定 D1~D12 ＋ High Task 事前批准後轉 `ACTIVE`）
+- 狀態：**`ACTIVE`**（人類 leonchih 2026-08-09 Spec Gate 通過：D1~D12 全數裁定＋T1/T2/T3/T5 四項 High Task 事前批准＋3 條件 AC 全生效——見 §18）
 - 建立日期：2026-08-09
 - Task ID：`PHASE-010-SPEC`
 - Base Commit：`41181ce`（branch `phase-010`，自 `main` `02a7d5f`＝PR #18 合併點切出）
@@ -611,7 +611,7 @@ DELETE /admin/users/:id
 | AC-11(a)(b)(c) | integration | 同上 | `AC-11: AuditLog 零 update／delete／upsert 掃描 ＋ mutant 自證` | T4 | `PENDING` |
 | AC-12(a)(b)(c) | integration | `backend/test/integration/phase10-user-delete-regression.test.ts` | `AC-12: 五類歷史逐一 409 拒刪且零刪除（VOIDED 經真實作廢端點構造）` | T5 | `PENDING` |
 | AC-13(a)(b)(c) | integration | 同上 | `AC-13: 零歷史可刪 ＋ USER_DELETED 稽核列 ＋ targetDisplayName null` | T5 | `PENDING` |
-| AC-14(a)(b)(c) | integration | 同上 | `AC-14: 六條 RESTRICT FK 之守門完整性；三條缺口路徑 409（非 500）` | T5 | `PENDING（Spec Gate 裁定後解鎖 — D5）` |
+| AC-14(a)(b)(c) | integration | 同上 | `AC-14: 六條 RESTRICT FK 之守門完整性；三條缺口路徑 409（非 500）` | T5 | `PENDING`（D5=(c) 生效解鎖 2026-08-09） |
 | AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx`／`HomePage.test.tsx` | `AC-15: 路由與管理員入口正負向；列表四要素` | T7 | `PENDING` |
 | AC-16(a)(b)(c) | frontend | `AuditLogPage.test.tsx` | `AC-16: 篩選重置頁次；分頁邊界停用；參數確實送後端` | T7 | `PENDING` |
 | AC-17 | frontend | 同上 | `AC-17: 五態逐格；Empty 與 Permission denied 文案可區辨` | T7 | `PENDING` |
@@ -620,8 +620,8 @@ DELETE /admin/users/:id
 | AC-18(c) | frontend | 同上 | `AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串` | T6 | `PENDING` |
 | AC-19(a)~(d) | e2e | `e2e/audit-log.spec.ts` | `AC-19: 稽核頁端到端（建帳號＋作廢兩事件可見）／篩選／分頁／375px` | T8 | `PENDING` |
 | AC-20(a)(b) | 全套件 | —（終審實跑對照） | 基準線 後端 3230／前端 346／E2E 50 不下降 | 全 Task | `PENDING` |
-| AC-21(a)~(d) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts` | `AC-21: 兜底不記原文 ＋ 站點白名單 ＋ 路徑反向探針 ＋ wire 零變更` | T9 | `PENDING（Spec Gate 裁定後解鎖 — D6）` |
-| AC-22(a)(b)(c)(d) | integration | 既有 contract 檔擴充 | `AC-22: REPORT_GENERATION_FAILED 改道 wire 逐位元組不變；errorLabel 收斂` | T10 | `PENDING（Spec Gate 裁定後解鎖 — D7）` |
+| AC-21(a)~(d) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts` | `AC-21: 兜底不記原文 ＋ 站點白名單 ＋ 路徑反向探針 ＋ wire 零變更` | T9 | `PENDING`（D6=(a) 生效解鎖 2026-08-09） |
+| AC-22(a)(b)(c)(d) | integration | 既有 contract 檔擴充 | `AC-22: REPORT_GENERATION_FAILED 改道 wire 逐位元組不變；errorLabel 收斂` | T10 | `PENDING`（D7=(a) 生效解鎖 2026-08-09） |
 
 **合計 22 條 AC ／ 30 列映射**（其中 **3 列**為條件列，待 Spec Gate 解鎖）。
 
@@ -997,3 +997,4 @@ T10（條件，獨立）
 | 日期 | Task ID | 內容 | 批准依據 |
 |---|---|---|---|
 | 2026-08-09 | `PHASE-010-SPEC` | 初版 DRAFT：§0~§18 全文；**22 條 AC**（其中 3 條為條件 AC）、**10 個 Task**（4 項 High ＋ 2 個條件 Task）、**12 個決策點**、**24 條邊界條件**（B-01~B-24）、**5 格授權矩陣**、AC↔測試映射表 **30 列**（27 列 `PENDING`、**3 列**條件列）。跨 Phase 追蹤 **10 項**逐項有落點（§0.3）。**兩項實查新發現**：①六條 `ON DELETE RESTRICT` FK 中三條無守門，AD-US-04② 現況實得 `500`（**D5**）②帳號類五事件之稽核為 fire-and-forget 且非同交易（**D11**）。 | 待 Spec Gate |
+| 2026-08-09 | `PHASE-010-SPEC`（Gate 固化，大總管白名單） | **★ Spec Gate 通過（人類 leonchih 2026-08-09；兩輪 AskUserQuestion——四條親核裁定＋六點複述確認）★** 裁定全文：**D5=(c) 兩邊都補**（守門擴至全部 6 條 RESTRICT FK 路徑＋P2003 兜底轉譯 409「拒絕並提供停用」非 500；**代價明示接受：凡曾建帳號/改參數/上傳附件/被記稽核之管理員永久不可刪、僅能停用**；AC-14 生效）／**D11=(a)** 帳號類五事件稽核維持 fire-and-forget 本期零變更，不對稱事實記 KNOWN_ISSUES 移交 PHASE-011／**D3=(c)＋中文欄名**（後端攤平「欄位/改前/改後」三欄＋前端中文欄位對照表）／**D8=(a) 結案**（`AuditAction` 維持現有 10 值、本 Phase 零 migration；**此案結案，後續 Phase 不再重議**）／其餘 8 條（D1/D2/D4/D6/D7/D9/D10/D12）照推薦（D6 之 AC-21 採依摘要重建版）／**T1/T2/T3/T5 四項 High 事前批准**／3 條件 AC 全生效（AC-14/21/22）／§0.2 來源標記清單（既有語意擴張/建議新增）無異議。狀態 DRAFT→ACTIVE；§12 三條件列解鎖。 | 人類 leonchih 2026-08-09（AskUserQuestion 兩輪） |
