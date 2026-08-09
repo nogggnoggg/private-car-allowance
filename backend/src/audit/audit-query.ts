@@ -13,11 +13,15 @@
  * T2（`audit/routes.ts`）。授權判定（`401`／`403`）在呼叫端**早於**本函式執行
  * （§6.1 判定紀律 1；B-20 側信道守門在 T2）。
  *
- * 本模組不引用 Prisma 型別這件事由
- * `test/unit/audit-log-query.test.ts` 之結構斷言守住。`parseUtcDate` 之複用沿
- * `mileage/mileage-range.ts`（PHASE-005-T1，同為「純函式查詢解析模組沿用
- * `parameter-service.ts:parseUtcDate`」）之既有先例，不重寫日期解析
- * （`applications/routes.ts` 對此有明文既有紀律）。
+ * **AC-02(f) 之操作型定義**（即 `test/unit/audit-log-query.test.ts` 之結構斷言
+ * 實際掃描的對象）：**本模組自身原始碼**零 `@prisma/client` 匯入、零
+ * `PrismaClient`／`Prisma.` 引用、零 DB 呼叫、零時鐘。**傳遞相依不在射程**——
+ * 本檔匯入的 `parseUtcDate` 其模組鏈上本就有 `@prisma/client` 的 value import
+ * （`parameter-service.ts` → `depreciation-engine.ts`），故執行期載入 Prisma
+ * 這件事本模組並未、也無意避免；沿 `mileage/mileage-range.ts`（PHASE-005-T1）
+ * 之既有先例，該檔同樣自稱純函式、同樣沿用 `parseUtcDate`，且其自身還有
+ * `import type { Prisma }`。複用 `parseUtcDate` 而不重寫日期解析亦是既有紀律
+ * （`applications/routes.ts` 對此有明文）。
  *
  * ---------------------------------------------------------------------------
  * AC-02(c)「逐字沿 PHASE-004 `application-query.ts` 之既有語意」
@@ -27,12 +31,22 @@
  * `export const PAGE_SIZE_MAX = 100;`，以及其 `parseApplicationListQuery` 內
  * `page`／`pageSize` 兩段：正整數正則 → `< 1`／`<= 0` 拒絕 → 超過上限 clamp）。
  *
- * **為何是複製常數而非 import**：AC-02(f) 要求本模組零 Prisma 型別相依，而
- * `application-query.ts` 直接引用 `Prisma`／`PrismaClient` 型別與 `ApplicationType`
- * 等 Prisma 產物；由本模組 import 之會把該相依整串拉進來，與 AC-02(f) 衝突。
- * 取而代之的是**測試層的機械等值守門**：單元測試對同一組輸入同時呼叫兩個
- * parser，斷言 `page`／`pageSize` 之值與欄位錯誤逐字全等——任一側日後改動語意
- * 即紅，複製不會靜默漂移。
+ * **為何是複製常數而非 import**（理由僅此一條，與 AC-02(f) 無關）：避免
+ * `audit/` 對 `applications/` 這個**另一個 feature 模組**產生跨特性耦合——稽核
+ * 檢視與申請查詢是兩個獨立子域，讓前者在編譯期綁住後者的模組圖，只為兩個數字，
+ * 代價不成比例。
+ *
+ * **這裡刻意不主張的理由**：「import 會拉進 Prisma 相依而違反 AC-02(f)」**不成立**，
+ * 不得作為本決定之依據——①`application-query.ts` 對 `@prisma/client` 是
+ * `import type`（執行期抹除）；②本檔的 `parseUtcDate` 匯入鏈上本就有
+ * `@prisma/client` 的 value import（見上「職責邊界」節）；③AC-02(f) 的操作型
+ * 定義只掃描本模組自身原始碼，`import { PAGE_SIZE_DEFAULT } from
+ * "../applications/application-query.js"` 同樣會通過該掃描。
+ *
+ * **複製之漂移風險如何守住**：以**測試層的雙向機械等值對照**——單元測試對同一組
+ * 輸入同時呼叫兩個 parser，斷言 `page`／`pageSize` 之值與該欄位錯誤逐字全等；
+ * 任一側日後改動語意即紅（即審之雙向 mutant 已實證兩個方向皆紅），複製不會
+ * 靜默漂移。
  *
  * ---------------------------------------------------------------------------
  * 日期區間（AC-02(e)：起訖日均含當日）
