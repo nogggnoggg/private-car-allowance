@@ -9,8 +9,10 @@
  *     獨立 `count` 之原始碼結構守門）
  *   · **AC-04** 列投影七鍵封閉（(a)~(e)，含十個 `AuditAction` 值逐一可取回）
  *   · **AC-05** 授權矩陣五格 ＋ `403` 早於 `400` 之側信道（B-20）
+ *   · **AC-02(e)**（**MG-2 後**之台北（UTC+8）日界——wire 面）
  *   · 邊界：B-03（`pageSize` clamp）／B-04（`page` 超出總頁數）／B-05／B-06／
- *     B-07／B-09／B-11／B-12／B-13／B-19／B-20／B-23／B-24
+ *     B-07／B-09／B-11／B-12／B-13／B-19／B-20／B-23／B-24／**B-29**（台北日界
+ *     之雙向釘死；`SPEC-REV-010-GATE` 新增）
  *   · 上游 FW：**FW-1**（`page` 無上界 → `skip` 溢位）／**FW-2**（半開區間
  *     `gte`／`lt` 之雙向釘死）
  *
@@ -24,7 +26,8 @@
  *   · AC-03(b) 要求「`createdAt` 完全相同」的多列——`createdAt` 為 `@default(now())`，
  *     真實端點無法令其相同；
  *   · AC-04(c)／B-13 要求「`target` 已被刪除（`SET NULL` 後）」之列；
- *   · FW-2 要求「當日 23:59:59.999Z 與次日 00:00:00.000Z」之毫秒級邊界列。
+ *   · FW-2／B-29 要求「台北日末毫秒（`15:59:59.999Z`）與台北次日首毫秒
+ *     （`16:00:00.000Z`）」之毫秒級邊界列（MG-2 後之台北日界）。
  * 故本檔之播種為 T2 職責所必需，且**不**用於證明任何「寫入是否發生」之命題
  * （唯一涉及寫入的斷言 AC-01(d) 是**零寫入**，方向相反）。
  *
@@ -200,6 +203,8 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
   let orderActorId: string;
   let enumActorId: string;
   let dateActorId: string;
+  /** B-29（MG-2 台北日界之 wire 面雙向釘死）專屬 actor。 */
+  let b29ActorId: string;
   let shapeActorId: string;
   let bulkActorId: string;
   /** 已被刪除之目標使用者（`SET NULL` 後）之刪除前 id — B-13。 */
@@ -216,11 +221,32 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
 
   const DATE_FROM = "2049-07-10";
   const DATE_TO = "2049-07-12";
-  /** FW-2 之四個毫秒級邊界時刻（前二必命中、後二必不命中）。 */
-  const DATE_IN_LOWER = new Date("2049-07-10T00:00:00.000Z");
-  const DATE_IN_UPPER = new Date("2049-07-12T23:59:59.999Z");
-  const DATE_OUT_NEXT_DAY = new Date("2049-07-13T00:00:00.000Z");
-  const DATE_OUT_PREV_DAY = new Date("2049-07-09T23:59:59.999Z");
+  /**
+   * FW-2 之四個毫秒級邊界時刻（前二必命中、後二必不命中）。
+   *
+   * **PHASE-010-T-MG1-BE2**（2026-08-09 Mock Gate MG-2 裁定「以台灣日曆日為準」／
+   * `SPEC-REV-010-GATE` 之 AC-02(e)）：日界由 UTC 日平移為**台北（UTC+8）日**，
+   * 故四個常數同批重錨定——篩 `2049-07-10`~`2049-07-12` 之半開區間為
+   * `[2049-07-09T16:00:00.000Z, 2049-07-12T16:00:00.000Z)`。
+   */
+  /** 台北 2049-07-10 00:00:00.000（區間**首毫秒**）→ 必命中。 */
+  const DATE_IN_LOWER = new Date("2049-07-09T16:00:00.000Z");
+  /** 台北 2049-07-12 23:59:59.999（區間**末毫秒**）→ 必命中。 */
+  const DATE_IN_UPPER = new Date("2049-07-12T15:59:59.999Z");
+  /** 台北 2049-07-13 00:00:00.000（上界本身）→ 必不命中。 */
+  const DATE_OUT_NEXT_DAY = new Date("2049-07-12T16:00:00.000Z");
+  /** 台北 2049-07-09 23:59:59.999（下界前一毫秒）→ 必不命中。 */
+  const DATE_OUT_PREV_DAY = new Date("2049-07-09T15:59:59.999Z");
+
+  /**
+   * B-29（MG-2 新增）之 wire 面雙向釘死：以**本組專屬 actor** 收斂射程，
+   * 且兩列之時刻皆落在 FW-2 區間之外，故對 FW-2／B-07 兩格零影響。
+   */
+  const B29_DATE = "2049-07-20";
+  /** 台北 2049-07-20 00:00:00.000（＝`D−1 16:00Z`）→ 篩 `D` 時**必命中**。 */
+  const B29_TAIPEI_DAY_START = new Date("2049-07-19T16:00:00.000Z");
+  /** UTC 2049-07-20 23:59:00.000Z（＝台北 `D+1` 07:59）→ 篩 `D` 時**必不命中**。 */
+  const B29_UTC_DAY_LATE = new Date("2049-07-20T23:59:00.000Z");
 
   const BULK_ROW_COUNT = 120;
 
@@ -307,6 +333,7 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
     orderActorId = await createUser("orderact", { role: "ADMIN" });
     enumActorId = await createUser("enumact", { role: "ADMIN" });
     dateActorId = await createUser("dateact", { role: "ADMIN" });
+    b29ActorId = await createUser("b29act", { role: "ADMIN" });
     shapeActorId = await createUser("shapeact", { role: "ADMIN" });
     bulkActorId = await createUser("bulkact", { role: "ADMIN" });
     const ghostId = await createUser("ghost");
@@ -367,6 +394,22 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
           actorId: dateActorId,
           targetId: null,
           targetLabel: `p10t2date-${label}`,
+          createdAt,
+        },
+      });
+    }
+
+    // ── B-29 組（MG-2 台北日界之雙向釘死）：兩列 ─────────────────────────
+    for (const [label, createdAt] of [
+      ["taipei-start", B29_TAIPEI_DAY_START],
+      ["utc-late", B29_UTC_DAY_LATE],
+    ] as Array<[string, Date]>) {
+      await prisma.auditLog.create({
+        data: {
+          action: "PARAMETER_VERSION_CREATED",
+          actorId: b29ActorId,
+          targetId: null,
+          targetLabel: `p10t2b29-${label}`,
           createdAt,
         },
       });
@@ -776,7 +819,7 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
   // -------------------------------------------------------------------------
 
   describe("篩選與邊界（wire 面）", () => {
-    it("FW-2 半開區間雙向釘死：dateTo 當日 23:59:59.999Z 必命中 ∧ 次日 00:00:00.000Z 必不命中", async () => {
+    it("FW-2 半開區間雙向釘死：台北 dateTo 當日 23:59:59.999（＝15:59:59.999Z）必命中 ∧ 台北次日 00:00:00.000（＝16:00:00.000Z）必不命中", async () => {
       const body = await getOk({
         actorId: dateActorId,
         dateFrom: DATE_FROM,
@@ -795,14 +838,35 @@ describeWithDb("PHASE-010-T2 — GET /admin/audit-logs", () => {
       expect(unfiltered.total).toBe(4);
     });
 
-    it("B-07 dateFrom ＝ dateTo（單日）→ 該日之列全數命中", async () => {
+    it("B-07 dateFrom ＝ dateTo（單日）→ 該台北日之列全數命中", async () => {
       const body = await getOk({
         actorId: dateActorId,
         dateFrom: DATE_TO,
         dateTo: DATE_TO,
         pageSize: "100",
       });
+      // 篩 2049-07-12 → 台北 07-12 全日 ＝ [2049-07-11T16:00Z, 2049-07-12T16:00Z)：
+      // 四列中僅 `upper`（台北 07-12 23:59:59.999）落入。
       expect((body.items ?? []).map((i) => i.targetLabel)).toEqual(["p10t2date-upper"]);
+    });
+
+    it("B-29 台北日界雙向釘死（MG-2）：台北 D 日 00:00 必命中 ∧ UTC D 日 23:59（台北 D+1 07:59）必不命中", async () => {
+      const body = await getOk({
+        actorId: b29ActorId,
+        dateFrom: B29_DATE,
+        dateTo: B29_DATE,
+        pageSize: "100",
+      });
+      // 以 UTC 日界實作之 mutant 於本格必紅：該實作會令 `taipei-start`
+      // （UTC 07-19 16:00）落出、`utc-late`（UTC 07-20 23:59）落入，兩個方向皆錯。
+      expect((body.items ?? []).map((i) => i.targetLabel)).toEqual(["p10t2b29-taipei-start"]);
+      expect(body.total).toBe(1);
+
+      // 前提自證：兩列確實都在 DB（否則「必不命中」恆真）。
+      const all = await prisma.auditLog.count({ where: { actorId: b29ActorId } });
+      expect(all).toBe(2);
+      const unfiltered = await getOk({ actorId: b29ActorId, pageSize: "100" });
+      expect(unfiltered.total).toBe(2);
     });
 
     it('B-05 action 非合法值 → 400 VALIDATION_ERROR ＋ fields[{field:"action"}]', async () => {

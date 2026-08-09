@@ -49,15 +49,31 @@
  * 靜默漂移。
  *
  * ---------------------------------------------------------------------------
- * 日期區間（AC-02(e)：起訖日均含當日）
+ * 日期區間（AC-02(e)：起訖日均含當日，且「日」＝台灣（UTC+8）日曆日）
  * ---------------------------------------------------------------------------
  * `AuditLog.createdAt` 是**時刻**（`DateTime`）而非日期，因此「`dateTo` 含當日」
  * 不能以「`lte` 當日 00:00」表達（否則該日 00:00:00.001 以後的稽核列全數漏
- * 掉——B-07 之失效模式）。本函式因而輸出**半開區間**：
- *   · `createdAtFrom`        ＝ `dateFrom` 當日 `00:00:00.000Z`（含）
- *   · `createdAtToExclusive` ＝ `dateTo` **次日** `00:00:00.000Z`（不含）
- * 欄位名即是用法：呼叫端一律 `gte: createdAtFrom` ＋ `lt: createdAtToExclusive`，
- * 讓「誤用 `lte`」在命名層就顯而易見。任一端未提供即為 `null`（該端不設界）。
+ * 掉——B-07 之失效模式）。本函式因而輸出**半開區間**。
+ *
+ * **【2026-08-09 Mock Gate MG-2 人類裁定「以台灣日曆日為準」／`SPEC-REV-010-GATE`】**
+ * 區間之「日」逐字為**台灣（UTC+8）日曆日**（裁定原文：「篩 8/7~8/8 就是台灣時間
+ * 的 8/7 00:00~8/8 23:59，與畫面顯示一致；後端日界平移八小時」）：
+ *   · `createdAtFrom`        ＝ `dateFrom` 之台北時 `00:00:00.000`（含）
+ *                            ＝ **前一日 `16:00:00.000Z`**
+ *                              （例：`dateFrom=2026-08-07` → `2026-08-06T16:00:00.000Z`）
+ *   · `createdAtToExclusive` ＝ `dateTo` **次日**之台北時 `00:00:00.000`（不含）
+ *                            ＝ **`dateTo` 當日 `16:00:00.000Z`**
+ *                              （例：`dateTo=2026-08-08` → `2026-08-08T16:00:00.000Z`）
+ * 偏移量為**固定 ＋8 小時**（台灣自 1979 年起無日光節約時間），故**不需時區資料庫、
+ * 零新增 npm 依賴**（N-6）。欄位名與半開區間之用法**零變更**：呼叫端仍為
+ * `gte: createdAtFrom` ＋ `lt: createdAtToExclusive`（`buildAuditLogWhere` 零程式
+ * 變更，僅兩個 `Date` 之值改變），讓「誤用 `lte`」在命名層就顯而易見。任一端未
+ * 提供即為 `null`（該端不設界）。
+ *
+ * 與 **AC-18(c)（前端沿瀏覽器時區顯示）之關係**：台灣時區之瀏覽器，篩選日與畫面
+ * 顯示日恆一致（裁定之直接目的）；非台灣時區之瀏覽器，顯示為當地時間而篩選仍以
+ * 台灣日為準——此不一致為**裁定當日明示接受之已知限制**（Spec §17.1 #11），
+ * **非缺陷，不得改為瀏覽器時區日界**。
  *
  * ---------------------------------------------------------------------------
  * 錯誤語意
@@ -150,9 +166,9 @@ export interface ParsedAuditLogQuery {
   actorId: string | null;
   /** `null` ＝ 不依對象篩選；不驗證存在性（B-09）。 */
   targetId: string | null;
-  /** 半開區間下界（含）：`dateFrom` 當日 `00:00:00.000Z`；`null` ＝ 不設下界。 */
+  /** 半開區間下界（含）：`dateFrom` 台北日 `00:00`＝**前一日 `16:00:00.000Z`**；`null` ＝ 不設下界。 */
   createdAtFrom: Date | null;
-  /** 半開區間上界（**不含**）：`dateTo` **次日** `00:00:00.000Z`；`null` ＝ 不設上界。 */
+  /** 半開區間上界（**不含**）：`dateTo` 台北次日 `00:00`＝**當日 `16:00:00.000Z`**；`null` ＝ 不設上界。 */
   createdAtToExclusive: Date | null;
   page: number;
   pageSize: number;
@@ -180,6 +196,22 @@ function readScalarParam(value: unknown, field: string, errors: FieldError[]): s
 /** UTC 日粒度之次日 `00:00:00.000Z`（跨月／跨年／閏日由 `Date.UTC` 自然進位）。 */
 function nextUtcDay(day: Date): Date {
   return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1));
+}
+
+/**
+ * AC-02(e)／MG-2：台北時區（UTC+8）相對 UTC 之**固定**偏移量（毫秒）。
+ * 台灣自 1979 年起無日光節約時間，故為常數——**不得**引入任何時區資料庫或
+ * npm 套件（N-6 零新增依賴）。
+ */
+const TAIPEI_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * 把「UTC 日曆日 `day` 之 `00:00:00.000Z`」平移為「**台北**日曆日之
+ * `00:00:00.000`（台北時）」所對應之 UTC 時刻，即 `day 00:00Z − 8h`。
+ * 例：`2026-08-07T00:00:00.000Z` → `2026-08-06T16:00:00.000Z`。
+ */
+function taipeiDayStartUtc(utcDayStart: Date): Date {
+  return new Date(utcDayStart.getTime() - TAIPEI_UTC_OFFSET_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -289,8 +321,9 @@ export function parseAuditLogQuery(raw: RawAuditLogQuery): ParsedAuditLogQuery {
     action,
     actorId,
     targetId,
-    createdAtFrom: dateFrom,
-    createdAtToExclusive: dateTo === null ? null : nextUtcDay(dateTo),
+    // AC-02(e)／MG-2：兩端皆平移 −8h，使日界落在台北日曆日而非 UTC 日。
+    createdAtFrom: dateFrom === null ? null : taipeiDayStartUtc(dateFrom),
+    createdAtToExclusive: dateTo === null ? null : taipeiDayStartUtc(nextUtcDay(dateTo)),
     page,
     pageSize,
   };

@@ -17,11 +17,18 @@
  *       `PAGE_SIZE_MAX=100`）。
  *   (d) `action` 非 `AuditAction` 之合法值 → `400` ＋ `fields[{field:"action"}]`
  *       （不得靜默忽略而回全集）。
- *   (e) `dateFrom > dateTo` → `400` ＋ `fields[]`；區間起訖日均含當日
- *       （`CLAUDE.md` 工程規則）。
+ *   (e) **【2026-08-09 Mock Gate MG-2 裁定「以台灣日曆日為準」修訂；`SPEC-REV-010-GATE`】**
+ *       `dateFrom > dateTo` → `400` ＋ `fields[]`；區間起訖日均含當日
+ *       （`CLAUDE.md` 工程規則），且此處之「日」逐字為**台灣（UTC+8）日曆日**：
+ *         · `createdAtFrom`        ＝ `dateFrom` 台北時 `00:00:00.000`
+ *                                  ＝ **前一日 `16:00:00.000Z`**
+ *         · `createdAtToExclusive` ＝ `dateTo` 次日之台北時 `00:00:00.000`
+ *                                  ＝ **`dateTo` 當日 `16:00:00.000Z`**
+ *       偏移為**固定 ＋8 小時**（台灣自 1979 年起無 DST → 零新增依賴，N-6）。
  *   (f) 解析為純函式（不碰 DB、不碰 Prisma 型別），可單獨單元測試。
  * §5 邊界條件 B-01 ~ B-09（本檔逐格覆蓋；B-04／B-06／B-09 之「DB 命中結果」面
- *   屬 T2 整合測試，本檔只證解析層不擋、不報錯、不改值）。
+ *   屬 T2 整合測試，本檔只證解析層不擋、不報錯、不改值）＋ **B-29**（MG-2 新增：
+ *   台北日界之雙向釘死——以 UTC 日界實作之 mutant 必紅）。
  * §12 映射表：本檔兩列 —— `AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）`／
  *   `AC-02(f): 解析為純函式 — 零 DB／零 Prisma 型別相依`（describe 名逐字對應）。
  *
@@ -51,9 +58,18 @@
  *    「靜默忽略而回全集」之 mutant（不報錯且 action 留 null）僅靠錯誤斷言即紅，
  *    但兩者並存可分辨「報錯卻仍把非法值放行」這一種更隱蔽的失敗。
  * 3. B-07 之「起訖含當日」不以「不報錯」交差，而是斷言解析後的半開區間
- *    `[createdAtFrom, createdAtToExclusive)` 實際涵蓋該日 `23:59:59.999Z`：
- *    把上界誤寫成當日 `00:00:00`（即以 `lte dateTo` 之日粒度收尾）之 mutant 必紅。
+ *    `[createdAtFrom, createdAtToExclusive)` 實際涵蓋該**台北日**之末毫秒
+ *    （`dateTo` 當日 `15:59:59.999Z`）：把上界誤寫成當日 `00:00:00`（即以
+ *    `lte dateTo` 之日粒度收尾）之 mutant 必紅。
  * 4. 錯誤時「零查詢」以「所有篩選欄位一律回 null」守門——上游不得誤用半驗證值。
+ * 5. **B-29（MG-2）之雙向釘死**：兩端點以**逐字 UTC 字面**斷言，故
+ *    (i) 偏移歸零（退回 UTC 日界）與 (ii) 偏移方向相反（−8h）兩種 mutant 皆必紅；
+ *    另以「台北 D 日 00:00 必命中 ∧ UTC D 日 23:59 必不命中」之區間內外對照
+ *    在語意層再釘一次。
+ * 6. 「日界借位」之跨月／跨年／閏日鑑別力：平移後上界為 `dateTo` **當日**
+ *    `16:00Z`（不再進位），故進位／借位改由**下界**承載
+ *    （`dateFrom=2028-03-01` → `2028-02-29T16:00:00.000Z`），以成對之 `it.each`
+ *    同時覆蓋兩端，避免 MG-2 後遺失原有之閏日覆蓋。
  */
 
 import { readFileSync } from "node:fs";
@@ -115,8 +131,9 @@ describe("AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）", () => {
         action: "APPLICATION_VOIDED",
         actorId: "cku111actor",
         targetId: "cku222target",
-        createdAtFrom: new Date("2026-08-01T00:00:00.000Z"),
-        createdAtToExclusive: new Date("2026-09-01T00:00:00.000Z"),
+        // AC-02(e)／MG-2：台北日界——`dateFrom` 前一日 16:00Z、`dateTo` 當日 16:00Z。
+        createdAtFrom: new Date("2026-07-31T16:00:00.000Z"),
+        createdAtToExclusive: new Date("2026-08-31T16:00:00.000Z"),
         page: 3,
         pageSize: 50,
       });
@@ -317,17 +334,17 @@ describe("AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）", () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // B-07／AC-02(e)：dateFrom == dateTo → 該日全數命中（起訖含當日）
+  // B-07／AC-02(e)：dateFrom == dateTo → 該台北日全數命中（起訖含當日）
   // ─────────────────────────────────────────────────────────────────────
-  describe("B-07 dateFrom == dateTo（起訖日均含當日）", () => {
-    it("同一日 → 零錯誤，半開區間為 [當日 00:00:00.000Z, 次日 00:00:00.000Z)", () => {
+  describe("B-07 dateFrom == dateTo（起訖日均含當日；MG-2 後之「日」＝台北日）", () => {
+    it("同一日 → 零錯誤，半開區間為 [前一日 16:00:00.000Z, 當日 16:00:00.000Z)", () => {
       const result = parseAuditLogQuery({ dateFrom: "2026-08-09", dateTo: "2026-08-09" });
       expect(result.errors).toEqual([]);
-      expect(result.createdAtFrom).toEqual(new Date("2026-08-09T00:00:00.000Z"));
-      expect(result.createdAtToExclusive).toEqual(new Date("2026-08-10T00:00:00.000Z"));
+      expect(result.createdAtFrom).toEqual(new Date("2026-08-08T16:00:00.000Z"));
+      expect(result.createdAtToExclusive).toEqual(new Date("2026-08-09T16:00:00.000Z"));
     });
 
-    it("該日全部時刻皆落在 [from, toExclusive) 內（上界寫成當日 00:00 之 mutant 必紅）", () => {
+    it("該台北日全部時刻皆落在 [from, toExclusive) 內（上界寫成當日 00:00 之 mutant 必紅）", () => {
       const result = parseAuditLogQuery({ dateFrom: "2026-08-09", dateTo: "2026-08-09" });
       const from = result.createdAtFrom;
       const toExclusive = result.createdAtToExclusive;
@@ -335,43 +352,57 @@ describe("AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）", () => {
       expect(toExclusive).not.toBeNull();
       if (from === null || toExclusive === null) throw new Error("unreachable");
 
+      // 台北 2026-08-09 之 00:00:00.000／08:30:00.000／23:59:59.999 三個時刻。
       for (const instant of [
-        "2026-08-09T00:00:00.000Z",
-        "2026-08-09T08:30:00.000Z",
-        "2026-08-09T23:59:59.999Z",
+        "2026-08-08T16:00:00.000Z",
+        "2026-08-09T00:30:00.000Z",
+        "2026-08-09T15:59:59.999Z",
       ]) {
         const t = new Date(instant).getTime();
         expect(t).toBeGreaterThanOrEqual(from.getTime());
         expect(t).toBeLessThan(toExclusive.getTime());
       }
 
-      // 區間外之相鄰時刻（負向對照，證明上方非恆真）
-      expect(new Date("2026-08-08T23:59:59.999Z").getTime()).toBeLessThan(from.getTime());
-      expect(new Date("2026-08-10T00:00:00.000Z").getTime()).toBeGreaterThanOrEqual(
+      // 區間外之相鄰時刻（負向對照，證明上方非恆真）：台北 08-08 23:59:59.999
+      // 與台北 08-10 00:00:00.000。
+      expect(new Date("2026-08-08T15:59:59.999Z").getTime()).toBeLessThan(from.getTime());
+      expect(new Date("2026-08-09T16:00:00.000Z").getTime()).toBeGreaterThanOrEqual(
         toExclusive.getTime()
       );
     });
 
     it.each([
-      ["2026-08-31", "2026-09-01T00:00:00.000Z"],
-      ["2026-12-31", "2027-01-01T00:00:00.000Z"],
-      ["2028-02-29", "2028-03-01T00:00:00.000Z"],
-    ])("dateTo='%s' 之次日上界為 %s（跨月／跨年／閏日皆正確）", (dateTo, expected) => {
+      ["2026-08-31", "2026-08-31T16:00:00.000Z"],
+      ["2026-12-31", "2026-12-31T16:00:00.000Z"],
+      ["2028-02-29", "2028-02-29T16:00:00.000Z"],
+    ])("dateTo='%s' 之台北次日上界為 %s（月末／年末／閏日皆正確）", (dateTo, expected) => {
       const result = parseAuditLogQuery({ dateTo });
       expect(result.errors).toEqual([]);
       expect(result.createdAtToExclusive).toEqual(new Date(expected));
     });
 
+    it.each([
+      ["2026-09-01", "2026-08-31T16:00:00.000Z"],
+      ["2027-01-01", "2026-12-31T16:00:00.000Z"],
+      ["2028-03-01", "2028-02-29T16:00:00.000Z"],
+    ])("dateFrom='%s' 之台北日起點為 %s（跨月／跨年／閏日之借位皆正確）", (dateFrom, expected) => {
+      // MG-2 平移後，進位／借位改由**下界**承載（上界恆為 dateTo 當日 16:00Z），
+      // 故原 `dateTo` 之跨月／跨年／閏日覆蓋以本格對稱補回，零覆蓋淨損。
+      const result = parseAuditLogQuery({ dateFrom });
+      expect(result.errors).toEqual([]);
+      expect(result.createdAtFrom).toEqual(new Date(expected));
+    });
+
     it("只給 dateFrom → 上界為 null（不設上界）；只給 dateTo → 下界為 null", () => {
       const onlyFrom = parseAuditLogQuery({ dateFrom: "2026-08-01" });
       expect(onlyFrom.errors).toEqual([]);
-      expect(onlyFrom.createdAtFrom).toEqual(new Date("2026-08-01T00:00:00.000Z"));
+      expect(onlyFrom.createdAtFrom).toEqual(new Date("2026-07-31T16:00:00.000Z"));
       expect(onlyFrom.createdAtToExclusive).toBeNull();
 
       const onlyTo = parseAuditLogQuery({ dateTo: "2026-08-31" });
       expect(onlyTo.errors).toEqual([]);
       expect(onlyTo.createdAtFrom).toBeNull();
-      expect(onlyTo.createdAtToExclusive).toEqual(new Date("2026-09-01T00:00:00.000Z"));
+      expect(onlyTo.createdAtToExclusive).toEqual(new Date("2026-08-31T16:00:00.000Z"));
     });
 
     it.each([
@@ -391,6 +422,57 @@ describe("AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）", () => {
       expect(result.errors).toEqual([]);
       expect(result.createdAtFrom).toBeNull();
       expect(result.createdAtToExclusive).toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // B-29／AC-02(e)：台北（UTC+8）日界之雙向釘死（MG-2）
+  // ─────────────────────────────────────────────────────────────────────
+  describe("B-29 台北（UTC+8）日界雙向釘死（MG-2；UTC 日界之 mutant 必紅）", () => {
+    /** 篩選日 D（裁定原文之例：「篩 8/7~8/8 就是台灣時間的 8/7 00:00~8/8 23:59」）。 */
+    const D = "2026-08-07";
+
+    it("dateFrom=dateTo=D：台北 D 日 00:00:00（＝D−1 16:00Z）必命中；UTC D 日 23:59（＝台北 D+1 07:59）必不命中", () => {
+      const result = parseAuditLogQuery({ dateFrom: D, dateTo: D });
+      expect(result.errors).toEqual([]);
+      const from = result.createdAtFrom;
+      const toExclusive = result.createdAtToExclusive;
+      if (from === null || toExclusive === null) throw new Error("unreachable");
+
+      // 台北 2026-08-07 00:00:00.000 ＝ 2026-08-06T16:00:00.000Z → 必命中
+      const taipeiDayStart = new Date("2026-08-06T16:00:00.000Z").getTime();
+      expect(taipeiDayStart).toBeGreaterThanOrEqual(from.getTime());
+      expect(taipeiDayStart).toBeLessThan(toExclusive.getTime());
+
+      // UTC 2026-08-07 23:59:00.000Z ＝ 台北 2026-08-08 07:59 → 必不命中
+      const utcDayLate = new Date("2026-08-07T23:59:00.000Z").getTime();
+      expect(utcDayLate).toBeGreaterThanOrEqual(toExclusive.getTime());
+    });
+
+    it("兩端點之逐字 UTC 字面：偏移歸零（UTC 日界）與偏移方向相反（−8h→+8h）兩種 mutant 皆必紅", () => {
+      const result = parseAuditLogQuery({ dateFrom: "2026-08-07", dateTo: "2026-08-08" });
+      expect(result.errors).toEqual([]);
+      expect(result.createdAtFrom).toEqual(new Date("2026-08-06T16:00:00.000Z"));
+      expect(result.createdAtToExclusive).toEqual(new Date("2026-08-08T16:00:00.000Z"));
+
+      // 明示排除兩種 mutant 之輸出（偏移歸零／方向相反），使失敗訊息自帶診斷。
+      expect(result.createdAtFrom).not.toEqual(new Date("2026-08-07T00:00:00.000Z"));
+      expect(result.createdAtToExclusive).not.toEqual(new Date("2026-08-09T00:00:00.000Z"));
+      expect(result.createdAtFrom).not.toEqual(new Date("2026-08-07T08:00:00.000Z"));
+      expect(result.createdAtToExclusive).not.toEqual(new Date("2026-08-09T08:00:00.000Z"));
+    });
+
+    it("偏移量恰為 −8 小時（固定 +8h 時區；區間長度仍為整日數）", () => {
+      const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000;
+      const result = parseAuditLogQuery({ dateFrom: "2026-08-07", dateTo: "2026-08-08" });
+      const from = result.createdAtFrom;
+      const toExclusive = result.createdAtToExclusive;
+      if (from === null || toExclusive === null) throw new Error("unreachable");
+
+      expect(from.getTime()).toBe(Date.UTC(2026, 7, 7) - EIGHT_HOURS_MS);
+      expect(toExclusive.getTime()).toBe(Date.UTC(2026, 7, 9) - EIGHT_HOURS_MS);
+      // 兩日之區間長度恰 48 小時（平移不改變區間長度）。
+      expect(toExclusive.getTime() - from.getTime()).toBe(2 * 24 * 60 * 60 * 1000);
     });
   });
 

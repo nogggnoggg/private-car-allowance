@@ -12,9 +12,15 @@
  *   而未建，記於 T2 Handoff W-5，本 Lite Task 補齊）。
  * §2.A AC-02(a)／§16 **D2(b)**：篩選維度恰四個——`action`／`actorId`／`targetId`
  *   ＋ `dateFrom`／`dateTo`（不含 `keyword`）。
- * §2.A AC-02(e)：區間**起訖日均含當日**。T1（`audit-query.ts`）將其表達為
- *   **半開區間** `[createdAtFrom, createdAtToExclusive)`，故 `where` 必為
- *   `gte` ＋ **`lt`**（誤用 `lte` 會使 `dateTo` 當日多撈一整天）。
+ * §2.A AC-02(e)：區間**起訖日均含當日**，且「日」＝**台灣（UTC+8）日曆日**
+ *   （2026-08-09 Mock Gate **MG-2** 裁定／`SPEC-REV-010-GATE`）。T1
+ *   （`audit-query.ts`）將其表達為**半開區間**
+ *   `[createdAtFrom, createdAtToExclusive)`，故 `where` 必為 `gte` ＋ **`lt`**
+ *   （誤用 `lte` 會使 `dateTo` 當日多撈一整天）。
+ *   **本檔與 MG-2 之關係**：本檔以 `Date` **值**直接建構 `parsed(...)` 輸入、
+ *   **不經** `parseAuditLogQuery`，故日界平移 −8h **不改變任何斷言之真偽**；
+ *   `T-MG1-BE2` 對本檔僅做**記載對齊**（fixture 字面與敘述由 UTC 日框架改為台北
+ *   日界字面），**零斷言增刪、零期望變更**（Spec §12 該列逐字）。
  * §5 邊界：B-06（合法 `action` 零命中）／B-09（`actorId`／`targetId` 不驗存在性）
  *   之「不應在 `where` 層被特殊處理」面；B-07（單日查詢）之區間形狀面。
  * §2.A AC-02(b)：`errors` 非空時 T1 之 parser 把四個篩選欄位一律歸 `null`
@@ -54,10 +60,13 @@ import { buildAuditLogWhere } from "../../src/audit/routes.js";
 // 固定裝置
 // ---------------------------------------------------------------------------
 
-/** 半開區間之兩端（本檔專屬年份 2049，與其他測試檔零重疊）。 */
-const FROM = new Date("2049-07-10T00:00:00.000Z");
-/** `dateTo=2049-07-12` 之次日 00:00:00.000Z（T1 輸出之 exclusive 上界）。 */
-const TO_EXCLUSIVE = new Date("2049-07-13T00:00:00.000Z");
+/**
+ * 半開區間之兩端（本檔專屬年份 2049，與其他測試檔零重疊）。
+ * 字面沿 MG-2 後之台北日界：`dateFrom=2049-07-10` 之台北日起點＝前一日 16:00Z。
+ */
+const FROM = new Date("2049-07-09T16:00:00.000Z");
+/** `dateTo=2049-07-12` 之台北次日 00:00＝**當日 16:00:00.000Z**（T1 輸出之 exclusive 上界）。 */
+const TO_EXCLUSIVE = new Date("2049-07-12T16:00:00.000Z");
 
 const ACTOR_ID = "p10t2w-actor-id";
 const TARGET_ID = "p10t2w-target-id";
@@ -131,21 +140,22 @@ describe("PHASE-010-T2R-LITE — buildAuditLogWhere（where 建構純函式；Sp
       expect(Object.keys(where.createdAt as object).sort()).toEqual(["gte", "lt"]);
     });
 
-    it("B-07 單日（dateFrom ＝ dateTo）→ 上界仍為次日 00:00Z 之 lt，可涵蓋該日 23:59:59.999Z", () => {
+    it("B-07 單日（dateFrom ＝ dateTo）→ 上界仍為台北次日 00:00 之 lt，可涵蓋該台北日 23:59:59.999", () => {
+      // 台北 2049-07-12 全日 ＝ [2049-07-11T16:00:00.000Z, 2049-07-12T16:00:00.000Z)。
       const where = buildAuditLogWhere(
         parsed({
-          createdAtFrom: new Date("2049-07-12T00:00:00.000Z"),
-          createdAtToExclusive: new Date("2049-07-13T00:00:00.000Z"),
+          createdAtFrom: new Date("2049-07-11T16:00:00.000Z"),
+          createdAtToExclusive: new Date("2049-07-12T16:00:00.000Z"),
         })
       );
       expect(where).toStrictEqual({
         createdAt: {
-          gte: new Date("2049-07-12T00:00:00.000Z"),
-          lt: new Date("2049-07-13T00:00:00.000Z"),
+          gte: new Date("2049-07-11T16:00:00.000Z"),
+          lt: new Date("2049-07-12T16:00:00.000Z"),
         },
       });
-      // 語意自證：該日最後一毫秒確實落在 [gte, lt) 內。
-      const lastMs = new Date("2049-07-12T23:59:59.999Z").getTime();
+      // 語意自證：該台北日最後一毫秒（＝15:59:59.999Z）確實落在 [gte, lt) 內。
+      const lastMs = new Date("2049-07-12T15:59:59.999Z").getTime();
       const range = where.createdAt as { gte: Date; lt: Date };
       expect(lastMs).toBeGreaterThanOrEqual(range.gte.getTime());
       expect(lastMs).toBeLessThan(range.lt.getTime());
