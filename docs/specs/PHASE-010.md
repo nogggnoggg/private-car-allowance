@@ -627,9 +627,9 @@ DELETE /admin/users/:id
 | AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx`／`HomePage.test.tsx` | `AC-15: 路由與管理員入口正負向；列表四要素` | T7 | `PENDING` |
 | AC-16(a)(b)(c) | frontend | `AuditLogPage.test.tsx` | `AC-16: 篩選重置頁次；分頁邊界停用；參數確實送後端` | T7 | `PENDING` |
 | AC-17 | frontend | 同上 | `AC-17: 五態逐格；Empty 與 Permission denied 文案可區辨` | T7 | `PENDING` |
-| AC-18(a) | frontend | `frontend/test/AuditChangesList.test.tsx` | `AC-18(a): XSS payload 三型跳脫；DOM 零新增 script 節點` | T6 | `PENDING` |
-| AC-18(b) | frontend | 同上 | `AC-18(b): 巢狀混合 summary 渲染零 [object Object]（前端自帶負向）` | T6 | `PENDING` |
-| AC-18(c) | frontend | 同上 | `AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串` | T6 | `PENDING` |
+| AC-18(a) | frontend | `frontend/test/AuditChangesList.test.tsx` | `AC-18(a): XSS payload 三型跳脫；DOM 零新增 script 節點` | T6 | `GREEN`（T6 `d625d94`） |
+| AC-18(b) | frontend | 同上 | `AC-18(b): 巢狀混合 summary 渲染零 [object Object]（前端自帶負向）` | T6 | `GREEN`（T6 `d625d94`） |
+| AC-18(c) | frontend | 同上 | `AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串` | T6 | `GREEN`（T6 `d625d94`） |
 | AC-19(a)~(d) | e2e | `e2e/audit-log.spec.ts` | `AC-19: 稽核頁端到端（建帳號＋作廢兩事件可見）／篩選／分頁／375px` | T8 | `PENDING` |
 | AC-20(a)(b) | 全套件 | —（終審實跑對照） | 基準線 後端 3230／前端 346／E2E 50 不下降 | 全 Task | `PENDING` |
 | AC-21(a)~(d) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts` | `AC-21: 兜底不記原文 ＋ 站點白名單 ＋ 路徑反向探針 ＋ wire 零變更` | T9 | `PENDING`（D6=(a) 生效解鎖 2026-08-09） |
