@@ -121,7 +121,7 @@
 
 **AC-01 — 端點與回應形狀**
 (a) 存在唯讀端點 `GET /admin/audit-logs`（路徑與落點依 **D1**），成功回 `200`。
-(b) 回應 body 為封閉三鍵 `{ items: AuditLogListItemDto[], total: number, page: number, pageSize: number }`——鍵集以 `toEqual` 封閉斷言，**多一鍵必紅**。
+(b) 回應 body 為封閉**四鍵** `{ items: AuditLogListItemDto[], total: number, page: number, pageSize: number }`——鍵集以 `toEqual` 封閉斷言，**多一鍵必紅**。（`SPEC-REV-010-LITE` 勘誤：原文字面作「三鍵」與同句列舉之四鍵及 §7.2 `AuditLogListResponse` 四欄不一致；此為字面計數勘誤，行為語意零變更。）
 (c) 零結果時回 `200` ＋ `items: []` ＋ `total: 0`（**非** 404）。
 (d) 端點**零寫入**：呼叫前後 `AuditLog`／`User`／`Application` 三表之列數與內容逐欄不變（查詢端點不得產生自身之稽核列）。
 
@@ -343,6 +343,7 @@
 | B-22 | 作廢原因為 500 字元長文字 | 列表列不破版；375px 下零水平溢位（換行或截斷 ＋ 完整值可得） |
 | B-23 | 稽核列數量極大（如 500 筆） | 分頁後單次回應恆 ≤ `pageSize`；**不得**將全集讀入記憶體（AC-03(c) 結構守門） |
 | B-24 | 查詢端點被呼叫 | **零**新增稽核列（查詢不是被稽核事件；AC-01(d)） |
+| B-25 | 同一 query 參數**重複帶入**（Fastify 執行期給 `string[]`）——`action`／`actorId`／`targetId`／`dateFrom`／`dateTo`／`page`／`pageSize` **七個參數皆適用** | `400 VALIDATION_ERROR` ＋ `fields[{field:"<該欄>"}]`；該欄**不得**以陣列值穿透至 Prisma `where` 而爆 `500`。**溯源**：逐字沿 `backend/src/applications/application-query.ts` :115／:241 之 **B-35** 既有紀律（PHASE-005 T6-AR-1 同型）；判讀經 T1／T2 兩輪即審 CONFIRM（T1 W-6）。**實測落點**：`backend/test/unit/audit-log-query.test.ts` 型別防禦格（:448，`it.each` 七欄）＋ `backend/test/integration/phase10-audit-query.test.ts` wire 格（:840） |
 
 ---
 
@@ -551,7 +552,7 @@ DELETE /admin/users/:id
 
 ### 11.2 整合（Vitest ＋ PostgreSQL ＋ 真實 route）
 
-- `phase10-audit-query.test.ts`：AC-01、AC-03、AC-04、AC-05（5 格）、B-10~B-13、B-19~B-20、B-23~B-24。
+- `phase10-audit-query.test.ts`：AC-01、AC-03、AC-04、AC-05（5 格）、B-10~B-13、B-19~B-20、B-23~B-25。
 - `phase10-audit-completeness.test.ts`：AC-07（七類 ＋ 負向對照）、AC-08（代操作兩類）、AC-09（全表 ＋ wire 掃描）。
 - `phase10-audit-structure.test.ts`：AC-10（站點白名單 ＋ enum 對照 ＋ 標籤表涵蓋）、AC-11（不可變性掃描 ＋ mutant 自證）。
 - `phase10-user-delete-regression.test.ts`：AC-12（五類）、AC-13、AC-14（依 D5）、B-14~B-18。
@@ -592,15 +593,16 @@ DELETE /admin/users/:id
 
 | AC | 層級 | 測試檔 | 測試名（預定） | Task | 狀態 |
 |---|---|---|---|---|---|
-| AC-01(a)(b)(c) | integration | `backend/test/integration/phase10-audit-query.test.ts` | `AC-01: GET /admin/audit-logs 回應三鍵封閉且零結果回 200 空陣列` | T2 | `PENDING` |
-| AC-01(d) | integration | 同上 | `AC-01(d): 查詢端點零寫入 — 三表列數與內容前後逐欄不變` | T2 | `PENDING` |
+| AC-01(a)(b)(c) | integration | `backend/test/integration/phase10-audit-query.test.ts` | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-01 端點與回應形狀` › `(a)(b) 200 ＋ 回應 body 為封閉四鍵（多一鍵必紅）`；`(c) 零結果 → 200 ＋ items: [] ＋ total: 0（非 404）——B-09 不存在之 actorId`；`(c)／B-06 合法 action 但零命中 → 200 ＋ 空集` | T2 | `GREEN`（T2 `1aec6ed`） |
+| AC-01(d) | integration | 同上 | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-01 端點與回應形狀` › `(d)／B-24 端點零寫入：AuditLog／User／Application 三表逐欄不變` | T2 | `GREEN`（T2 `1aec6ed`） |
 | AC-02(a)~(e) | unit | `backend/test/unit/audit-log-query.test.ts` | `AC-02: parseAuditLogQuery 參數矩陣（B-01~B-09）` | T1 | `GREEN`（T1 `d7b70ad`） |
 | AC-02(f) | unit | 同上 | `AC-02(f): 解析為純函式 — 零 DB／零 Prisma 型別相依` | T1 | `GREEN`（T1 `d7b70ad`） |
-| AC-03(a)(b) | integration | `phase10-audit-query.test.ts` | `AC-03: createdAt 同值三列跨頁不重不漏；移除 id 排序鍵之 mutant 必紅` | T2 | `PENDING` |
-| AC-03(c) | integration | 同上 | `AC-03(c): skip/take + 獨立 count 之原始碼結構斷言` | T2 | `PENDING` |
-| AC-04(a)(b)(c)(e) | integration | 同上 | `AC-04: AuditLogListItemDto 七鍵封閉；零內部識別值；targetDisplayName 可為 null` | T2 | `PENDING` |
-| AC-04(d) | integration | 同上 | `AC-04(d): 十個 AuditAction 值逐一皆可取回並通過鍵集斷言` | T2 | `PENDING` |
-| AC-05(a)(b)(c) | integration | 同上 | `AC-05: 授權五格逐格；403 早於 400 之側信道；403 零業務值` | T2 | `PENDING` |
+| AC-02(a)(e) | unit | `backend/test/unit/audit-log-where.test.ts` | `PHASE-010-T2R-LITE — buildAuditLogWhere（where 建構純函式；Spec §11.1）` | T2（R-LITE） | `GREEN`（`1a6b714`） |
+| AC-03(a)(b) | integration | `phase10-audit-query.test.ts` | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-03 全序排序與跨頁不重不漏` › `(a) 排序恆為 createdAt DESC, id DESC——同 createdAt 之 5 列逐位對照 id 降冪`；`(a) 跨不同 createdAt 時以 createdAt 降冪為主鍵`；`(b)／B-10 createdAt 完全相同之 5 列，pageSize=2 跨頁：聯集恰等於全集且零重複` | T2 | `GREEN`（T2 `1aec6ed`） |
+| AC-03(c) | integration | 同上 | `PHASE-010-T2 結構性斷言（AC-03(c)／ErrorCode 聯集）` › ``AC-03(c)：分頁與計數皆於 DB 層完成——`skip`／`take` ＋ 獨立 `count` 在場，且零記憶體內切片`` | T2 | `GREEN`（T2 `1aec6ed`） |
+| AC-04(a)(b)(c)(e) | integration | 同上 | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-04 列投影（AD-US-14② 之四要素）` › `(a) AuditLogListItemDto 鍵集封閉為七鍵（多一鍵必紅）`；`(b) 操作者＝actorDisplayName；回應零內部識別值（actorId／targetId 不外露）`；`(c) 受影響資料＝targetLabel ＋ targetDisplayName（target 在場時為其顯示名）`；`(c)／B-13 target 已被刪除（SET NULL 後）→ targetDisplayName: null，targetLabel 仍為快照`；`(e) createdAt 以 ISO 8601 UTC 字串輸出` | T2 | `GREEN`（T2 `1aec6ed`） |
+| AC-04(d) | integration | 同上 | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-04 列投影（AD-US-14② 之四要素）` › `(d) 十個 AuditAction 值逐一皆有一條真實列可被取回並通過 (a)~(c)`；`(d) 含 APPLICATION_VOIDED，且作廢原因逐字可見於 changes` | T2 | `GREEN`（T2 `1aec6ed`） |
+| AC-05(a)(b)(c) | integration | 同上 | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-05 授權矩陣（1 端點 × 5 身分 ＝ 5 格）`（該 describe 下 8 條 `it`：格 1~格 5 ＋ 三條 B-20 側信道） | T2 | `GREEN`（T2 `1aec6ed`） |
 | AC-06(a)(b)(d)(e) | unit | `backend/test/unit/audit-summary-flatten.test.ts` | `AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant 必紅）` | T1 | `GREEN`（T1 `d7b70ad`） |
 | AC-06(c)(f) | unit | 同上 | `AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object]` | T1 | `GREEN`（T1 `d7b70ad`） |
 | AC-07(a)(b) | integration | `backend/test/integration/phase10-audit-completeness.test.ts` | `AC-07: 七類事件經真實端點觸發後稽核列齊備且可經檢視端點取回` | T3 | `PENDING` |
@@ -623,7 +625,9 @@ DELETE /admin/users/:id
 | AC-21(a)~(d) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts` | `AC-21: 兜底不記原文 ＋ 站點白名單 ＋ 路徑反向探針 ＋ wire 零變更` | T9 | `PENDING`（D6=(a) 生效解鎖 2026-08-09） |
 | AC-22(a)(b)(c)(d) | integration | 既有 contract 檔擴充 | `AC-22: REPORT_GENERATION_FAILED 改道 wire 逐位元組不變；errorLabel 收斂` | T10 | `PENDING`（D7=(a) 生效解鎖 2026-08-09） |
 
-**合計 22 條 AC ／ 30 列映射**（其中 **3 列**為條件列，待 Spec Gate 解鎖）。
+**合計 22 條 AC ／ 31 列映射**（其中 **3 列**為條件列 AC-14／AC-21／AC-22，已隨 Spec Gate 裁定於 2026-08-09 解鎖）。
+
+> `SPEC-REV-010-LITE`（2026-08-09）：新增 `buildAuditLogWhere` 一列（§11.1 該項原無映射落點，30 → 31 列），並將 T2 之七列以實際測試名逐字回填轉 `GREEN`。表內以 `A` › `B` 表示「`describe` A 之下的 `describe`／`it` B」。
 
 ---
 
@@ -998,3 +1002,4 @@ T10（條件，獨立）
 |---|---|---|---|
 | 2026-08-09 | `PHASE-010-SPEC` | 初版 DRAFT：§0~§18 全文；**22 條 AC**（其中 3 條為條件 AC）、**10 個 Task**（4 項 High ＋ 2 個條件 Task）、**12 個決策點**、**24 條邊界條件**（B-01~B-24）、**5 格授權矩陣**、AC↔測試映射表 **30 列**（27 列 `PENDING`、**3 列**條件列）。跨 Phase 追蹤 **10 項**逐項有落點（§0.3）。**兩項實查新發現**：①六條 `ON DELETE RESTRICT` FK 中三條無守門，AD-US-04② 現況實得 `500`（**D5**）②帳號類五事件之稽核為 fire-and-forget 且非同交易（**D11**）。 | 待 Spec Gate |
 | 2026-08-09 | `PHASE-010-SPEC`（Gate 固化，大總管白名單） | **★ Spec Gate 通過（人類 leonchih 2026-08-09；兩輪 AskUserQuestion——四條親核裁定＋六點複述確認）★** 裁定全文：**D5=(c) 兩邊都補**（守門擴至全部 6 條 RESTRICT FK 路徑＋P2003 兜底轉譯 409「拒絕並提供停用」非 500；**代價明示接受：凡曾建帳號/改參數/上傳附件/被記稽核之管理員永久不可刪、僅能停用**；AC-14 生效）／**D11=(a)** 帳號類五事件稽核維持 fire-and-forget 本期零變更，不對稱事實記 KNOWN_ISSUES 移交 PHASE-011／**D3=(c)＋中文欄名**（後端攤平「欄位/改前/改後」三欄＋前端中文欄位對照表）／**D8=(a) 結案**（`AuditAction` 維持現有 10 值、本 Phase 零 migration；**此案結案，後續 Phase 不再重議**）／其餘 8 條（D1/D2/D4/D6/D7/D9/D10/D12）照推薦（D6 之 AC-21 採依摘要重建版）／**T1/T2/T3/T5 四項 High 事前批准**／3 條件 AC 全生效（AC-14/21/22）／§0.2 來源標記清單（既有語意擴張/建議新增）無異議。狀態 DRAFT→ACTIVE；§12 三條件列解鎖。 | 人類 leonchih 2026-08-09（AskUserQuestion 兩輪） |
+| 2026-08-09 | `SPEC-REV-010-LITE` | **記載面修訂批次（零 AC 語意變更、零新 AC、零 Task Graph 變更）**，四項：①**§2 AC-01(b) 勘誤**——字面「封閉三鍵」與同句列舉之四鍵及 §7.2 `AuditLogListResponse` 四欄不一致，更正為「封閉**四鍵**」（T2 實作採四鍵已 APPROVE）。②**§12 T2 七列回填**——AC-01(a)(b)(c)／AC-01(d)／AC-03(a)(b)／AC-03(c)／AC-04(a)(b)(c)(e)／AC-04(d)／AC-05(a)(b)(c) 以 `phase10-audit-query.test.ts` 之實際 `describe`／`it` 名逐字回填並轉 `GREEN`（T2 `1aec6ed`）；**兩處預定名經實查證為失準**（「回應三鍵封閉」實為四鍵、「createdAt 同值三列」實為 5 列），以實查為準。③**§12 新增 `buildAuditLogWhere` 一列**（AC-02(a)(e)／`backend/test/unit/audit-log-where.test.ts`／T2（R-LITE）／`GREEN` `1a6b714`）——§11.1 該項原無映射落點（SF-1 長期不可見之結構成因），映射表 30 → **31 列**。④**§5 新增 B-25**——同一 query 參數重複帶入（`string[]`）七參數皆 `400 VALIDATION_ERROR` ＋ `fields[{field:"<該欄>"}]`，溯源 `applications/application-query.ts` B-35（PHASE-005 T6-AR-1 同型），並於 §11.2 同步 `B-23~B-24` → `B-23~B-25`。 | T1 即審 FW-6／T2 即審 SF-2·AR-4／T2 關閉確認 FW-7／大總管派工 2026-08-09 |
