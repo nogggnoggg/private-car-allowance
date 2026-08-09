@@ -611,9 +611,9 @@ DELETE /admin/users/:id
 | AC-09(a)(b)(c)(d) | integration | 同上 | `AC-09: 密碼與敏感資料不入稽核 — DB 全表 ＋ wire 面雙掃描` | T3 | `GREEN`（T3 `81dd7b9`） |
 | AC-10(a)(b)(c)(d) | integration | `backend/test/integration/phase10-audit-structure.test.ts` | `AC-10: 稽核寫入站點白名單（5 檔／13 呼叫）＋ enum 10 值 ＋ 標籤表涵蓋` | T4 | `PENDING` |
 | AC-11(a)(b)(c) | integration | 同上 | `AC-11: AuditLog 零 update／delete／upsert 掃描 ＋ mutant 自證` | T4 | `PENDING` |
-| AC-12(a)(b)(c) | integration | `backend/test/integration/phase10-user-delete-regression.test.ts` | `AC-12: 五類歷史逐一 409 拒刪且零刪除（VOIDED 經真實作廢端點構造）` | T5 | `PENDING` |
-| AC-13(a)(b)(c) | integration | 同上 | `AC-13: 零歷史可刪 ＋ USER_DELETED 稽核列 ＋ targetDisplayName null` | T5 | `PENDING` |
-| AC-14(a)(b)(c) | integration | 同上 | `AC-14: 六條 RESTRICT FK 之守門完整性；三條缺口路徑 409（非 500）` | T5 | `PENDING`（D5=(c) 生效解鎖 2026-08-09） |
+| AC-12(a)(b)(c) | integration | `backend/test/integration/phase10-user-delete-regression.test.ts` | `AC-12: 五類歷史逐一 409 拒刪且零刪除（VOIDED 經真實作廢端點構造）` | T5 | `GREEN`（T5 `f900984`） |
+| AC-13(a)(b)(c) | integration | 同上 | `AC-13: 零歷史可刪 ＋ USER_DELETED 稽核列 ＋ targetDisplayName null` | T5 | `GREEN`（T5 `f900984`） |
+| AC-14(a)(b)(c) | integration | 同上 | `AC-14: 六條 RESTRICT FK 之守門完整性；三條缺口路徑 409（非 500）` | T5 | `GREEN`（T5 `f900984`；D5=(c) 生效解鎖 2026-08-09） |
 | AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx`／`HomePage.test.tsx` | `AC-15: 路由與管理員入口正負向；列表四要素` | T7 | `PENDING` |
 | AC-16(a)(b)(c) | frontend | `AuditLogPage.test.tsx` | `AC-16: 篩選重置頁次；分頁邊界停用；參數確實送後端` | T7 | `PENDING` |
 | AC-17 | frontend | 同上 | `AC-17: 五態逐格；Empty 與 Permission denied 文案可區辨` | T7 | `PENDING` |
