@@ -57,7 +57,7 @@
 > **US 原意保護聲明**：本 Spec **未改變任何 US 之原意**，亦未刪減任何 US 驗收條件。凡本 Spec 判定「US 未涵蓋而現實需要裁量」者（篩選維度／`summary` 揭露形式／FK 守門範圍／技術債納入與否），**一律不由 spec-writer 折衷**，完整列為 §16 之選項與代價交人類裁定。
 >
 > **來源類別標記（治理 2026-08-03.1）**——本 Spec 之 AC 逐條分類如下：
-> - **裁定直接推論／US 逐字**：AC-01, AC-04, AC-06, AC-07, AC-08, AC-09, AC-12, AC-13, AC-15
+> - **裁定直接推論／US 逐字**：AC-01, AC-04, AC-06, AC-07, AC-08, AC-09, AC-12, AC-13, AC-15，**＋ AC-16(d)**（`SPEC-REV-010-LITE-3` 新增之子項——人類 leonchih 2026-08-09 SF-1 裁定「改用使用者下拉」之逐字落地；其母條 AC-16 仍屬「建議新增」）
 > - **既有語意擴張**（須於 Human Gate 清單獨立列出）：**AC-02**（篩選與分頁——PRD :509「篩選」之具體化）、**AC-03**（全序排序——分頁之必要前提，沿 PHASE-004 AC-67 慣例）、**AC-05**（授權矩陣格數——US 僅稱「管理員」）、**AC-14**（FK 守門範圍擴大——US 僅列「申請或歷史資料」）、**AC-18**（呈現安全——US 未提）
 > - **建議新增**（須於 Human Gate 清單獨立列出）：**AC-10**（站點白名單掃描）、**AC-11**（稽核不可變性守門）、**AC-16／AC-17**（前端篩選 UI 與五態）、**AC-19**（E2E）、**AC-20**（零弱化基準線）、**AC-21**（error-handler 兜底，依 D6）、**AC-22**（技術債收斂，依 D7）
 
@@ -78,7 +78,7 @@
 
 ### 0.4 上游 Gate 裁定之搭配條件回查（治理 2026-08-09.1 §11 強制）
 
-本 Phase 尚無自身之人類裁定；下表逐筆回查**與本 Phase 範圍交集**之上游裁定，確認其搭配條件／但書在本 Phase 是否有落地義務。
+下表逐筆回查**與本 Phase 範圍交集**之上游裁定，確認其搭配條件／但書在本 Phase 是否有落地義務。**本 Phase 自身之人類裁定**（Spec Gate 2026-08-09 之 D1~D12 十二條，見 §18；期中複審 #2 之 SF-1／SF-3 兩條，2026-08-09）**併入表末逐筆回查**。
 
 | 上游裁定 | 搭配條件／但書 | 本 Phase 之義務 | 落點 |
 |---|---|---|---|
@@ -87,6 +87,8 @@
 | **PHASE-009 D15(a)**（修正版不自動作廢 ＋ **前端強提示**） | 前提「前端強提示」曾於 T16 M-1 漏落 AC（本專案最重 finding） | **無**——本 Phase 不觸及該面；但列為 §11.0 之零弱化義務：**既有重複計入提醒文案之測試不得被本 Phase 之前端改動弱化** | §11.0, AC-20 |
 | **PHASE-005a T1 即審 AR**（`PROJECT_STATE.md` :393） | 「油耗版本使使用者**永久不可刪**（D8(a) 設計後果，**PHASE-010 文件記載**）」 | **有**——明文記載於已知限制，並納入 AC-12 之五類歷史逐一回歸（含油耗版本一類） | AC-12, §17.1 #1 |
 | **PHASE-008 T12~T13 即審 SF-2**（時間呈現一致性 Mock Gate 裁定項） | ISO8601 與 `toLocaleString("zh-TW")` 並排不一致之教訓 | **有**——§16 **D9** 明文裁定本頁時間呈現形式，避免同型再犯 | **D9**, AC-18(c) |
+| **本 Phase・期中複審 #2 SF-1 裁定**（人類 leonchih 2026-08-09，AskUserQuestion）＝「**改用使用者下拉**」 | 三項搭配條件逐字：①顯示名稱為選項文字、②**內部帶 id** 為送出值、③**複用既有使用者清單 API** | **有**——三項**逐字入 AC**（治理 §11；原 (a) 之「篩選控制項對應 AC-02 之維度」與下拉相容但**不蘊含**下拉，僅加註不足以承載） | **AC-16(d)**（新）, §16 D2(b) 註, §15 T7／**T7R** |
+| **本 Phase・期中複審 #2 SF-3 裁定**（人類 leonchih 2026-08-09，AskUserQuestion）＝「**沿用瀏覽器時區**」 | 但書逐字：①與前端既有 8 處一致、**零程式變更**、②規格字面修正、③**記載已知限制**（國外登入時顯示當地時間） | **有**——①②入 AC-18(c) 字面；③入已知限制；列印版／PDF 之固定 +8h **不變**（裁定射程僅及前端） | **AC-18(c)**（改字面）, §16 D9(a) 註, **§17.1 #10**（新） |
 
 ---
 
@@ -236,6 +238,7 @@
 (a) 篩選控制項對應 AC-02 之維度（依 **D2**）；變更任一篩選即重置 `page` 為 1。
 (b) 分頁控制：上一頁／下一頁與「第 N 頁／共 M 筆」；首頁時「上一頁」停用、末頁時「下一頁」停用。
 (c) 篩選與分頁一律**經 query 參數送後端**——前端**不得**取回全集後自行過濾或分頁（以「請求 URL 含該參數」之斷言守門）。
+(d) **`actorId`／`targetId` 兩篩選欄為使用者下拉選單**【**裁定直接推論**——人類 leonchih 2026-08-09 SF-1 裁定逐字：「改用使用者下拉」】：以**顯示名稱**為選項文字、**內部帶使用者 id** 為送出值；清單**複用既有使用者清單 API**（`apiGetUsers`，`frontend/src/api/users.ts` :3），不另立端點。**不得**以純文字 id 輸入實作——回應依 §6.3／AC-04(b) **不外露** `actorId`／`targetId`，使用者無從得知可輸入之值（SF-1 之成因）。〔本子項為**裁定內容入 AC** 之落點，治理 2026-08-09.1 §11 強制；(a) 之現行字面「篩選控制項對應 AC-02 之維度」與下拉相容但**不蘊含**下拉，故不足以承載本裁定〕
 
 **AC-17 — 五態【建議新增】**
 依 §4 表逐格：Loading／Empty／Error／Success／Permission denied 各至少一條斷言；**Empty 與 Permission denied 不得共用同一段文案**（防兩態混淆）。
@@ -243,7 +246,7 @@
 **AC-18 — 呈現安全【既有語意擴張】**
 (a) **跳脫**：`targetLabel` 與 `changes[].before`／`after` 皆含使用者自由文字（作廢原因、出差目的、油耗依據備註），一律經 React 之文字節點渲染（**不得** `dangerouslySetInnerHTML`）；以 XSS payload（`<script>`／`"><img onerror=`／`javascript:`）為輸入之正負向各一格，並以「全頁 DOM 無 `<script>` 節點新增」為守門。
 (b) **`[object Object]` 負向守門**：以 AC-06(c) 之巢狀混合 `summary`（油耗版本形）為 fixture，斷言渲染結果**不含** `"[object Object]"`。**此守門必須自帶於前端測試**，不得倚賴後端扁平化之測試（沿 PHASE-009 T15c FW「前端呈現側負向守門必自帶」）。
-(c) **時間呈現**（依 **D9**）：後端回 ISO 8601 UTC，前端以與列印版同型之台北時區在地化呈現；同頁**不得**同時出現 ISO 原字串與在地化字串兩種形式（PHASE-008 SF-2 之同型再犯防護）。
+(c) **時間呈現**（依 **D9**）：後端回 ISO 8601 UTC，前端以**使用者瀏覽器時區之在地化（`zh-TW` 格式）**呈現（**人類 leonchih 2026-08-09 SF-3 裁定逐字：「沿用瀏覽器時區」**——與前端既有 8 個時間格式化落點一致、零程式變更；列印版／PDF 之後端固定 +8h 台北時區**維持不變**，二者**格式同型但基準時區不同**，已知限制見 §17.1 #10）；同頁**不得**同時出現 ISO 原字串與在地化字串兩種形式（PHASE-008 SF-2 之同型再犯防護）。
 
 ### F. E2E / Gate
 
@@ -624,23 +627,26 @@ DELETE /admin/users/:id
 | AC-14(c) | —（非測試落點） | — | **Handoff 物證，非測試**：§2 AC-14(c) 之要求逐字為「修復前之**紅燈物證**（現況實得 500）須記入 Handoff」，其載體為 T5 Handoff 而非測試斷言；三條缺口路徑（B-14／B-15／B-16）修復前實得 `500` 之物證已由 T5 Handoff 承載。本列**不計入測試覆蓋計數**。 | T5 | `N/A（非測試）` |
 | AC-14(d) | integration | 同上 | `PHASE-010-T5 — AD-US-04 有歷史拒刪回歸 ＋ FK 守門完整性` › `AC-14(d): DELETE 端點之 P2003 兜底 — 守門停用時仍為 409（非 500）` › `守門 stub 恆 false ＋ 真實 RESTRICT 列 → 409 CONFLICT ＋ 同一文案，使用者仍在`；`防恆真：守門 stub 恆 false ＋ 零 RESTRICT 列 → 200（兜底不是無條件 409）`；`mutant：兜底之錯誤碼辨識——P2003 為真；P2002／P2025／非 Prisma 例外皆為偽` | T5 | `GREEN`（T5 `f900984`；D5=(c) 之「P2003 兜底轉譯 409」半邊） |
 | B-17／B-18（§5 邊界；AC-12／AC-13 之既有行為零變更對照） | integration | 同上 | `PHASE-010-T5 — AD-US-04 有歷史拒刪回歸 ＋ FK 守門完整性` › `B-17／B-18: 既有行為零變更` › `B-17 刪除自己 → 409「不可對自己執行此操作」（自我守門先於歷史守門）`；`B-18 刪除不存在之 id → 404 NOT_FOUND` | T5 | `GREEN`（T5 `f900984`） |
-| AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx`／`HomePage.test.tsx` | `AC-15: 路由與管理員入口正負向；列表四要素` | T7 | `GREEN`（T7 `15a1a9a`） |
-| AC-16(a)(b)(c) | frontend | `AuditLogPage.test.tsx` | `AC-16: 篩選重置頁次；分頁邊界停用；參數確實送後端` | T7 | `GREEN`（T7 `15a1a9a`） |
-| AC-17 | frontend | 同上 | `AC-17: 五態逐格；Empty 與 Permission denied 文案可區辨` | T7 | `GREEN`（T7 `15a1a9a`） |
-| AC-18(a) | frontend | `frontend/test/AuditChangesList.test.tsx` | `AC-18(a): XSS payload 三型跳脫；DOM 零新增 script 節點` | T6 | `GREEN`（T6 `d625d94`） |
-| AC-18(b) | frontend | 同上 | `AC-18(b): 巢狀混合 summary 渲染零 [object Object]（前端自帶負向）` | T6 | `GREEN`（T6 `d625d94`） |
-| AC-18(c) | frontend | 同上 | `AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串` | T6 | `GREEN`（T6 `d625d94`） |
+| AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx` ＋ `frontend/test/HomePage.test.tsx`（**兩檔並列**） | ①`AuditLogPage` › `AC-15: 路由與列表欄位` › `AC-15(a)：非管理員進入 /admin/audit-logs 不渲染任何稽核內容`；`AC-15(c)：列表逐列顯示四要素（操作時間／操作者／操作類型／受影響資料）`；②（＝AC-15(b) 入口正負向）`HomePage — 稽核紀錄導覽連結` › `管理員登入 → 首頁顯示「稽核紀錄」連結，指向 /admin/audit-logs`；`一般使用者（role=USER）登入 → 首頁不顯示「稽核紀錄」連結` | T7 | `GREEN`（T7 `15a1a9a`） |
+| AC-16(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx` | `AuditLogPage` › `AC-16: 篩選與分頁 UI` › `AC-16(a)：篩選變更即重置 page 為 1（先翻頁至 2，再套用篩選 → 請求帶 page=1）`；`AC-16(b)：首頁「上一頁」停用、末頁「下一頁」停用`；`AC-16(c)：篩選與分頁參數確實經 query 送後端（請求 URL 含該參數）` | T7 | `GREEN`（T7 `15a1a9a`） |
+| **AC-16(d)**（新，SF-1 裁定） | frontend | `frontend/test/AuditLogPage.test.tsx` | （預定）`AC-16(d)：actorId／targetId 兩篩選欄為使用者下拉——選項文字為顯示名稱、送出值為 id，清單來自 apiGetUsers`（**負向**：頁面不得存在純文字 id 輸入欄） | **T7R** | `PENDING`（SF-1 裁定 2026-08-09 落地；T7R 修復後由大總管以實際測試名逐字回填並轉 `GREEN`） |
+| AC-17 | frontend | 同上 | `AuditLogPage` › `AC-17: 五態` › `Loading 態：顯示載入中，且篩選控制項停用`；`Empty 態（無篩選）：顯示「尚無任何稽核紀錄」`；`Empty 態（篩選導致空集合）：文案與「尚無任何稽核紀錄」可區辨`；`Error 態（500）：顯示錯誤訊息與重試鈕，重試不重複送出`；`Error 態（400 篩選參數違規）：逐欄提示 fields[].reason`；`Success 態：列表渲染 N 列，每列四要素，並顯示共 M 筆`；`Permission denied 態：一般使用者顯示無權限訊息，零後續請求，無重試鈕，零稽核內容` | T7 | `GREEN`（T7 `15a1a9a`） |
+| AC-18(a) | frontend | `frontend/test/AuditChangesList.test.tsx` ＋ `frontend/test/AuditLogPage.test.tsx`（**兩檔並列**） | ①`AuditChangesList` › `AC-18: 呈現安全` › `AC-18(a): XSS payload 三型跳脫；DOM 零新增 script 節點`（`changes[].before`／`after` 面）；②`AuditLogPage` › `追加①: targetLabel 之 AC-18(a) XSS 跳脫` › `三型 payload 逐字以純文字節點呈現，DOM 零新增 script 節點`（**`targetLabel` 面之實質補齊**——①之元件級不涵蓋頁面列之 `targetLabel`） | T6／T7 | `GREEN`（T6 `d625d94`；追加①格 T7 `15a1a9a`） |
+| AC-18(b) | frontend | `frontend/test/AuditChangesList.test.tsx` | `AuditChangesList` › `AC-18: 呈現安全` › `AC-18(b): 巢狀混合 summary 渲染零 [object Object]（前端自帶負向）` | T6 | `GREEN`（T6 `d625d94`） |
+| AC-18(c) | frontend | `frontend/test/AuditChangesList.test.tsx` ＋ `frontend/test/AuditLogPage.test.tsx`（**兩檔並列**） | ①`AuditChangesList` › `AC-18: 呈現安全` › `AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串`；②`AuditLogPage` › `追加②: createdAt 之 AC-18(c) 在地化單一形式` › `操作時間欄以在地化字串呈現，同頁不並存 ISO 原字串`（**頁面列 `createdAt` 面之實質補齊**） | T6／T7 | `GREEN`（T6 `d625d94`；追加②格 T7 `15a1a9a`） |
 | AC-19(a)~(d) | e2e | `e2e/audit-log.spec.ts` | `AC-19: 稽核頁端到端（建帳號＋作廢兩事件可見）／篩選／分頁／375px` | T8 | `PENDING` |
 | AC-20(a)(b) | 全套件 | —（終審實跑對照） | 基準線 後端 3230／前端 346／E2E 50 不下降 | 全 Task | `PENDING` |
 | AC-21(a)~(d) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts` | `AC-21: 兜底不記原文 ＋ 站點白名單 ＋ 路徑反向探針 ＋ wire 零變更` | T9 | `PENDING`（D6=(a) 生效解鎖 2026-08-09） |
 | AC-22(a)(b)(c)(d) | integration | 既有 contract 檔擴充 | `AC-22: REPORT_GENERATION_FAILED 改道 wire 逐位元組不變；errorLabel 收斂` | T10 | `PENDING`（D7=(a) 生效解鎖 2026-08-09） |
 
-**合計 22 條 AC ／ 38 列映射**（含 **1 列** `N/A（非測試）`＝AC-14(c)，故**測試列為 37 列**；另 **1 列**為 §5 邊界列 B-17／B-18）。條件 AC（AC-14／AC-21／AC-22）已隨 Spec Gate 裁定於 2026-08-09 解鎖。
-**狀態計數（本次修訂後）**：`GREEN` **25**／`PENDING` **12**／`N/A（非測試）` **1**＝38。
+**合計 22 條 AC ／ 39 列映射**（含 **1 列** `N/A（非測試）`＝AC-14(c)，故**測試列為 38 列**；另 **1 列**為 §5 邊界列 B-17／B-18）。條件 AC（AC-14／AC-21／AC-22）已隨 Spec Gate 裁定於 2026-08-09 解鎖。**AC 條數維持 22**——`SPEC-REV-010-LITE-3` 新增之 **AC-16(d)** 為既有 AC-16 之**子項**，不新增 AC 編號。
+**狀態計數（本次修訂後）**：`GREEN` **31**／`PENDING` **7**／`N/A（非測試）` **1**＝39。（大總管 2026-08-09 更正：SPEC-REV-010-LITE-3 原載 25／13 未計入 T5/T6/T7 已回填之 GREEN 九列——以實體表機械計數為準）
 
 > `SPEC-REV-010-LITE`（2026-08-09）：新增 `buildAuditLogWhere` 一列（§11.1 該項原無映射落點，30 → 31 列），並將 T2 之七列以實際測試名逐字回填轉 `GREEN`。表內以 `A` › `B` 表示「`describe` A 之下的 `describe`／`it` B」。
 >
 > `SPEC-REV-010-LITE-2`（2026-08-09）：**31 → 38 列**，四處：①**T3 四列拆為七列**（AC-07(a)(b)／AC-07(c)／AC-08(a)(b)／**AC-08(c)**／AC-09(a)(b)／**AC-09(c)**／**AC-09(d)**）——原四列之「測試名」各僅載一個 `it` 名，但 (c)／(d) 於 `phase10-audit-completeness.test.ts` 實為**獨立 `it`**；本次以該檔實際 `describe`／`it` 名逐字補全（含 AC-07(a) 之三個補強格與 AC-09 之掃描器鑑別力自證格）。②**AC-01(d) 補第二落點**——同檔之 `FW-1（T2 即審）` 格（T2 版於 `Application` 恆空分支上為恆真，FW-1 為其實質補齊），該列改為兩檔並列。③**AC-14 一列拆為四列**（(a)／(b)／**(c)＝`N/A（非測試）`**／**(d)** 新列），(a) 列併入 T5R-LITE 之 SF-1 鑑別力格（`69d4cae`）。④**新增 B-17／B-18 落點列**（§11.2 已列 `B-14~B-18`，其中 B-17／B-18 原無映射落點）。**本次零 AC 語意變更**（AC-14(a) 之欄位級升格見 §2，方向為更嚴且實作已達標）。
+>
+> `SPEC-REV-010-LITE-3`（2026-08-09）：**38 → 39 列**，三處：①**T7 三列逐字回填**——AC-15／AC-16(a)(b)(c)／AC-17 原載**預定名稱**（各一句），以 `AuditLogPage.test.tsx`／`HomePage.test.tsx` 實查之 `describe`／`it` 名逐字取代（AC-15 改**兩檔並列**：(b) 之入口正負向實際落於 `HomePage — 稽核紀錄導覽連結` 之兩個 `it`；AC-17 實為**七個 `it`**，非原載之一句）。②**AC-18(a)／(c) 補 T7 落點**——`AuditLogPage.test.tsx` 之 `追加①`（`targetLabel` 面 XSS）與 `追加②`（頁面列 `createdAt` 在地化）為 T6 元件級所**不涵蓋**之面，兩列改為兩檔並列（T6／T7）；同時為 T6 三列補上 `describe` 前綴（`A` › `B` 記法）。GREEN 標注維持（T6 `d625d94`／T7 `15a1a9a`）。③**新增 AC-16(d) 一列**（SF-1 裁定落地，`PENDING`／T7R）——**T7R 修復後之該列由大總管以實際測試名逐字回填並轉 `GREEN`**。
 
 ---
 
@@ -686,7 +692,7 @@ DELETE /admin/users/:id
 | **T4** | 結構性防腐：稽核寫入站點白名單 ＋ enum 對照封閉 ＋ 標籤表涵蓋 ＋ 不可變性掃描 | BE（測試為主） | AC-10, AC-11 | `backend/test/integration/phase10-audit-structure.test.ts`（新） | Medium（**若 D8 裁定新增 enum 則升 High**） | T2, T7（標籤表） | 重 Lite／複合修復／**~115-215k** | ✅ 依 D8：若新增 enum 值 → `enumLabels("AuditAction")` **4 處** ＋ `phase9-migration-safety.test.ts` (e) 一處，合計 5 處預授權 | 白名單 5 檔／13 呼叫實查相符且新增檔必紅；**掃描器自帶三型規避探針**（enum 成員／跨行／變數間接——PHASE-009 T2 SF-2 教訓）；enum 10 值封閉；標籤表涵蓋全 10 值且漏一值必紅；`auditLog.update/delete/upsert` 零命中且插入 mutant 必紅；既有測試零弱化 |
 | **T5** | AD-US-04 有歷史拒刪完整回歸 ＋ FK 守門補齊（依 D5） | BE | AC-12, AC-13, AC-14 | `backend/src/users/history.ts`、`backend/src/admin/routes.ts`、`backend/test/integration/phase10-user-delete-regression.test.ts`（新） | **High**（不可逆操作 ＋ 使用者可見行為 ＋ 資料保存） | — | 重 Lite／複合修復**上緣**／**~150-215k**（**方法論風險加成**，見 §11.6） | — | **首步 spike**：`information_schema` FK 列舉可行性（失敗即改 migration.sql 字面掃描，據實記入 Handoff）；五類歷史逐類 `409` ＋ 零刪除（`VOIDED` 經真實作廢端點）；零歷史 `200` ＋ `USER_DELETED`；**三條缺口路徑修復前之 500 紅燈物證記入 Handoff**，修復後 `409`；六條 FK 與守門表集合之機械相符斷言綠；既有 `admin-users.test.ts`／`phase4-reference-protection.test.ts` 零弱化 |
 | **T6** | 前端：API client ＋ 稽核變更清單元件（呈現安全） | FE | AC-18 | `frontend/src/api/audit.ts`（新）、`frontend/src/types/api.ts`（型別）、`frontend/src/components/AuditChangesList.tsx`（新）、`frontend/test/AuditChangesList.test.tsx`（新） | Medium | T2 | FE 頁面（單元件型）／**~110-195k** | — | XSS 三型正負向綠且 DOM 零新增 `<script>`；**巢狀混合 `summary` 之 `[object Object]` 負向自帶於前端**；時間在地化單一形式且同頁不並存 ISO；`credentials:"include"` 沿既有慣例；既有前端測試零弱化 |
-| **T7** | 前端：稽核檢視頁（路由／入口／列表／篩選／分頁／五態） | FE | AC-15, AC-16, AC-17 | `frontend/src/pages/AuditLogPage.tsx`（新）、`frontend/src/App.tsx`（路由）、`frontend/src/pages/HomePage.tsx`（入口）、`frontend/test/AuditLogPage.test.tsx`（新）、`frontend/test/HomePage.test.tsx`（既有擴充）、`frontend/src/index.css` | Medium | T6 | FE 頁面型／**~140-195k** | — | 管理員入口正負向逐一；四要素逐列；篩選變更重置頁次；分頁邊界停用；**參數確實送後端**（前端零自行過濾之結構斷言）；五態逐格且 Empty 與 Permission denied 文案可區辨；既有 `HomePage.test.tsx` 零弱化 |
+| **T7** | 前端：稽核檢視頁（路由／入口／列表／篩選／分頁／五態） | FE | AC-15, AC-16, AC-17 | `frontend/src/pages/AuditLogPage.tsx`（新）、`frontend/src/App.tsx`（路由）、`frontend/src/pages/HomePage.tsx`（入口）、`frontend/test/AuditLogPage.test.tsx`（新）、`frontend/test/HomePage.test.tsx`（既有擴充）、`frontend/src/index.css` | Medium | T6 | FE 頁面型／**~140-195k** | — | 管理員入口正負向逐一；四要素逐列；篩選變更重置頁次；分頁邊界停用；**參數確實送後端**（前端零自行過濾之結構斷言）；五態逐格且 Empty 與 Permission denied 文案可區辨；既有 `HomePage.test.tsx` 零弱化；**〔SF-1 裁定 2026-08-09 追加，落於修復 Task `T7R`〕`actorId`／`targetId` 兩篩選欄為使用者下拉（選項文字＝顯示名稱、送出值＝id、清單來自 `apiGetUsers`），且頁面零純文字 id 輸入欄（AC-16(d)）** |
 | **T8** | E2E Gate：稽核頁端到端 ＋ 375px | E2E | AC-19 | `e2e/audit-log.spec.ts`（新） | Medium | T7 | E2E Gate／**~150-265k** | — | 建帳號與作廢兩事件於稽核頁可見且四要素正確；篩選收斂；第 2 頁零重複；375px 零溢位；播種冪等；既有 50 條 E2E 零弱化 |
 | **T9** | 【條件，依 D6】error-handler 兜底洩漏面收斂 | BE | AC-21 | `backend/src/platform/error-handler.ts`、`backend/test/integration/phase10-error-handler-leak.test.ts`（新）、`backend/test/integration/error-handler.test.ts`（既有，零弱化確認） | Medium | — | 小型接線／合約批次／**~110-170k** | — | 修復前反向探針必紅之物證；白名單掃描綠且新增站點必紅；`500` wire body 逐位元組不變；既有 `error-handler.test.ts` 全綠零改動 |
 | **T10** | 【條件，依 D7】技術債收斂批次（D-2／D-3 ＋ R-4／R-5） | BE | AC-22 | `backend/src/applications/routes.ts`、`backend/src/reports/report-service.ts`（檔頭）、`errorLabel` 三處落點（派工時實查）、既有 contract 測試檔 | Medium | — | 多項合併修復（≥4 項）／**逐項累加 ~110-200k** | — | `REPORT_GENERATION_FAILED` 改道後 wire 逐位元組（含鍵序）不變；`errorLabel` 三處收斂後行為零變更；R-4／R-5 敘述與實測相符；既有測試零弱化 |
@@ -788,6 +794,7 @@ T10（條件，獨立）
 **影響**
 - (a)：實作最小；但「查某位使用者身上發生過什麼」為稽核之最常見需求，無法滿足。
 - (b)：四個維度皆有既有索引支撐（`actorId`／`targetId`／`createdAt` 三索引實查在場），**零新增索引**；前端需一個使用者下拉（可複用 `apiGetUsers`）。
+  - **〔SF-1 裁定落地——人類 leonchih 2026-08-09〕**：本影響欄之「前端需一個使用者下拉」為**已裁定之強制要求**，非選配。裁定逐字：`actorId`／`targetId` 兩篩選欄**改用使用者下拉**（顯示名稱、內部帶 id），**複用既有使用者清單 API**。理由＝**純文字 id 輸入實質不可用**——依 §6.3 與 AC-04(b)，回應**不外露** `actorId`／`targetId`，管理員無從得知可輸入之值。複用對象實查：`apiGetUsers`（`frontend/src/api/users.ts` :3），既有先例 `AdminFuelConsumptionPage.tsx` :131、`AdminUserApplicationsPage.tsx` :87。落點：**AC-16(d)**（治理 2026-08-09.1 §11：裁定內容須入 AC 條文，不得僅存於 D 項）、§15 **T7R**。
 - (c)：`targetLabel` 無索引，模糊比對為全表掃描；且 `keyword` 之 LIKE 跳脫已有 PHASE-004 B-23 先例但屬額外面。效能面歸 PHASE-011 才實測，此時加入等於先欠債。
 
 **推薦**：**(b)**。
@@ -907,12 +914,13 @@ T10（條件，獨立）
 **為什麼要決定**：PHASE-008 T12~T13 即審 SF-2 曾出現「ISO8601（UTC）與 `toLocaleString("zh-TW")` 上下相鄰並排不一致、對非技術使用者不可讀」之 Mock Gate 裁定項。本 Phase 為時間欄密度最高之頁面，須事前定調以免同型再犯。
 
 **選項**
-- **(a) 後端回 ISO 8601 UTC；前端以與列印版同型之台北時區在地化呈現**（沿 `report-labels.ts` :46 之 `formatTaipeiDateTime` 為唯一格式化來源之既有紀律）。
+- **(a) 後端回 ISO 8601 UTC；前端以與列印版同型之台北時區在地化呈現**（沿 `report-labels.ts` :46 之 `formatTaipeiDateTime` 為唯一格式化來源之既有紀律）。　**〔本選項文字為 Spec Gate 當時之原文，保留為歷史紀錄；其「台北時區」半邊已由 SF-3 裁定（人類 leonchih 2026-08-09）修正為「使用者瀏覽器時區」——現行有效字面以 §2 AC-18(c) 為準〕**
 - (b) 後端直接回在地化字串。
 - (c) 後端同時回兩者。
 
 **影響**
 - (a)：契約單純（ISO 為機器可讀之單一真值）；前端在地化與列印版一致，使用者體驗統一；**須**在前端建立同型格式化（可抄 `report-labels.ts` 之邏輯或建共用 util）。
+  - **〔SF-3 裁定修正——人類 leonchih 2026-08-09〕**：上句「可抄 `report-labels.ts` 之邏輯」**不再適用**。前端採**瀏覽器時區**慣例（`new Date(...).toLocaleString("zh-TW")`，與既有 8 個時間格式化落點一致——實查：`ReportSection.tsx` :161、`DepreciationApplicationPage.tsx` :623/:662、`MaintenanceApplicationPage.tsx` :601/:638、`TravelApplicationPage.tsx` :684/:765 共 7 處 ＋ `ParametersPage.formatDateYmd`（:46-53，本地時區 `getFullYear`／`getMonth`／`getDate`）），**不**移植後端之固定 +8h。列印版／PDF 之 `formatTaipeiDateTime`（`report-labels.ts` :46，固定台北）**維持不變**。故本 D 項所稱「與列印版一致」**限於格式同型**，**不含基準時區同一**；差異已明示接受並記於 §17.1 #10。落點：AC-18(c)。
 - (b)：前端零工；但格式化邏輯散落後端，與既有「格式化屬呈現層」之紀律相衝，且測試須斷言中文字串（環境 ICU 相依——PHASE-009 CI TZ-FIX 事件之同族風險）。
 - (c)：`AuditLogListItemDto` 多一鍵；AC-18(c) 之「同頁不並存兩形式」反而更難守。
 
@@ -983,6 +991,7 @@ T10（條件，獨立）
 7. **【若 D3 裁定 (c)】`changes[].field` 為英文鍵名**：可讀性遜於中文標籤；緩解＝前端可選之對照表（D3 併記）。
 8. **PHASE-009 D2(a) 之保存效果本 Phase 不兌現**：本 Phase 無參數覆寫端點，`parameterHasReferences` 之 `VOIDED` 語意仍無使用者可達之觸發路徑（義務續留 PHASE-011）。
 9. **【若 D7 裁定 (b)】D-5／D-6／D-7 續存**：E2E helper 未抽取、`e2e/` 未接入 typecheck（76 個既有型別錯誤）、XSS 字面與掃描器 pattern 未收斂——三項移交 PHASE-011。
+10. **稽核頁時間以「使用者瀏覽器時區」呈現**（**人類 leonchih 2026-08-09 SF-3 裁定「沿用瀏覽器時區」之明示接受項**）：於**非台灣時區之瀏覽器**登入時，稽核頁「操作時間」與 `AuditChangesList` 之時間值顯示**當地時間**，與列印版／PDF 之固定台北時間（後端 `formatTaipeiDateTime` +8h）**可能不同**（同一事件於兩處呈現之時分不一致）。此為與前端既有 8 個時間格式化落點一致之取捨（**零程式變更**），**明示接受**；若日後需全站固定台北，屬跨頁時間基準一致性議題，歸 PHASE-011。
 
 ### 17.2 與 PHASE-011 之銜接
 
@@ -1017,3 +1026,4 @@ T10（條件，獨立）
 | 2026-08-09 | `PHASE-010-SPEC`（Gate 固化，大總管白名單） | **★ Spec Gate 通過（人類 leonchih 2026-08-09；兩輪 AskUserQuestion——四條親核裁定＋六點複述確認）★** 裁定全文：**D5=(c) 兩邊都補**（守門擴至全部 6 條 RESTRICT FK 路徑＋P2003 兜底轉譯 409「拒絕並提供停用」非 500；**代價明示接受：凡曾建帳號/改參數/上傳附件/被記稽核之管理員永久不可刪、僅能停用**；AC-14 生效）／**D11=(a)** 帳號類五事件稽核維持 fire-and-forget 本期零變更，不對稱事實記 KNOWN_ISSUES 移交 PHASE-011／**D3=(c)＋中文欄名**（後端攤平「欄位/改前/改後」三欄＋前端中文欄位對照表）／**D8=(a) 結案**（`AuditAction` 維持現有 10 值、本 Phase 零 migration；**此案結案，後續 Phase 不再重議**）／其餘 8 條（D1/D2/D4/D6/D7/D9/D10/D12）照推薦（D6 之 AC-21 採依摘要重建版）／**T1/T2/T3/T5 四項 High 事前批准**／3 條件 AC 全生效（AC-14/21/22）／§0.2 來源標記清單（既有語意擴張/建議新增）無異議。狀態 DRAFT→ACTIVE；§12 三條件列解鎖。 | 人類 leonchih 2026-08-09（AskUserQuestion 兩輪） |
 | 2026-08-09 | `SPEC-REV-010-LITE` | **記載面修訂批次（零 AC 語意變更、零新 AC、零 Task Graph 變更）**，四項：①**§2 AC-01(b) 勘誤**——字面「封閉三鍵」與同句列舉之四鍵及 §7.2 `AuditLogListResponse` 四欄不一致，更正為「封閉**四鍵**」（T2 實作採四鍵已 APPROVE）。②**§12 T2 七列回填**——AC-01(a)(b)(c)／AC-01(d)／AC-03(a)(b)／AC-03(c)／AC-04(a)(b)(c)(e)／AC-04(d)／AC-05(a)(b)(c) 以 `phase10-audit-query.test.ts` 之實際 `describe`／`it` 名逐字回填並轉 `GREEN`（T2 `1aec6ed`）；**兩處預定名經實查證為失準**（「回應三鍵封閉」實為四鍵、「createdAt 同值三列」實為 5 列），以實查為準。③**§12 新增 `buildAuditLogWhere` 一列**（AC-02(a)(e)／`backend/test/unit/audit-log-where.test.ts`／T2（R-LITE）／`GREEN` `1a6b714`）——§11.1 該項原無映射落點（SF-1 長期不可見之結構成因），映射表 30 → **31 列**。④**§5 新增 B-25**——同一 query 參數重複帶入（`string[]`）七參數皆 `400 VALIDATION_ERROR` ＋ `fields[{field:"<該欄>"}]`，溯源 `applications/application-query.ts` B-35（PHASE-005 T6-AR-1 同型），並於 §11.2 同步 `B-23~B-24` → `B-23~B-25`。 | T1 即審 FW-6／T2 即審 SF-2·AR-4／T2 關閉確認 FW-7／大總管派工 2026-08-09 |
 | 2026-08-09 | `SPEC-REV-010-LITE-2` | **記載面修訂批次（零新 AC、零 Task Graph 變更；AC 語意變更僅第⑤項之單向從嚴升格）**，六項：①**§12 T3 四列失準修正**——AC-07(a)(b)／AC-07(c)／AC-08(a)(b)(c)／AC-09(a)(b)(c)(d) 四列之測試名各僅載單一 `it` 名，但 `phase10-audit-completeness.test.ts` 實查證 AC-08(c)（:1315）、AC-09(c)（:1445）、AC-09(d)（:1465）及 AC-07(a) 之三個補強格（:1161／:1173／:1184）、AC-07(c) 延伸格（:1224）、掃描器鑑別力自證格（:1488）皆為**獨立 `it`**；四列拆為**七列**並以實際 `describe`／`it` 名逐字補全（`A` › `B` 記法沿 T2 七列）。GREEN 標注維持（T3 `81dd7b9`；格式修復 `71d729c`）。②**§12 AC-01(d) 補第二落點**——同檔 `FW-1（T2 即審）: GET /admin/audit-logs 呼叫前後 AuditLog／User／Application 三表逐欄不變，且三表皆非空`（:1228）補入該列，改為 T2／T3 兩檔並列（T2 版於 `Application` 恆空分支上為恆真，FW-1 為其實質補齊）。③**§2 AC-09(a) 明載 W-1 允許集**——`assertNoSensitiveContent` 同型掃描器得帶**封閉允許集**，成員限「Spec／schema 強制上 wire 之識別字之**完整字面**」（現行恰兩個：`USER_PASSWORD_RESET`、`mustChangePassword`），封閉性由 AC-09(c) 之 `toEqual` 承擔，**子字串不放行**；§11.6 同步交叉引用。④**§12 AC-14 拆列＋落點補齊**——拆為 AC-14(a)／(b)／(c)／(d) 四列：(c) 依 §2 逐字為「紅燈物證記入 Handoff」，改註 **`N/A（非測試）`**（不計入測試覆蓋計數；狀態值圖例同步新增該值）；(d) 為新列（`AC-14(d): DELETE 端點之 P2003 兜底 — 守門停用時仍為 409（非 500）` describe 之三格）；(a) 列併入 T5R-LITE 之 `(a)／SF-1 守門判定邏輯之鑑別力` 格（`69d4cae`）；另補 `B-17／B-18: 既有行為零變更` 落點列（§11.2 已列 `B-14~B-18`，該兩項原無落點）。映射表 **31 → 38 列**（`GREEN` 25／`PENDING` 12／`N/A` 1）。⑤**§2 AC-14(a) 升格為欄位級**——「引用**表**集合恰等於…」升格為「引用**「表.欄位」**集合恰等於…」；原文對「同表新增未守門欄」**零鑑別力**（期中複審 #1 V4 實證），升格方向為**更嚴**、屬防「合規弱化」，**T5 實作已達此標準**（欄位級格在場）故零實作影響。⑥**§3.3 步驟 1 措辭對齊**——原文「以**真實端點**構造該類資料」寬於 AC-12(c) 之強制射程（僅 `VOIDED` 一類強制真實端點），與 T5 實作（②④底稿沿 phase9 先例直寫）字面矛盾；改為逐字引用 AC-12(c) 之射程並註明 §11.0 #4 之禁止項僅及於直寫**被驗證之狀態**。**與 Packet 之差異（據實記錄）**：Packet 第 6 項稱「§10 步驟 1」，實查 §10 為非功能需求表（無步驟）；該逐字文句位於 **§3.3 步驟 1**，故落於 §3.3。 | T3 即審 SF-2·W-1(iii)／期中複審 #1 SF-B1·SF-B2／T5 即審 AR-5／T5R 關閉確認附帶提醒／大總管派工 2026-08-09 |
+| 2026-08-09 | `SPEC-REV-010-LITE-3` | **兩項人類裁定落地 ＋ 記載面修訂批次（零新 AC 編號、零 Task Graph 結構變更；AC 語意變更兩處，皆為已批准裁定之逐字落地）**，五項：①**SF-3 落地（「沿用瀏覽器時區」）**——§2 **AC-18(c)** 之「與列印版同型之**台北時區**在地化」改為「**使用者瀏覽器時區之在地化（`zh-TW` 格式）**」，並明載列印版／PDF 之後端固定 +8h **維持不變**（二者格式同型、基準時區不同）；§16 **D9(a) 影響欄**加註「可抄 `report-labels.ts` 之邏輯」一句**不再適用**（實查既有 8 個瀏覽器時區格式化落點：`ReportSection.tsx` :161、`DepreciationApplicationPage.tsx` :623/:662、`MaintenanceApplicationPage.tsx` :601/:638、`TravelApplicationPage.tsx` :684/:765 ＋ `ParametersPage.formatDateYmd` :46-53）；§17.1 **新增 #10** 已知限制（非台灣時區瀏覽器登入時顯示當地時間，與列印版可能不同——**明示接受**）。②**SF-1 落地（「改用使用者下拉」）**——§16 **D2(b) 影響欄**加註裁定三項搭配條件與複用對象（`apiGetUsers`，`frontend/src/api/users.ts` :3；既有先例 `AdminFuelConsumptionPage.tsx` :131、`AdminUserApplicationsPage.tsx` :87）；**§2 新增 AC-16(d)**（來源標記：**裁定直接推論**）載明兩篩選欄為使用者下拉、選項文字＝顯示名稱、送出值＝id、清單複用既有 API、**不得**以純文字 id 輸入實作；§15 **T7** Done When 追加同義項並指向修復 Task **T7R**。③**§12 T7 三列逐字回填**（AC-15／AC-16(a)(b)(c)／AC-17，AC-15 改兩檔並列、AC-17 實為七個 `it`）＋ **AC-18(a)／(c) 補 T7 追加①②落點**（改兩檔並列，T6 三列補 `describe` 前綴）＋ **新增 AC-16(d) 一列**（`PENDING`／T7R）；映射表 **38 → 39 列**（`GREEN` 31／`PENDING` 7／`N/A` 1——大總管更正，原載 25／13 為計數失準）。④**§0.4 併入本 Phase 自身裁定之回查**（SF-1／SF-3 兩列 ＋ 導言更正——原句「本 Phase 尚無自身之人類裁定」於 Spec Gate 後已失準）。⑤本列。**與 Packet 之差異（據實記錄，需大總管知悉）**：Packet 第 2 項指示「AC-16(a) 若字面相容則**僅加註不改 AC**」；實查 AC-16(a) 字面**與下拉相容但不蘊含下拉**（純文字 id 輸入亦滿足之），若僅加註於 §16 D 項則構成**治理 2026-08-09.1 §11 之缺口**（＝PHASE-009 T16 M-1「已批准措施零 AC 落地」之同型），故**改以新增 AC-16(d) 承載**，AC-16(a) 字面**未動**。 | **人類 leonchih 2026-08-09（AskUserQuestion 兩項裁定：SF-1＝改用使用者下拉、SF-3＝沿用瀏覽器時區）**／期中複審 #2 SF-1·SF-3·SF-4／大總管派工 2026-08-09 |
