@@ -1,0 +1,283 @@
+/**
+ * PHASE-010-T1 — 稽核查詢之 query string 解析純函式（`parseAuditLogQuery`）
+ *
+ * Spec `docs/specs/PHASE-010.md` §2.A AC-02、§5 B-01~B-09、§7.3 請求形狀、
+ * §16 D2 裁定（(b)：`action` ＋ `actorId`／`targetId` ＋ `dateFrom`／`dateTo`
+ * 四個篩選維度 ＋ `page`／`pageSize` 分頁兩參數；**不含** `keyword`）。
+ *
+ * ---------------------------------------------------------------------------
+ * 職責邊界
+ * ---------------------------------------------------------------------------
+ * 本模組**只**做 query string 的格式驗證與正規化，AC-02(f)：不碰 DB、不引用任何
+ * Prisma 型別、不讀時鐘。`where` 建構、排序、`skip`／`take`、投影、授權一律屬
+ * T2（`audit/routes.ts`）。授權判定（`401`／`403`）在呼叫端**早於**本函式執行
+ * （§6.1 判定紀律 1；B-20 側信道守門在 T2）。
+ *
+ * 本模組不引用 Prisma 型別這件事由
+ * `test/unit/audit-log-query.test.ts` 之結構斷言守住。`parseUtcDate` 之複用沿
+ * `mileage/mileage-range.ts`（PHASE-005-T1，同為「純函式查詢解析模組沿用
+ * `parameter-service.ts:parseUtcDate`」）之既有先例，不重寫日期解析
+ * （`applications/routes.ts` 對此有明文既有紀律）。
+ *
+ * ---------------------------------------------------------------------------
+ * AC-02(c)「逐字沿 PHASE-004 `application-query.ts` 之既有語意」
+ * ---------------------------------------------------------------------------
+ * `page`／`pageSize` 之分支與常數逐字沿用 `applications/application-query.ts`
+ * （實查該檔：`export const PAGE_SIZE_DEFAULT = 20;`／
+ * `export const PAGE_SIZE_MAX = 100;`，以及其 `parseApplicationListQuery` 內
+ * `page`／`pageSize` 兩段：正整數正則 → `< 1`／`<= 0` 拒絕 → 超過上限 clamp）。
+ *
+ * **為何是複製常數而非 import**：AC-02(f) 要求本模組零 Prisma 型別相依，而
+ * `application-query.ts` 直接引用 `Prisma`／`PrismaClient` 型別與 `ApplicationType`
+ * 等 Prisma 產物；由本模組 import 之會把該相依整串拉進來，與 AC-02(f) 衝突。
+ * 取而代之的是**測試層的機械等值守門**：單元測試對同一組輸入同時呼叫兩個
+ * parser，斷言 `page`／`pageSize` 之值與欄位錯誤逐字全等——任一側日後改動語意
+ * 即紅，複製不會靜默漂移。
+ *
+ * ---------------------------------------------------------------------------
+ * 日期區間（AC-02(e)：起訖日均含當日）
+ * ---------------------------------------------------------------------------
+ * `AuditLog.createdAt` 是**時刻**（`DateTime`）而非日期，因此「`dateTo` 含當日」
+ * 不能以「`lte` 當日 00:00」表達（否則該日 00:00:00.001 以後的稽核列全數漏
+ * 掉——B-07 之失效模式）。本函式因而輸出**半開區間**：
+ *   · `createdAtFrom`        ＝ `dateFrom` 當日 `00:00:00.000Z`（含）
+ *   · `createdAtToExclusive` ＝ `dateTo` **次日** `00:00:00.000Z`（不含）
+ * 欄位名即是用法：呼叫端一律 `gte: createdAtFrom` ＋ `lt: createdAtToExclusive`，
+ * 讓「誤用 `lte`」在命名層就顯而易見。任一端未提供即為 `null`（該端不設界）。
+ *
+ * ---------------------------------------------------------------------------
+ * 錯誤語意
+ * ---------------------------------------------------------------------------
+ * · 回傳**全部**欄位錯誤（非第一項即中止），沿既有 `VALIDATION_ERROR` 慣例；
+ *   呼叫端於 `errors.length > 0` 時拋 `400 VALIDATION_ERROR` ＋ `fields[]`，
+ *   且**零查詢**（AC-02(b)）。
+ * · 只要有任一錯誤，四個篩選欄位與兩個時間界一律回 `null`（沿
+ *   `mileage-range.ts` 之既有紀律：上游不得誤用半驗證值）。`page`／`pageSize`
+ *   維持其解析結果，以與 PHASE-004 之既有行為逐字一致。
+ * · `actorId`／`targetId` **不做存在性或 cuid 格式驗證**（B-09）：不存在之 id
+ *   應自然得到空集合而非 `400`／`404`，否則會以錯誤碼洩漏使用者存在性。
+ * · 重複 query key 在 Fastify 執行期是 `string[]`（沿 PHASE-005 T6-AR-1／
+ *   `application-query.ts` B-35 之既有教訓）：本函式對**每個**參數統一以
+ *   `readScalarParam` 擋下非字串值，避免陣列一路穿透進 Prisma `where` 而在 DB
+ *   層爆成 500。
+ */
+
+import { parseUtcDate } from "../parameters/parameter-service.js";
+import type { FieldError } from "../platform/errors.js";
+
+// ---------------------------------------------------------------------------
+// 常數
+// ---------------------------------------------------------------------------
+
+/** AC-02(b)：`page` 預設 1。 */
+export const PAGE_DEFAULT = 1;
+
+/** AC-02(c)：逐字沿 PHASE-004 `application-query.ts`（`PAGE_SIZE_DEFAULT = 20`）。 */
+export const PAGE_SIZE_DEFAULT = 20;
+
+/** AC-02(c)：逐字沿 PHASE-004 `application-query.ts`（`PAGE_SIZE_MAX = 100`，超過即 clamp）。 */
+export const PAGE_SIZE_MAX = 100;
+
+/**
+ * AC-02(d)：`action` 之合法值集合，逐字對應 `prisma/schema.prisma` 之
+ * `enum AuditAction`（實查 10 值）。
+ *
+ * 刻意不從 `@prisma/client` 匯入（AC-02(f) 零 Prisma 型別相依）；漂移由
+ * `test/unit/audit-log-query.test.ts` 之「本清單與 `@prisma/client` 之
+ * `AuditAction` 值集合全等」斷言守住（schema 新增／刪除值而未同步者必紅），
+ * 另有 T4／AC-10(b) 之 enum 封閉斷言為第二道。
+ */
+export const AUDIT_ACTIONS = [
+  "USER_CREATED",
+  "USER_DEACTIVATED",
+  "USER_ACTIVATED",
+  "USER_PASSWORD_RESET",
+  "USER_DELETED",
+  "PARAMETER_VERSION_CREATED",
+  "APPLICATION_CREATED_ON_BEHALF",
+  "APPLICATION_UPDATED_ON_BEHALF",
+  "USER_FUEL_CONSUMPTION_VERSION_CREATED",
+  "APPLICATION_VOIDED",
+] as const;
+
+export type AuditActionValue = (typeof AUDIT_ACTIONS)[number];
+
+/** 逐字沿 PHASE-004 `application-query.ts` 之 `POSITIVE_INTEGER_PATTERN`。 */
+const POSITIVE_INTEGER_PATTERN = /^\d+$/;
+
+function isAuditAction(value: string): value is AuditActionValue {
+  return (AUDIT_ACTIONS as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// 型別
+// ---------------------------------------------------------------------------
+
+/**
+ * 原始 query（Fastify 之 `request.query`）。每欄刻意宣告為 `unknown`：執行期
+ * 可能是 `string`、`string[]`（重複 key），型別層不得先假設為 `string`。
+ */
+export interface RawAuditLogQuery {
+  action?: unknown;
+  actorId?: unknown;
+  targetId?: unknown;
+  dateFrom?: unknown;
+  dateTo?: unknown;
+  page?: unknown;
+  pageSize?: unknown;
+}
+
+export interface ParsedAuditLogQuery {
+  /** 全部欄位錯誤；非空時呼叫端拋 `400 VALIDATION_ERROR` ＋ `fields[]` 且零查詢。 */
+  errors: FieldError[];
+  /** `null` ＝ 不依 action 篩選。 */
+  action: AuditActionValue | null;
+  /** `null` ＝ 不依操作者篩選；不驗證存在性（B-09）。 */
+  actorId: string | null;
+  /** `null` ＝ 不依對象篩選；不驗證存在性（B-09）。 */
+  targetId: string | null;
+  /** 半開區間下界（含）：`dateFrom` 當日 `00:00:00.000Z`；`null` ＝ 不設下界。 */
+  createdAtFrom: Date | null;
+  /** 半開區間上界（**不含**）：`dateTo` **次日** `00:00:00.000Z`；`null` ＝ 不設上界。 */
+  createdAtToExclusive: Date | null;
+  page: number;
+  pageSize: number;
+}
+
+// ---------------------------------------------------------------------------
+// 內部助手
+// ---------------------------------------------------------------------------
+
+/**
+ * 取單一字串值；`undefined` 與 `""` 一律視同未提供（沿既有慣例）。
+ * 非字串（如重複 query key 造成的 `string[]`）即記欄位錯誤並回 `null`。
+ */
+function readScalarParam(value: unknown, field: string, errors: FieldError[]): string | null {
+  if (value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    errors.push({ field, reason: "僅接受單一字串值，不得重複帶入此參數" });
+    return null;
+  }
+  return value;
+}
+
+/** UTC 日粒度之次日 `00:00:00.000Z`（跨月／跨年／閏日由 `Date.UTC` 自然進位）。 */
+function nextUtcDay(day: Date): Date {
+  return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1));
+}
+
+// ---------------------------------------------------------------------------
+// parseAuditLogQuery
+// ---------------------------------------------------------------------------
+
+/**
+ * AC-02：解析並驗證 `GET /admin/audit-logs` 之 query string（純函式）。
+ * 邊界逐格見 Spec §5 B-01~B-09 與 `test/unit/audit-log-query.test.ts`。
+ */
+export function parseAuditLogQuery(raw: RawAuditLogQuery): ParsedAuditLogQuery {
+  const errors: FieldError[] = [];
+
+  // ── action（AC-02(d)／B-05／B-06）─────────────────────────────────────
+  let action: AuditActionValue | null = null;
+  const rawAction = readScalarParam(raw.action, "action", errors);
+  if (rawAction !== null) {
+    if (!isAuditAction(rawAction)) {
+      // 不得靜默忽略而回全集——一律以欄位錯誤拒絕。
+      errors.push({ field: "action", reason: "操作類型不合法" });
+    } else {
+      action = rawAction;
+    }
+  }
+
+  // ── actorId／targetId（B-09：不驗證存在性，不洩漏使用者存在性）─────────
+  const actorId = readScalarParam(raw.actorId, "actorId", errors);
+  const targetId = readScalarParam(raw.targetId, "targetId", errors);
+
+  // ── dateFrom／dateTo（AC-02(e)／B-07／B-08）───────────────────────────
+  let dateFrom: Date | null = null;
+  const rawDateFrom = readScalarParam(raw.dateFrom, "dateFrom", errors);
+  if (rawDateFrom !== null) {
+    const parsed = parseUtcDate(rawDateFrom);
+    if (!parsed) {
+      errors.push({ field: "dateFrom", reason: "日期格式錯誤（必須為 YYYY-MM-DD）" });
+    } else {
+      dateFrom = parsed;
+    }
+  }
+
+  let dateTo: Date | null = null;
+  const rawDateTo = readScalarParam(raw.dateTo, "dateTo", errors);
+  if (rawDateTo !== null) {
+    const parsed = parseUtcDate(rawDateTo);
+    if (!parsed) {
+      errors.push({ field: "dateTo", reason: "日期格式錯誤（必須為 YYYY-MM-DD）" });
+    } else {
+      dateTo = parsed;
+    }
+  }
+
+  // 僅當兩端皆成功解析才比較起訖（單端格式錯誤時不再疊加誤導性的 dateRange 錯誤）。
+  // `dateFrom === dateTo` 為合法（B-07 單日查詢），故用嚴格 `>`。
+  if (dateFrom !== null && dateTo !== null && dateFrom.getTime() > dateTo.getTime()) {
+    errors.push({ field: "dateRange", reason: "起日（dateFrom）不可晚於迄日（dateTo）" });
+  }
+
+  // ── page（AC-02(b)／B-01；逐字沿 PHASE-004）───────────────────────────
+  let page = PAGE_DEFAULT;
+  const rawPage = readScalarParam(raw.page, "page", errors);
+  if (rawPage !== null) {
+    if (!POSITIVE_INTEGER_PATTERN.test(rawPage)) {
+      errors.push({ field: "page", reason: "頁次必須為正整數" });
+    } else {
+      const parsedPage = Number.parseInt(rawPage, 10);
+      if (parsedPage < 1) {
+        errors.push({ field: "page", reason: "頁次必須大於等於 1" });
+      } else {
+        page = parsedPage;
+      }
+    }
+  }
+
+  // ── pageSize（AC-02(c)／B-02／B-03；逐字沿 PHASE-004：<=0 → 400、超上限 → clamp）─
+  let pageSize = PAGE_SIZE_DEFAULT;
+  const rawPageSize = readScalarParam(raw.pageSize, "pageSize", errors);
+  if (rawPageSize !== null) {
+    if (!POSITIVE_INTEGER_PATTERN.test(rawPageSize)) {
+      errors.push({ field: "pageSize", reason: "每頁筆數必須為正整數" });
+    } else {
+      const parsedPageSize = Number.parseInt(rawPageSize, 10);
+      if (parsedPageSize <= 0) {
+        errors.push({ field: "pageSize", reason: "每頁筆數必須大於 0" });
+      } else {
+        pageSize = Math.min(parsedPageSize, PAGE_SIZE_MAX);
+      }
+    }
+  }
+
+  // 任一錯誤 → 篩選欄位一律回 null（AC-02(b) 零查詢；上游不得誤用半驗證值）。
+  if (errors.length > 0) {
+    return {
+      errors,
+      action: null,
+      actorId: null,
+      targetId: null,
+      createdAtFrom: null,
+      createdAtToExclusive: null,
+      page,
+      pageSize,
+    };
+  }
+
+  return {
+    errors,
+    action,
+    actorId,
+    targetId,
+    createdAtFrom: dateFrom,
+    createdAtToExclusive: dateTo === null ? null : nextUtcDay(dateTo),
+    page,
+    pageSize,
+  };
+}
