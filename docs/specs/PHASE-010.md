@@ -605,10 +605,10 @@ DELETE /admin/users/:id
 | AC-05(a)(b)(c) | integration | 同上 | `PHASE-010-T2 — GET /admin/audit-logs` › `AC-05 授權矩陣（1 端點 × 5 身分 ＝ 5 格）`（該 describe 下 8 條 `it`：格 1~格 5 ＋ 三條 B-20 側信道） | T2 | `GREEN`（T2 `1aec6ed`） |
 | AC-06(a)(b)(d)(e) | unit | `backend/test/unit/audit-summary-flatten.test.ts` | `AC-06: flattenAuditSummary 形狀分派與鍵守恆（刪鍵 mutant 必紅）` | T1 | `GREEN`（T1 `d7b70ad`） |
 | AC-06(c)(f) | unit | 同上 | `AC-06(c)(f): 四種真實 summary 形狀皆成立且零 [object Object]` | T1 | `GREEN`（T1 `d7b70ad`） |
-| AC-07(a)(b) | integration | `backend/test/integration/phase10-audit-completeness.test.ts` | `AC-07: 七類事件經真實端點觸發後稽核列齊備且可經檢視端點取回` | T3 | `PENDING` |
-| AC-07(c) | integration | 同上 | `AC-07(c): 本人自建草稿零稽核列（防恆真負向對照）` | T3 | `PENDING` |
-| AC-08(a)(b)(c) | integration | 同上 | `AC-08: 代操作稽核完整性 — 作廢與修正版兩類（含三向零稽核邊界）` | T3 | `PENDING` |
-| AC-09(a)(b)(c)(d) | integration | 同上 | `AC-09: 密碼與敏感資料不入稽核 — DB 全表 ＋ wire 面雙掃描` | T3 | `PENDING` |
+| AC-07(a)(b) | integration | `backend/test/integration/phase10-audit-completeness.test.ts` | `AC-07: 七類事件經真實端點觸發後稽核列齊備且可經檢視端點取回` | T3 | `GREEN`（T3 `81dd7b9`） |
+| AC-07(c) | integration | 同上 | `AC-07(c): 本人自建草稿零稽核列（防恆真負向對照）` | T3 | `GREEN`（T3 `81dd7b9`） |
+| AC-08(a)(b)(c) | integration | 同上 | `AC-08: 代操作稽核完整性 — 作廢與修正版兩類（含三向零稽核邊界）` | T3 | `GREEN`（T3 `81dd7b9`） |
+| AC-09(a)(b)(c)(d) | integration | 同上 | `AC-09: 密碼與敏感資料不入稽核 — DB 全表 ＋ wire 面雙掃描` | T3 | `GREEN`（T3 `81dd7b9`） |
 | AC-10(a)(b)(c)(d) | integration | `backend/test/integration/phase10-audit-structure.test.ts` | `AC-10: 稽核寫入站點白名單（5 檔／13 呼叫）＋ enum 10 值 ＋ 標籤表涵蓋` | T4 | `PENDING` |
 | AC-11(a)(b)(c) | integration | 同上 | `AC-11: AuditLog 零 update／delete／upsert 掃描 ＋ mutant 自證` | T4 | `PENDING` |
 | AC-12(a)(b)(c) | integration | `backend/test/integration/phase10-user-delete-regression.test.ts` | `AC-12: 五類歷史逐一 409 拒刪且零刪除（VOIDED 經真實作廢端點構造）` | T5 | `PENDING` |
