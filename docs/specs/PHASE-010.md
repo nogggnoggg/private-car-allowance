@@ -624,9 +624,9 @@ DELETE /admin/users/:id
 | AC-14(c) | —（非測試落點） | — | **Handoff 物證，非測試**：§2 AC-14(c) 之要求逐字為「修復前之**紅燈物證**（現況實得 500）須記入 Handoff」，其載體為 T5 Handoff 而非測試斷言；三條缺口路徑（B-14／B-15／B-16）修復前實得 `500` 之物證已由 T5 Handoff 承載。本列**不計入測試覆蓋計數**。 | T5 | `N/A（非測試）` |
 | AC-14(d) | integration | 同上 | `PHASE-010-T5 — AD-US-04 有歷史拒刪回歸 ＋ FK 守門完整性` › `AC-14(d): DELETE 端點之 P2003 兜底 — 守門停用時仍為 409（非 500）` › `守門 stub 恆 false ＋ 真實 RESTRICT 列 → 409 CONFLICT ＋ 同一文案，使用者仍在`；`防恆真：守門 stub 恆 false ＋ 零 RESTRICT 列 → 200（兜底不是無條件 409）`；`mutant：兜底之錯誤碼辨識——P2003 為真；P2002／P2025／非 Prisma 例外皆為偽` | T5 | `GREEN`（T5 `f900984`；D5=(c) 之「P2003 兜底轉譯 409」半邊） |
 | B-17／B-18（§5 邊界；AC-12／AC-13 之既有行為零變更對照） | integration | 同上 | `PHASE-010-T5 — AD-US-04 有歷史拒刪回歸 ＋ FK 守門完整性` › `B-17／B-18: 既有行為零變更` › `B-17 刪除自己 → 409「不可對自己執行此操作」（自我守門先於歷史守門）`；`B-18 刪除不存在之 id → 404 NOT_FOUND` | T5 | `GREEN`（T5 `f900984`） |
-| AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx`／`HomePage.test.tsx` | `AC-15: 路由與管理員入口正負向；列表四要素` | T7 | `PENDING` |
-| AC-16(a)(b)(c) | frontend | `AuditLogPage.test.tsx` | `AC-16: 篩選重置頁次；分頁邊界停用；參數確實送後端` | T7 | `PENDING` |
-| AC-17 | frontend | 同上 | `AC-17: 五態逐格；Empty 與 Permission denied 文案可區辨` | T7 | `PENDING` |
+| AC-15(a)(b)(c) | frontend | `frontend/test/AuditLogPage.test.tsx`／`HomePage.test.tsx` | `AC-15: 路由與管理員入口正負向；列表四要素` | T7 | `GREEN`（T7 `15a1a9a`） |
+| AC-16(a)(b)(c) | frontend | `AuditLogPage.test.tsx` | `AC-16: 篩選重置頁次；分頁邊界停用；參數確實送後端` | T7 | `GREEN`（T7 `15a1a9a`） |
+| AC-17 | frontend | 同上 | `AC-17: 五態逐格；Empty 與 Permission denied 文案可區辨` | T7 | `GREEN`（T7 `15a1a9a`） |
 | AC-18(a) | frontend | `frontend/test/AuditChangesList.test.tsx` | `AC-18(a): XSS payload 三型跳脫；DOM 零新增 script 節點` | T6 | `GREEN`（T6 `d625d94`） |
 | AC-18(b) | frontend | 同上 | `AC-18(b): 巢狀混合 summary 渲染零 [object Object]（前端自帶負向）` | T6 | `GREEN`（T6 `d625d94`） |
 | AC-18(c) | frontend | 同上 | `AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串` | T6 | `GREEN`（T6 `d625d94`） |
