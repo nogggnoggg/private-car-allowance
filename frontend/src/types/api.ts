@@ -64,6 +64,55 @@ export interface DepreciationParameterDto {
   };
 }
 
+// ---- PHASE-010-T6 audit log types (§7.2 AuditLogListItemDto／AuditChangeDto) ----
+
+/** `AuditAction` enum，10 值封閉（`schema.prisma` :30-41；D8=(a) 結案，零 migration）。 */
+export type AuditAction =
+  | "USER_CREATED"
+  | "USER_DEACTIVATED"
+  | "USER_ACTIVATED"
+  | "USER_PASSWORD_RESET"
+  | "USER_DELETED"
+  | "PARAMETER_VERSION_CREATED"
+  | "APPLICATION_CREATED_ON_BEHALF"
+  | "APPLICATION_UPDATED_ON_BEHALF"
+  | "USER_FUEL_CONSUMPTION_VERSION_CREATED"
+  | "APPLICATION_VOIDED";
+
+/**
+ * §7.2 `AuditChangeDto`：`AuditLog.summary` 經後端 `flattenAuditSummary`
+ * 扁平化後之單列（欄位／改前／改後）。`before`／`after` 恆為 `string | null`
+ * ——非純量之原值（含巢狀混合形之 `before`／`after` 物件）已由後端
+ * `JSON.stringify` 字串化，前端不得再對其做二次物件化解讀。
+ */
+export interface AuditChangeDto {
+  /** `summary` 之頂層鍵（英文鍵名）；中文標籤對照見 AuditChangesList（D3=(c)）。 */
+  field: string;
+  before: string | null;
+  after: string | null;
+}
+
+/** §7.2／AC-04(a)：鍵集封閉為七鍵（後端 `backend/src/audit/routes.ts` 同名介面）。 */
+export interface AuditLogListItemDto {
+  id: string;
+  action: AuditAction;
+  /** ISO 8601 UTC 字串（D9(a)）；在地化屬前端呈現層。 */
+  createdAt: string;
+  actorDisplayName: string;
+  targetLabel: string;
+  /** `target` 已被刪除（FK `ON DELETE SET NULL`）時為 `null`（AC-04(c)）。 */
+  targetDisplayName: string | null;
+  changes: AuditChangeDto[];
+}
+
+/** §7.2／AC-01(b)：鍵集封閉為四鍵。 */
+export interface AuditLogListResponse {
+  items: AuditLogListItemDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface UserDto {
   id: string;
   loginName: string;
