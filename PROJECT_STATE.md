@@ -2,6 +2,15 @@
 
 State: ACTIVE
 
+> **PHASE-010（稽核檢視與回歸）開工記錄（2026-08-09，使用者指令「繼續」）**
+> - **★ PHASE-009 COMPLETED：PR #18 合併 main（merge `02a7d5f`，人類 leonchih 2026-08-09 06:00 UTC 批准；CI 三檢全綠——Lint/Typecheck/Frontend、Backend Build & Tests、Docker Build）★** Spec 轉 COMPLETED（狀態欄白名單回填）。**Phase 邊界常設判斷（大總管依授權記錄）**：整合 Gate 準備（同日合併前）已完成全量 dev DB 重置（DROP SCHEMA→15 migrations 重放→重播種）＋E2E 自舉 50/50 全綠＋容器 stack `down -v` 全新重建，且 merge 未引入任何新內容（main＝phase-009 尖端＋merge commit，內容全等）——判定該輪已滿足「合併後 DB 重置＋E2E 自舉」常設要求，**不重跑**；後續 session 重建 dev 環境沿 KNOWN_ISSUES O-2 之 `.env` 既有 STORAGE_ROOT。
+> - §15 重錨定（Phase 開工第一步）：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令；治理變更權責歸管理協作 agent。模型/effort 確認提醒：session 應為 best+high（請使用者確認）。
+> - branch：`phase-010`（自 main `02a7d5f` 切出）。流程：spec-writer 產 SPEC-010（DRAFT）→ **人類 Spec Gate（停等）** → TDD → Review 照 §19（含終審凍結分支新規則）→ Mock Gate（稽核列表/篩選）＋整合 Gate → Draft PR＋CI。
+> - 範圍（PRD :503-521）：管理員稽核檢視頁（操作者/時間/類型/受影響資料、重要欄位前後摘要、密碼不入稽核）＋各 Phase 已寫入稽核事件之回歸（帳號新增/停用/密碼重設/代操作/作廢/參數異動）＋AD-US-04 有歷史拒刪完整回歸。US：AD-US-14（userstory :1154）/BE-US-31（:1968）/AD-US-04（:930）。Risk **High**（稽核可追溯性）；PRD 初始 Task 概要 T1~T4（T1/T2/T3 High）。
+> - Packet 必讀（跨 Phase 核銷）：①KNOWN_ISSUES §5 PHASE-010 五項（`APPLICATION_VOIDED` 納入檢視頁/前後摘要對作廢事件呈現（summary 已含 reason/voidedAt）/AD-US-04 回歸此時已有 VOIDED 資料（userHasHistory 對 VOIDED 天然計入）/代操作稽核完整性回歸（作廢＋修正版）/D-2·D-3·D-5·D-6·D-7 收斂）②D-1 error-handler 兜底洩漏面新 AC 候選（PHASE-009 終審 R-3 裁定；四段 AC 草案含站點白名單掃描見 PHASE-009 終審結案列⑤）③D15 稽核 enum 收斂議題再議（§13#11③）④KNOWN_ISSUES §4 R-4/R-5 記載型更正候選（觸檔時順手）。
+> - 基準線起點：後端 3230/前端 346/E2E 50（PHASE-009 終審實測）。usage 預算帶：`docs/retrospective/PHASE-009-usage.md`。
+> - 下一步：spec-writer 產 SPEC-010（DRAFT）→ 停等人類 Spec Gate。
+
 > **PHASE-009（作廢與修正版）開工記錄（2026-08-07，依使用者夜間授權「復盤做完直接進入下一個 phase 開工」）**
 > - §15 重錨定（Phase 開工第一步）：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令；治理變更權責歸管理協作 agent。模型/effort 確認提醒：session 應為 best+high（使用者晨間可確認）。
 > - **PHASE-008 殘留晨間批次（本 Phase 開工不豁免）**：①git push 放行（分類器擋）→Draft PR #17＋CI②整合 Gate 目視（WALKTHROUGH-PHASE-008-INTEGRATION.md）③PR 合併批准④Phase 邊界 DB 重置＋E2E 自舉（常設——合併後執行）。PHASE-008 分支未合併前，phase-009 branch 自 phase-008 尖端切出、待 008 合併後 rebase 至 main（記錄為環境安排）。
