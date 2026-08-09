@@ -1,6 +1,13 @@
 /**
  * AuditChangesList 元件單元測試 — PHASE-010-T6（PHASE-010-T7R 擴充；
- * PHASE-010-T-MG1-FE 再擴充）
+ * PHASE-010-T-MG1-FE 再擴充；PHASE-010-T-MG1-FE-R 暖續修復）
+ *
+ * **T-MG1-FE-R（FE 複審 SF-A／AR-10）**：AC-18(b) 格於 T-MG1-FE 之 fixture
+ * 汰換（子欄拆列新契約）後已無任何 JSON blob 值 fixture，前端自帶負向守門
+ * 因此失去對 (b-2) 整包字串化路徑之鑑別力（reviewer M3）；補一格獨立
+ * (b-2) 形 fixture 予以恢復。另於「未知值與自由文字」格加一行 AR-10
+ * （`reason:"true"` 不得被誤譯為「是」），封「布林映射限定於布林欄位」
+ * 半邊（reviewer M23）。兩格詳見下方對應 `it`。
  *
  * 涵蓋 AC-18(a)(b)(c)（呈現安全；§12 三列預定測試名逐字對應）＋ D3=(c) 中文
  * 欄名對照（§18 Gate 固化，T3 即審 FW-5／T1 即審 FW-4／T1 即審 FW-5 三項上游
@@ -176,6 +183,24 @@ describe("AuditChangesList", () => {
       expect(screen.getByText("2026-01-01")).toBeInTheDocument();
       expect(screen.getByText("2026-08-01")).toBeInTheDocument();
       expect(screen.getByText("原廠油耗數據（合成資料）")).toBeInTheDocument();
+    });
+
+    it("AC-18(b) 補格（PHASE-010-T-MG1-FE-R SF-A）：(b-2) 形整包 JSON blob 值仍零 [object Object]、逐字可見", () => {
+      // T-MG1-FE 後兩測試檔已無任何 JSON blob 值 fixture（BE1 (b-0) 新契約
+      // 使油耗巢狀 fixture 改為子欄拆列）——AC-18(b) 之存在理由正是「後端
+      // 契約可能在前端腳下改變」，(b-2) 之整包字串化 blob 於契約上仍可達
+      // （陣列／任意物件形，及 before/after 兩保留條目之未來形狀），故本格
+      // 獨立補一個 (b-2) 形 fixture，防前端自帶負向守門因 fixture 汰換而
+      // 失去鑑別力（reviewer M3：formatValue 內對 `{` 開頭值 JSON.parse 後
+      // 樣板插值，在無 blob fixture 時可存活）。
+      const blobValue =
+        '{"fuelType":"GASOLINE_95","kmPerLiter":"12.3400","effectiveFrom":"2026-01-01"}';
+      const changes: AuditChangeDto[] = [{ field: "after", before: null, after: blobValue }];
+
+      const { container } = render(<AuditChangesList changes={changes} />);
+
+      expect(container.textContent).not.toContain("[object Object]");
+      expect(screen.getByText(blobValue)).toBeInTheDocument();
     });
 
     it("AC-18(c): 時間在地化單一形式；同頁不並存 ISO 原字串", () => {
@@ -356,12 +381,19 @@ describe("AuditChangesList", () => {
       const changes: AuditChangeDto[] = [
         { field: "type", before: null, after: "UNKNOWN_FUTURE_TYPE" },
         { field: "reason", before: null, after: freeTextReason },
+        // AR-10（PHASE-010-T-MG1-FE-R）：封「布林映射限定於布林欄位」半邊
+        // ——"reason" 非布林限定欄位，即使值字面恰為 "true"，亦不得被誤譯
+        // 為「是」（reviewer M23：移除欄位限定判斷後仍可能存活之缺口）。
+        { field: "reason", before: null, after: "true" },
       ];
 
       expect(() => render(<AuditChangesList changes={changes} />)).not.toThrow();
       expect(screen.getByText("UNKNOWN_FUTURE_TYPE")).toBeInTheDocument();
       expect(screen.getByText(freeTextReason)).toBeInTheDocument();
       expect(screen.queryByText("一般使用者")).not.toBeInTheDocument();
+      // AR-10：非布林限定欄位之 "true" 原樣顯示，不被譯為「是」。
+      expect(screen.getByText("true")).toBeInTheDocument();
+      expect(screen.queryByText("是")).not.toBeInTheDocument();
     });
 
     it("14 值覆蓋守門常數：刪任一值即紅", () => {
