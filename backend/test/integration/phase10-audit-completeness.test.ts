@@ -34,8 +34,11 @@
  * ---------------------------------------------------------------------------
  * 「被驗證之狀態」＝**稽核列**。故本檔**零** `prisma.auditLog.create`／raw SQL
  * 直寫：全部 22 列稽核列一律由真實 HTTP 端點產生（下方 `seedAllEvents()` 逐一
- * 標註端點）。此為 Done When 之硬性條件，全檔以 `auditLog` 之寫入 API 完全不
- * 出現於本檔為機械證據。
+ * 標註端點）。此為 Done When 之硬性條件，其機械證據為**全檔零
+ * `auditLog.create`／`createMany`／raw SQL 插入**。〔精確射程，勿讀成「`auditLog`
+ * 完全不出現」：本檔另有 `cleanupSyntheticData()` 之兩處 `auditLog.deleteMany`
+ * （beforeAll 之前置清理，只刪不建、不產生任何被驗證之稽核列），以及各斷言之
+ * `findMany`／`count` 讀取。〕
  *
  * **前置狀態**（非被驗證之狀態）之構造沿既有先例：作廢（AC-07(a)⑤）與修正版
  * （AC-08(b)）之前置條件是「一筆 `COMPLETED` 申請」，其構造以
@@ -212,10 +215,7 @@ function assertNoSecretLiterals(value: unknown, path: string, secrets: readonly 
   if (typeof value === "object") {
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
       for (const secret of secrets) {
-        expect(
-          key.includes(secret),
-          `secret literal leaked in key at ${path}.${key}`
-        ).toBe(false);
+        expect(key.includes(secret), `secret literal leaked in key at ${path}.${key}`).toBe(false);
       }
       assertNoSecretLiterals(v, `${path}.${key}`, secrets);
     }
@@ -469,7 +469,9 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
       ...(payload !== undefined ? { payload } : {}),
     });
     if (resp.statusCode !== expectedStatus) {
-      throw new Error(`${method} ${url} → ${resp.statusCode} (expected ${expectedStatus}): ${resp.body}`);
+      throw new Error(
+        `${method} ${url} → ${resp.statusCode} (expected ${expectedStatus}): ${resp.body}`
+      );
     }
     return resp.json() as Record<string, unknown>;
   }
@@ -689,7 +691,8 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
         currentOdometerKm: "2600.00",
         actualCost: "1800.00",
       });
-      const selfMaintenanceId = (selfMaintenance as { application: ApplicationJson }).application.id;
+      const selfMaintenanceId = (selfMaintenance as { application: ApplicationJson }).application
+        .id;
       selfCreatedApplicationIds.push(selfMaintenanceId);
 
       const selfDepreciation = await callOk("POST", "/applications/depreciation", ownerCookie, {
@@ -735,7 +738,9 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
         adminCookie,
         { tripDate: `${PARAM_YEAR}-04-20`, purpose: "合成出差目的：管理員自建（C3 邊界）" }
       );
-      selfCreatedApplicationIds.push((adminSelf as { application: ApplicationJson }).application.id);
+      selfCreatedApplicationIds.push(
+        (adminSelf as { application: ApplicationJson }).application.id
+      );
       adminSelfDraftAuditDelta = (await auditCount()) - before;
     }
 
@@ -1422,7 +1427,7 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
       assertNoSecretLiterals(body, "wire", SECRETS);
       assertNoSensitiveContent(body, "wire", HEURISTIC_ALLOWED_LITERALS);
       for (const secret of SECRETS) {
-        expect(raw.includes(secret), `secret literal leaked in raw response body`).toBe(false);
+        expect(raw.includes(secret), "secret literal leaked in raw response body").toBe(false);
       }
       // 巢狀混合形（`{before:{...}, after:{...}, basisNote}`）確實在場——否則
       // 上面的 wire 掃描會漏掉本 Phase 最複雜的揭露面。
@@ -1434,9 +1439,7 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
         (i) => i.changes.find((c) => c.field === "before")?.after !== null
       );
       expect(withBefore.length).toBe(1);
-      expect(
-        fuelItems.every((i) => i.changes.some((c) => c.field === "basisNote"))
-      ).toBe(true);
+      expect(fuelItems.every((i) => i.changes.some((c) => c.field === "basisNote"))).toBe(true);
     });
 
     it("AC-09(c): USER_PASSWORD_RESET 之 summary 為封閉單鍵 {mustChangePassword:true}（加鍵 mutant 必紅）", async () => {
@@ -1507,26 +1510,14 @@ describeWithDb("PHASE-010-T3 — 稽核完整性回歸（AC-07／AC-08／AC-09�
       ).toThrow();
       // （2）通用啟發式——值命中
       expect(() =>
-        assertNoSensitiveContent(
-          { note: "session token leaked" },
-          "$",
-          HEURISTIC_ALLOWED_LITERALS
-        )
+        assertNoSensitiveContent({ note: "session token leaked" }, "$", HEURISTIC_ALLOWED_LITERALS)
       ).toThrow();
       // （2）允許集**恰為兩個完整字面**：子字串型的規避不被放行
       expect(() =>
-        assertNoSensitiveContent(
-          { mustChangePasswordExtra: true },
-          "$",
-          HEURISTIC_ALLOWED_LITERALS
-        )
+        assertNoSensitiveContent({ mustChangePasswordExtra: true }, "$", HEURISTIC_ALLOWED_LITERALS)
       ).toThrow();
       expect(() =>
-        assertNoSensitiveContent(
-          { field: "mustChangePassword" },
-          "$",
-          HEURISTIC_ALLOWED_LITERALS
-        )
+        assertNoSensitiveContent({ field: "mustChangePassword" }, "$", HEURISTIC_ALLOWED_LITERALS)
       ).not.toThrow();
     });
   });
