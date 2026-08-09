@@ -1,9 +1,16 @@
 /**
- * AuditChangesList 元件單元測試 — PHASE-010-T6
+ * AuditChangesList 元件單元測試 — PHASE-010-T6（PHASE-010-T7R 擴充）
  *
  * 涵蓋 AC-18(a)(b)(c)（呈現安全；§12 三列預定測試名逐字對應）＋ D3=(c) 中文
  * 欄名對照（§18 Gate 固化，T3 即審 FW-5／T1 即審 FW-4／T1 即審 FW-5 三項上游
- * FW 義務）。本檔為 AuditChangesList 之**唯一**測試檔——AC-18(b) 之
+ * FW 義務）。
+ *
+ * **T7R（期中複審 #2 SF-2／AR-3）**：中文對照表之覆蓋守門常數由 T6 之 17 鍵
+ * 擴為 `backend/src` 全樹實掃之 **31 鍵全集**（見 `REQUIRED_SUMMARY_FIELDS`
+ * 之逐點列舉），使「刪 `FIELD_LABELS` 任一鍵即紅」成立於全部鍵——T6 加碼之
+ * 7 鍵原本零守門（AR-3），另 7 個真實高頻鍵原本缺表（SF-2）。
+ *
+ * 本檔為 AuditChangesList 之**唯一**測試檔——AC-18(b) 之
  * `[object Object]` 負向守門依 Spec §11.0 紀律 6／PHASE-009 T15c FW 前端
  * 自帶，不倚賴 `backend/test/unit/audit-summary-flatten.test.ts`（僅借用其
  * 真實 fixture 之值以貼近真實資料，見下方 FUEL_CONSUMPTION_NESTED_CHANGES）。
@@ -39,8 +46,31 @@ const FUEL_CONSUMPTION_NESTED_CHANGES: AuditChangeDto[] = [
   { field: "basisNote", before: null, after: "原廠油耗數據（合成資料）" },
 ];
 
-/** Spec §16 D3／PHASE-010-T6 Packet FW-5：T3 已實證推上 wire 之 17 個真實頂層鍵。 */
-const REQUIRED_17_FIELDS = [
+/**
+ * `summary` 頂層鍵之**全集**（31 鍵）——PHASE-010-T7R 對 `backend/src` 全樹
+ * 之實掃結果，逐一列舉：
+ *
+ *   · `admin/routes.ts` `writeAudit` ×5：`role`／`employeeNumber`（USER_CREATED）、
+ *     `isActive`（USER_DEACTIVATED／USER_ACTIVATED）、`mustChangePassword`
+ *     （USER_PASSWORD_RESET）、`deletedLoginName`／`deletedDisplayName`
+ *     （USER_DELETED）
+ *   · `admin/routes.ts` 代建 `auditLog.create` ×3：`applicationId`／`type` ＋
+ *     TRAVEL 之 `tripDate`／`purpose`、MAINTENANCE 之 `lastMaintenanceDate`／
+ *     `currentMaintenanceDate`／`lastOdometerKm`／`currentOdometerKm`／
+ *     `actualCost`、DEPRECIATION 之 `applicationYear`／`annualTotalKm`
+ *   · `applications/routes.ts` 代改 ×3：同上 ＋ TRAVEL 之 `segmentsCount`
+ *   · `applications/routes.ts` 作廢：`reason`／`voidedAt`；修正版：`revisionOf`
+ *   · `parameters/routes.ts` ×3：`parameterType`／`fuelType`／`pricePerLiter`／
+ *     `effectiveFrom`／`unitPrice`／`vehiclePrice`／`usefulLifeYears`
+ *   · `users/fuel-consumption-routes.ts` ×1：`before`／`after`／`basisNote`
+ *
+ * 本常數即 D3=(c) 中文對照表之**覆蓋守門**（AR-3／SF-2）：`FIELD_LABELS` 刪去
+ * 其中任一鍵，下方「逐鍵顯示中文標籤」之測試即因回退顯示英文原鍵名而變紅。
+ * T6 原版僅列 17 鍵，故 T6 加碼之 7 鍵（`segmentsCount` 等）當時零守門
+ * （期中複審 #2 AR-3）；T7R 擴為全集後補齊。
+ */
+const REQUIRED_SUMMARY_FIELDS = [
+  // T3 即審 FW-5 已實證之 17 鍵
   "applicationId",
   "type",
   "reason",
@@ -58,6 +88,22 @@ const REQUIRED_17_FIELDS = [
   "employeeNumber",
   "deletedLoginName",
   "deletedDisplayName",
+  // T6 實查補入之 7 鍵（原無守門——AR-3）
+  "segmentsCount",
+  "fuelType",
+  "pricePerLiter",
+  "effectiveFrom",
+  "unitPrice",
+  "vehiclePrice",
+  "usefulLifeYears",
+  // T7R 實掃補入之 7 鍵（期中複審 #2 SF-2）
+  "applicationYear",
+  "annualTotalKm",
+  "actualCost",
+  "lastOdometerKm",
+  "currentOdometerKm",
+  "lastMaintenanceDate",
+  "currentMaintenanceDate",
 ];
 
 describe("AuditChangesList", () => {
@@ -134,8 +180,8 @@ describe("AuditChangesList", () => {
   });
 
   describe("D3=(c): 中文欄名對照（§18 Gate 固化）", () => {
-    it("中文對照表涵蓋 T3 實證之 17 個真實 summary 頂層鍵，逐鍵顯示中文標籤（非原始英文鍵名）", () => {
-      const changes: AuditChangeDto[] = REQUIRED_17_FIELDS.map((field) => ({
+    it("中文對照表涵蓋 backend/src 實掃之 31 個真實 summary 頂層鍵全集，逐鍵顯示中文標籤（非原始英文鍵名）", () => {
+      const changes: AuditChangeDto[] = REQUIRED_SUMMARY_FIELDS.map((field) => ({
         field,
         before: null,
         after: "x",
@@ -144,7 +190,7 @@ describe("AuditChangesList", () => {
       render(<AuditChangesList changes={changes} />);
 
       // 逐鍵：畫面上不得出現原始英文鍵名字面（已被翻譯覆蓋，非缺表回退）
-      for (const field of REQUIRED_17_FIELDS) {
+      for (const field of REQUIRED_SUMMARY_FIELDS) {
         expect(screen.queryByText(field)).not.toBeInTheDocument();
       }
     });

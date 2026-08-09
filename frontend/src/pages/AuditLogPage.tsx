@@ -1,5 +1,6 @@
 /**
  * AuditLogPage — PHASE-010-T7（稽核檢視頁：路由／入口／列表／篩選／分頁／五態）
+ * ＋ PHASE-010-T7R（AC-16(d) 使用者下拉篩選；SF-1 人類裁定 2026-08-09）
  *
  * AD-US-14②③ 之使用者可見落點。路由 `/admin/audit-logs`（D10=(a)），管理員 only；
  * 一般使用者一律 Permission denied 態（AC-15(a)）。
@@ -21,6 +22,26 @@
  * 重置為 1（AC-16(a)）。所有篩選與分頁值一律經 `apiListAuditLogs` 之 query
  * 參數送後端（`AuditLogQueryParams`）——本頁不對 `items` 做任何 `.filter()`
  * ／`.slice()`，AC-16(c) 之「零自行過濾」以此結構自然滿足。
+ *
+ * ---------------------------------------------------------------------------
+ * AC-16(d)：`actorId`／`targetId` 兩篩選欄為使用者下拉（T7R）
+ * ---------------------------------------------------------------------------
+ * 人類 leonchih 2026-08-09 SF-1 裁定逐字：「改用使用者下拉」。選項文字為
+ * **顯示名稱**、送出值為**使用者 id**；清單**複用既有** `apiGetUsers`
+ * （`GET /admin/users`，`api/users.ts` :3），不另立端點——沿
+ * `AdminFuelConsumptionPage.tsx` :297-309 之既有下拉先例。成因（Spec §2
+ * AC-16(d)）：回應依 §6.3／AC-04(b) **不外露** `actorId`／`targetId`，管理員
+ * 無從得知可輸入之值，故純文字 id 輸入實質不可用。
+ *
+ * 選項文字採 `顯示名稱（登入帳號）`（沿上述先例逐字）：顯示名稱可能重複，
+ * 附掛登入帳號才足以區辨；登入帳號本就外露於列表之 `targetLabel`，非內部
+ * 識別值，與 §6.3 不衝突。
+ *
+ * `apiGetUsers` 為管理員端點（`admin/routes.ts` 之 `adminPreHandlers` 含
+ * `requireAdmin`），與本頁「管理員 only」相容；非管理員一律不發此請求。
+ *
+ * **降級**（清單載入失敗）：兩下拉停用並顯示提示，**列表與其餘篩選照常**
+ * ——篩選為輔助功能，不得阻斷主功能（頁面不因此進 Error 態）。
  *
  * 分頁只提供上一頁／下一頁（無手打頁碼）——沿 T2 即審 FW-5 建議：後端
  * `page` 無上界、`skip` 超界回 200 空集合，若允許手打頁碼須前端 clamp，
@@ -65,9 +86,10 @@ import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiListAuditLogs } from "../api/audit.js";
+import { apiGetUsers } from "../api/users.js";
 import AuditChangesList from "../components/AuditChangesList.js";
 import { useAuth } from "../context/AuthContext.js";
-import type { ApiError, AuditAction, AuditLogListItemDto } from "../types/api.js";
+import type { ApiError, AuditAction, AuditLogListItemDto, UserDto } from "../types/api.js";
 
 /** AC-10(c)：`action` → 中文標籤（10 值封閉，見上方檔頭說明）。 */
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
@@ -101,6 +123,12 @@ const EMPTY_FILTERS: FilterFormState = {
 
 const PAGE_SIZE = 20;
 
+/**
+ * AC-16(d)：使用者下拉之清單狀態。`failed` 為**降級**態（非致命）——見檔頭
+ * 「AC-16(d)」段落之降級設計。
+ */
+type UsersState = { kind: "loading" } | { kind: "ready"; users: UserDto[] } | { kind: "failed" };
+
 type PageState =
   | { kind: "loading" }
   | { kind: "permission-denied" }
@@ -124,6 +152,7 @@ export default function AuditLogPage(): React.ReactElement {
   const [appliedFilters, setAppliedFilters] = useState<FilterFormState>(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
   const [pageState, setPageState] = useState<PageState>({ kind: "loading" });
+  const [usersState, setUsersState] = useState<UsersState>({ kind: "loading" });
 
   const hasActiveFilters =
     appliedFilters.action !== "" ||
@@ -180,6 +209,25 @@ export default function AuditLogPage(): React.ReactElement {
     load(appliedFilters, page);
   }, [authState, load, appliedFilters, page]);
 
+  // AC-16(d)：兩個使用者下拉之選項來源。非管理員一律不發此請求（沿同頁
+  // Permission denied 之「零後續請求」紀律）；失敗即降級，不阻斷列表。
+  useEffect(() => {
+    if (authState.status !== "authenticated") return;
+    if (authState.user.role !== "ADMIN") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { users } = await apiGetUsers();
+        if (!cancelled) setUsersState({ kind: "ready", users });
+      } catch {
+        if (!cancelled) setUsersState({ kind: "failed" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authState]);
+
   function handleSubmitFilters(e: React.FormEvent) {
     e.preventDefault();
     setPage(1);
@@ -221,6 +269,7 @@ export default function AuditLogPage(): React.ReactElement {
   }
 
   const loading = pageState.kind === "loading";
+  const userOptions = usersState.kind === "ready" ? usersState.users : [];
   const totalPages =
     pageState.kind === "ready" ? Math.max(1, Math.ceil(pageState.total / pageState.pageSize)) : 1;
 
@@ -256,24 +305,36 @@ export default function AuditLogPage(): React.ReactElement {
             </select>
           </div>
           <div className="form-group">
-            <label htmlFor="audit-filter-actorId">操作者 ID</label>
-            <input
+            <label htmlFor="audit-filter-actorId">操作者</label>
+            <select
               id="audit-filter-actorId"
-              type="text"
               value={filters.actorId}
               onChange={(e) => setFilters((f) => ({ ...f, actorId: e.target.value }))}
-              disabled={loading}
-            />
+              disabled={loading || usersState.kind !== "ready"}
+            >
+              <option value="">全部</option>
+              {userOptions.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.displayName}（{u.loginName}）
+                </option>
+              ))}
+            </select>
           </div>
           <div className="form-group">
-            <label htmlFor="audit-filter-targetId">受影響對象 ID</label>
-            <input
+            <label htmlFor="audit-filter-targetId">受影響對象</label>
+            <select
               id="audit-filter-targetId"
-              type="text"
               value={filters.targetId}
               onChange={(e) => setFilters((f) => ({ ...f, targetId: e.target.value }))}
-              disabled={loading}
-            />
+              disabled={loading || usersState.kind !== "ready"}
+            >
+              <option value="">全部</option>
+              {userOptions.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.displayName}（{u.loginName}）
+                </option>
+              ))}
+            </select>
           </div>
           <div className="form-group">
             <label htmlFor="audit-filter-dateFrom">起日</label>
@@ -309,6 +370,14 @@ export default function AuditLogPage(): React.ReactElement {
             </button>
           </div>
         </form>
+
+        {/* AC-16(d) 降級提示：沿既有 `<output className="warn-text">` 慣例
+            （`DepreciationApplicationPage.tsx` :790）——非 Error 態，僅提示。 */}
+        {usersState.kind === "failed" && (
+          <output className="warn-text">
+            使用者清單載入失敗，暫時無法依使用者篩選；其餘篩選與稽核列表不受影響。
+          </output>
+        )}
 
         {pageState.kind === "loading" && (
           <div className="loading-block" aria-busy="true">

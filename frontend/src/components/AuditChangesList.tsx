@@ -43,11 +43,19 @@
  * `field` 為後端 `summary` 之英文頂層鍵名，此處提供中文標籤對照表；缺表鍵
  * **不得崩、不得空白**——回退顯示原始英文鍵名（可接受回退）。
  *
- * 覆蓋鍵集：跨 Phase 追蹤上游 FW 實證之 17 個真實頂層鍵（PHASE-010-T3
- * 即審 FW-5）＋另 7 個經本次實查（`backend/test/unit/audit-summary-flatten
- * .test.ts`／`backend/src/parameters/routes.ts`）確認之真實頂層鍵
- * （`segmentsCount`／`fuelType`／`pricePerLiter`／`effectiveFrom`／
- * `unitPrice`／`vehiclePrice`／`usefulLifeYears`），合計 24 鍵。
+ * 覆蓋鍵集（**合計 31 鍵**）：跨 Phase 追蹤上游 FW 實證之 17 個真實頂層鍵
+ * （PHASE-010-T3 即審 FW-5）＋ T6 實查補入之 7 鍵（`segmentsCount`／`fuelType`／
+ * `pricePerLiter`／`effectiveFrom`／`unitPrice`／`vehiclePrice`／
+ * `usefulLifeYears`）＋ **T7R** 補入之 7 鍵（期中複審 #2 SF-2：`applicationYear`／
+ * `annualTotalKm`／`actualCost`／`lastOdometerKm`／`currentOdometerKm`／
+ * `lastMaintenanceDate`／`currentMaintenanceDate`）。
+ *
+ * 此 31 鍵為 `backend/src` 全樹實掃之**全集**（T7R 覆核 17 個 `summary` 構造點：
+ * `admin/routes.ts` 之 5 個 `writeAudit` ＋ 3 個代建、`applications/routes.ts`
+ * 之 3 個代改 ＋ 作廢 ＋ 修正版、`parameters/routes.ts` 之 3 個、
+ * `users/fuel-consumption-routes.ts` 之 1 個）。「刪表中任一鍵即紅」之覆蓋守門
+ * 由 `AuditChangesList.test.tsx` 之 `REQUIRED_SUMMARY_FIELDS` 承擔——T6 版僅列
+ * 17 鍵，故當時加碼之 7 鍵零守門（期中複審 #2 AR-3），T7R 一併補齊。
  *
  * **`before`／`after` 同名陷阱**（T1 即審 FW-4）：`USER_FUEL_CONSUMPTION_
  * VERSION_CREATED` 巢狀混合形之 `summary` 頂層鍵字面就叫 `before`／`after`
@@ -87,6 +95,16 @@ const FIELD_LABELS: Record<string, string> = {
   unitPrice: "單價",
   vehiclePrice: "車輛價格",
   usefulLifeYears: "耐用年限",
+  // T7R（期中複審 #2 SF-2）：保養／折舊代建與代改之真實高頻鍵。中文用詞逐字
+  // 沿既有申請頁之 `<dt>`（`MaintenanceApplicationPage.tsx` :611-620、
+  // `DepreciationApplicationPage.tsx` :633、:654），不另立第二種說法。
+  applicationYear: "申請年度",
+  annualTotalKm: "年度總里程",
+  actualCost: "本次實際保養費用",
+  lastOdometerKm: "上次里程表",
+  currentOdometerKm: "本次里程表",
+  lastMaintenanceDate: "上次保養日期",
+  currentMaintenanceDate: "本次保養日期",
 };
 
 function fieldLabel(field: string): string {

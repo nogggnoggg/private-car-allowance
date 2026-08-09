@@ -1,9 +1,11 @@
 /**
- * AuditLogPage 前端單元測試 — PHASE-010-T7
+ * AuditLogPage 前端單元測試 — PHASE-010-T7（PHASE-010-T7R 擴充）
  *
- * 涵蓋 AC-15（路由／入口／列表四要素）、AC-16（篩選與分頁 UI）、AC-17（五態）、
- * 追加①（`targetLabel` 之 AC-18(a) XSS 跳脫，頁面列渲染處自帶）、追加②
- * （`createdAt` 之 AC-18(c) 在地化單一形式，與 T6 之 `changes` 內 ISO 互補）。
+ * 涵蓋 AC-15（路由／入口／列表四要素）、AC-16（篩選與分頁 UI）、**AC-16(d)**
+ * （SF-1 裁定之使用者下拉，T7R 新增）、AC-17（五態）、**SF-5**（切頁 Loading
+ * 守門，T7R 新增）、追加①（`targetLabel` 之 AC-18(a) XSS 跳脫，頁面列渲染處
+ * 自帶）、追加②（`createdAt` 之 AC-18(c) 在地化單一形式，與 T6 之 `changes`
+ * 內 ISO 互補）。
  *
  * 測試策略沿用既有前端頁面慣例：
  *   - Permission denied：沿 `AdminUsersPage.test.tsx`「先查 authState.role 再
@@ -11,6 +13,17 @@
  *     零後續請求，不倚賴後端真的回 403。
  *   - 篩選／分頁／五態：沿 `ApplicationListSection.test.tsx` 之
  *     `(fetch as Mock).mock.calls` 請求 URL 斷言手法（AC-16(c) 之「結構斷言」）。
+ *
+ * ---------------------------------------------------------------------------
+ * T7R：fetch mock 由「呼叫序佇列」改為「依 URL 分流之三佇列」
+ * ---------------------------------------------------------------------------
+ * AC-16(d) 使本頁多出第三個端點（`GET /api/admin/users`，複用 `apiGetUsers`）。
+ * 原先以 `mockResolvedValueOnce` 依**呼叫順序**排隊之手法，會使每一個測試都
+ * 隱性耦合於元件內 `useEffect` 的執行順序（多掛一個 effect 就全盤錯位）。
+ * 改為 `/api/me`／`/api/admin/users`／`/api/admin/audit-logs` 各自獨立佇列：
+ * 測試只宣告它關心的端點回應，跨端點順序無關；未宣告之使用者清單回退為空集合
+ * （多數測試不關心該欄），其餘端點缺 mock 則**明確 reject**（不靜默放行）。
+ * 此為測試基礎設施之等價改寫——既有各格之斷言逐條保留，無任何弱化。
  */
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -42,13 +55,69 @@ const regularUser: UserDto = {
   mustChangePassword: false,
 };
 
+/**
+ * AC-16(d)：`GET /admin/users` 之播種回應——兩個下拉之選項來源。
+ * `id` 刻意取 `actor-9`／`target-9`（既有 AC-16(c) 之送出值），使「選項文字＝
+ * 顯示名稱、送出值＝id」可同時被正向格與 AC-16(c) 之 query 斷言驗證。
+ */
+const SEEDED_USERS: UserDto[] = [
+  {
+    id: "actor-9",
+    loginName: "admin2",
+    displayName: "稽核管理員",
+    employeeNumber: "EMP009",
+    role: "ADMIN",
+    isActive: true,
+    mustChangePassword: false,
+  },
+  {
+    id: "target-9",
+    loginName: "user9",
+    displayName: "受影響使用者",
+    employeeNumber: null,
+    role: "USER",
+    isActive: true,
+    mustChangePassword: false,
+  },
+];
+
+// ---------------------------------------------------------------------------
+// 依 URL 分流之 fetch mock（見檔頭 T7R 段落）
+// ---------------------------------------------------------------------------
+
+type ResponseThunk = () => Promise<Response>;
+
+const queues: { me: ResponseThunk[]; users: ResponseThunk[]; audit: ResponseThunk[] } = {
+  me: [],
+  users: [],
+  audit: [],
+};
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** `/api/admin/audit-logs` 必須先於 `/api/admin/users` 比對（前者為後者之前綴外形）。 */
+function queueFor(url: string): ResponseThunk[] | null {
+  if (url.includes("/api/me")) return queues.me;
+  if (url.includes("/api/admin/audit-logs")) return queues.audit;
+  if (url.includes("/api/admin/users")) return queues.users;
+  return null;
+}
+
 function mockMeAs(user: UserDto) {
-  (fetch as Mock).mockResolvedValueOnce(
-    new Response(JSON.stringify({ user }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    })
-  );
+  queues.me.push(() => Promise.resolve(jsonResponse({ user })));
+}
+
+function mockUsers(users: UserDto[]) {
+  queues.users.push(() => Promise.resolve(jsonResponse({ users })));
+}
+
+function mockUsersError(status: number, error: { code: string; message: string }) {
+  queues.users.push(() => Promise.resolve(jsonResponse({ error }, status)));
 }
 
 function mockAuditList(body: {
@@ -57,24 +126,19 @@ function mockAuditList(body: {
   pageSize: number;
   total: number;
 }) {
-  (fetch as Mock).mockResolvedValueOnce(
-    new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    })
-  );
+  queues.audit.push(() => Promise.resolve(jsonResponse(body)));
 }
 
 function mockAuditListError(
   status: number,
   error: { code: string; message: string; fields?: Array<{ field: string; reason: string }> }
 ) {
-  (fetch as Mock).mockResolvedValueOnce(
-    new Response(JSON.stringify({ error }), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    })
-  );
+  queues.audit.push(() => Promise.resolve(jsonResponse({ error }, status)));
+}
+
+/** 稽核列表回應永不 resolve —— 用於把畫面釘在 Loading 態（AC-17／SF-5）。 */
+function mockAuditListHanging() {
+  queues.audit.push(() => new Promise<Response>(() => {}));
 }
 
 function baseItem(overrides: Partial<AuditLogListItemDto> = {}): AuditLogListItemDto {
@@ -108,7 +172,20 @@ function renderAuditLogPage() {
 
 describe("AuditLogPage", () => {
   beforeEach(() => {
-    vi.spyOn(globalThis, "fetch");
+    queues.me = [];
+    queues.users = [];
+    queues.audit = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      const queue = queueFor(url);
+      if (queue === null) return Promise.reject(new Error(`未預期的請求：${url}`));
+      const next = queue.shift();
+      if (next) return next();
+      // 未宣告之使用者清單 → 空集合（多數測試不關心該欄）；其餘端點缺 mock
+      // 一律明確 reject，不靜默放行成真實網路請求。
+      if (queue === queues.users) return Promise.resolve(jsonResponse({ users: [] }));
+      return Promise.reject(new Error(`缺少 mock 回應：${url}`));
+    });
   });
 
   afterEach(() => {
@@ -122,17 +199,7 @@ describe("AuditLogPage", () => {
     it("Loading 態：顯示載入中，且篩選控制項停用", async () => {
       mockMeAs(adminUser);
       // /api/admin/audit-logs 掛起，永不 resolve
-      (fetch as Mock).mockImplementation((url: string) => {
-        if (typeof url === "string" && url.includes("/api/me")) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ user: adminUser }), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            })
-          );
-        }
-        return new Promise(() => {});
-      });
+      mockAuditListHanging();
 
       renderAuditLogPage();
 
@@ -357,16 +424,21 @@ describe("AuditLogPage", () => {
 
     it("AC-16(c)：篩選與分頁參數確實經 query 送後端（請求 URL 含該參數）", async () => {
       mockMeAs(adminUser);
+      // T7R／AC-16(d)：操作者與受影響對象改為使用者下拉，選取值須為清單內之
+      // 真實 id，故本格改以播種使用者提供 `actor-9`／`target-9` 兩個選項。
+      mockUsers(SEEDED_USERS);
       mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
       renderAuditLogPage();
       await waitFor(() => expect(screen.getByText("尚無任何稽核紀錄。")).toBeInTheDocument());
+      // 使用者清單到齊後兩下拉才可用（AC-16(d) 之降級設計）
+      await waitFor(() => expect(screen.getByLabelText("操作者")).not.toBeDisabled());
 
       mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
       fireEvent.change(screen.getByLabelText("操作類型"), {
         target: { value: "APPLICATION_VOIDED" },
       });
-      fireEvent.change(screen.getByLabelText("操作者 ID"), { target: { value: "actor-9" } });
-      fireEvent.change(screen.getByLabelText("受影響對象 ID"), { target: { value: "target-9" } });
+      fireEvent.change(screen.getByLabelText("操作者"), { target: { value: "actor-9" } });
+      fireEvent.change(screen.getByLabelText("受影響對象"), { target: { value: "target-9" } });
       fireEvent.change(screen.getByLabelText("起日"), { target: { value: "2026-08-01" } });
       fireEvent.change(screen.getByLabelText("迄日"), { target: { value: "2026-08-31" } });
       fireEvent.click(screen.getByRole("button", { name: "套用篩選" }));
@@ -382,6 +454,150 @@ describe("AuditLogPage", () => {
         expect(last).toContain("page=1");
         expect(last).toContain("pageSize=20");
       });
+    });
+  });
+
+  // ==========================================================================
+  // AC-16(d)：操作者／受影響對象兩篩選欄為使用者下拉（SF-1 人類裁定 2026-08-09）
+  // ==========================================================================
+  describe("AC-16(d): 使用者下拉篩選", () => {
+    it("AC-16(d) 正向：兩篩選欄為使用者下拉——選項文字為顯示名稱、送出值為 id，清單來自 apiGetUsers", async () => {
+      mockMeAs(adminUser);
+      mockUsers(SEEDED_USERS);
+      mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
+      renderAuditLogPage();
+      await waitFor(() => expect(screen.getByText("尚無任何稽核紀錄。")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByLabelText("操作者")).not.toBeDisabled());
+
+      // 清單複用既有使用者清單 API（`apiGetUsers` → GET /api/admin/users），不另立端點
+      const calledUrls = (fetch as Mock).mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(calledUrls.some((u) => u.includes("/api/admin/users"))).toBe(true);
+
+      const actorSelect = screen.getByLabelText("操作者");
+      const targetSelect = screen.getByLabelText("受影響對象");
+      expect(actorSelect.tagName).toBe("SELECT");
+      expect(targetSelect.tagName).toBe("SELECT");
+
+      // 選項文字＝顯示名稱；送出值＝id（兩下拉皆然）
+      for (const select of [actorSelect, targetSelect]) {
+        const scoped = within(select);
+        const actorOption = scoped.getByRole("option", { name: /稽核管理員/ }) as HTMLOptionElement;
+        const targetOption = scoped.getByRole("option", {
+          name: /受影響使用者/,
+        }) as HTMLOptionElement;
+        expect(actorOption.value).toBe("actor-9");
+        expect(targetOption.value).toBe("target-9");
+      }
+
+      // 選取後，請求以 id 為送出值（非顯示名稱）
+      mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
+      fireEvent.change(actorSelect, { target: { value: "actor-9" } });
+      fireEvent.change(targetSelect, { target: { value: "target-9" } });
+      fireEvent.click(screen.getByRole("button", { name: "套用篩選" }));
+
+      await waitFor(() => {
+        const calls = (fetch as Mock).mock.calls;
+        const last = String(calls[calls.length - 1]?.[0]);
+        expect(last).toContain("actorId=actor-9");
+        expect(last).toContain("targetId=target-9");
+      });
+      // 負向：送出值不得為顯示名稱
+      const lastUrl = String(
+        (fetch as Mock).mock.calls[(fetch as Mock).mock.calls.length - 1]?.[0]
+      );
+      expect(lastUrl).not.toContain("稽核管理員");
+      expect(lastUrl).not.toContain(encodeURIComponent("稽核管理員"));
+    });
+
+    it("AC-16(d) 負向：篩選區不得存在純文字 id 輸入欄", async () => {
+      mockMeAs(adminUser);
+      mockUsers(SEEDED_USERS);
+      mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
+      renderAuditLogPage();
+      await waitFor(() => expect(screen.getByText("尚無任何稽核紀錄。")).toBeInTheDocument());
+
+      // 篩選表單內之 <input> 僅允許兩個日期欄；任何文字輸入框即違反 AC-16(d)
+      const form = screen.getByRole("form", { name: "篩選稽核紀錄" });
+      const inputs = Array.from(form.querySelectorAll("input"));
+      expect(inputs.map((el) => el.type).sort()).toEqual(["date", "date"]);
+
+      // 原純文字實作之無障礙名稱不得再存在
+      expect(screen.queryByLabelText("操作者 ID")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("受影響對象 ID")).not.toBeInTheDocument();
+    });
+
+    it("AC-16(d) 降級：使用者清單載入失敗時兩下拉停用並提示，稽核列表與其餘篩選照常（篩選不阻斷主功能）", async () => {
+      mockMeAs(adminUser);
+      mockUsersError(500, { code: "INTERNAL_ERROR", message: "伺服器錯誤" });
+      mockAuditList({ items: [baseItem()], page: 1, pageSize: 20, total: 1 });
+      renderAuditLogPage();
+
+      await waitFor(() => {
+        expect(screen.getByText(/使用者清單載入失敗/)).toBeInTheDocument();
+      });
+      expect(screen.getByLabelText("操作者")).toBeDisabled();
+      expect(screen.getByLabelText("受影響對象")).toBeDisabled();
+
+      // 主功能不受影響：列表照常渲染，其餘篩選控制項可用
+      expect(screen.getByRole("list", { name: "稽核紀錄清單" })).toBeInTheDocument();
+      expect(screen.getByText("user1")).toBeInTheDocument();
+      expect(screen.getByLabelText("操作類型")).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: "套用篩選" })).not.toBeDisabled();
+    });
+  });
+
+  // ==========================================================================
+  // SF-5（期中複審 #2 M15 存活）：切頁／套用篩選期間之 Loading 守門
+  // §4 表逐字：「列表區不渲染舊資料之殘影；篩選控制項停用」「切頁時同左；
+  // 重複點擊不併發送出（送出中停用）」
+  // ==========================================================================
+  describe("SF-5: 切頁期間之 Loading 守門", () => {
+    it("切頁請求掛起中：列表區零舊資料殘影、篩選控制項全停用、且無從重複送出", async () => {
+      mockMeAs(adminUser);
+      mockUsers(SEEDED_USERS);
+      const items = Array.from({ length: 3 }, (_, i) =>
+        baseItem({ id: `audit-${i}`, targetLabel: `stale-user-${i}` })
+      );
+      mockAuditList({ items, page: 1, pageSize: 20, total: 45 });
+      renderAuditLogPage();
+
+      await waitFor(() => {
+        expect(screen.getByRole("list", { name: "稽核紀錄清單" })).toBeInTheDocument();
+      });
+      expect(
+        within(screen.getByRole("list", { name: "稽核紀錄清單" })).getAllByRole("listitem")
+      ).toHaveLength(3);
+
+      // 第二次（切頁）回應永不 resolve → 畫面釘在切頁中的 Loading 態
+      mockAuditListHanging();
+      fireEvent.click(screen.getByRole("button", { name: "下一頁" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/載入中/)).toBeInTheDocument();
+      });
+
+      // (1) 列表區不渲染舊資料之殘影
+      expect(screen.queryByRole("list", { name: "稽核紀錄清單" })).not.toBeInTheDocument();
+      for (const item of items) {
+        expect(screen.queryByText(item.targetLabel)).not.toBeInTheDocument();
+      }
+
+      // (2) 篩選控制項停用（五欄兩鈕逐一）
+      expect(screen.getByLabelText("操作類型")).toBeDisabled();
+      expect(screen.getByLabelText("操作者")).toBeDisabled();
+      expect(screen.getByLabelText("受影響對象")).toBeDisabled();
+      expect(screen.getByLabelText("起日")).toBeDisabled();
+      expect(screen.getByLabelText("迄日")).toBeDisabled();
+      expect(screen.getByRole("button", { name: "套用篩選" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "清除篩選" })).toBeDisabled();
+
+      // (3) 重複點擊不併發送出：分頁鈕隨列表一併退場，停用中之「套用篩選」點擊零新增請求
+      expect(screen.queryByRole("button", { name: "下一頁" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "上一頁" })).not.toBeInTheDocument();
+      const callsDuringLoading = (fetch as Mock).mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: "套用篩選" }));
+      fireEvent.click(screen.getByRole("button", { name: "清除篩選" }));
+      expect((fetch as Mock).mock.calls.length).toBe(callsDuringLoading);
     });
   });
 
