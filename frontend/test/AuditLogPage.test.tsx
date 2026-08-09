@@ -1,11 +1,13 @@
 /**
- * AuditLogPage 前端單元測試 — PHASE-010-T7（PHASE-010-T7R 擴充）
+ * AuditLogPage 前端單元測試 — PHASE-010-T7（PHASE-010-T7R 擴充；
+ * PHASE-010-T-MG1-FE 再擴充）
  *
  * 涵蓋 AC-15（路由／入口／列表四要素）、AC-16（篩選與分頁 UI）、**AC-16(d)**
  * （SF-1 裁定之使用者下拉，T7R 新增）、AC-17（五態）、**SF-5**（切頁 Loading
  * 守門，T7R 新增）、追加①（`targetLabel` 之 AC-18(a) XSS 跳脫，頁面列渲染處
  * 自帶）、追加②（`createdAt` 之 AC-18(c) 在地化單一形式，與 T6 之 `changes`
- * 內 ISO 互補）。
+ * 內 ISO 互補）、**BE2 即審 FW-1**（`dateFrom`／`dateTo` 送出值紅線，
+ * T-MG1-FE 新增——見下方同名 describe 區塊檔頭之完整說明）。
  *
  * 測試策略沿用既有前端頁面慣例：
  *   - Permission denied：沿 `AdminUsersPage.test.tsx`「先查 authState.role 再
@@ -453,6 +455,70 @@ describe("AuditLogPage", () => {
         expect(last).toContain("dateTo=2026-08-31");
         expect(last).toContain("page=1");
         expect(last).toContain("pageSize=20");
+      });
+    });
+  });
+
+  // ==========================================================================
+  // BE2 即審 FW-1（T-MG1-FE 新增）：dateFrom/dateTo 送出值紅線
+  // ==========================================================================
+  //
+  // 實查（T-MG1-FE）：`AuditLogPage.tsx` 之 `load()`（`dateFrom: f.dateFrom ||
+  // undefined`）與 `api/audit.ts` 之 `apiListAuditLogs`（`search.set("dateFrom",
+  // params.dateFrom)`）皆**直傳** `<input type="date">` 之 `e.target.value`
+  // 字串，零 `Date` 物件轉換——已直傳，本節純屬**守門新增**（防未來回歸），
+  // 非行為變更（依 Packet FW-1：「已直傳則此格為守門新增非行為變更」）。
+  //
+  // MG-2（台灣日曆日裁定）之風險面：若未來「優化」為先建 `Date` 物件再取
+  // 日期字串（如 `new Date(v).toLocaleDateString()`／`.getDate()` 等**依賴
+  // 執行環境本地時區**的路徑），會在 UTC 負偏移瀏覽器（西半球，例如
+  // America/Los_Angeles，UTC-7/-8）發生「前一日」位移，直接抵銷 MG-2 的
+  // 台北日界裁定。經實測驗證（見 Handoff「mutant 實錄」）：
+  //   · Packet 建議之 `new Date(v).toISOString().slice(0,10)` 對純日期字串
+  //     （`YYYY-MM-DD`）**不會**位移——ECMAScript 規定純日期字串以 UTC 解讀，
+  //     `.toISOString()` 之輸出恆為 UTC，兩端點皆為 UTC 故互相抵銷，
+  //     與宿主時區無關（已用 `America/Los_Angeles` 實測確認零位移）。
+  //   · 真正會位移的是**經本地時間方法**之路徑（如 `.toLocaleDateString()`／
+  //     `.getDate()`）——同一輸入於 `America/Los_Angeles` 下實測確實位移一日
+  //     （`2026-08-01` → `2026-07-31`）。
+  // 故本格刻意將 `process.env.TZ` 釘死為負偏移時區（`America/Los_Angeles`）
+  // 執行，使守門對任何「經本地時間方法之日期往返」回歸具真實鑑別力，不受
+  // CI 宿主時區（本機預設 `Asia/Taipei`，正偏移，即使發生同型回歸也不會
+  // 位移，守門會零鑑別力）影響。
+  describe("BE2 即審 FW-1: dateFrom/dateTo 送出值紅線（T-MG1-FE）", () => {
+    const originalTz = process.env.TZ;
+
+    afterEach(() => {
+      if (originalTz === undefined) {
+        // `process.env.TZ = undefined` 會被 Node 強制轉為字面字串 "undefined"
+        // （非真正移除該鍵），故以 Reflect.deleteProperty 真正清除（同時避開
+        // biome lint/performance/noDelete 對 `delete` 運算子之規則）。
+        Reflect.deleteProperty(process.env, "TZ");
+      } else {
+        process.env.TZ = originalTz;
+      }
+    });
+
+    it("dateFrom／dateTo 送出值逐字等於使用者所選 YYYY-MM-DD 字串（釘死負偏移時區 America/Los_Angeles，防經 Date 本地時間往返之位移回歸）", async () => {
+      process.env.TZ = "America/Los_Angeles";
+
+      mockMeAs(adminUser);
+      mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
+      renderAuditLogPage();
+      await waitFor(() => expect(screen.getByText("尚無任何稽核紀錄。")).toBeInTheDocument());
+
+      mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
+      fireEvent.change(screen.getByLabelText("起日"), { target: { value: "2026-08-01" } });
+      fireEvent.change(screen.getByLabelText("迄日"), { target: { value: "2026-08-31" } });
+      fireEvent.click(screen.getByRole("button", { name: "套用篩選" }));
+
+      await waitFor(() => {
+        const calls = (fetch as Mock).mock.calls;
+        const last = String(calls[calls.length - 1]?.[0]);
+        // 逐字相等（非僅 toContain 子字串）：位移一日會使日期數字不同，必紅。
+        const url = new URL(last, "http://localhost");
+        expect(url.searchParams.get("dateFrom")).toBe("2026-08-01");
+        expect(url.searchParams.get("dateTo")).toBe("2026-08-31");
       });
     });
   });

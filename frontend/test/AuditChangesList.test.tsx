@@ -1,14 +1,35 @@
 /**
- * AuditChangesList 元件單元測試 — PHASE-010-T6（PHASE-010-T7R 擴充）
+ * AuditChangesList 元件單元測試 — PHASE-010-T6（PHASE-010-T7R 擴充；
+ * PHASE-010-T-MG1-FE 再擴充）
  *
  * 涵蓋 AC-18(a)(b)(c)（呈現安全；§12 三列預定測試名逐字對應）＋ D3=(c) 中文
  * 欄名對照（§18 Gate 固化，T3 即審 FW-5／T1 即審 FW-4／T1 即審 FW-5 三項上游
- * FW 義務）。
+ * FW 義務）＋ **AC-18(d) 值層中文化**（MG-1 裁定，T-MG1-FE 新增）。
  *
  * **T7R（期中複審 #2 SF-2／AR-3）**：中文對照表之覆蓋守門常數由 T6 之 17 鍵
  * 擴為 `backend/src` 全樹實掃之 **31 鍵全集**（見 `REQUIRED_SUMMARY_FIELDS`
  * 之逐點列舉），使「刪 `FIELD_LABELS` 任一鍵即紅」成立於全部鍵——T6 加碼之
  * 7 鍵原本零守門（AR-3），另 7 個真實高頻鍵原本缺表（SF-2）。
+ *
+ * **T-MG1-FE（Mock Gate MG-1 修復）**：
+ *   ① `REQUIRED_SUMMARY_FIELDS` 31 → **32 鍵**（新增 `kmPerLiter`——BE1
+ *      AC-06(b-0) 生效後之油耗巢狀子欄拆列新鍵）；
+ *   ② `FUEL_CONSUMPTION_NESTED_CHANGES` fixture 由「頂層 `before`／`after`
+ *      各一列、值為 JSON 字串」之**修訂前**形狀，改為 BE1 新契約之**子欄拆列
+ *      四列形**（`fuelType`／`kmPerLiter`／`effectiveFrom`／`basisNote`），
+ *      逐值抄錄自 `backend/test/unit/audit-summary-flatten.test.ts` :662-691
+ *      之 `FUEL_CONSUMPTION_NESTED` 真實輸出（不自行虛構，沿 T3 即審 FW-6）；
+ *   ③ 新增 `describe("AC-18(d): 值層中文化")`——四格：枚舉四類逐值中文、
+ *      布林 true/false → 是/否（限定布林欄位）、未知值與自由文字原樣顯示
+ *      不崩（防誤譯）、14 值覆蓋守門常數刪值必紅。
+ *   ④ `isActive` 相關格改用 BE1／BE2 後之新契約單列兩欄形
+ *      （`{field:"isActive", before:"true", after:"false"}`，不再是舊契約之
+ *      `{before:null, after:'{"from":true,"to":false}'}`），並新增其值依
+ *      AC-18(d) 譯為「是」／「否」之斷言。
+ *   ⑤「同名陷阱」格不再共用 `FUEL_CONSUMPTION_NESTED_CHANGES`（該 fixture
+ *      經 (b-0) 後已不再產生 `field: "before"`／`"after"`），改用獨立最小
+ *      fixture 直接構造這兩個現行常態不可達、但保留可讀之邊界值（見
+ *      `AuditChangesList.tsx` 檔頭「`before`／`after` 兩鍵」段落）。
  *
  * 本檔為 AuditChangesList 之**唯一**測試檔——AC-18(b) 之
  * `[object Object]` 負向守門依 Spec §11.0 紀律 6／PHASE-009 T15c FW 前端
@@ -27,28 +48,27 @@ import type { AuditChangeDto } from "../src/types/api.js";
 
 /**
  * 真實 fixture：`USER_FUEL_CONSUMPTION_VERSION_CREATED` 巢狀混合形，逐值抄錄
- * 自 `backend/test/unit/audit-summary-flatten.test.ts` 之 `FUEL_CONSUMPTION_NESTED`
- * ── 經後端 `flattenAuditSummary` 之真實輸出形狀：頂層 `before`／`after` 各自
- * 為物件，已由後端 `JSON.stringify` 字串化；`basisNote` 為純量字串
- * （AC-06(f) 之最高密度案例；T3 即審 FW-6：以真實字串長度為 fixture，非短純量）。
+ * 自 `backend/test/unit/audit-summary-flatten.test.ts` :662-691 之
+ * `FUEL_CONSUMPTION_NESTED` ── 經後端 `flattenAuditSummary`（**MG-1 後之新
+ * 契約**：AC-06(b-0) 子欄拆列）之真實輸出形狀：恰 4 列＝三子鍵
+ * （`fuelType`／`kmPerLiter`／`effectiveFrom`，各自改前→改後兩欄對照）＋
+ * `basisNote` 純量一列；頂層 `before`／`after` **不**各自成列
+ * （T-MG1-FE：修訂前 fixture 為頂層 `before`／`after` 各一列、值為
+ * `JSON.stringify` 整包字串，已隨 BE1 新契約汰換——AC-06(f) 之最高密度案例
+ * 仍以本 fixture 承接；T3 即審 FW-6：以真實字串長度為 fixture，非短純量）。
  */
 const FUEL_CONSUMPTION_NESTED_CHANGES: AuditChangeDto[] = [
-  {
-    field: "before",
-    before: null,
-    after: '{"fuelType":"GASOLINE_95","kmPerLiter":"12.3400","effectiveFrom":"2026-01-01"}',
-  },
-  {
-    field: "after",
-    before: null,
-    after: '{"fuelType":"GASOLINE_98","kmPerLiter":"13.5000","effectiveFrom":"2026-08-01"}',
-  },
+  { field: "fuelType", before: "GASOLINE_95", after: "GASOLINE_98" },
+  { field: "kmPerLiter", before: "12.3400", after: "13.5000" },
+  { field: "effectiveFrom", before: "2026-01-01", after: "2026-08-01" },
   { field: "basisNote", before: null, after: "原廠油耗數據（合成資料）" },
 ];
 
 /**
- * `summary` 頂層鍵之**全集**（31 鍵）——PHASE-010-T7R 對 `backend/src` 全樹
- * 之實掃結果，逐一列舉：
+ * `changes[].field` 之**可能值全集**（**32 鍵**）——T7R 對 `backend/src` 全樹
+ * 之實掃結果（31 鍵）＋ T-MG1-FE 補入之 `kmPerLiter`（AC-06(b-0) 子欄拆列後
+ * 新增之可能值；定義依 `AuditChangesList.tsx` 檔頭「D3=(c)」段落，接替 T7R
+ * 版之「backend/src 全樹頂層鍵實掃全集」定義），逐一列舉：
  *
  *   · `admin/routes.ts` `writeAudit` ×5：`role`／`employeeNumber`（USER_CREATED）、
  *     `isActive`（USER_DEACTIVATED／USER_ACTIVATED）、`mustChangePassword`
@@ -63,11 +83,15 @@ const FUEL_CONSUMPTION_NESTED_CHANGES: AuditChangeDto[] = [
  *   · `parameters/routes.ts` ×3：`parameterType`／`fuelType`／`pricePerLiter`／
  *     `effectiveFrom`／`unitPrice`／`vehiclePrice`／`usefulLifeYears`
  *   · `users/fuel-consumption-routes.ts` ×1：`before`／`after`／`basisNote`
+ *     ——**(b-0) 後 `before`／`after` 常態不可達，保留條目**（BE1 即審 FW-1）
+ *   · T-MG1-FE：`kmPerLiter`——(b-0) 子欄拆列後之新可能值
  *
- * 本常數即 D3=(c) 中文對照表之**覆蓋守門**（AR-3／SF-2）：`FIELD_LABELS` 刪去
- * 其中任一鍵，下方「逐鍵顯示中文標籤」之測試即因回退顯示英文原鍵名而變紅。
- * T6 原版僅列 17 鍵，故 T6 加碼之 7 鍵（`segmentsCount` 等）當時零守門
- * （期中複審 #2 AR-3）；T7R 擴為全集後補齊。
+ * 本常數即 D3=(c) 中文對照表之**覆蓋守門**（AR-3／SF-2／T-MG1-FE）：
+ * `FIELD_LABELS` 刪去其中任一鍵，下方「逐鍵顯示中文標籤」之測試即因回退
+ * 顯示英文原鍵名而變紅。T6 原版僅列 17 鍵（AR-3）、T7R 擴為 31 鍵（SF-2）、
+ * T-MG1-FE 補齊 `kmPerLiter` 達 32 鍵。**刻意獨立硬編、不衍生自
+ * `AuditChangesList.tsx` 之 `FIELD_LABELS`**（若改為 `Object.keys(FIELD_LABELS)`，
+ * 刪表中鍵時本常數會同步縮小，「刪鍵即紅」之鑑別力即失效）。
  */
 const REQUIRED_SUMMARY_FIELDS = [
   // T3 即審 FW-5 已實證之 17 鍵
@@ -104,6 +128,8 @@ const REQUIRED_SUMMARY_FIELDS = [
   "currentOdometerKm",
   "lastMaintenanceDate",
   "currentMaintenanceDate",
+  // T-MG1-FE 補入之 1 鍵（AC-06(b-0) 子欄拆列後之新可能值）
+  "kmPerLiter",
 ];
 
 describe("AuditChangesList", () => {
@@ -141,17 +167,14 @@ describe("AuditChangesList", () => {
       // 負向：全渲染結果零 "[object Object]"（前端自帶，不倚賴後端測試）
       expect(container.textContent).not.toContain("[object Object]");
 
-      // 正向：巢狀物件已字串化之 JSON 內容逐字可見
-      expect(
-        screen.getByText(
-          '{"fuelType":"GASOLINE_95","kmPerLiter":"12.3400","effectiveFrom":"2026-01-01"}'
-        )
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          '{"fuelType":"GASOLINE_98","kmPerLiter":"13.5000","effectiveFrom":"2026-08-01"}'
-        )
-      ).toBeInTheDocument();
+      // 正向：子欄拆列後之逐值可見——fuelType 值依 AC-18(d) 中文化（T-MG1-FE
+      // 新契約：BE1 (b-0) 後不再產生整包 JSON 字串，改為子欄逐值對照）。
+      expect(screen.getByText("95 無鉛汽油")).toBeInTheDocument();
+      expect(screen.getByText("98 無鉛汽油")).toBeInTheDocument();
+      expect(screen.getByText("12.3400")).toBeInTheDocument();
+      expect(screen.getByText("13.5000")).toBeInTheDocument();
+      expect(screen.getByText("2026-01-01")).toBeInTheDocument();
+      expect(screen.getByText("2026-08-01")).toBeInTheDocument();
       expect(screen.getByText("原廠油耗數據（合成資料）")).toBeInTheDocument();
     });
 
@@ -180,7 +203,7 @@ describe("AuditChangesList", () => {
   });
 
   describe("D3=(c): 中文欄名對照（§18 Gate 固化）", () => {
-    it("中文對照表涵蓋 backend/src 實掃之 31 個真實 summary 頂層鍵全集，逐鍵顯示中文標籤（非原始英文鍵名）", () => {
+    it("中文對照表涵蓋 changes[].field 可能值全集（32 鍵，含 kmPerLiter），逐鍵顯示中文標籤（非原始英文鍵名）", () => {
       const changes: AuditChangeDto[] = REQUIRED_SUMMARY_FIELDS.map((field) => ({
         field,
         before: null,
@@ -205,8 +228,16 @@ describe("AuditChangesList", () => {
       expect(screen.getByText("value")).toBeInTheDocument();
     });
 
-    it('before/after 同名陷阱：field="before"／"after" 之中文標籤不得與表頭「改前」／「改後」同名（T1 即審 FW-4）', () => {
-      render(<AuditChangesList changes={FUEL_CONSUMPTION_NESTED_CHANGES} />);
+    it('before/after 同名陷阱：field="before"／"after" 之中文標籤不得與表頭「改前」／「改後」同名（T1 即審 FW-4；BE1 後為保留條目，見 AuditChangesList.tsx 檔頭）', () => {
+      // (b-0) 生效後，油耗巢狀 fixture 已不再產生 field="before"／"after"
+      // （見 FUEL_CONSUMPTION_NESTED_CHANGES 檔頭說明）——本格改以獨立最小
+      // fixture 直接構造這兩個保留條目（BE1 即審 FW-1：現行常態不可達，但
+      // 仍可能以「兩側皆非物件」等未來形狀出現，保留可讀）。
+      const changes: AuditChangeDto[] = [
+        { field: "before", before: null, after: "x" },
+        { field: "after", before: null, after: "y" },
+      ];
+      render(<AuditChangesList changes={changes} />);
 
       // 表頭固定為「欄位」／「改前」／「改後」三欄
       expect(screen.getByRole("columnheader", { name: "欄位" })).toBeInTheDocument();
@@ -217,18 +248,136 @@ describe("AuditChangesList", () => {
       // ——否則會與表頭同名，讀者會誤讀成「欄位＝改前」。
       expect(screen.queryByRole("cell", { name: "改前" })).not.toBeInTheDocument();
       expect(screen.queryByRole("cell", { name: "改後" })).not.toBeInTheDocument();
+      expect(screen.getByText("異動前版本")).toBeInTheDocument();
+      expect(screen.getByText("異動後版本")).toBeInTheDocument();
     });
 
-    it("isActive（USER_DEACTIVATED／USER_ACTIVATED 之 {from,to} 兩鍵物件）在對照表中且缺表不崩（T1 即審 FW-5）", () => {
-      const changes: AuditChangeDto[] = [
-        { field: "isActive", before: null, after: '{"from":true,"to":false}' },
-      ];
+    it("isActive（USER_DEACTIVATED／USER_ACTIVATED，BE1／BE2 後為 {field:'isActive', before:'true', after:'false'} 單列兩欄形）在對照表中；值依 AC-18(d) 譯為 是/否（T1 即審 FW-5 沿用 ＋ MG-1 新契約）", () => {
+      // T-MG1-FE：舊契約之 {before:null, after:'{"from":true,"to":false}'}
+      // 已隨 BE1／BE2 之 (b-1) 分派（{from,to} 與 {before,after} 同等待遇）
+      // 汰換為本列單列兩欄形（見 audit-summary-flatten.test.ts :736）。
+      const changes: AuditChangeDto[] = [{ field: "isActive", before: "true", after: "false" }];
 
       render(<AuditChangesList changes={changes} />);
 
       expect(screen.queryByText("isActive")).not.toBeInTheDocument();
-      expect(screen.getByText('{"from":true,"to":false}')).toBeInTheDocument();
+      expect(screen.getByText("啟用狀態")).toBeInTheDocument();
+      // AC-18(d)：布林限定欄位之 true/false → 是/否
+      expect(screen.getByText("是")).toBeInTheDocument();
+      expect(screen.getByText("否")).toBeInTheDocument();
+      expect(screen.queryByText("true")).not.toBeInTheDocument();
+      expect(screen.queryByText("false")).not.toBeInTheDocument();
       expect(document.body.textContent).not.toContain("[object Object]");
+    });
+  });
+
+  describe("AC-18(d): 值層中文化", () => {
+    /**
+     * 14 值覆蓋守門常數（Spec §2 AC-18(d) 末段：`ApplicationType` 3 ＋
+     * `FuelType` 4 ＋ `Role` 2 ＋ 參數類型 3 ＋ 布林 2）。**刻意獨立硬編、
+     * 不從 `AuditChangesList.tsx` 之值映射表衍生**——理由同
+     * `REQUIRED_SUMMARY_FIELDS`：若改為從 src 常數衍生，刪 src 值時本常數
+     * 會同步縮小，「刪值即紅」之鑑別力即失效。
+     */
+    const REQUIRED_ENUM_VALUE_MAPPINGS: Array<{ field: string; value: string; label: string }> = [
+      // type → ApplicationType 三值（沿 ApplicationListSection.tsx :30-32）
+      { field: "type", value: "TRAVEL", label: "差旅補助" },
+      { field: "type", value: "MAINTENANCE", label: "保養分攤" },
+      { field: "type", value: "DEPRECIATION", label: "折舊補貼" },
+      // fuelType → FuelType 四值（沿 AdminFuelConsumptionPage.tsx :59-62）
+      { field: "fuelType", value: "GASOLINE_92", label: "92 無鉛汽油" },
+      { field: "fuelType", value: "GASOLINE_95", label: "95 無鉛汽油" },
+      { field: "fuelType", value: "GASOLINE_98", label: "98 無鉛汽油" },
+      { field: "fuelType", value: "DIESEL", label: "柴油" },
+      // role → Role 兩值（沿 AdminUsersPage.tsx :310／:413）
+      { field: "role", value: "ADMIN", label: "管理員" },
+      { field: "role", value: "USER", label: "一般使用者" },
+      // parameterType → 參數類型三值（沿 ParametersPage.tsx :148／:361／:547）
+      { field: "parameterType", value: "FUEL_PRICE", label: "油資參數（油價）" },
+      { field: "parameterType", value: "ETC", label: "ETC 參數" },
+      { field: "parameterType", value: "DEPRECIATION", label: "折舊參數" },
+      // 布林兩值（限定布林欄位：isActive／mustChangePassword，此處以 isActive 取樣）
+      { field: "isActive", value: "true", label: "是" },
+      { field: "isActive", value: "false", label: "否" },
+    ];
+
+    it("枚舉四類逐值中文（type／fuelType／role／parameterType）", () => {
+      const changes: AuditChangeDto[] = [
+        { field: "type", before: "TRAVEL", after: "MAINTENANCE" },
+        { field: "fuelType", before: "GASOLINE_92", after: "GASOLINE_95" },
+        { field: "role", before: "USER", after: "ADMIN" },
+        { field: "parameterType", before: "FUEL_PRICE", after: "ETC" },
+      ];
+
+      render(<AuditChangesList changes={changes} />);
+
+      expect(screen.getByText("差旅補助")).toBeInTheDocument();
+      expect(screen.getByText("保養分攤")).toBeInTheDocument();
+      expect(screen.getByText("92 無鉛汽油")).toBeInTheDocument();
+      expect(screen.getByText("95 無鉛汽油")).toBeInTheDocument();
+      expect(screen.getByText("一般使用者")).toBeInTheDocument();
+      expect(screen.getByText("管理員")).toBeInTheDocument();
+      expect(screen.getByText("油資參數（油價）")).toBeInTheDocument();
+      expect(screen.getByText("ETC 參數")).toBeInTheDocument();
+
+      // 負向：原始英文值不逐字出現（皆已被翻譯覆蓋，非缺表回退）
+      for (const raw of [
+        "TRAVEL",
+        "MAINTENANCE",
+        "GASOLINE_92",
+        "GASOLINE_95",
+        "USER",
+        "ADMIN",
+        "FUEL_PRICE",
+        "ETC",
+      ]) {
+        expect(screen.queryByText(raw)).not.toBeInTheDocument();
+      }
+    });
+
+    it("布林 true/false → 是/否（限定布林欄位）", () => {
+      const changes: AuditChangeDto[] = [
+        { field: "isActive", before: "true", after: "false" },
+        { field: "mustChangePassword", before: null, after: "true" },
+      ];
+
+      render(<AuditChangesList changes={changes} />);
+
+      expect(screen.getAllByText("是").length).toBeGreaterThanOrEqual(2); // isActive.before ＋ mustChangePassword.after
+      expect(screen.getAllByText("否").length).toBeGreaterThanOrEqual(1); // isActive.after
+      expect(screen.queryByText("true")).not.toBeInTheDocument();
+      expect(screen.queryByText("false")).not.toBeInTheDocument();
+    });
+
+    it("未知值與自由文字原樣顯示不崩（防誤譯：作廢原因逐字不被映射）", () => {
+      // T6 W-1 沿用：布林／枚舉映射僅限定於特定欄位；"reason" 非限定欄位，
+      // 即使值字面恰為 Role 枚舉值 "USER"，亦不得被誤譯為「一般使用者」。
+      const freeTextReason = "USER 帳號設定有誤，重新申請（合成資料）";
+      const changes: AuditChangeDto[] = [
+        { field: "type", before: null, after: "UNKNOWN_FUTURE_TYPE" },
+        { field: "reason", before: null, after: freeTextReason },
+      ];
+
+      expect(() => render(<AuditChangesList changes={changes} />)).not.toThrow();
+      expect(screen.getByText("UNKNOWN_FUTURE_TYPE")).toBeInTheDocument();
+      expect(screen.getByText(freeTextReason)).toBeInTheDocument();
+      expect(screen.queryByText("一般使用者")).not.toBeInTheDocument();
+    });
+
+    it("14 值覆蓋守門常數：刪任一值即紅", () => {
+      expect(REQUIRED_ENUM_VALUE_MAPPINGS).toHaveLength(14);
+
+      const changes: AuditChangeDto[] = REQUIRED_ENUM_VALUE_MAPPINGS.map(({ field, value }) => ({
+        field,
+        before: null,
+        after: value,
+      }));
+
+      render(<AuditChangesList changes={changes} />);
+
+      for (const { label } of REQUIRED_ENUM_VALUE_MAPPINGS) {
+        expect(screen.getAllByText(label).length).toBeGreaterThanOrEqual(1);
+      }
     });
   });
 });
