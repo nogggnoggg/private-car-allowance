@@ -1188,9 +1188,14 @@ describeWithDb("PHASE-007-R6 — 折舊參數選版 ＋ 每年折舊費用 ＋ c
 
     it("單一組裝點：routes.ts 之折舊三端點一律經 buildDepreciationApplicationDto，且不自行 import 計算／blocker 純函式", () => {
       const source = fs.readFileSync(ROUTES_SRC_PATH, "utf8");
-      // POST／GET／PUT／complete 四處呼叫（`await buildDepreciationApplicationDto(...)`）。
+      // POST／GET／PUT／complete／void／revision 六處呼叫
+      // （`await buildDepreciationApplicationDto(...)`）——`void` 一處為
+      // PHASE-009-T4 新增之作廢端點折舊分支，`revision` 一處為 PHASE-009-T7
+      // 新增之修正版端點折舊分支（機械連動：僅更新計數基線，鑑別性零弱化——
+      // 六處仍全部經同一單一組裝點，且下方「不得自行 import 純函式」之負向
+      // 斷言逐條不動）。
       const builderCalls = source.match(/await buildDepreciationApplicationDto\(/g) ?? [];
-      expect(builderCalls.length).toBe(4);
+      expect(builderCalls.length).toBe(6);
       // routes.ts 不得自行 import 金額／blocker／參數純函式（否則即出現第二個
       // 組裝點，`computed` 與 `completionBlockers` 可各自漂移）。
       const importBlock = source.slice(0, source.indexOf("export const applicationsPlugin"));

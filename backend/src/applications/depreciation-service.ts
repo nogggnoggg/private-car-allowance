@@ -59,6 +59,7 @@ import {
 import { type PrismaLike, sumOfficialMileage } from "../mileage/mileage-engine.js";
 import { AppError, type FieldError } from "../platform/errors.js";
 import { assertApplicationMutable, assertTransition } from "./application-state-machine.js";
+import { type VoidInfoDto, resolveVoidInfo } from "./application-void.js";
 import type { Blocker } from "./depreciation-blockers.js";
 import {
   computeDepreciationBlockers,
@@ -876,6 +877,8 @@ export interface DepreciationApplicationDto {
   completionBlockers: Blocker[] | null;
   computed: DepreciationComputedDto | null;
   snapshot: DepreciationSnapshotDto | null;
+  /** PHASE-009-T3（§7.2）：未作廢恆為 null。 */
+  void: VoidInfoDto | null;
 }
 
 function formatDate(value: Date): string {
@@ -970,7 +973,8 @@ export function toDepreciationApplicationDto(
   application: DepreciationApplicationRecord,
   attachments: AttachmentDto[] = [],
   duplicateYearNotice: { count: number; hasCompleted: boolean } | null = null,
-  computed: DepreciationComputedResult | null = null
+  computed: DepreciationComputedResult | null = null,
+  voidInfo: VoidInfoDto | null = null
 ): DepreciationApplicationDto {
   const depreciation = application.depreciation;
   const isDraft = application.status === "DRAFT";
@@ -1011,6 +1015,7 @@ export function toDepreciationApplicationDto(
     // 故此處為 `null`）。
     computed: computed?.dto ?? null,
     snapshot: buildSnapshotDto(application),
+    void: voidInfo,
   };
 }
 
@@ -1078,6 +1083,9 @@ export async function buildDepreciationApplicationDto(
     application.ownerId,
     applicationYear
   );
+  // PHASE-009-T3：作廢資訊之解析需查 DB（`voidedById` 無 FK）——本函式本就
+  // 是「查 DB 的那一層」，`toDepreciationApplicationDto` 保持純函式不變。
+  const voidInfo = await resolveVoidInfo(db, application);
   const computed =
     application.status === "DRAFT"
       ? await computeDepreciationComputedResult(db, {
@@ -1092,7 +1100,8 @@ export async function buildDepreciationApplicationDto(
     application,
     attachmentRows.map(toAttachmentDto),
     duplicateYearNotice,
-    computed
+    computed,
+    voidInfo
   );
 }
 

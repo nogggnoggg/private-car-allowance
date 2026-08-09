@@ -39,6 +39,22 @@
  *        產生但非固定字面集合，移除有鑑別力）。
  *     `PRINT_HINT_TEXT`（`.print-hint`）不計入——其為硬編碼 UI 常數，非
  *     `ReportData` 之資料插值。
+ *     【PHASE-009-T11 追記】作廢標示區塊（`renderVoidBanner`）之三項資訊
+ *     （`common.void.reason`／`byDisplayName`／`at`）**全部**經 `field()`
+ *     ——即同一個 `escapeHtml`——輸出，未另開插值路徑；其中 `reason` 與
+ *     `byDisplayName` 為開放值（使用者原文，`report-data.ts` 刻意不跳脫，
+ *     本檔為唯一防線，移除即可鑑別），`at` 經 `formatTaipeiDateTime` 後為
+ *     定格式字串（閉集，移除跳脫無鑑別力）。`VOID_BANNER_TEXT`（`已作廢`）
+ *     同 `PRINT_HINT_TEXT` 為硬編碼 UI 常數，不計入。
+ *
+ * ---------------------------------------------------------------------------
+ * PHASE-009 AC-20：列印版之作廢標示（`.void-banner`）
+ * ---------------------------------------------------------------------------
+ * 已作廢申請（`common.void !== null`）於 `.print-hint` 之後、
+ * `renderCommonHeader` 之**前**（文件首屏）渲染 `.void-banner avoid-break`
+ * 專屬區塊，內含逐字 `已作廢` ＋ 作廢原因／作廢操作者／作廢時間三項；未作廢
+ * 者（`void === null`）**零**該區塊、全篇零 `已作廢` 字樣。詳見
+ * {@link renderVoidBanner}。
  *
  * ---------------------------------------------------------------------------
  * FW-1（T4 移交，本檔延續）：輸出零 storageKey／attachmentId 值、零 `rpt/`／
@@ -95,6 +111,7 @@ import type {
   ReportCommon,
   ReportData,
   ReportImage,
+  ReportVoidInfo,
   TravelReportBody,
   TravelSegmentReport,
 } from "./report-data.js";
@@ -148,6 +165,35 @@ function renderImages(images: ReportImage[], emptyLabel: string): string {
     return `<p class="image-empty">${emptyLabel}</p>`;
   }
   return images.map(renderImage).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// 作廢標示（PHASE-009 AC-20）
+// ---------------------------------------------------------------------------
+
+/** AC-20(a) 之逐字標示字串（專屬區塊內；未作廢文件全篇零此字樣）。 */
+const VOID_BANNER_TEXT = "已作廢";
+
+/**
+ * 已作廢申請之首屏作廢標示（AC-20）。
+ *
+ * (a) 專屬區塊 `.void-banner`，由 {@link renderReportHtml} 置於
+ *     {@link renderCommonHeader} 之前（文件首屏）。
+ * (b) 三項資訊沿既有 {@link field} 呈現；`at` 為 ISO8601（T10 FW-1），直傳
+ *     {@link formatTaipeiDateTime}——`report-labels.ts` 為**唯一**時間格式化
+ *     來源，本檔不新增第二個格式化函式（FW-6 紀律不變）。
+ * (d) `reason`／`byDisplayName` 為使用者原文（`report-data.ts` 刻意不跳脫），
+ *     {@link field} 之 {@link escapeHtml} 為唯一防線——不另開插值路徑。
+ * (f) 掛 `avoid-break`（沿既有 `break-inside: avoid` 規則），且 `.void-banner`
+ *     之樣式不進 `@media print`，故列印媒體與 PDF 皆可見。
+ */
+function renderVoidBanner(info: ReportVoidInfo): string {
+  return `<section class="void-banner avoid-break">
+<p class="void-banner-title">${VOID_BANNER_TEXT}</p>
+${field("作廢原因", info.reason)}
+${field("作廢操作者", info.byDisplayName)}
+${field("作廢時間", formatTaipeiDateTime(info.at))}
+</section>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +355,17 @@ h2 { font-size: 16px; margin-top: 20px; }
 }
 @page { size: A4; margin: 16mm; }`;
 
+/**
+ * AC-20 之作廢標示樣式；**僅**於 `common.void !== null` 時附加於 {@link STYLE}
+ * 之後——AC-20(c) 要求未作廢之列印版**零** `.void-banner`，恆常輸出樣式規則
+ * 會使該字串仍出現於 `<style>` 內而不成立。
+ * 刻意**不**置於 `@media print` 內（AC-20(f)：列印媒體與 PDF 皆須可見）；
+ * 分頁保護沿既有 `.avoid-break { break-inside: avoid; }`（不另立規則）。
+ */
+const VOID_STYLE = `
+.void-banner { border: 2px solid #b91c1c; background: #fee2e2; color: #7f1d1d; padding: 12px 16px; margin-bottom: 16px; }
+.void-banner-title { font-size: 20px; font-weight: 700; letter-spacing: 2px; margin: 0 0 8px; }`;
+
 // ---------------------------------------------------------------------------
 // 入口（§7.4：與 PDF 同一版型契約——唯一模板、唯一函式）
 // ---------------------------------------------------------------------------
@@ -334,11 +391,11 @@ export function renderReportHtml(data: ReportData): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(data.common.typeLabel)}報表${titleSuffix}</title>
-<style>${STYLE}</style>
+<style>${STYLE}${data.common.void ? VOID_STYLE : ""}</style>
 </head>
 <body>
 <p class="print-hint">${escapeHtml(PRINT_HINT_TEXT)}</p>
-${renderCommonHeader(data.common)}
+${data.common.void ? `${renderVoidBanner(data.common.void)}\n` : ""}${renderCommonHeader(data.common)}
 ${bodyHtml}
 </body>
 </html>`;

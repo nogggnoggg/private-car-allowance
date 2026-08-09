@@ -173,20 +173,29 @@ export function assertContainerMutable(containerState: ContainerState): void {
  * authoritative replacement for the PHASE-003-era pattern of trusting a
  * client-supplied `containerState` query/body parameter.
  *
- * Rules (Spec §9):
+ * Rules (Spec §9；PHASE-009-T4b 更正——見下方「VOIDED」段):
  *   attachment.status = TEMP                     → 'draft' (no container yet)
  *   refType = TRIP_SEGMENT → TripSegment → TravelApplication → Application.status
- *        COMPLETED → 'completed'
- *        DRAFT     → 'draft'
+ *        非 DRAFT（COMPLETED／VOIDED） → 'completed'
+ *        DRAFT                        → 'draft'
  *   refType = MAINTENANCE → Application.status（PHASE-006-T6：子表已存在，
  *        `MaintenanceApplication.applicationId` ＝ `Application.id`，故
  *        `refId` 直接就是要查的 `Application.id`，一次 `findUnique` 即可）
- *        COMPLETED → 'completed'；否則（DRAFT／不存在）→ 'draft'
+ *        非 DRAFT（COMPLETED／VOIDED） → 'completed'；DRAFT／不存在 → 'draft'
  *   refType = DEPRECIATION → Application.status（PHASE-007-T8：子表已存在，
  *        `DepreciationApplication.applicationId` ＝ `Application.id`，故
  *        `refId` 直接就是要查的 `Application.id`，一次 `findUnique` 即可）
- *        COMPLETED → 'completed'；否則（DRAFT／不存在）→ 'draft'
+ *        非 DRAFT（COMPLETED／VOIDED） → 'completed'；DRAFT／不存在 → 'draft'
  *   refId 指向已不存在的 TripSegment／Application（孤兒）→ 'draft'（記錄 log；不得 500）
+ *
+ * VOIDED（PHASE-009-T4b，AC-08(b)）：三個 refType 分支原以
+ * `status === "COMPLETED" ? "completed" : "draft"` 判定，`VOIDED` 誤落
+ * `draft`（解鎖）致 `DELETE /attachments/:id` 對已作廢申請之附件仍會成功
+ * （現況實紅之缺陷，T3 依 Stop Conditions 據實不修，見該 Handoff）。修法改
+ * 為 `status !== "DRAFT" ? "completed" : "draft"`——「非草稿即鎖定」。
+ * `ContainerState` 型別**不**擴充第三個值（唯一呼叫端 `assertContainerMutable`
+ * 只判斷「是否等於 'completed'」，COMPLETED／VOIDED 鎖定語意完全相同，無需
+ * 擴張回傳型別或呼叫端契約——'completed' 在此代表兩者之一）。
  *
  * The ONLY caller in this Phase is `routes.ts`'s `DELETE /attachments/:id` —
  * it no longer reads any client-supplied containerState at all (AC-27b).
@@ -226,7 +235,8 @@ export async function deriveContainerState(
       );
       return "draft";
     }
-    return segment.travel.application.status === "COMPLETED" ? "completed" : "draft";
+    // PHASE-009-T4b（AC-08(b)）：非 DRAFT 皆鎖定——見上方 JSDoc「VOIDED」段。
+    return segment.travel.application.status !== "DRAFT" ? "completed" : "draft";
   }
 
   if (attachment.refType === "MAINTENANCE" && attachment.refId) {
@@ -252,7 +262,8 @@ export async function deriveContainerState(
       );
       return "draft";
     }
-    return application.status === "COMPLETED" ? "completed" : "draft";
+    // PHASE-009-T4b（AC-08(b)）：非 DRAFT 皆鎖定——見上方 JSDoc「VOIDED」段。
+    return application.status !== "DRAFT" ? "completed" : "draft";
   }
 
   if (attachment.refType === "DEPRECIATION" && attachment.refId) {
@@ -285,7 +296,8 @@ export async function deriveContainerState(
       );
       return "draft";
     }
-    return application.status === "COMPLETED" ? "completed" : "draft";
+    // PHASE-009-T4b（AC-08(b)）：非 DRAFT 皆鎖定——見上方 JSDoc「VOIDED」段。
+    return application.status !== "DRAFT" ? "completed" : "draft";
   }
 
   // No recognised refType/refId combination (e.g. LINKED with a null refId —

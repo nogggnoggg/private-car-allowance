@@ -29,6 +29,35 @@
  *   test.ts` 僅驗證純函式輸出，本檔驗證經 HTTP 層之真實回應）。
  *
  * ---------------------------------------------------------------------------
+ * PHASE-009-T13 增補（Spec `docs/specs/PHASE-009.md`）
+ * ---------------------------------------------------------------------------
+ * AC-22（:211，依 §16 **D5**）：`GET /applications/:id/report/print` 之狀態守
+ *   門由 `status === "COMPLETED"` 改為 **`status ∈ {COMPLETED, VOIDED}`**；草
+ *   稿仍 409 `CONFLICT` ＋ `details.status="DRAFT"`（§D 既有斷言**零弱化**）；
+ *   已作廢之列印版含 AC-20 之全部作廢標示；授權矩陣（他人 403、未登入 401、
+ *   強制改密 403）於 `VOIDED` 狀態逐格重驗。**全部落於 §K**。
+ *
+ * §K 之設計取捨（誠實揭露）
+ *   · 作廢一律經**真實作廢端點**（`POST /applications/:id/void`），非
+ *     `prisma.application.update` 直寫——與 AC-16／AC-17 之「真實流程」紀律
+ *     同型；作廢資訊（原因／操作者／時間）因而是真實寫入路徑之產物。
+ *   · 作廢動作一律置於 `it` 之內（非 `describe` 之 `beforeAll`）：`renderPdf`
+ *     之合成替身由 `beforeEach` 套用，而 vitest 之 `beforeAll` 早於首則測試之
+ *     `beforeEach`——已產生報表之申請作廢時會走 T12a 之作廢版 PDF 渲染
+ *     （AC-21(a)），置於 `beforeAll` 將啟動真實 Chromium。
+ *   · 標示斷言採**區塊內**比對（`extractVoidBanner` 擷取 `.void-banner` 後再
+ *     `toContain`）——T11 W-4 紀律：`statusLabel` 亦含「已作廢」，全文
+ *     `toContain` 會假陽性。
+ *   · §K5 之 XSS 探針為 **HTTP body 層**（T11 即審 FW 之 wire 面銷帳）：
+ *     `report-html.test.ts` 之 AC-20(d) 僅驗純函式輸出，本區塊驗證使用者原文
+ *     經真實作廢端點入庫後、由真實 HTTP 回應吐出時之跳脫在場（並確認
+ *     `Content-Type` 之 `charset=utf-8` 在場——缺 charset 有 sniffing 風險）。
+ *   · §K6 之結構斷言釘住**白名單字面**（`COMPLETED` ∪ `VOIDED`）：`Application
+ *     Status` 現僅三值，故「`!== "DRAFT"` 之黑名單」在**今日**與白名單行為等
+ *     價、無測試可鑑別；釘字面即為對「未來新增狀態被誤放行」之守門（Packet
+ *     Mutant ① 之構造）。
+ *
+ * ---------------------------------------------------------------------------
  * 上游必引義務核銷（Packet 逐條）
  * ---------------------------------------------------------------------------
  * 1. T5 複審 FW-A（綁定義務）：§F 之 wire 斷言為「列印端點」與「產生時所用
@@ -96,6 +125,9 @@ vi.mock("../../src/reports/pdf-renderer.js", async (importOriginal) => {
 
 import { renderPdf } from "../../src/reports/pdf-renderer.js";
 import { renderReportHtml } from "../../src/reports/report-html.js";
+// T13／§K：作廢時間之期望值沿 `report-labels.ts` 之**唯一**格式化來源
+// （FW-6 紀律：不在測試側另寫第二個台北時區格式化實作）。
+import { formatTaipeiDateTime } from "../../src/reports/report-labels.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -146,6 +178,31 @@ async function loginUser(
 }
 
 const ERROR_KEY_SET = ["code", "message", "requestId"].sort();
+
+// ── T13／§K 之共用輔助（AC-22）─────────────────────────────────────────────
+
+/**
+ * 擷取 `.void-banner` 區塊內容（不含外層標籤）；不存在時回 `null`。
+ *
+ * T11 W-4 紀律：`statusLabel` 於已作廢申請亦為「已作廢」，故標示斷言一律先
+ * 擷取專屬區塊再比對，避免全文 `toContain("已作廢")` 之假陽性。手法沿
+ * `test/unit/report-html.test.ts` 之同名輔助（唯讀參考，逐字同一 regex）。
+ */
+function extractVoidBanner(html: string): string | null {
+  const match = html.match(/<section class="void-banner avoid-break">([\s\S]*?)<\/section>/);
+  return match ? match[1] : null;
+}
+
+/**
+ * 錯誤回應指紋（`requestId` 遮蔽後之狀態碼 ＋ 全 body）——沿
+ * `phase9-contract.test.ts` §J 之三態全等手法（T4）。用於 §K 之「他人對
+ * VOIDED 與對 COMPLETED 之 403 逐字相同」比對。
+ */
+function errorFingerprint(resp: { statusCode: number; body: string }): string {
+  const parsed = JSON.parse(resp.body) as { error?: { requestId?: string } };
+  if (parsed.error) parsed.error.requestId = "<redacted>";
+  return `${resp.statusCode}|${JSON.stringify(parsed)}`;
+}
 
 describeWithDb(
   "PHASE-008-T10 — GET /applications/:id/report/print ＋ 授權矩陣（產生／列印兩列）＋ AC-25",
@@ -238,6 +295,34 @@ describeWithDb(
       return { statusCode: resp.statusCode, body: JSON.parse(resp.body) };
     }
 
+    /**
+     * T13／AC-22：經**真實作廢端點**作廢（非 `prisma.application.update` 直
+     * 寫），回傳持久化之 `{ voidedAt }` 供時間格式斷言使用。
+     */
+    async function voidViaHttp(
+      id: string,
+      cookie: string,
+      reason: string
+    ): Promise<{ voidedAt: Date }> {
+      const resp = await app.inject({
+        method: "POST",
+        url: `/applications/${id}/void`,
+        headers: { cookie },
+        payload: { reason },
+      });
+      if (resp.statusCode !== 200) {
+        throw new Error(`Void failed for ${id}: ${resp.statusCode} ${resp.body}`);
+      }
+      const row = await prisma.application.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, voidedAt: true },
+      });
+      if (row.status !== "VOIDED" || row.voidedAt === null) {
+        throw new Error(`Void did not persist for ${id}: ${row.status}`);
+      }
+      return { voidedAt: row.voidedAt };
+    }
+
     beforeAll(async () => {
       if (!DB_URL) return;
       prisma = new PrismaClient({ datasources: { db: { url: DB_URL } } });
@@ -312,9 +397,25 @@ describeWithDb(
       if (!prisma) return;
       await app.close();
       await prisma.attachment.deleteMany({ where: { uploaderId: { in: createdUserIds } } });
+      // T13：§K 之作廢流程會經 T12a 產生 `VoidedReportFile`（FK `onDelete:
+      // Restrict`），故須先於 `Report` 刪除（沿 `phase9-contract.test.ts` 之既
+      // 有清理形狀）。
+      const reportsToClean = await prisma.report.findMany({
+        where: { applicationId: { in: createdApplicationIds } },
+        select: { id: true },
+      });
+      if (reportsToClean.length > 0) {
+        await prisma.voidedReportFile.deleteMany({
+          where: { reportId: { in: reportsToClean.map((r) => r.id) } },
+        });
+      }
       await prisma.report.deleteMany({ where: { applicationId: { in: createdApplicationIds } } });
       await prisma.application.deleteMany({ where: { id: { in: createdApplicationIds } } });
       if (createdUserIds.length > 0) {
+        // T13：§K 之真實作廢端點於同交易寫入 `APPLICATION_VOIDED` 稽核列
+        // （AC-24），其 `actorId`／`targetId` 指向本檔自建使用者。
+        await prisma.auditLog.deleteMany({ where: { actorId: { in: createdUserIds } } });
+        await prisma.auditLog.deleteMany({ where: { targetId: { in: createdUserIds } } });
         await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
         await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
       }
@@ -926,7 +1027,7 @@ describeWithDb(
     // -------------------------------------------------------------------------
 
     describe("§J 結構性守門：授權判定早於狀態判定（產生／列印兩端點；順序對調 mutant 必紅）", () => {
-      it("routes.ts：兩端點皆先 assertOwnershipOrAdmin 後 status !== COMPLETED 檢查", () => {
+      it("routes.ts：兩端點皆先 assertOwnershipOrAdmin 後狀態守門檢查", () => {
         const routesSrcPath = new URL("../../src/reports/routes.ts", import.meta.url);
         const src = fs.readFileSync(routesSrcPath, "utf8");
 
@@ -939,16 +1040,347 @@ describeWithDb(
         const postSection = src.slice(postHandlerStart, printHandlerStart);
         const printSection = src.slice(printHandlerStart);
 
-        for (const [label, section] of [
-          ["產生端點", postSection],
-          ["列印端點", printSection],
+        // T13／AC-22：列印端點之狀態守門字面自 `COMPLETED` 單值改為
+        // `COMPLETED ∪ VOIDED` 白名單（§16 D5）——本測試之定位字串隨之更新，
+        // **結構斷言語意（授權早於狀態）逐字維持**（T12b 即審 FW-3 之字面連
+        // 動）。產生端點之字面不變（草稿與已作廢皆 409，B-27／D13）。
+        for (const [label, section, statusLiteral] of [
+          ["產生端點", postSection, 'application.status !== "COMPLETED"'],
+          [
+            "列印端點",
+            printSection,
+            'application.status !== "COMPLETED" && application.status !== "VOIDED"',
+          ],
         ] as const) {
           const ownershipIdx = section.indexOf("assertOwnershipOrAdmin(");
-          const statusIdx = section.indexOf('application.status !== "COMPLETED"');
+          const statusIdx = section.indexOf(statusLiteral);
           expect(ownershipIdx, `${label}: assertOwnershipOrAdmin 未找到`).toBeGreaterThan(-1);
           expect(statusIdx, `${label}: 狀態檢查未找到`).toBeGreaterThan(-1);
           expect(ownershipIdx, `${label}: 授權判定須早於狀態判定`).toBeLessThan(statusIdx);
         }
+      });
+    });
+
+    // -------------------------------------------------------------------------
+    // §K PHASE-009-T13／AC-22（§16 D5）：列印端點對已作廢申請放行
+    //
+    // 「`status ∈ {COMPLETED, VOIDED}` → 放行；`DRAFT` → 409」＋ 已作廢之列
+    // 印版含 AC-20 全部作廢標示 ＋ 授權五格於 `VOIDED` 逐格重驗 ＋ HTTP body
+    // 層 XSS 探針。作廢一律經真實作廢端點，且一律置於 `it` 之內（見檔頭
+    // 「§K 之設計取捨」）。
+    // -------------------------------------------------------------------------
+
+    describe("§K AC-22（D5）：列印端點對已作廢申請放行 ＋ VOIDED 之授權矩陣重驗", () => {
+      const OWNER_DISPLAY = "P8T10 擁有人";
+
+      // -----------------------------------------------------------------------
+      // §K1 放行與標示
+      // -----------------------------------------------------------------------
+
+      it("§K1-a 已作廢（且已產生報表）→ 200 text/html，.void-banner 區塊內含 已作廢／原因／操作者／時間", async () => {
+        const id = await createTravelApp(ownerId, "ac22-voided-with-report", 314);
+        const gen = await generateReportViaHttp(id, ownerCookie);
+        expect(gen.statusCode).toBe(201);
+        const reason = "T13 作廢原因-重複申報314";
+        const { voidedAt } = await voidViaHttp(id, ownerCookie, reason);
+
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/print`,
+          headers: { cookie: ownerCookie },
+        });
+        expect(resp.statusCode, resp.body.slice(0, 300)).toBe(200);
+        expect(resp.headers["content-type"]).toBe("text/html; charset=utf-8");
+
+        // T11 W-4：區塊內比對（`statusLabel` 亦為「已作廢」，全文 toContain
+        // 會假陽性）。
+        const banner = extractVoidBanner(resp.body);
+        expect(banner).not.toBeNull();
+        expect(banner).toContain("已作廢");
+        expect(banner).toContain(
+          `<span class="field-label">作廢原因</span><span class="field-value">${reason}</span>`
+        );
+        expect(banner).toContain(
+          `<span class="field-label">作廢操作者</span><span class="field-value">${OWNER_DISPLAY}</span>`
+        );
+        expect(banner).toContain(
+          `<span class="field-label">作廢時間</span><span class="field-value">${formatTaipeiDateTime(
+            voidedAt.toISOString()
+          )}</span>`
+        );
+        // AC-20(b)：唯一格式化來源——原始 ISO 字面不在場。
+        expect(resp.body).not.toContain(voidedAt.toISOString());
+        // 作廢不改變報表編號（列印版仍呈現原編號）。
+        expect(resp.body).toContain(gen.body.report.reportNumber as string);
+      });
+
+      it("§K1-b 已作廢但**未產生報表**（AC-21(e) 純 DB 作廢）→ 仍 200，含作廢標示且報表編號呈「尚未產生」", async () => {
+        const id = await createTravelApp(ownerId, "ac22-voided-no-report", 315);
+        const reason = "T13 作廢原因-未產生報表315";
+        await voidViaHttp(id, ownerCookie, reason);
+
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/print`,
+          headers: { cookie: ownerCookie },
+        });
+        expect(resp.statusCode, resp.body.slice(0, 300)).toBe(200);
+        const banner = extractVoidBanner(resp.body);
+        expect(banner).not.toBeNull();
+        expect(banner).toContain("已作廢");
+        expect(banner).toContain(
+          `<span class="field-label">作廢原因</span><span class="field-value">${reason}</span>`
+        );
+        expect(resp.body).toContain("尚未產生");
+      });
+
+      it("§K1-c 負向對照：同型**未作廢**（COMPLETED）申請之列印版零 .void-banner、零「已作廢」字樣", async () => {
+        const id = await createTravelApp(ownerId, "ac22-not-voided-control", 316);
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/print`,
+          headers: { cookie: ownerCookie },
+        });
+        expect(resp.statusCode).toBe(200);
+        expect(extractVoidBanner(resp.body)).toBeNull();
+        expect(resp.body).not.toContain("void-banner");
+        expect(resp.body).not.toContain("已作廢");
+      });
+
+      it("§K1-d 草稿仍 409 CONFLICT + details.status='DRAFT'（放行 VOIDED 後之複核；§D 既有斷言零弱化）", async () => {
+        const id = await createDraftTravelApp(ownerId);
+        const resp = await app.inject({
+          method: "GET",
+          url: `/applications/${id}/report/print`,
+          headers: { cookie: ownerCookie },
+        });
+        expect(resp.statusCode).toBe(409);
+        expect(resp.headers["content-type"]).not.toMatch(/text\/html/);
+        const body = JSON.parse(resp.body);
+        expect(body.error.code).toBe("CONFLICT");
+        expect(body.error.details).toEqual({ status: "DRAFT" });
+        expect(resp.body).not.toContain("已作廢");
+      });
+
+      // -----------------------------------------------------------------------
+      // §K2 授權五格於 `VOIDED` 逐格重驗（AC-22 末句）
+      //
+      // fixture 為 lazily-created（首則測試建立、其餘重用）——作廢必須在 `it`
+      // 之內執行，見檔頭「§K 之設計取捨」。
+      // -----------------------------------------------------------------------
+
+      describe("§K2 授權五格於 VOIDED 逐格重驗", () => {
+        let fixture: { id: string; reportNumber: string; reason: string } | null = null;
+        let completedControlId: string | null = null;
+
+        async function ensureVoidedFixture(): Promise<{
+          id: string;
+          reportNumber: string;
+          reason: string;
+        }> {
+          if (fixture) return fixture;
+          const id = await createTravelApp(ownerId, "ac22-authz-voided", 486);
+          const gen = await generateReportViaHttp(id, ownerCookie);
+          expect(gen.statusCode).toBe(201);
+          const reason = "T13 授權矩陣作廢原因486";
+          await voidViaHttp(id, ownerCookie, reason);
+          fixture = { id, reportNumber: gen.body.report.reportNumber as string, reason };
+          return fixture;
+        }
+
+        async function ensureCompletedControl(): Promise<string> {
+          if (completedControlId) return completedControlId;
+          completedControlId = await createTravelApp(ownerId, "ac22-authz-completed-control", 486);
+          return completedControlId;
+        }
+
+        it("格1 未登入 → 401 UNAUTHORIZED，鍵集恰 {code,message,requestId}，零洩漏（含作廢原因），非 text/html", async () => {
+          const f = await ensureVoidedFixture();
+          const resp = await app.inject({
+            method: "GET",
+            url: `/applications/${f.id}/report/print`,
+          });
+          expect(resp.statusCode).toBe(401);
+          expect(resp.headers["content-type"]).not.toMatch(/text\/html/);
+          const body = JSON.parse(resp.body);
+          expect(body.error.code).toBe("UNAUTHORIZED");
+          expect(Object.keys(body.error).sort()).toEqual(ERROR_KEY_SET);
+          expect(resp.body).not.toContain(f.reportNumber);
+          expect(resp.body).not.toContain(f.reason);
+          expect(resp.body).not.toContain("486");
+          expect(resp.body).not.toContain(OWNER_DISPLAY);
+          expect(resp.body).not.toContain("已作廢");
+        });
+
+        it("格2 需強制改密 → 403 PASSWORD_CHANGE_REQUIRED，鍵集，零洩漏（含作廢原因）", async () => {
+          const f = await ensureVoidedFixture();
+          const resp = await app.inject({
+            method: "GET",
+            url: `/applications/${f.id}/report/print`,
+            headers: { cookie: mustChangeCookie },
+          });
+          expect(resp.statusCode).toBe(403);
+          expect(resp.headers["content-type"]).not.toMatch(/text\/html/);
+          const body = JSON.parse(resp.body);
+          expect(body.error.code).toBe("PASSWORD_CHANGE_REQUIRED");
+          expect(Object.keys(body.error).sort()).toEqual(ERROR_KEY_SET);
+          expect(resp.body).not.toContain(f.reportNumber);
+          expect(resp.body).not.toContain(f.reason);
+          expect(resp.body).not.toContain("486");
+          expect(resp.body).not.toContain(OWNER_DISPLAY);
+          expect(resp.body).not.toContain("已作廢");
+        });
+
+        it("格3 本人（擁有人）→ 200 text/html，含報表編號、擁有人姓名與作廢標示", async () => {
+          const f = await ensureVoidedFixture();
+          const resp = await app.inject({
+            method: "GET",
+            url: `/applications/${f.id}/report/print`,
+            headers: { cookie: ownerCookie },
+          });
+          expect(resp.statusCode, resp.body.slice(0, 300)).toBe(200);
+          expect(resp.headers["content-type"]).toBe("text/html; charset=utf-8");
+          expect(resp.body).toContain(f.reportNumber);
+          expect(resp.body).toContain(OWNER_DISPLAY);
+          expect(extractVoidBanner(resp.body)).toContain("已作廢");
+        });
+
+        it("格4 他人（一般使用者）→ 403 FORBIDDEN，鍵集，零洩漏，且與**同一身分對 COMPLETED** 之回應指紋逐字相同（不因作廢而洩漏狀態）", async () => {
+          const f = await ensureVoidedFixture();
+          const controlId = await ensureCompletedControl();
+
+          const voidedResp = await app.inject({
+            method: "GET",
+            url: `/applications/${f.id}/report/print`,
+            headers: { cookie: strangerCookie },
+          });
+          const completedResp = await app.inject({
+            method: "GET",
+            url: `/applications/${controlId}/report/print`,
+            headers: { cookie: strangerCookie },
+          });
+
+          expect(voidedResp.statusCode).toBe(403);
+          expect(voidedResp.headers["content-type"]).not.toMatch(/text\/html/);
+          const body = JSON.parse(voidedResp.body);
+          expect(body.error.code).toBe("FORBIDDEN");
+          expect(Object.keys(body.error).sort()).toEqual(ERROR_KEY_SET);
+          expect(voidedResp.body).not.toContain(f.reportNumber);
+          expect(voidedResp.body).not.toContain(f.reason);
+          expect(voidedResp.body).not.toContain("486");
+          expect(voidedResp.body).not.toContain(OWNER_DISPLAY);
+          expect(voidedResp.body).not.toContain("已作廢");
+
+          // 側信道：VOIDED 與 COMPLETED 之他人回應逐字相同（授權早於狀態）。
+          expect(errorFingerprint(voidedResp)).toBe(errorFingerprint(completedResp));
+        });
+
+        it("格5 管理員 → 200 text/html，含作廢標示（可見面不擴張，與擁有人視角同一份列印版）", async () => {
+          const f = await ensureVoidedFixture();
+          const adminResp = await app.inject({
+            method: "GET",
+            url: `/applications/${f.id}/report/print`,
+            headers: { cookie: adminCookie },
+          });
+          const ownerResp = await app.inject({
+            method: "GET",
+            url: `/applications/${f.id}/report/print`,
+            headers: { cookie: ownerCookie },
+          });
+          expect(adminResp.statusCode, adminResp.body.slice(0, 300)).toBe(200);
+          expect(adminResp.headers["content-type"]).toBe("text/html; charset=utf-8");
+          expect(adminResp.body).toContain(f.reportNumber);
+          expect(extractVoidBanner(adminResp.body)).toContain("已作廢");
+          // 可見面不擴張：管理員所見與擁有人所見之 HTML 逐字相同。
+          expect(adminResp.body).toBe(ownerResp.body);
+        });
+      });
+
+      // -----------------------------------------------------------------------
+      // §K3 HTTP body 層之 XSS wire 探針（T11 即審 FW 銷帳）＋ Content-Type
+      // charset 在場
+      //
+      // 期望值一律**硬編碼**（沿 T11R 即審 S-1 紀律：不由被測之 `escapeHtml`
+      // 現場算出，否則跳脫弱化之 mutant 會自我抵銷）。
+      // -----------------------------------------------------------------------
+
+      describe("§K3 XSS wire 探針（HTTP body 層）＋ Content-Type charset", () => {
+        const XSS_CASES: { label: string; payload: string; escaped: string }[] = [
+          {
+            label: "script 標籤",
+            payload: "<script>alert('T13-XSS')</script>",
+            escaped: "&lt;script&gt;alert(&#39;T13-XSS&#39;)&lt;/script&gt;",
+          },
+          {
+            label: "屬性突破",
+            payload: '"><img src=x onerror="alert(1)">',
+            escaped: "&quot;&gt;&lt;img src=x onerror=&quot;alert(1)&quot;&gt;",
+          },
+          {
+            label: "實體與單引號混合",
+            payload: "&amp;'T13' <b>bold</b>",
+            escaped: "&amp;amp;&#39;T13&#39; &lt;b&gt;bold&lt;/b&gt;",
+          },
+        ];
+
+        for (const [idx, testCase] of XSS_CASES.entries()) {
+          it(`${testCase.label}：作廢原因原樣入庫，列印回應之 body 為跳脫後字面，原文不在場`, async () => {
+            const id = await createTravelApp(ownerId, `ac22-xss-${idx}`, 500 + idx);
+            await voidViaHttp(id, ownerCookie, testCase.payload);
+
+            // 入庫為原文（驗證與跳脫之分工：`void-reason.ts` 不跳脫）。
+            const row = await prisma.application.findUniqueOrThrow({
+              where: { id },
+              select: { voidReason: true },
+            });
+            expect(row.voidReason).toBe(testCase.payload);
+
+            const resp = await app.inject({
+              method: "GET",
+              url: `/applications/${id}/report/print`,
+              headers: { cookie: ownerCookie },
+            });
+            expect(resp.statusCode, resp.body.slice(0, 300)).toBe(200);
+            // charset 在場（缺 charset 有 MIME sniffing 風險）。
+            expect(resp.headers["content-type"]).toBe("text/html; charset=utf-8");
+
+            const banner = extractVoidBanner(resp.body);
+            expect(banner).not.toBeNull();
+            expect(banner).toContain(
+              `<span class="field-label">作廢原因</span><span class="field-value">${testCase.escaped}</span>`
+            );
+            // 原文（未跳脫）不在整份 HTTP body 之任何一處。
+            expect(resp.body).not.toContain(testCase.payload);
+            // 可執行之標籤起始序列一律不在場。**不**掃描 `onerror=` 等屬性名
+            // ——跳脫後之 `&lt;img src=x onerror=&quot;…` 仍逐字含該片段，但已
+            // 是純文字（無標籤起始），掃描它只會製造假陽性（實測攔截）。
+            expect(resp.body).not.toContain("<script");
+            expect(resp.body).not.toContain("<img src=x");
+            expect(resp.body).not.toContain("<b>");
+          });
+        }
+      });
+
+      // -----------------------------------------------------------------------
+      // §K4 結構性守門：列印端點之狀態守門為**白名單**字面（Mutant ①）
+      //
+      // `ApplicationStatus` 現僅三值（DRAFT／COMPLETED／VOIDED），故
+      // 「`!== "DRAFT"` 之黑名單」在今日與白名單**行為等價**，無任何行為測試
+      // 可鑑別（誠實揭露）。本格以原始碼字面釘住白名單形式，作為「未來新增狀
+      // 態被誤放行」之唯一守門。
+      // -----------------------------------------------------------------------
+
+      it("§K4 routes.ts 列印端點：狀態守門為 COMPLETED ∪ VOIDED 白名單字面，且零 DRAFT 黑名單字面", () => {
+        const routesSrcPath = new URL("../../src/reports/routes.ts", import.meta.url);
+        const src = fs.readFileSync(routesSrcPath, "utf8");
+        const printHandlerStart = src.indexOf('"/applications/:id/report/print",');
+        expect(printHandlerStart).toBeGreaterThan(-1);
+        const printSection = src.slice(printHandlerStart);
+
+        expect(printSection).toContain(
+          'application.status !== "COMPLETED" && application.status !== "VOIDED"'
+        );
+        expect(printSection).not.toMatch(/application\.status\s*[!=]==?\s*"DRAFT"/);
       });
     });
   }

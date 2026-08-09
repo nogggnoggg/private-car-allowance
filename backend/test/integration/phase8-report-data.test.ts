@@ -191,6 +191,9 @@ describe("PHASE-008-T4 — report-data.ts 結構性掃描（AC-17(c)：金額路
 // AC-27：三型 body 之封閉鍵集（供多處測試複用）
 // ---------------------------------------------------------------------------
 
+// PHASE-009-T10 機械連動（§8.5 第四類，§15 T10「機械連動預授權」明文）：
+// `ReportCommon` 依 AC-19 受控擴充一鍵 `void`（七鍵 → 八鍵）。此處僅重錨定基
+// 線鍵集，鑑別性（`toEqual` 全等、多一鍵必紅）零弱化；三型 body 鍵集逐字不變。
 const COMMON_KEYS = [
   "reportNumber",
   "generatedAt",
@@ -199,6 +202,7 @@ const COMMON_KEYS = [
   "statusLabel",
   "createdAt",
   "totalAmount",
+  "void",
 ].sort();
 
 const TRAVEL_KEYS = [

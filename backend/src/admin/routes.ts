@@ -63,6 +63,7 @@ import {
   parseMaintenanceFieldsInput,
   parsePurposeField,
   parseTripDateField,
+  withRevisionLinks,
 } from "../applications/routes.js";
 import type { OnTravelDraftCreated } from "../applications/travel-service.js";
 import { createTravelDraft, toTravelApplicationDto } from "../applications/travel-service.js";
@@ -528,8 +529,11 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
         onCreated
       );
 
+      // PHASE-009-T7b（W-3）：AC-12(b) 之版本關聯投影須套用於**每一個**回傳
+      // 詳情 DTO 之端點——代建之新草稿兩鍵恆為 `null`，但鍵必須在場，否則同一
+      // 份 DTO 會因端點而異形（前端型別分歧）。
       const dto = await toTravelApplicationDto(prisma, application);
-      return reply.status(201).send({ application: dto });
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -615,8 +619,9 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       };
 
       const application = await createMaintenanceDraft(prisma, createInput, onCreated);
+      // PHASE-009-T7b（W-3）：見差旅代建端點同位置之說明。
       const dto = await buildMaintenanceApplicationDto(prisma, application);
-      return reply.status(201).send({ application: dto });
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 
@@ -710,8 +715,9 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       };
 
       const application = await createDepreciationDraft(prisma, createInput, onCreated);
+      // PHASE-009-T7b（W-3）：見差旅代建端點同位置之說明。
       const dto = await buildDepreciationApplicationDto(prisma, application);
-      return reply.status(201).send({ application: dto });
+      return reply.status(201).send({ application: await withRevisionLinks(prisma, dto) });
     }
   );
 };

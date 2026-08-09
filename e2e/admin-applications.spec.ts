@@ -349,9 +349,9 @@ test.describe("管理員：使用者申請紀錄 + 代操作 — PHASE-004-T14 G
     await page.goto(`${BASE}/applications/travel/${appId}`);
     await page.waitForURL(`${BASE}/applications/travel/${appId}`);
     await expect(page.locator("h1")).toContainText("差旅補助申請（已完成）", { timeout: 10000 });
-    await expect(page.locator(".success-block")).toContainText(
-      "如需異動，請聯絡管理員建立修正版（功能將於後續版本提供）"
-    );
+    // PHASE-009-T16（AC-32(a)）：佔位文案「功能將於後續版本提供」已逐字移除，
+    // 改為真實入口之導引文案（見 TravelApplicationPage.tsx COMPLETED 分支）。
+    await expect(page.locator(".success-block")).toContainText("如需異動，請建立修正版");
     await expect(page.locator('button:has-text("儲存草稿")')).toHaveCount(0);
     await expect(page.locator('button:has-text("完成申請")')).toHaveCount(0);
     await expect(page.locator("#trip-date")).toHaveCount(0);
