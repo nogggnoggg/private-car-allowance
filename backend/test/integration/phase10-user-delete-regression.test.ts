@@ -100,7 +100,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { adminPlugin, isPrismaForeignKeyConstraintError } from "../../src/admin/routes.js";
 import { hashPassword } from "../../src/auth/password.js";
 import { buildServer } from "../../src/server.js";
-import { USER_RESTRICT_FK_GUARDS } from "../../src/users/history.js";
+import { USER_RESTRICT_FK_GUARDS, userHasHistory } from "../../src/users/history.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -707,6 +707,62 @@ describeWithDb("PHASE-010-T5 — AD-US-04 有歷史拒刪回歸 ＋ FK 守門完
       const sessionRow = userFkRows.find((r) => r.referencing_table === "Session");
       expect(sessionRow?.delete_rule).toBe("CASCADE");
       expect(USER_RESTRICT_FK_GUARDS.some((g) => g.table === "Session")).toBe(false);
+    });
+
+    it("(a)／SF-1 守門判定邏輯之鑑別力：六條 guard 逐條對「僅走該路徑」之使用者計得 > 0、對零歷史者 0，且 userHasHistory 六人皆 true／零歷史者 false", async () => {
+      // 為什麼需要這一格（T5 即審 SF-1）：AC-14(a) 只比對「宣告」與 DB 是否相
+      // 符；AC-14(b)／(d) 只看端點回應——而端點回應在 P2003 兜底之下對「守門
+      // 判定寫錯」**完全不敏感**：把 `counts.some(...)` 誤寫為 `counts.every(
+      // ...)`（守門退化成 D5=(b)，全靠兜底）或某條 guard 的 lambda 誤查同表
+      // 別欄，兩者都不會改變任何一個 409／200。本格直接對判定邏輯本身取證，
+      // 是**區辨 D5=(c)（守門正確＋兜底縱深）與 D5=(b)（只剩兜底）的唯一落點**。
+      //
+      // 每一格之使用者刻意選為「**只**走該欄」者（見各列註解之對照關係），使
+      // 「lambda 誤查同表另一欄」必得 0 而翻紅。
+      function guardFor(table: string, column: string) {
+        const guard = USER_RESTRICT_FK_GUARDS.find((g) => g.table === table && g.column === column);
+        if (!guard) throw new Error(`守門清單缺少 ${table}.${column}`);
+        return guard;
+      }
+
+      const matrix = [
+        // peer 是 uCreator 代建草稿之 owner，且**不是**任何申請之 createdById
+        // → lambda 若誤查 createdById 即得 0。
+        { table: "Application", column: "ownerId", userId: peerId },
+        // uCreator 只當 createdById、零 ownerId（B-16 格另有獨立斷言）。
+        { table: "Application", column: "createdById", userId: uCreator.id },
+        // uUploader 只當 uploaderId（該附件之 ownerId 為 peer）。
+        { table: "Attachment", column: "uploaderId", userId: uUploader.id },
+        // uAttachmentOwner 只當 ownerId（該附件之 uploaderId 為 admin）。
+        { table: "Attachment", column: "ownerId", userId: uAttachmentOwner.id },
+        // uActor 只當 actorId（他建立的那個帳號才是 targetId）
+        // → lambda 若誤查 targetId 即得 0。
+        { table: "AuditLog", column: "actorId", userId: uActor.id },
+        // 該表僅此一條指向 User 之外鍵，無同表誤查對照。
+        { table: "UserFuelConsumptionVersion", column: "userId", userId: uFuel.id },
+      ];
+      // 矩陣與守門清單等長——日後新增 guard 而未補對應格即紅。
+      expect(matrix).toHaveLength(USER_RESTRICT_FK_GUARDS.length);
+
+      for (const row of matrix) {
+        const guard = guardFor(row.table, row.column);
+        await expect(
+          guard.count(prisma, row.userId),
+          `${row.table}.${row.column} 之 guard 對僅走該路徑之使用者應計得 > 0`
+        ).resolves.toBeGreaterThan(0);
+        // 同一條 guard 對零歷史使用者必為 0——否則上面的 `> 0` 是恆真。
+        await expect(
+          guard.count(prisma, uFkControl.id),
+          `${row.table}.${row.column} 之 guard 對零歷史使用者應計得 0`
+        ).resolves.toBe(0);
+      }
+
+      // 判定層：六人**各只有一條**路徑，故 `some` → `every` 之退化在此必然
+      // 全數翻假（P2003 兜底救不了這條斷言，因為這裡根本沒有經過端點）。
+      for (const row of matrix) {
+        await expect(userHasHistory(prisma, row.userId)).resolves.toBe(true);
+      }
+      await expect(userHasHistory(prisma, uFkControl.id)).resolves.toBe(false);
     });
 
     // -----------------------------------------------------------------------
