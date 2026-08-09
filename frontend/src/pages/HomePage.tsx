@@ -37,6 +37,13 @@ export default function HomePage(): React.ReactElement {
               補助參數維護
             </Link>
           )}
+          {/* PHASE-010-T7 (AC-15(b)／D10=(a)): 稽核紀錄入口，沿上方兩個既有
+              管理員入口（/admin/users、/admin/parameters）之慣例。 */}
+          {user.role === "ADMIN" && (
+            <Link to="/admin/audit-logs" className="btn btn-secondary">
+              稽核紀錄
+            </Link>
+          )}
           <Link to="/change-password" className="btn btn-secondary">
             變更密碼
           </Link>

@@ -6,6 +6,7 @@ import AdminFuelConsumptionPage from "./pages/AdminFuelConsumptionPage.js";
 import AdminUserApplicationsPage from "./pages/AdminUserApplicationsPage.js";
 import AdminUsersPage from "./pages/AdminUsersPage.js";
 import AttachmentsDemoPage from "./pages/AttachmentsDemoPage.js";
+import AuditLogPage from "./pages/AuditLogPage.js";
 import ChangePasswordPage from "./pages/ChangePasswordPage.js";
 import DepreciationApplicationPage from "./pages/DepreciationApplicationPage.js";
 import ForceChangePasswordPage from "./pages/ForceChangePasswordPage.js";
@@ -163,6 +164,18 @@ export default function App(): React.ReactElement {
             element={
               <RequireAuth>
                 <AdminFuelConsumptionPage />
+              </RequireAuth>
+            }
+          />
+
+          {/* PHASE-010-T7 (AC-15(a)／D10=(a)): 稽核檢視頁——`RequireAuth` 僅保護
+              登入態，管理員 only 之判定在 `AuditLogPage` 內（沿
+              `AdminUsersPage`／`ParametersPage` 既有慣例，路由層不做角色分流）。 */}
+          <Route
+            path="/admin/audit-logs"
+            element={
+              <RequireAuth>
+                <AuditLogPage />
               </RequireAuth>
             }
           />

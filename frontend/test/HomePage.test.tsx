@@ -194,6 +194,48 @@ describe("HomePage — 補助參數維護導覽連結", () => {
 });
 
 // ============================================================
+// PHASE-010-T7（AC-15(b)）: 稽核紀錄導覽連結
+// ============================================================
+
+describe("HomePage — 稽核紀錄導覽連結", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("管理員登入 → 首頁顯示「稽核紀錄」連結，指向 /admin/audit-logs", async () => {
+    mockMeAs(adminUser);
+    mockMyFuelConsumptionEmpty();
+    mockEmptyApplicationsList();
+
+    renderHomePage();
+
+    await waitFor(() => {
+      const link = screen.getByRole("link", { name: /稽核紀錄/ });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute("href", "/admin/audit-logs");
+    });
+  });
+
+  it("一般使用者（role=USER）登入 → 首頁不顯示「稽核紀錄」連結", async () => {
+    mockMeAs(regularUser);
+    mockMyFuelConsumptionEmpty();
+    mockEmptyApplicationsList();
+
+    renderHomePage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/使用者一/)).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole("link", { name: /稽核紀錄/ })).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // PHASE-005-T7: MileageSummarySection 嵌入首頁（D6(a)——不新增路由）
 // ============================================================
 
