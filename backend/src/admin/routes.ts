@@ -480,6 +480,15 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
         // 兩條路徑對外**不可區辨**：使用者不該從錯誤訊息推知系統內部是「事前
         // 查到」還是「刪的時候才撞到」。
         if (isPrismaForeignKeyConstraintError(err)) {
+          // PHASE-010-T9（T5 期中複審 FW-8／AR-2）：這條兜底原本**完全靜默**——
+          // 若守門真的漏補了一條 RESTRICT 外鍵，運維端只看得到 409，看不到「縱深
+          // 被觸發」這件事。記一筆 warn（`fkField` 為 Prisma 回報之外鍵欄位／約束
+          // 名，屬 schema metadata，零 PII；不記 `err.message`——見
+          // `platform/error-handler.ts` AC-21 之同一理由）。
+          request.log.warn(
+            { fkField: String((err as { meta?: { field_name?: unknown } }).meta?.field_name) },
+            "USER_DELETE_P2003_FALLBACK: RESTRICT 外鍵於刪除當下攔截，轉譯為 409（守門漏補或競態）"
+          );
           throw new AppError("CONFLICT", 409, HAS_HISTORY_CONFLICT_MESSAGE);
         }
         throw err;
