@@ -35,6 +35,10 @@
  * storage key。故失敗時只記錄「錯誤類別名稱」這類零內容之標籤，並一律改拋
  * 訊息固定之 `AppError("INTERNAL_ERROR", 500, …)`，使原始訊息不會沿著
  * error-handler 之未預期錯誤路徑被記錄或外洩。
+ * 【PHASE-010-T10／AC-22(b)】該標籤原為本檔自有之 `errorLabel` 私有函式，已
+ * 連同 `upload-service.ts` 之逐字同形副本一併收斂至單一葉節點模組
+ * `platform/error-label.ts`（`KNOWN_ISSUES.md` §3 D-3）；實作逐字相同，本檔
+ * 之日誌輸出零變更。
  */
 import type { AttachmentRefType, PrismaClient } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
@@ -43,6 +47,7 @@ import type {
   OnApplicationRevisionCreated,
 } from "../applications/application-revision.js";
 import { createApplicationRevision } from "../applications/application-revision.js";
+import { errorLabel } from "../platform/error-label.js";
 import { AppError } from "../platform/errors.js";
 import type { Storage } from "../storage/index.js";
 import { generateStorageId, generateStorageKeys } from "./upload-service.js";
@@ -304,15 +309,6 @@ async function readBytes(storage: Storage, key: string): Promise<Buffer> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return Buffer.concat(chunks);
-}
-
-/**
- * 零內容之錯誤標籤——只取錯誤的類別名稱，**不含**訊息（storage 錯誤訊息逐字
- * 含 key）。這是本檔唯一允許進入日誌的錯誤資訊。
- */
-function errorLabel(err: unknown): string {
-  if (err instanceof Error) return err.constructor.name;
-  return "UnknownError";
 }
 
 /**

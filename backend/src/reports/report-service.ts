@@ -1,5 +1,25 @@
 /**
  * 報表產生服務 — PHASE-008-T8／T8R／T8R2／T8R3／T8R4（BE-US-26／27）
+ * ＋ PHASE-009-T12a（作廢版報表 {@link prepareVoidedReport}）
+ *
+ * 【PHASE-010-T10／AC-22(c)（R-4）檔頭更正】本檔頭原僅標 PHASE-008 各 Task
+ * 且全文只描述「正式報表產生」一條流程，未提及 PHASE-009-T12a 於本檔新增之
+ * {@link prepareVoidedReport}（`KNOWN_ISSUES.md` §4 R-4 登記之「檔頭停在舊
+ * Task」）。**本檔現有兩條流程入口**（另有下載側之查詢／標頭純函式
+ * {@link findReportByApplicationId}／{@link buildReportContentDisposition}／
+ * {@link encodeRfc5987ValueChars}／{@link streamToBuffer}，供
+ * `reports/routes.ts` 之下載端點使用，不屬流程編排）：
+ *   · {@link generateReport}——正式報表之唯一寫入路徑（下述 §9.1 流程）。
+ *   · {@link prepareVoidedReport}（PHASE-009-T12a；`docs/specs/PHASE-009.md`
+ *     §16 D4）——申請作廢時之作廢版 PDF。回傳
+ *     `VoidedReportPlan | null`（該申請尚無 `Report` → `null`，零渲染零寫
+ *     入，AC-21(e)）；`onVoided` 於**呼叫端之作廢交易內**執行，位元組寫入
+ *     與補償 `compensate()` 由呼叫端 `applications/routes.ts` 編排。作廢版
+ *     寫入獨立表 `VoidedReportFile`，**不**改動既有 `Report` 列
+ *     （§8.2「為何不擴充 Report」；結構性守門見
+ *     `phase9-void-report.test.ts` §D-0 之 AC-21(f)）。
+ * 下述 §9.1 流程、隔離等級沿革、重試範圍、不燒號、同組排隊各節**僅描述
+ * {@link generateReport}**，與作廢版路徑無關。
  *
  * Spec `docs/specs/PHASE-008.md` §2.B/C AC-04／AC-05／AC-06／AC-07／AC-10、
  * §3.1、§9.1（唯一之寫入路徑，**方案 (d)**，2026-08-06 人類裁定；
@@ -141,8 +161,14 @@
  * 由 error-handler 之 `AppError` 分支以同一個 `buildErrorBody` 組出回應（wire
  * 格式逐字不變；詳見 routes.ts 檔頭）。本檔之 `ReportGenerationError` 語意
  * （僅含 `stage`、結構性不持有原始錯誤）不受影響。
- * `ErrorCode` 聯集現已收錄此碼，此處與 routes.ts 之呼叫端原樣沿用
- * （`buildErrorBody` 的 `code` 參數本就接受 union 的任何成員），不需修改。
+ * 【PHASE-010-T10／AC-22(c)（R-4）更正】原接於此處之一句「`ErrorCode` 聯集
+ * 現已收錄此碼，此處與 routes.ts 之呼叫端原樣沿用（`buildErrorBody` 的
+ * `code` 參數本就接受 union 的任何成員），不需修改」係 T18 之前的敘述，與其
+ * 上方 T18 更新段**直接矛盾**（`KNOWN_ISSUES.md` §4 R-4 登記之「檔頭停在舊
+ * Task」），故刪除。**現況**：本檔之兩個上游 catch 端——`reports/routes.ts`
+ * （PHASE-009-T18／AC-40(b)）與 `applications/routes.ts` 之作廢版路徑
+ * （PHASE-010-T10／AC-22(a)）——**皆已改經 `AppError` 承載**，全案零
+ * `buildErrorBody` 繞道；兩處 wire 輸出逐位元組相同。
  * 各階段之 catch 區塊刻意**不**保留原始 `err`（連內部欄位也不留）——
  * `LocalVolumeStorage` 之錯誤訊息逐字含 storage key（T8a `report-storage.ts`
  * 檔頭同型說明），`chromium.launch()` 失敗訊息逐字含 `executablePath`（T7-
