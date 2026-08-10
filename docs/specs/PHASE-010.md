@@ -1,7 +1,7 @@
 # PHASE-010 — 稽核檢視與回歸
 
 - Governance-Version: 2026-08-09.1
-- 狀態：**`ACTIVE`**（人類 leonchih 2026-08-09 Spec Gate 通過：D1~D12 全數裁定＋T1/T2/T3/T5 四項 High Task 事前批准＋3 條件 AC 全生效——見 §18）
+- 狀態：**`COMPLETED`**（PR #19 經人類 leonchih 2026-08-10 批准合併 main，merge `834f022`，CI 三檢全綠；suspected flaky（PHASE-006 B-30 併發 503 一輪）經人類同批准接受並登記 PHASE-011 收斂候選。原 Gate 沿革見 §18）
 - 建立日期：2026-08-09
 - Task ID：`PHASE-010-SPEC`
 - Base Commit：`41181ce`（branch `phase-010`，自 `main` `02a7d5f`＝PR #18 合併點切出）
