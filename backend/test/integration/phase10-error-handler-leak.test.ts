@@ -1,5 +1,5 @@
 /**
- * PHASE-010-T9 — error-handler 兜底路徑之洩漏面收斂（AC-21）
+ * PHASE-010-T9／T9R — error-handler 兜底路徑之洩漏面收斂（AC-21）
  *
  * 涵蓋（`docs/specs/PHASE-010.md` §2 H 段 AC-21 四段逐字）：
  *   · AC-21(a) `error-handler.ts` 分支 4（未預期例外）之日誌**不再記錄
@@ -7,7 +7,7 @@
  *     仍為關聯手段。
  *   · AC-21(b) 站點白名單掃描：全 `backend/src` 中「將 `err.message`／
  *     `error.message` 直接送入 `log.*` 或回應 `details`」之出現位置，其檔案
- *     集合恰等於白名單；新增站點必紅（本檔以 fixture 自證鑑別力）。
+ *     集合恰等於白名單；新增站點必紅（以 fixture ＋ 真實檔暫改雙軌自證）。
  *   · AC-21(c) 反向探針：注入訊息含絕對路徑之未預期例外，斷言 `logStream`
  *     之該筆錯誤紀錄零路徑分隔字面命中。
  *   · AC-21(d) wire 零變更：`500` 回應 body 逐位元組不變。
@@ -15,29 +15,54 @@
  * 零 DB 依賴（沿 `error-handler.test.ts` 之 `noopDbProbe` 慣例），全套件恆跑。
  *
  * ---------------------------------------------------------------------------
- * AC-21(b) 之「站點」定義與兩層掃描（實作裁量，逐項記載）
+ * AC-21(b) 之「站點」定義與兩層掃描
  * ---------------------------------------------------------------------------
- * AC 原文之站點類別為「直接送入 `log.*` 或回應 `details`」。純字面掃描對
- * 「變數間接」一型天然有規避面（PHASE-009 T2 SF-2 教訓；T4
- * `phase10-audit-structure.test.ts` 檔頭亦明記此本質限制）——而
- * `attachment/upload-service.ts` :150-151 正是該型（`const msg =
- * sanitizeForLog(err.message)` 後於次行 `log.warn` 送出），若只做 AC 字面之
- * 直接掃描，這個**今日已知之受控站點**會落在白名單之外，掃描形同放行。
- *
- * 故本檔做**兩層**掃描，互補而非擇一：
- *   L1（AC 字面）：`log.*`／`console.*` 呼叫之引數文字內含 `err.message`，或
- *       `details:` 物件字面內含 `err.message` → 直接輸出站點。白名單
+ * AC 原文之站點類別為「直接送入 `log.*` 或回應 `details`」。故本檔做**兩層**
+ * 掃描，互補而非擇一：
+ *   L1（AC 字面）：`log.*`／`console.*` 呼叫之引數文字內含錯誤訊息取值，或
+ *       `details:` 物件字面內含之 → 直接輸出站點。白名單
  *       `DIRECT_SINK_WHITELIST`。
- *   L2（保守超集）：`backend/src` 全域任何對錯誤識別字（`err`／`error`／`e`
- *       ／`ex`／`exception`／`cause`，容許前綴底線）之 `.message` 讀取 → 白名
- *       單 `MESSAGE_READ_WHITELIST`。此層涵蓋 L1 之全部命中，另補上變數間接
- *       型與非 `log.*` 之輸出面（`process.stderr.write`）。
- * 代價明示：L2 會把「讀了 `err.message` 但根本不輸出」之用法（如死結重試判別
- * 之 regex 比對）一併納入白名單，新增此類用法亦會紅。此為**刻意偏保守**——
- * 安全守門寧可誤報後由維護者具名加入白名單，不可漏報。
+ *   L2（保守超集）：`backend/src` 全域任何錯誤訊息取值 → 白名單
+ *       `MESSAGE_READ_WHITELIST`。此層涵蓋 L1 之全部命中，另補上**變數間接
+ *       型**與非 `log.*` 之輸出面（`process.stderr.write`）。
+ *       必要性：`attachment/upload-service.ts` :150-151 正是變數間接型
+ *       （`const msg = sanitizeForLog(err.message)` 後於次行 `log.warn` 送
+ *       出），只做 L1 的話這個**今日已知受控站點**會落在白名單外。
+ * 代價明示：L2 會把「讀了 `err.message` 但根本不輸出」之用法（死結重試判別之
+ * regex 比對）一併納入白名單，新增此類用法亦會紅——刻意偏保守。
  *
- * 兩層皆以 fixture 內容字串自證鑑別力（零磁碟寫入），並以反向對照明示 L1 對
- * 變數間接型之盲點正是由 L2 承接。
+ * ---------------------------------------------------------------------------
+ * 掃描涵蓋面 — **據實敘述**（T9R／複審 M-1；初版檔頭曾宣稱「不可漏報」，經
+ * 複審實測為與事實相反之過度宣稱，已刪除該宣稱並改為下列逐型記載）
+ * ---------------------------------------------------------------------------
+ * 複審列舉之七型 TS 主流寫法，本掃描器之涵蓋狀態：
+ *   ① `(err as Error).message`（斷言後取值）        → **可及**（`\)` 分支）
+ *   ② `err?.message`（optional chaining）           → **可及**（`\??`）
+ *   ③ `err["message"]`／`err?.["message"]`（bracket）→ **可及**（bracket 分支）
+ *   ④ `wireError.message`（TS 窄化後之他名變數）    → **可及**（識別字含
+ *      `err`／`error`／`exception`／`cause` 字樣即納入，不再限縮於固定短名清單）
+ *   ⑤ `catch (reason) { … reason.message }`（catch 他名繫結）
+ *                                                   → **可及**（逐檔先擷取
+ *      `catch (X)` 之繫結名，再併入該檔之錯誤識別字集合——非固定字樣清單）
+ *   ⑥ `const { message } = err;`（解構賦值）        → **可及**（L2；L1 不及，
+ *      因解構後送出屬變數間接型）。**參數位解構**（`function f({ message })`）
+ *      仍**不可及**——無從判定該參數是否為錯誤物件。
+ *   ⑦ `log.error({ err })`（pino 之 err 序列化器自動展開 message）
+ *                                                   → **不可及，且本次刻意不
+ *      納**：此型不含任何 `.message` 字面，屬「序列化器行為」而非取值語法，需
+ *      改以「log 呼叫是否直接挾帶錯誤物件」為另一組判準（含 `{ err }`／
+ *      `{ error }` 簡寫、`log.error(err)` 位置引數兩式），且需先確認
+ *      `logger.ts` 之 serializer 設定才能界定真實洩漏面。依複審 **FW-A** 屬
+ *      **PHASE-011 射程**，本檔以「記載型反向對照」之 it 明示掃不到（見該 it），
+ *      使未來修好時該 it 會顯性翻紅、不會被靜默略過。
+ * 另一項刻意接受之**偽陽性**（方向安全）：`\)` 分支為名稱盲判，任何
+ * `foo(...).message` 皆會命中，即使 `foo()` 回傳的不是錯誤物件。誤報方向為
+ * 「多抓」，由維護者具名加入白名單即可；漏報才是不可接受的方向。
+ *
+ * 自證雙軌：fixture 內容字串（零磁碟寫入）＋ **真實檔暫改**（重放複審 M5：於
+ * `error-handler.ts` 分支 3 植入 `errMessage: wireError.message`）。後者於記憶
+ * 體內對真實檔內容字串施加突變後掃描，並斷言磁碟原檔位元組全等——刻意不寫回
+ * 磁碟，以免平行測試或中途失敗留下被改壞的原始碼。
  */
 
 import * as fs from "node:fs";
@@ -208,7 +233,7 @@ describe("AC-21(a)(c)(d): 未預期例外兜底 — 日誌洩漏面與 wire 逐�
 });
 
 // ---------------------------------------------------------------------------
-// AC-21(b) 站點白名單掃描
+// AC-21(b) 站點白名單掃描 — 掃描核心
 // ---------------------------------------------------------------------------
 
 /** 去除區塊註解與行註解，以等長空白取代（保留換行位置，行號可還原）——沿
@@ -234,49 +259,112 @@ function listTsFilesRecursive(dir: string): string[] {
   return files;
 }
 
-/** 錯誤識別字之 `.message` 讀取（容許前綴底線與成員存取空白／跨行）。
- * 刻意不涵蓋 `blocker.message`／`issue.message`／`detail.message` 等領域物件
- * 欄位——它們不是例外訊息。 */
-const ERROR_MESSAGE_READ = String.raw`\b_?(?:err|error|e|ex|exception|cause)\s*\.\s*message\b`;
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-/** L1：`log.*`／`console.*` 呼叫之引數文字內含錯誤訊息讀取。`[^;]*?` 以陳述
- * 句結尾為界，天然涵蓋跨行與模板字面、以及巢狀呼叫（如
- * `sanitizeForLog(err.message)`）。 */
-const LOG_SINK_RE = new RegExp(
-  String.raw`\b(?:[A-Za-z_$][\w$]*\s*\.\s*)*(?:log|logger|console)\s*\.\s*` +
-    String.raw`(?:trace|debug|info|warn|error|fatal)\s*\([^;]*?` +
-    ERROR_MESSAGE_READ,
-  "g"
-);
+/** 含 `err`／`error`／`exception`／`cause` 字樣之**任意**識別字——涵蓋 TS 窄化
+ * 後之他名變數（`wireError`／`fastifyError`／`deleteErr`／`rootCause`…）。
+ * 刻意不再使用「固定短名清單」：複審 M-1 證實那會漏掉窄化變數一整型。 */
+const ERROR_NAMED_IDENT = String.raw`\w*(?:[Ee]rr(?:or)?|[Ee]xception|[Cc]ause)\w*`;
 
-/** L1：回應 `details` 物件字面內含錯誤訊息讀取。 */
-const DETAILS_SINK_RE = new RegExp(String.raw`\bdetails\s*:\s*\{[^;]*?` + ERROR_MESSAGE_READ, "g");
+/** 歷史短名（`catch (e)`／`catch (ex)`）。 */
+const ERROR_SHORT_IDENTS = ["ex", "e"];
 
-/** L2：任何錯誤識別字之 `.message` 讀取。 */
-const MESSAGE_READ_RE = new RegExp(ERROR_MESSAGE_READ, "g");
+/** `.message` 之各種取值語法：`.message`／`?.message`／`["message"]`／
+ * `?.["message"]`；成員存取之空白與跨行皆容許。
+ * （T9R 自測踩點：早期寫法把 `?` 與 `.` 拆成 `\??\s*\.`，導致
+ * `err?.["message"]` 這型漏報——optional chaining 之 `?.` 後面接的是 `[` 而非
+ * 第二個 `.`。故 dot 型與 bracket 型各自帶自己的 `?.` 前綴。） */
+const MESSAGE_ACCESS = String.raw`\s*(?:(?:\?\s*\.|\.)\s*message\b|(?:\?\s*\.)?\s*\[\s*["']message["']\s*\])`;
 
-/** 對單一內容字串掃描，回傳每個命中之行號（已去除註解）。 */
-function scanContent(content: string, patterns: readonly RegExp[]): number[] {
+/** 擷取內容中所有 `catch (X)` 之繫結名（任意命名，如 `catch (reason)`）。 */
+function extractCatchBindings(cleaned: string): string[] {
+  const names = new Set<string>();
+  for (const m of cleaned.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) {
+    names.add(m[1]);
+  }
+  return [...names];
+}
+
+/** 錯誤識別字之比對式（具名字樣 ∪ 歷史短名 ∪ 本檔 catch 繫結名）。 */
+function buildErrorIdent(catchNames: readonly string[]): string {
+  const alts = [ERROR_NAMED_IDENT, ...ERROR_SHORT_IDENTS, ...catchNames.map(escapeRegex)];
+  return String.raw`\b(?:${alts.join("|")})(?![\w$])`;
+}
+
+/** 錯誤運算式＝錯誤識別字 ∪ 右括號（涵蓋 `(err as Error)`／`getErr()` 等
+ * 斷言後／呼叫後取值；名稱盲判之偽陽性已於檔頭明示接受）。 */
+function buildErrorExpr(catchNames: readonly string[]): string {
+  return `(?:${buildErrorIdent(catchNames)}|\\))`;
+}
+
+type ScanLayer = "L1" | "L2";
+
+/**
+ * 依「已去註解之內容」組出該層之比對式集合。
+ * catch 繫結名逐檔擷取，故比對式與內容相依（不能是模組級常數）。
+ */
+function buildLayerPatterns(cleaned: string, layer: ScanLayer): RegExp[] {
+  const catchNames = extractCatchBindings(cleaned);
+  const errorExpr = buildErrorExpr(catchNames);
+  const errorRead = errorExpr + MESSAGE_ACCESS;
+
+  if (layer === "L1") {
+    return [
+      // `log.*`／`console.*` 呼叫之引數文字內含錯誤訊息取值。`[^;]*?` 以陳述句
+      // 結尾為界，天然涵蓋跨行、模板字面與巢狀呼叫（`sanitizeForLog(err.message)`）。
+      new RegExp(
+        String.raw`\b(?:[A-Za-z_$][\w$]*\s*\.\s*)*(?:log|logger|console)\s*\.\s*` +
+          String.raw`(?:trace|debug|info|warn|error|fatal)\s*\([^;]*?` +
+          errorRead,
+        "g"
+      ),
+      // 回應 `details` 物件字面內含錯誤訊息取值。
+      new RegExp(String.raw`\bdetails\s*:\s*\{[^;]*?` + errorRead, "g"),
+    ];
+  }
+  return [
+    // 任何錯誤訊息取值。
+    new RegExp(errorRead, "g"),
+    // 解構賦值型：`const { message } = err;`／`= (err as Error);`
+    // （右側限錯誤識別字，不含 `\)` 分支——否則 `= foo()` 會誤報）。
+    new RegExp(
+      String.raw`\{[^{}]*\bmessage\b[^{}]*\}\s*=[^;]{0,40}?` + buildErrorIdent(catchNames),
+      "g"
+    ),
+  ];
+}
+
+/** 對單一內容字串掃描，回傳每個命中之行號與命中文字（已去除註解）。
+ * 行號為**比對式起點**所在行——L1 之起點是 `log.*` 呼叫本身，故跨行寫法之行號
+ * 指向呼叫首行而非 `.message` 那一行（M5 重放 it 即據此比對命中文字）。 */
+function scanContentMatches(content: string, layer: ScanLayer): { line: number; text: string }[] {
   const cleaned = stripComments(content);
-  const lines = new Set<number>();
-  for (const pattern of patterns) {
-    const re = new RegExp(pattern.source, pattern.flags);
-    let match: RegExpExecArray | null = re.exec(cleaned);
+  const found = new Map<number, string>();
+  for (const pattern of buildLayerPatterns(cleaned, layer)) {
+    let match: RegExpExecArray | null = pattern.exec(cleaned);
     while (match !== null) {
-      lines.add(cleaned.slice(0, match.index).split("\n").length);
-      match = re.exec(cleaned);
+      const line = cleaned.slice(0, match.index).split("\n").length;
+      if (!found.has(line)) found.set(line, match[0]);
+      match = pattern.exec(cleaned);
     }
   }
-  return [...lines].sort((a, b) => a - b);
+  return [...found.entries()].sort((a, b) => a[0] - b[0]).map(([line, text]) => ({ line, text }));
+}
+
+/** 對單一內容字串掃描，回傳每個命中之行號（已去除註解）。 */
+function scanContent(content: string, layer: ScanLayer): number[] {
+  return scanContentMatches(content, layer).map((m) => m.line);
 }
 
 /** 掃描 `SRC_ROOT` 下所有 `.ts` 檔，回傳「相對路徑 → 命中行號」之 Map
  * （零命中之檔案不入 Map，故鍵集合即檔案集合）。 */
-function scanSrc(patterns: readonly RegExp[]): Map<string, number[]> {
+function scanSrc(layer: ScanLayer): Map<string, number[]> {
   const result = new Map<string, number[]>();
   for (const file of listTsFilesRecursive(SRC_ROOT)) {
     const rel = path.relative(SRC_ROOT, file).split(path.sep).join("/");
-    const hits = scanContent(fs.readFileSync(file, "utf8"), patterns);
+    const hits = scanContent(fs.readFileSync(file, "utf8"), layer);
     if (hits.length > 0) result.set(rel, hits);
   }
   return result;
@@ -290,12 +378,12 @@ function scanSrc(patterns: readonly RegExp[]): Map<string, number[]> {
  * 對象為執行者本人的終端機，故受控保留。
  *
  * `platform/error-handler.ts` 自 PHASE-010-T9（AC-21(a)）起**不在此列**——
- * 修復前它在此，該差異即為本掃描之紅燈物證。
+ * 修復前它在此，該差異即為本掃描之紅燈物證（T9R 另以真實檔暫改 it 常設重放）。
  */
 const DIRECT_SINK_WHITELIST = ["seed/seed-admin.ts"];
 
 /**
- * L2 白名單 — 全域 `err.message` 讀取之受控站點（超集；理由見檔頭）。
+ * L2 白名單 — 全域錯誤訊息取值之受控站點（超集；理由見檔頭）。
  *
  *   · `applications/depreciation-service.ts`／`applications/maintenance-service.ts`
  *     ／`applications/travel-service.ts`／`attachment/lifecycle-service.ts`
@@ -305,6 +393,12 @@ const DIRECT_SINK_WHITELIST = ["seed/seed-admin.ts"];
  *   · `index.ts`：啟動期環境變數驗證失敗，`process.stderr.write` 印出欄位名／
  *     原因後 `exit 1`（非請求路徑，且 AC-09 已保證不印值）。
  *   · `seed/seed-admin.ts`：同 L1。
+ *
+ * T9R 之 regex 擴充（斷言／optional／bracket／窄化變數／catch 他名／解構）對
+ * 真實原始碼**未新增任何命中檔**——實查：全 `backend/src` 今日零 `).message`、
+ * 零 `?.message`、零 `["message"]`，`catch` 繫結名僅 `err`（34 處）與
+ * `deleteErr`（1 處，`attachment/lifecycle-service.ts`，該檔本已在列）。故本
+ * 基線與 T9 相同，非「擴充後仍漏掉」，而是「今日這些型別在 src 中不存在」。
  */
 const MESSAGE_READ_WHITELIST = [
   "applications/depreciation-service.ts",
@@ -317,20 +411,35 @@ const MESSAGE_READ_WHITELIST = [
   "seed/seed-admin.ts",
 ];
 
-describe("AC-21(b): 站點白名單掃描 — err.message 之輸出面", () => {
+// ---------------------------------------------------------------------------
+// 真實檔暫改自證（重放複審 M5）之錨點
+// ---------------------------------------------------------------------------
+
+const ERROR_HANDLER_PATH = path.join(SRC_ROOT, "platform/error-handler.ts");
+
+/** `error-handler.ts` 分支 3（wire-level 4xx）之日誌物件逐字。錨點失效即代表
+ * 該分支已改版，本 it 會以明確訊息紅燈，提示維護者同步更新重放突變。 */
+const M5_ANCHOR = "{ errName: error.name, errCode: wireError.code },";
+
+/** 複審 M5 之突變：於分支 3 植入 TS 窄化變數之 message（初版掃描器對此型
+ * 漏報，17/17 全綠——即 M-1 之核心證據）。 */
+const M5_MUTANT =
+  "{ errName: error.name, errCode: wireError.code, errMessage: wireError.message },";
+
+describe("AC-21(b): 站點白名單掃描 — 錯誤訊息之輸出面", () => {
   it("L1（AC 字面）：直接送入 log.*／console.* 或回應 details 之檔案集合恰等於白名單", () => {
-    const hits = scanSrc([LOG_SINK_RE, DETAILS_SINK_RE]);
+    const hits = scanSrc("L1");
     expect([...hits.keys()].sort()).toEqual([...DIRECT_SINK_WHITELIST].sort());
   });
 
-  it("L2（保守超集）：全域 err.message 讀取之檔案集合恰等於白名單", () => {
-    const hits = scanSrc([MESSAGE_READ_RE]);
+  it("L2（保守超集）：全域錯誤訊息取值之檔案集合恰等於白名單", () => {
+    const hits = scanSrc("L2");
     expect([...hits.keys()].sort()).toEqual([...MESSAGE_READ_WHITELIST].sort());
   });
 
   it("L1 鑑別力①：單行 log 呼叫內之 error.message 必被偵測", () => {
     const fixture = `request.log.error({ errMessage: error.message }, "Unhandled exception");`;
-    expect(scanContent(fixture, [LOG_SINK_RE, DETAILS_SINK_RE])).toEqual([1]);
+    expect(scanContent(fixture, "L1")).toEqual([1]);
   });
 
   it("L1 鑑別力②：跨行 log 呼叫內之 err.message 必被偵測", () => {
@@ -342,17 +451,17 @@ describe("AC-21(b): 站點白名單掃描 — err.message 之輸出面", () => {
       '  "boom"',
       ");",
     ].join("\n");
-    expect(scanContent(fixture, [LOG_SINK_RE, DETAILS_SINK_RE]).length).toBe(1);
+    expect(scanContent(fixture, "L1").length).toBe(1);
   });
 
   it("L1 鑑別力③：巢狀呼叫（sanitizeForLog(err.message)）與模板字面必被偵測", () => {
     const nested = "log.warn(`thumb failed: ${sanitizeForLog(err.message)}`);";
-    expect(scanContent(nested, [LOG_SINK_RE, DETAILS_SINK_RE])).toEqual([1]);
+    expect(scanContent(nested, "L1")).toEqual([1]);
   });
 
   it("L1 鑑別力④：回應 details 內之 err.message 必被偵測", () => {
     const fixture = `throw new AppError("INTERNAL_ERROR", 500, "x", undefined, { details: { reason: err.message } });`;
-    expect(scanContent(fixture, [DETAILS_SINK_RE])).toEqual([1]);
+    expect(scanContent(fixture, "L1")).toEqual([1]);
   });
 
   it("L1 鑑別力⑤（反向）：領域物件之 .message（blocker／issue／detail）不得誤報", () => {
@@ -361,16 +470,90 @@ describe("AC-21(b): 站點白名單掃描 — err.message 之輸出面", () => {
       'log.info({ reason: issue.message }, "y");',
       'log.info({ reason: detail.message }, "z");',
     ].join("\n");
-    expect(scanContent(fixture, [LOG_SINK_RE, DETAILS_SINK_RE])).toEqual([]);
-    expect(scanContent(fixture, [MESSAGE_READ_RE])).toEqual([]);
+    expect(scanContent(fixture, "L1")).toEqual([]);
+    expect(scanContent(fixture, "L2")).toEqual([]);
+  });
+
+  // ── T9R／M-1：七型主流寫法之逐型鑑別力（①~⑤ 見上，⑥~⑫ 如下）────────────
+
+  it("鑑別力⑥：型別斷言後取值 (err as Error).message 必被偵測（L1／L2 皆是）", () => {
+    const fixture = 'request.log.error({ m: (err as Error).message }, "boom");';
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+    expect(scanContent(fixture, "L2")).toEqual([1]);
+  });
+
+  it("鑑別力⑦：optional chaining err?.message 必被偵測（L1／L2 皆是）", () => {
+    const fixture = 'request.log.error({ m: err?.message }, "boom");';
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+    expect(scanContent(fixture, "L2")).toEqual([1]);
+  });
+
+  it('鑑別力⑧：bracket 取值 err["message"]／err?.["message"] 必被偵測（L1／L2 皆是）', () => {
+    const bracket = 'log.error({ m: err["message"] }, "boom");';
+    const optionalBracket = "const m = err?.['message'];";
+    expect(scanContent(bracket, "L1")).toEqual([1]);
+    expect(scanContent(bracket, "L2")).toEqual([1]);
+    expect(scanContent(optionalBracket, "L2")).toEqual([1]);
+  });
+
+  it("鑑別力⑨：TS 窄化後之他名變數（wireError／fastifyError）必被偵測（L1／L2 皆是）", () => {
+    const fixture = [
+      'request.log.info({ m: wireError.message }, "wire 4xx");',
+      "const detail = fastifyError.message;",
+    ].join("\n");
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+    expect(scanContent(fixture, "L2")).toEqual([1, 2]);
+  });
+
+  it("鑑別力⑩：catch 他名繫結（catch (reason)）之 .message 必被偵測（L1／L2 皆是）", () => {
+    const fixture = [
+      "try {",
+      "  doWork();",
+      "} catch (reason) {",
+      '  request.log.error({ m: reason.message }, "boom");',
+      "}",
+    ].join("\n");
+    expect(scanContent(fixture, "L1")).toEqual([4]);
+    expect(scanContent(fixture, "L2")).toEqual([4]);
+    // 反向對照：同一個他名若不是 catch 繫結（純領域變數），則不誤報
+    const notCatch = 'request.log.error({ m: reason.message }, "boom");';
+    expect(scanContent(notCatch, "L2")).toEqual([]);
+  });
+
+  it("鑑別力⑪：解構賦值 const { message } = err 必被偵測（L2；L1 不及——變數間接）", () => {
+    const fixture = ["const { message } = err;", 'log.warn(message, "boom");'].join("\n");
+    expect(scanContent(fixture, "L1")).toEqual([]);
+    expect(scanContent(fixture, "L2")).toEqual([1]);
+    // 改名解構與斷言後解構亦可及
+    expect(scanContent("const { message: m } = (err as Error);", "L2")).toEqual([1]);
+    // 反向：非錯誤來源之解構不誤報
+    expect(scanContent("const { message } = dto;", "L2")).toEqual([]);
+  });
+
+  it("已知不可及⑫（記載型反向對照）：log.error({ err }) 之 pino 序列化型掃不到 — FW-A 移交 PHASE-011", () => {
+    const pinoStyle = [
+      'request.log.error({ err }, "Unhandled exception");',
+      'request.log.error(err, "positional form");',
+    ].join("\n");
+    // 此型不含任何 `.message` 字面，兩層皆掃不到——**現況記載**，非期望行為。
+    // PHASE-011 依 FW-A 補上「log 呼叫直接挾帶錯誤物件」之判準後，本 it 會顯性
+    // 翻紅，屆時須改為正向斷言並移除本註解。
+    expect(scanContent(pinoStyle, "L1")).toEqual([]);
+    expect(scanContent(pinoStyle, "L2")).toEqual([]);
+  });
+
+  it("已知不可及（記載型）：參數位解構 function f({ message }) 掃不到 — 無從判定是否為錯誤物件", () => {
+    const paramDestructure =
+      "function render({ message }: { message: string }) { return message; }";
+    expect(scanContent(paramDestructure, "L2")).toEqual([]);
   });
 
   it("L1 已知盲點（變數間接型）由 L2 承接 — 反向對照明示", () => {
     const fixture = ["const msg = err.message;", 'log.warn(msg, "boom");'].join("\n");
     // L1 掃不到（`err.message` 不在 log 呼叫之引數文字內）——靜態文字掃描之本質限制
-    expect(scanContent(fixture, [LOG_SINK_RE, DETAILS_SINK_RE])).toEqual([]);
+    expect(scanContent(fixture, "L1")).toEqual([]);
     // L2 掃得到——故新增此型站點仍必紅
-    expect(scanContent(fixture, [MESSAGE_READ_RE])).toEqual([1]);
+    expect(scanContent(fixture, "L2")).toEqual([1]);
   });
 
   it("L2 鑑別力：註解內之 err.message 不得誤報（stripComments 生效）", () => {
@@ -379,11 +562,42 @@ describe("AC-21(b): 站點白名單掃描 — err.message 之輸出面", () => {
       "/* 亦不轉呼叫 sanitizeForLog(error.message) */",
       "const ok = 1;",
     ].join("\n");
-    expect(scanContent(fixture, [MESSAGE_READ_RE])).toEqual([]);
+    expect(scanContent(fixture, "L2")).toEqual([]);
   });
 
   it("L2 鑑別力：新增任一站點（新檔）即必紅 — 以 fixture 內容自證", () => {
     const newSite = "process.stdout.write(String(e.message));";
-    expect(scanContent(newSite, [MESSAGE_READ_RE])).toEqual([1]);
+    expect(scanContent(newSite, "L2")).toEqual([1]);
+  });
+
+  // ── T9R：真實檔暫改自證（重放複審 M5）──────────────────────────────────
+
+  it("真實檔暫改自證（重放複審 M5）：error-handler 分支 3 植入 wireError.message 即轉紅，原檔位元組不變", () => {
+    const beforeBytes = fs.readFileSync(ERROR_HANDLER_PATH);
+    const source = beforeBytes.toString("utf8");
+
+    // 錨點實查——失效即代表分支 3 已改版，須同步更新本重放突變
+    expect(
+      source.includes(M5_ANCHOR),
+      `M5 錨點未於 error-handler.ts 找到（分支 3 已改版？）：${M5_ANCHOR}`
+    ).toBe(true);
+
+    // 原檔：L1 零命中（與白名單斷言一致）
+    expect(scanContent(source, "L1")).toEqual([]);
+
+    // 突變後：L1 必命中恰一處，且落在 `errMessage` 那一行
+    const mutated = source.replace(M5_ANCHOR, M5_MUTANT);
+    expect(mutated).not.toBe(source);
+    const mutatedHits = scanContentMatches(mutated, "L1");
+    expect(mutatedHits.length).toBe(1);
+    // 命中文字自 `request.log.info(` 起、至被植入的 `wireError.message` 止
+    expect(mutatedHits[0].text).toContain("request.log.info(");
+    expect(mutatedHits[0].text).toContain("wireError.message");
+
+    // L2 亦必命中（超集層）
+    expect(scanContent(mutated, "L2").length).toBeGreaterThan(0);
+
+    // 還原 byte-identical：全程未寫檔，重讀比對以杜絕誤寫
+    expect(fs.readFileSync(ERROR_HANDLER_PATH).equals(beforeBytes)).toBe(true);
   });
 });
