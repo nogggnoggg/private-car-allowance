@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：2026-08-09（最後同步至 **PHASE-009（作廢與修正版）**已落地現實；DOC-SYNC `PHASE-009-DOC-SYNC-B`。前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
+- 更新日期：**2026-08-10**（最後同步至 **PHASE-010（稽核檢視與回歸）**已落地現實；DOC-SYNC `PHASE-010-DOCSYNC`——**新增 §2.9 稽核檢視（唯讀）**、§3 稽核紀錄列補檢視面六點。前次：2026-08-09 `PHASE-009-DOC-SYNC-B`；再前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
 - 上游：`userstory.md`、`docs/PRD.md`、`docs/ARCHITECTURE.md`
 - 說明：概念層資料模型與資料流草案。實體命名為概念名稱，非最終 DB schema；不含欄位型別、索引、API I/O 格式（於 Phase Spec 定案）。
 
@@ -503,6 +503,56 @@ mileage 引擎 sumOfficialMileage(db, {ownerId,dateFrom,dateTo})（唯讀，可�
   → 差旅/保養/折舊混合依日期倒序；不適用欄位顯「—」
 ```
 
+### 2.9 稽核檢視（唯讀；PHASE-010 落地）
+
+```
+管理員 →稽核紀錄頁→ GET /admin/audit-logs
+  ?action &actorId &targetId &dateFrom &dateTo &page &pageSize   （全部 optional）
+  ├─【授權】requireAuth ──────────────────── 未登入/Session 失效 → 401 UNAUTHORIZED
+  ├─【授權】requirePasswordChanged ───────── 需強制改密 → 403 PASSWORD_CHANGE_REQUIRED
+  ├─【授權】requireAdmin ─────────────────── 非管理員（含資料擁有人本人）→ 403 FORBIDDEN
+  │     ★ 三段皆為 preHandler：授權恆早於解析與任何查詢
+  │       （非管理員送出畸形 page → 403 而非 400，側信道測試守門）
+  │       ★ 管理員 only ＝**嚴於**申請端點之「擁有人或管理員」
+  ▼
+parseAuditLogQuery(query)〔純函式，零 DB〕
+  │  page 預設 1；pageSize 預設 20、上限 100（超過即 clamp 不報錯）
+  │  action 非合法 AuditAction → 400（不得靜默忽略而回全集）
+  │  dateFrom > dateTo → 400；區間起訖含當日，**日界＝台灣（UTC+8）日曆日**
+  │    · createdAtFrom        = dateFrom 台北 00:00 = 前一日 16:00:00.000Z
+  │    · createdAtToExclusive = dateTo 台北次日 00:00 = dateTo 當日 16:00:00.000Z
+  │    （固定 +8h；台灣無日光節約 → 零時區套件）
+  │  任一違規 → 400 VALIDATION_ERROR + fields[]，**零查詢**
+  ▼
+buildAuditLogWhere(filters)〔純函式〕→ where（日期用 gte + **lt**，半開區間）
+  ▼
+Promise.all([
+   auditLog.findMany({ where, include:{actor:{displayName}, target:{displayName}},
+                       orderBy:[createdAt desc, id desc], skip, take }),
+   auditLog.count({ where })
+])                                   ★ 分頁與計數皆於 DB 層（不整份讀入記憶體）
+  │                                  ★ 兩層全序（id 為次鍵）→ 跨頁不重不漏
+  ▼
+逐列投影 AuditLogListItemDto（封閉七鍵）
+  │  changes[] ← flattenAuditSummary(summary)〔純函式；揭露面單一事實來源〕
+  │  createdAt ← ISO 8601 UTC（在地化屬呈現層）
+  │  **不含 actorId／targetId**（內部識別值不外露）
+  ▼
+200 { items, total, page, pageSize }        ★ 零結果 → 200 + items:[] + total:0（非 404）
+  ▼                                          ★ **端點零寫入**（查詢不產生自身稽核列）
+前端稽核頁：時間在地化（瀏覽器時區）／action 中文標籤（涵蓋全 10 值）／
+            changes 逐列「欄位｜改前｜改後」（欄名中文對照 32 鍵、值中文化 14 值）
+            ★ 呈現層過濾（MG-3）：targetLabel 只顯示第一個 `#` 前段；
+              changes 之 applicationId／revisionOf 兩列不渲染
+```
+
+- **判定順序固定**：授權（401/403）→ 參數解析（400）→ 查詢。授權先於一切，`403` 回應**零業務值**（不含任何稽核內容、不含 `total`）。
+- **`changes[]` 之攤平為唯一出口**：`AuditLog.summary`（`Json?`）之對外形式只由 `flattenAuditSummary` 一處決定；巢狀前後版本逐子鍵拆列、`{before,after}` 與 `{from,to}` 拆兩欄、其餘一律字串化入「改後」。**攤平不擴大揭露面**（輸出恰為同一 `summary` 之既有值），敏感資料掃描同時涵蓋 DB 全表與 wire 面（含 `changes`）。
+- **wire 與畫面之邊界（MG-3 裁定，人類 2026-08-10）**：`targetLabel` 之完整快照字串與 `applicationId`／`revisionOf` 兩欄**於 wire 與 DB 完整保留**（追查用），**僅畫面不呈現**。兩者不得互相侵蝕——不得因「畫面不顯示」而縮減 wire 值，亦不得在畫面回填 cuid。**行為後果**：修正版之「修正自」關係於畫面不可辨識（明示接受，見 `docs/specs/PHASE-010.md` §17.1 #12）。
+- **不新增錯誤碼**：沿用既有結構化錯誤協定之聯集（有 contract 斷言守門）；**稽核內容恆不入日誌**（作廢原因、備註、目的等自由文字）。
+- **不可變性**：`AuditLog` 為 append-only——`backend/src` 全域對其 `update`／`delete`／`upsert` 零呼叫（結構性掃描守門）。本頁為**唯讀**路徑，不提供匯出／下載，亦不提供一般使用者可見之稽核視圖。
+- **保留期限**：`AuditLog` 現**無保留期限與封存**（無限成長）；清理／封存語意與「已清理期間在本頁如何呈現」歸 PHASE-011，本 Phase 不預設。
+
 ---
 
 ## 3. 敏感資料處理彙整
@@ -515,7 +565,7 @@ mileage 引擎 sumOfficialMileage(db, {ownerId,dateFrom,dateTo})（唯讀，可�
 | 正式 PDF | 保存於 volume；下載須授權；作廢後保留作廢標示。**PHASE-008 落地補記**：①`storageKey` **由系統產生**（`rpt/<uuid>/pdf`，不含使用者輸入，杜絕路徑穿越與列舉取檔），**封閉前綴白名單**下報表實例只認 `rpt`、附件實例只認 `att`，**跨實例互拒**；②PDF **一律經授權端點回傳**，volume **不得由 nginx 靜態直出**（有結構性守門，見 ARCHITECTURE §4.5）；③**日誌禁字**——`storageKey`（`rpt/`／`att/` 前綴值）、volume 絕對路徑、session cookie／token、密碼、**PDF 位元組或其 base64 片段**一律不入日誌（七類掃描 ＋ 反向探針證明非恆真）；④**折舊揭露面於報表延續**——車價／折舊年限／預估年度行駛公里數／參數版本 id **不出現於列印版與 PDF**（全身分一致，含管理員），與 ARCHITECTURE §4.11 同一契約；⑤**檔名於產生時凍結**（事後改顯示姓名不影響已產生報表之下載檔名），檔名恆不含 `/ \ CR LF NUL` 且恆含報表編號。**PHASE-009 落地補記**：⑥**原 PDF 之位元組於作廢後永不被觸碰**——作廢版以獨立之 `VoidedReportFile`（`rpt/<uuid>/void`）承載，下載端點依狀態**選擇來源**而非改寫原檔；⑦作廢版之 `storageKey` 同樣由系統產生且落於同一封閉前綴白名單（報表實例只認 `rpt`），日誌禁字清單原樣適用；⑧作廢版產生失敗時**補償刪檔**（雙層），不留無主 `rpt/` 物件——in-doubt 窗之殘留歸 PHASE-011 孤兒清理 | FE-US-24, BE-US-27, BE-US-28, NFR-US-10, NFR-US-16 |
 | 作廢原因（PHASE-009） | 使用者自由輸入之文字（trim 後 1..500）。**入 DB**（`Application.voidReason`）與**入稽核**（`AuditLog.summary.reason`，BE-US-31② 逐字要求）；**不入日誌**（作廢流程之錯誤日誌僅記 `{ stage, applicationId }` 一類零內容標籤）；**呈現須跳脫**——列印版與 PDF 之插值一律經 `report-html.ts` 之單一 `escapeHtml` 出口（不另開插值路徑），前端另有一層。系統**不做**長度以外之內容審查 | BE-US-31, NFR-US-16 |
 | 修正版之附件副本（PHASE-009） | 位元組逐位元組複製為**新 `storageKey`**（原圖與縮圖各自新 key），`ownerId` 與授權面不變——副本仍須通過同一授權端點才能存取；複製失敗時補償刪檔 ＋ 整筆交易回滾。**日誌零 storage key**：複製模組永不記錄底層錯誤訊息原文（其逐字含 key），只記錯誤類別名稱並改拋訊息固定之 500 | NFR-US-10, BE-US-23, NFR-US-16 |
-| 稽核紀錄 | 記操作者/擁有人/時間/類型/前後摘要；不含密碼與憑證 | BE-US-31, AD-US-14 |
+| 稽核紀錄 | 記操作者/擁有人/時間/類型/前後摘要；不含密碼與憑證。**PHASE-010 落地補記（檢視面）**：①**檢視端點為管理員 only**（`GET /admin/audit-logs`；一般使用者含資料擁有人本人一律 403，**嚴於**申請端點之「擁有人或管理員」；授權恆早於解析與查詢，`403` 回應零業務值）②**對外投影不含內部識別值**——列 DTO 封閉七鍵、**`actorId`／`targetId` 不外露**（沿 PHASE-009 既有紀律；連帶使前端篩選必須是使用者下拉而非 id 文字輸入）③`summary` 之對外形式**只由 `flattenAuditSummary` 一處決定**（攤平不擴大揭露面），敏感字掃描**同時涵蓋 DB 全表與 wire 面**（含新的 `changes` 揭露面），對明文密碼／`$argon2` 前綴／session token 零命中；封閉允許集恰兩個完整字面（`USER_PASSWORD_RESET`、`mustChangePassword`），子字串不放行④`USER_PASSWORD_RESET` 之 `summary` 為封閉單鍵 `{mustChangePassword:true}`（加鍵 mutant 必紅）；`USER_DELETED` 之列 `targetId` 為 `null`、`targetLabel` 為刪除前 `loginName` 快照⑤**wire 完整而畫面過濾**（MG-3，人類 2026-08-10）：`targetLabel` 與 `changes[]` 之 `applicationId`／`revisionOf` 於 wire／DB 完整保留供追查，**僅畫面不呈現**——追查路徑存在但非畫面可達⑥`AuditLog` 為 **append-only**（零 `update`／`delete`／`upsert` 路徑）；**稽核內容恆不入日誌** | BE-US-31, AD-US-14 |
 | 錯誤回應/日誌 | 不外洩堆疊/DB 結構/敏感資訊；日誌含追查識別但不含密碼 | NFR-US-16 |
 | Secrets/連線憑證 | 一律環境變數；不寫死於程式/commit/log/文件 | NFR-US-05 |
 
