@@ -565,7 +565,8 @@ describe("AuditLogPage", () => {
   });
 
   // ==========================================================================
-  // BE2 即審 FW-1（T-MG1-FE 新增）：dateFrom/dateTo 送出值紅線
+  // BE2 即審 FW-1（T-MG1-FE 新增；PHASE-010-CIFIX-TZ 修正）：
+  // dateFrom/dateTo 送出值紅線
   // ==========================================================================
   //
   // 實查（T-MG1-FE）：`AuditLogPage.tsx` 之 `load()`（`dateFrom: f.dateFrom ||
@@ -574,39 +575,29 @@ describe("AuditLogPage", () => {
   // 字串，零 `Date` 物件轉換——已直傳，本節純屬**守門新增**（防未來回歸），
   // 非行為變更（依 Packet FW-1：「已直傳則此格為守門新增非行為變更」）。
   //
-  // MG-2（台灣日曆日裁定）之風險面：若未來「優化」為先建 `Date` 物件再取
-  // 日期字串（如 `new Date(v).toLocaleDateString()`／`.getDate()` 等**依賴
-  // 執行環境本地時區**的路徑），會在 UTC 負偏移瀏覽器（西半球，例如
-  // America/Los_Angeles，UTC-7/-8）發生「前一日」位移，直接抵銷 MG-2 的
-  // 台北日界裁定。經實測驗證（見 Handoff「mutant 實錄」）：
-  //   · Packet 建議之 `new Date(v).toISOString().slice(0,10)` 對純日期字串
-  //     （`YYYY-MM-DD`）**不會**位移——ECMAScript 規定純日期字串以 UTC 解讀，
-  //     `.toISOString()` 之輸出恆為 UTC，兩端點皆為 UTC 故互相抵銷，
-  //     與宿主時區無關（已用 `America/Los_Angeles` 實測確認零位移）。
-  //   · 真正會位移的是**經本地時間方法**之路徑（如 `.toLocaleDateString()`／
-  //     `.getDate()`）——同一輸入於 `America/Los_Angeles` 下實測確實位移一日
-  //     （`2026-08-01` → `2026-07-31`）。
-  // 故本格刻意將 `process.env.TZ` 釘死為負偏移時區（`America/Los_Angeles`）
-  // 執行，使守門對任何「經本地時間方法之日期往返」回歸具真實鑑別力，不受
-  // CI 宿主時區（本機預設 `Asia/Taipei`，正偏移，即使發生同型回歸也不會
-  // 位移，守門會零鑑別力）影響。
+  // **PHASE-010-CIFIX-TZ（2026-08-10）**：T-MG1-FE 原版曾以
+  // `process.env.TZ = "America/Los_Angeles"`（釘死負偏移時區）執行本格，
+  // 意圖使守門對「經本地時間方法之日期往返」回歸具真實鑑別力（本機
+  // `Asia/Taipei` 為正偏移，同型回歸不會位移，守門會零鑑別力）。此法在
+  // PR #19 首跑 CI（Linux）造成本檔另外三格（AC-17 Success 態／AC-15(c)
+  // 四要素／追加② createdAt 在地化）之 `toLocaleString("zh-TW")` 渲染改用
+  // 他時區、與斷言期望的台北字串不符而變紅——本機 Windows 全綠、CI Linux
+  // 才紅（與 PHASE-008 T2 SF-1 之 TZ 污染守門同族）。改用
+  // `vi.stubEnv`／`unstubAllEnvs` 之標準隔離手法仍依賴 Node 對 `Intl`／
+  // `Date` 本地時區之快取行為（構造 `Intl.DateTimeFormat`／呼叫過一次
+  // `toLocaleString` 後之時區解析在部分 Node/ICU 組合下不保證每次呼叫都
+  // 重新讀取 `process.env.TZ`，還原後仍可能殘留），跨平台不保證零洩漏。
+  //
+  // 改採**移除渲染面**（不釘死全域 `TZ`）：本格斷言之標的本就只是「送出
+  // 之 query 字串是否逐字等於使用者所選 `YYYY-MM-DD`」，不需要、也不應該
+  // 依賴任何時區才能成立——`YYYY-MM-DD` 逐字相等本身即可鑑別絕大多數真實
+  // 回歸（任何經 `.toLocaleDateString()`／`.toISOString()` 等 `Date` 往返
+  // 之路徑，只要輸出格式或數值與原始輸入字面不同即必紅，不論宿主時區）。
+  // 唯一逃逸的極窄案例＝「轉換後格式恰為 `YYYY-MM-DD` 且數值恰好不變」
+  // ——此案例本身即不構成 bug（值未變）。零環境變數操作，對本檔或其他檔
+  // 之任何測試皆為零洩漏。
   describe("BE2 即審 FW-1: dateFrom/dateTo 送出值紅線（T-MG1-FE）", () => {
-    const originalTz = process.env.TZ;
-
-    afterEach(() => {
-      if (originalTz === undefined) {
-        // `process.env.TZ = undefined` 會被 Node 強制轉為字面字串 "undefined"
-        // （非真正移除該鍵），故以 Reflect.deleteProperty 真正清除（同時避開
-        // biome lint/performance/noDelete 對 `delete` 運算子之規則）。
-        Reflect.deleteProperty(process.env, "TZ");
-      } else {
-        process.env.TZ = originalTz;
-      }
-    });
-
-    it("dateFrom／dateTo 送出值逐字等於使用者所選 YYYY-MM-DD 字串（釘死負偏移時區 America/Los_Angeles，防經 Date 本地時間往返之位移回歸）", async () => {
-      process.env.TZ = "America/Los_Angeles";
-
+    it("dateFrom／dateTo 送出值逐字等於使用者所選 YYYY-MM-DD 字串", async () => {
       mockMeAs(adminUser);
       mockAuditList({ items: [], page: 1, pageSize: 20, total: 0 });
       renderAuditLogPage();
@@ -620,7 +611,8 @@ describe("AuditLogPage", () => {
       await waitFor(() => {
         const calls = (fetch as Mock).mock.calls;
         const last = String(calls[calls.length - 1]?.[0]);
-        // 逐字相等（非僅 toContain 子字串）：位移一日會使日期數字不同，必紅。
+        // 逐字相等（非僅 toContain 子字串）：任何經 Date 往返之格式／數值
+        // 變化皆必紅，且不依賴任何全域環境狀態（零跨測試洩漏風險）。
         const url = new URL(last, "http://localhost");
         expect(url.searchParams.get("dateFrom")).toBe("2026-08-01");
         expect(url.searchParams.get("dateTo")).toBe("2026-08-31");
