@@ -1,6 +1,7 @@
 /**
  * AuditLogPage — PHASE-010-T7（稽核檢視頁：路由／入口／列表／篩選／分頁／五態）
  * ＋ PHASE-010-T7R（AC-16(d) 使用者下拉篩選；SF-1 人類裁定 2026-08-09）
+ * ＋ PHASE-010-T-MG3-FE（Mock Gate MG-3 修復：`targetLabel` 內部識別碼不呈現）
  *
  * AD-US-14②③ 之使用者可見落點。路由 `/admin/audit-logs`（D10=(a)），管理員 only；
  * 一般使用者一律 Permission denied 態（AC-15(a)）。
@@ -60,9 +61,27 @@
  * （`targetLabel`，必要時併 `targetDisplayName`，依 AC-04(c)）。
  *
  * 追加①（T6 W-3，大總管裁定）：`targetLabel` 經 React 文字節點渲染
- * （`{item.targetLabel}`），**不使用** `dangerouslySetInnerHTML`——理由與
- * 守門方式同 `AuditChangesList.tsx` 檔頭 AC-18(a) 段落，此處為該覆蓋在
- * 本頁列渲染處的落點。
+ * （`{truncateAtFirstHash(item.targetLabel)}`），**不使用**
+ * `dangerouslySetInnerHTML`——理由與守門方式同 `AuditChangesList.tsx` 檔頭
+ * AC-18(a) 段落，此處為該覆蓋在本頁列渲染處的落點。
+ *
+ * ---------------------------------------------------------------------------
+ * AC-18(e)：內部識別碼不呈現於畫面（MG-3，T-MG3-FE）
+ * ---------------------------------------------------------------------------
+ * 人類 leonchih 2026-08-10 Mock Gate 第二輪 MG-3 裁定逐字：「內部申請編號
+ * （cuid）對人類無意義，畫面不顯示、資料庫可查即可」；同日消歧裁定＝
+ * 「兩處都拿掉」之①半邊（②半邊為 `AuditChangesList` 明細列過濾）。
+ *
+ * `truncateAtFirstHash`（(e-1)）：僅呈現 `targetLabel` 第一個 `#` 字元之前
+ * 的子字串，`#` 及其後全部字元不渲染；**不含 `#` 者原樣全字呈現**（`loginName`
+ * 形／`USER_DELETED` 快照形／油耗 fallback 之裸 `userId`，見 B-30）。射程涵蓋
+ * 參數型 `targetLabel`（`FUEL_PRICE#<cuid>` 等，裁定直接推論之延伸判讀，
+ * 已於 §18 獨立列出供 Gate 覆核）。純前端呈現層變更——`targetLabel` 之
+ * **wire 值零變更**（AC-04(c)），DB 與 API 完整保留供追查（§17.1 #12）。
+ *
+ * (e-7)：`targetDisplayName` 之附掛去重比較改以**裁切後**之顯示值為準
+ * （`targetDisplayName !== truncatedLabel`），防「`alice#<cuid>` 截斷後與
+ * 顯示名稱相同卻仍附掛」之「alice（alice）」重複呈現。
  *
  * `changes[]` 之呈現直接複用 `AuditChangesList`（T6 既有元件，不重造——
  * 沿 T1 即審 FW-5／T3 即審 FW-6 上游 FW 義務）。
@@ -122,6 +141,15 @@ const EMPTY_FILTERS: FilterFormState = {
 };
 
 const PAGE_SIZE = 20;
+
+/**
+ * AC-18(e-1)：`targetLabel` 呈現＝第一個 `#` 之前段；不含 `#` 者原樣全字
+ * 呈現（不截斷，B-30）。純前端呈現層運算，`targetLabel` 之 wire 值不變。
+ */
+function truncateAtFirstHash(targetLabel: string): string {
+  const hashIndex = targetLabel.indexOf("#");
+  return hashIndex === -1 ? targetLabel : targetLabel.slice(0, hashIndex);
+}
 
 /**
  * AC-16(d)：使用者下拉之清單狀態。`failed` 為**降級**態（非致命）——見檔頭
@@ -426,25 +454,31 @@ export default function AuditLogPage(): React.ReactElement {
         {pageState.kind === "ready" && pageState.items.length > 0 && (
           <>
             <ul className="audit-log-list" aria-label="稽核紀錄清單">
-              {pageState.items.map((item) => (
-                <li key={item.id} className="audit-log-item">
-                  <div className="audit-log-item-header">
-                    <span className="audit-log-time">
-                      {new Date(item.createdAt).toLocaleString("zh-TW")}
-                    </span>
-                    <span className="audit-log-actor">{item.actorDisplayName}</span>
-                    <span className="type-badge">{AUDIT_ACTION_LABELS[item.action]}</span>
-                    <span className="audit-log-target">
-                      {item.targetLabel}
-                      {item.targetDisplayName !== null &&
-                        item.targetDisplayName !== item.targetLabel && (
-                          <>（{item.targetDisplayName}）</>
-                        )}
-                    </span>
-                  </div>
-                  <AuditChangesList changes={item.changes} />
-                </li>
-              ))}
+              {pageState.items.map((item) => {
+                // AC-18(e-1)：畫面只呈現第一個 `#` 前段，內部識別碼不渲染
+                // （wire 之 item.targetLabel 完整值不變，僅此處呈現運算）。
+                const displayTargetLabel = truncateAtFirstHash(item.targetLabel);
+                return (
+                  <li key={item.id} className="audit-log-item">
+                    <div className="audit-log-item-header">
+                      <span className="audit-log-time">
+                        {new Date(item.createdAt).toLocaleString("zh-TW")}
+                      </span>
+                      <span className="audit-log-actor">{item.actorDisplayName}</span>
+                      <span className="type-badge">{AUDIT_ACTION_LABELS[item.action]}</span>
+                      <span className="audit-log-target">
+                        {displayTargetLabel}
+                        {item.targetDisplayName !== null &&
+                          // (e-7)：去重比較以裁切後之顯示值為準，防「alice（alice）」。
+                          item.targetDisplayName !== displayTargetLabel && (
+                            <>（{item.targetDisplayName}）</>
+                          )}
+                      </span>
+                    </div>
+                    <AuditChangesList changes={item.changes} />
+                  </li>
+                );
+              })}
             </ul>
 
             <div className="pagination">

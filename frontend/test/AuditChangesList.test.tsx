@@ -1,6 +1,15 @@
 /**
  * AuditChangesList 元件單元測試 — PHASE-010-T6（PHASE-010-T7R 擴充；
- * PHASE-010-T-MG1-FE 再擴充；PHASE-010-T-MG1-FE-R 暖續修復）
+ * PHASE-010-T-MG1-FE 再擴充；PHASE-010-T-MG1-FE-R 暖續修復；
+ * PHASE-010-T-MG3-FE 四度擴充）
+ *
+ * **T-MG3-FE（Mock Gate 第二輪修復，依 MG-3 裁定）**：新增
+ * `describe("AC-18(e): 純內部識別碼列不呈現（MG-3）")`——`applicationId`／
+ * `revisionOf` 兩列不渲染之正負向、隱藏欄常數恰兩鍵之刪／增 mutant、
+ * 過濾過寬防護（其餘欄位照常渲染）、B-31 全濾後之既有空態；另於既有
+ * 32 鍵欄名守門格（`D3=(c)` describe）**新增**（非刪除）(e-4) 鑑別力自證
+ * 斷言——就 `applicationId`／`revisionOf` 兩鍵改以 `FIELD_LABELS`／
+ * `fieldLabel()` 為斷言對象（見該 it 內對應段落）。
  *
  * **T-MG1-FE-R（FE 複審 SF-A／AR-10）**：AC-18(b) 格於 T-MG1-FE 之 fixture
  * 汰換（子欄拆列新契約）後已無任何 JSON blob 值 fixture，前端自帶負向守門
@@ -50,7 +59,11 @@
 
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import AuditChangesList from "../src/components/AuditChangesList.js";
+import AuditChangesList, {
+  FIELD_LABELS,
+  HIDDEN_INTERNAL_ID_FIELDS,
+  fieldLabel,
+} from "../src/components/AuditChangesList.js";
 import type { AuditChangeDto } from "../src/types/api.js";
 
 /**
@@ -241,6 +254,19 @@ describe("AuditChangesList", () => {
       for (const field of REQUIRED_SUMMARY_FIELDS) {
         expect(screen.queryByText(field)).not.toBeInTheDocument();
       }
+
+      // AC-18(e-4)：(e-2) 生效後 applicationId／revisionOf 兩鍵之列完全不
+      // 渲染，上方迴圈對此二鍵之斷言因此恆真而失去鑑別力（見
+      // AuditChangesList.tsx 檔頭 AC-18(e-4) 段落）。就此二鍵改以標籤表本身
+      // 為斷言對象：逐鍵須有非空、且不等於鍵名之中文標籤——「刪
+      // FIELD_LABELS 之該鍵」之 mutant 會使 fieldLabel() 回退顯示原始英文
+      // 鍵名（等於鍵名），下列斷言即必紅（§15 T-MG3-FE 機械連動預授權，
+      // 本段為既有 it 之新增內容，零刪除既有 expect）。
+      for (const field of HIDDEN_INTERNAL_ID_FIELDS) {
+        const label = fieldLabel(field);
+        expect(label).toBeTruthy();
+        expect(label).not.toBe(field);
+      }
     });
 
     it("缺表鍵不得崩、不得空白——回退顯示原始英文鍵名（可接受回退）", () => {
@@ -410,6 +436,90 @@ describe("AuditChangesList", () => {
       for (const { label } of REQUIRED_ENUM_VALUE_MAPPINGS) {
         expect(screen.getAllByText(label).length).toBeGreaterThanOrEqual(1);
       }
+    });
+  });
+
+  // ==========================================================================
+  // AC-18(e)：純內部識別碼列不呈現（MG-3，T-MG3-FE 新增）
+  // ==========================================================================
+  //
+  // 人類 leonchih 2026-08-10 Mock Gate 第二輪 MG-3 裁定逐字：「內部申請編號
+  // （cuid）對人類無意義，畫面不顯示、資料庫可查即可」；同日消歧裁定＝
+  // 「兩處都拿掉」之②半邊（①半邊為 `AuditLogPage` 之 targetLabel 截斷，見
+  // `AuditLogPage.test.tsx` 之「AC-18(e)」describe）。
+  describe("AC-18(e): 純內部識別碼列不呈現（MG-3）", () => {
+    it("applicationId／revisionOf 兩列不渲染（正向）且其值字面零命中（負向）", () => {
+      const changes: AuditChangeDto[] = [
+        { field: "applicationId", before: null, after: "app-cuid-abc" },
+        { field: "revisionOf", before: null, after: "app-cuid-prev" },
+        { field: "type", before: null, after: "TRAVEL" },
+      ];
+
+      const { container } = render(<AuditChangesList changes={changes} />);
+
+      // 正向：僅餘 1 個非隱藏欄位列（+ 表頭列）
+      expect(screen.getAllByRole("row")).toHaveLength(2);
+      expect(screen.queryByText("申請編號")).not.toBeInTheDocument();
+      expect(screen.queryByText("修正自申請編號")).not.toBeInTheDocument();
+
+      // 負向：兩隱藏欄位之值於全渲染結果零命中
+      expect(container.textContent).not.toContain("app-cuid-abc");
+      expect(container.textContent).not.toContain("app-cuid-prev");
+    });
+
+    it("其餘欄位列逐列照常渲染（防過濾過寬）", () => {
+      const changes: AuditChangeDto[] = [
+        { field: "applicationId", before: null, after: "app-cuid-1" },
+        { field: "type", before: "TRAVEL", after: "MAINTENANCE" },
+        { field: "revisionOf", before: null, after: "app-cuid-0" },
+        { field: "reason", before: null, after: "測試作廢原因（合成資料）" },
+      ];
+
+      render(<AuditChangesList changes={changes} />);
+
+      expect(screen.getByText("申請類型")).toBeInTheDocument();
+      expect(screen.getByText("差旅補助")).toBeInTheDocument();
+      expect(screen.getByText("保養分攤")).toBeInTheDocument();
+      expect(screen.getByText("作廢原因")).toBeInTheDocument();
+      expect(screen.getByText("測試作廢原因（合成資料）")).toBeInTheDocument();
+
+      // 僅隱藏兩列不渲染：表頭列 + 2 非隱藏資料列 = 3 列
+      expect(screen.getAllByRole("row")).toHaveLength(3);
+    });
+
+    it("隱藏欄常數恰兩鍵：刪一鍵／多一鍵之 mutant 必紅", () => {
+      expect(HIDDEN_INTERNAL_ID_FIELDS.size).toBe(2);
+      expect([...HIDDEN_INTERNAL_ID_FIELDS].sort()).toEqual(["applicationId", "revisionOf"]);
+
+      // (e-3)：隱藏欄集合 ⊆ FIELD_LABELS 鍵集
+      for (const field of HIDDEN_INTERNAL_ID_FIELDS) {
+        expect(Object.prototype.hasOwnProperty.call(FIELD_LABELS, field)).toBe(true);
+      }
+    });
+
+    it("(e-4) 刪 FIELD_LABELS 之 applicationId／revisionOf 任一鍵 → 32 鍵守門仍必紅（鑑別力自證）", () => {
+      // 隱藏後渲染不到這兩鍵，「畫面不出現鍵名」之負向斷言對它們恆真——
+      // 鑑別力改由標籤表本身承載：逐鍵須有非空、且不等於鍵名之標籤，
+      // 「刪 FIELD_LABELS 之該鍵」之 mutant 會使 fieldLabel() 回退顯示原始
+      // 英文鍵名（等於鍵名），下列斷言即必紅。
+      for (const field of HIDDEN_INTERNAL_ID_FIELDS) {
+        const label = fieldLabel(field);
+        expect(label).toBeTruthy();
+        expect(label).not.toBe(field);
+      }
+    });
+
+    it("B-31 全列被濾 → 既有空態「（無異動明細）」且無空表頭", () => {
+      const changes: AuditChangeDto[] = [
+        { field: "applicationId", before: null, after: "app-cuid-x" },
+        { field: "revisionOf", before: null, after: "app-cuid-y" },
+      ];
+
+      render(<AuditChangesList changes={changes} />);
+
+      expect(screen.getByText("（無異動明細）")).toBeInTheDocument();
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(screen.queryByRole("columnheader")).not.toBeInTheDocument();
     });
   });
 });

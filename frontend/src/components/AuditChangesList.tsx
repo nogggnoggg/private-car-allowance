@@ -1,6 +1,7 @@
 /**
  * AuditChangesList — PHASE-010-T6（稽核變更清單元件；呈現安全）
  * ＋ PHASE-010-T-MG1-FE（Mock Gate MG-1 修復：值層中文化 ＋ 欄名表補 `kmPerLiter`）
+ * ＋ PHASE-010-T-MG3-FE（Mock Gate MG-3 修復：純內部識別碼列不呈現）
  *
  * 呈現單一稽核列之 `changes: AuditChangeDto[]`（§7.2；由後端
  * `flattenAuditSummary` 攤平而得）為「欄位／改前／改後」三欄表格。
@@ -94,13 +95,45 @@
  * `AuditChangesList.test.tsx`（14 值：`ApplicationType` 3 ＋ `FuelType` 4 ＋
  * `Role` 2 ＋ 參數類型 3 ＋ 布林 2；沿 `REQUIRED_SUMMARY_FIELDS` 之守門形狀，
  * 獨立硬編、不衍生自本檔常數，以保有「刪值即紅」之鑑別力）。
+ *
+ * ---------------------------------------------------------------------------
+ * AC-18(e)：純內部識別碼列不呈現（MG-3 裁定；T-MG3-FE）
+ * ---------------------------------------------------------------------------
+ * 人類 leonchih 2026-08-10 Mock Gate 第二輪 MG-3 裁定逐字：「內部申請編號
+ * （cuid）對人類無意義，畫面不顯示、資料庫可查即可」；同日消歧裁定＝
+ * 「兩處都拿掉」之②半邊（①半邊為 `AuditLogPage` 之 `targetLabel` 截斷）。
+ *
+ * (e-2)：渲染前濾除 `field` 屬 `HIDDEN_INTERNAL_ID_FIELDS`（封閉集合，
+ * **現行恰兩鍵**：`applicationId`／`revisionOf`）之列。過濾一律依欄位名，
+ * 不依值形狀猜測。(e-5)：全列被濾後走既有空態「（無異動明細）」，不渲染
+ * 空表頭。純前端呈現層變更——`changes[]` 之 wire 值不變（AC-04(a)）。
+ *
+ * (e-3)：`HIDDEN_INTERNAL_ID_FIELDS` 獨立硬編（不衍生自 `FIELD_LABELS`），
+ * 供測試斷言「恰兩鍵」與「⊆ FIELD_LABELS 鍵集」。
+ *
+ * (e-4)：現行 32 鍵欄名守門（`AuditChangesList.test.tsx` 之「D3=(c)」describe）
+ * 之形狀為「32 鍵各構成一列渲染 → 斷言畫面上不出現原始英文鍵名」——(e-2)
+ * 生效後，被隱藏之兩鍵根本不渲染，該斷言對此二鍵恆真而失去鑑別力。故
+ * `FIELD_LABELS` 與 `fieldLabel` 在此**匯出**，供測試就被隱藏之兩鍵改以
+ * 標籤表本身為斷言對象（逐鍵須有非空、且不等於鍵名之標籤），使「刪
+ * `FIELD_LABELS` 之該鍵」之 mutant 仍必紅。`FIELD_LABELS` 之 32 鍵定義與
+ * 計數**零變更**——「是否呈現」與「是否有標籤」為兩件正交之事，隱藏欄之
+ * 標籤條目一律保留（供回退顯示、日後解除隱藏、及守門之用）。
  */
 
 import type React from "react";
 import type { AuditChangeDto } from "../types/api.js";
 
-/** D3=(c)：`summary` 頂層鍵 → 中文標籤（缺表鍵回退顯示原鍵名）。 */
-const FIELD_LABELS: Record<string, string> = {
+/**
+ * D3=(c)：`summary` 頂層鍵 → 中文標籤（缺表鍵回退顯示原鍵名）。
+ *
+ * **匯出理由（AC-18(e-4)）**：`applicationId`／`revisionOf` 兩鍵經
+ * (e-2) 過濾後不渲染，32 鍵欄名守門對此二鍵之「畫面不出現鍵名」斷言因而
+ * 恆真、失去鑑別力——測試改就此二鍵直接斷言本表之標籤內容（見
+ * `AuditChangesList.test.tsx` 之 (e-4) 格）。**32 鍵定義與計數零變更**，
+ * 隱藏欄之標籤條目一律保留（不因隱藏而刪除）。
+ */
+export const FIELD_LABELS: Record<string, string> = {
   applicationId: "申請編號",
   type: "申請類型",
   reason: "作廢原因",
@@ -141,9 +174,22 @@ const FIELD_LABELS: Record<string, string> = {
   currentMaintenanceDate: "本次保養日期",
 };
 
-function fieldLabel(field: string): string {
+/** 匯出理由同 `FIELD_LABELS`（AC-18(e-4) 之鑑別力自證，見上方檔頭段落）。 */
+export function fieldLabel(field: string): string {
   return FIELD_LABELS[field] ?? field;
 }
+
+/**
+ * AC-18(e-2)(e-3)：純內部識別碼欄位之封閉集合——**現行恰兩鍵**。渲染前依
+ * 此集合濾除對應列（依欄位名，不依值形狀猜測）。獨立硬編、不衍生自
+ * `FIELD_LABELS`，保有「刪一鍵／多一鍵即紅」之鑑別力（沿
+ * `REQUIRED_SUMMARY_FIELDS`／14 值守門之既有形狀）。日後若有新的純內部
+ * 識別碼欄成為 `changes[].field` 之可能值，須同批更新本集合（屬 Spec 變更）。
+ */
+export const HIDDEN_INTERNAL_ID_FIELDS: ReadonlySet<string> = new Set([
+  "applicationId",
+  "revisionOf",
+]);
 
 /** AC-18(d)：`type` → `ApplicationType` 三值中文（沿 `ApplicationListSection.tsx` :30-32）。 */
 export const TYPE_VALUE_LABELS: Record<string, string> = {
@@ -229,7 +275,11 @@ export interface AuditChangesListProps {
 }
 
 export default function AuditChangesList({ changes }: AuditChangesListProps): React.ReactElement {
-  if (changes.length === 0) {
+  // AC-18(e-2)：渲染前濾除純內部識別碼欄位列（wire 之 changes[] 不變，僅此
+  // 處呈現過濾）。(e-5)：全列被濾後走既有空態，不渲染空表頭。
+  const visibleChanges = changes.filter((change) => !HIDDEN_INTERNAL_ID_FIELDS.has(change.field));
+
+  if (visibleChanges.length === 0) {
     return <p className="audit-changes-empty">（無異動明細）</p>;
   }
 
@@ -244,7 +294,7 @@ export default function AuditChangesList({ changes }: AuditChangesListProps): Re
           </tr>
         </thead>
         <tbody>
-          {changes.map((change, index) => (
+          {visibleChanges.map((change, index) => (
             <tr key={`${change.field}-${index}`}>
               <td>{fieldLabel(change.field)}</td>
               <td>{formatValue(change.field, change.before)}</td>

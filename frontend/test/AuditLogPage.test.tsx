@@ -1,13 +1,15 @@
 /**
  * AuditLogPage 前端單元測試 — PHASE-010-T7（PHASE-010-T7R 擴充；
- * PHASE-010-T-MG1-FE 再擴充）
+ * PHASE-010-T-MG1-FE 再擴充；PHASE-010-T-MG3-FE 三度擴充）
  *
  * 涵蓋 AC-15（路由／入口／列表四要素）、AC-16（篩選與分頁 UI）、**AC-16(d)**
  * （SF-1 裁定之使用者下拉，T7R 新增）、AC-17（五態）、**SF-5**（切頁 Loading
  * 守門，T7R 新增）、追加①（`targetLabel` 之 AC-18(a) XSS 跳脫，頁面列渲染處
  * 自帶）、追加②（`createdAt` 之 AC-18(c) 在地化單一形式，與 T6 之 `changes`
  * 內 ISO 互補）、**BE2 即審 FW-1**（`dateFrom`／`dateTo` 送出值紅線，
- * T-MG1-FE 新增——見下方同名 describe 區塊檔頭之完整說明）。
+ * T-MG1-FE 新增——見下方同名 describe 區塊檔頭之完整說明）、**AC-18(e)**
+ * （MG-3 裁定之內部識別碼不呈現——`targetLabel` 面，T-MG3-FE 新增；AC-15(c)
+ * 一格同批重錨定，見下方 describe 區塊）。
  *
  * 測試策略沿用既有前端頁面慣例：
  *   - Permission denied：沿 `AdminUsersPage.test.tsx`「先查 authState.role 再
@@ -371,11 +373,114 @@ describe("AuditLogPage", () => {
       expect(within(list).getByText("申請作廢")).toBeInTheDocument();
       // AC-04(c)：受影響資料＝targetLabel，必要時併 targetDisplayName——同一
       // <span> 內兩者皆逐字可見（非精確等於單一字串，因併陳呈現分屬多個文字節點）。
-      expect(screen.getByText(/user1#app-9/)).toBeInTheDocument();
+      // AC-18(e-1)（MG-3 重錨定，T-MG3-FE）：targetLabel 只呈現第一個 `#` 前段，
+      // 內部申請編號（`#app-9`）於全頁零命中——原斷言 `/user1#app-9/` 已隨此
+      // 裁定改為下列正負向兩格（不得刪格，見 §15 T-MG3-FE 機械連動預授權）。
+      expect(screen.getByText(/^user1/)).toBeInTheDocument();
+      expect(screen.queryByText(/#app-9/)).not.toBeInTheDocument();
+      expect(document.body.textContent).not.toContain("#app-9");
       expect(screen.getByText(/使用者一/)).toBeInTheDocument();
       expect(
         screen.getByText(new Date("2026-08-09T03:21:00.000Z").toLocaleString("zh-TW"))
       ).toBeInTheDocument();
+    });
+  });
+
+  // ==========================================================================
+  // AC-18(e)：內部識別碼不呈現（MG-3，T-MG3-FE 新增）
+  // ==========================================================================
+  //
+  // 人類 leonchih 2026-08-10 Mock Gate 第二輪 MG-3 裁定逐字：「內部申請編號
+  // （cuid）對人類無意義，畫面不顯示、資料庫可查即可」；同日消歧裁定＝
+  // 「兩處都拿掉」。本 describe 涵蓋 (e-1)(e-7) 之 `targetLabel` 呈現面
+  // （明細列面之 (e-2)~(e-5) 見 `AuditChangesList.test.tsx`）。
+  describe("AC-18(e): 內部識別碼不呈現（MG-3）", () => {
+    it("帳號#編號 只顯示帳號段，# 後段字面於全頁零命中", async () => {
+      mockMeAs(adminUser);
+      mockAuditList({
+        items: [
+          baseItem({
+            action: "APPLICATION_VOIDED",
+            targetLabel: "user1#app-9",
+            targetDisplayName: null,
+          }),
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      });
+      renderAuditLogPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("user1")).toBeInTheDocument();
+      });
+      expect(document.body.textContent).not.toContain("#app-9");
+    });
+
+    it("參數型 FUEL_PRICE#<cuid> 只顯示 FUEL_PRICE", async () => {
+      mockMeAs(adminUser);
+      mockAuditList({
+        items: [
+          baseItem({
+            action: "PARAMETER_VERSION_CREATED",
+            targetLabel: "FUEL_PRICE#param-cuid-1",
+            targetDisplayName: null,
+          }),
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      });
+      renderAuditLogPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("FUEL_PRICE")).toBeInTheDocument();
+      });
+      expect(document.body.textContent).not.toContain("param-cuid-1");
+      expect(document.body.textContent).not.toContain("FUEL_PRICE#");
+    });
+
+    it("B-30 無 # 之 targetLabel 原樣全字呈現（不截斷）", async () => {
+      mockMeAs(adminUser);
+      mockAuditList({
+        items: [
+          baseItem({
+            action: "USER_DELETED",
+            targetLabel: "已刪除帳號快照-user1",
+            targetDisplayName: null,
+          }),
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      });
+      renderAuditLogPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("已刪除帳號快照-user1")).toBeInTheDocument();
+      });
+    });
+
+    it("(e-7) 顯示名稱去重以裁切後之值比較——不得出現「alice（alice）」", async () => {
+      mockMeAs(adminUser);
+      mockAuditList({
+        items: [
+          baseItem({
+            action: "APPLICATION_VOIDED",
+            targetLabel: "alice#app-42",
+            targetDisplayName: "alice",
+          }),
+        ],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      });
+      renderAuditLogPage();
+
+      await waitFor(() => {
+        expect(screen.getByText("alice")).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/alice（alice）/)).not.toBeInTheDocument();
     });
   });
 
