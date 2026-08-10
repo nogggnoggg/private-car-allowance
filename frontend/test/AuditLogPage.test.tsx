@@ -1,6 +1,7 @@
 /**
  * AuditLogPage 前端單元測試 — PHASE-010-T7（PHASE-010-T7R 擴充；
- * PHASE-010-T-MG1-FE 再擴充；PHASE-010-T-MG3-FE 三度擴充）
+ * PHASE-010-T-MG1-FE 再擴充；PHASE-010-T-MG3-FE 三度擴充；
+ * PHASE-010-CIFIX-TZ／PHASE-010-CIFIX-NNSP CI 紅燈修復）
  *
  * 涵蓋 AC-15（路由／入口／列表四要素）、AC-16（篩選與分頁 UI）、**AC-16(d)**
  * （SF-1 裁定之使用者下拉，T7R 新增）、AC-17（五態）、**SF-5**（切頁 Loading
@@ -10,6 +11,15 @@
  * T-MG1-FE 新增——見下方同名 describe 區塊檔頭之完整說明）、**AC-18(e)**
  * （MG-3 裁定之內部識別碼不呈現——`targetLabel` 面，T-MG3-FE 新增；AC-15(c)
  * 一格同批重錨定，見下方 describe 區塊）。
+ *
+ * **PHASE-010-CIFIX-NNSP（2026-08-10，CI 第三輪）**：全部「以裸
+ * `new Date(iso).toLocaleString("zh-TW")` 建 `getByText` 期望字串」之處
+ * （AC-17 Success 態／AC-15(c) 四要素／追加② createdAt 在地化，共三處）
+ * 改經下方 `localized()` helper——Linux ICU 於日期與「上午/下午」間插入
+ * U+2009 THIN SPACE（Windows 為 U+0020），Testing Library 之字串 matcher
+ * 僅 normalize 元素文字、不 normalize matcher 本身，故裸用在 Linux CI 上
+ * 永遠比對失敗、Windows 本機因兩側皆半形空格而偶合通過。詳見 `localized()`
+ * 之函式註解。**本地全綠不代表已修復——最終驗證依賴 CI 重跑。**
  *
  * 測試策略沿用既有前端頁面慣例：
  *   - Permission denied：沿 `AdminUsersPage.test.tsx`「先查 authState.role 再
@@ -174,6 +184,23 @@ function renderAuditLogPage() {
   );
 }
 
+/**
+ * PHASE-010-CIFIX-NNSP：`new Date(iso).toLocaleString("zh-TW")` 之期望字串
+ * 「裸用」於 `getByText` 在 Linux ICU 下必炸——Linux 之 `toLocaleString`
+ * 在日期與「上午/下午」間插入 U+2009 THIN SPACE（Windows 為一般半形空格
+ * U+0020）。Testing Library 的字串 matcher 比對為
+ * `normalizer(elementText) === matcher`：**元素文字被 normalize**
+ * （`\s+` → 單一空格，U+2009 ∈ `\s`），**matcher 字串本身不 normalize**
+ * ——故 Linux 上 normalize 後之元素文字（半形空格）永遠不等於含 U+2009 之
+ * 期望字串，`getByText` 必然找不到；Windows 因兩側皆為半形空格而偶合通過。
+ * 本 helper 與 Testing Library 預設 normalizer 同式（collapse whitespace），
+ * 使期望字串與元素文字在比對前皆已正規化——**禁止簡化回裸
+ * `toLocaleString`**，那正是本次 CI 紅燈之根因。
+ */
+function localized(iso: string): string {
+  return new Date(iso).toLocaleString("zh-TW").replace(/\s+/g, " ");
+}
+
 describe("AuditLogPage", () => {
   beforeEach(() => {
     queues.me = [];
@@ -305,9 +332,7 @@ describe("AuditLogPage", () => {
         expect(screen.getByText("管理員")).toBeInTheDocument();
       });
       // 四要素：操作時間（在地化，見追加②獨立描述）／操作者／操作類型（中文標籤）／受影響資料
-      expect(
-        screen.getByText(new Date("2026-08-09T03:21:00.000Z").toLocaleString("zh-TW"))
-      ).toBeInTheDocument();
+      expect(screen.getByText(localized("2026-08-09T03:21:00.000Z"))).toBeInTheDocument();
       // 操作類型中文標籤同時出現在篩選下拉的 <option>，用 list 範圍鎖定實際列渲染。
       const list = screen.getByRole("list", { name: "稽核紀錄清單" });
       expect(within(list).getByText("新增使用者")).toBeInTheDocument();
@@ -380,9 +405,7 @@ describe("AuditLogPage", () => {
       expect(screen.queryByText(/#app-9/)).not.toBeInTheDocument();
       expect(document.body.textContent).not.toContain("#app-9");
       expect(screen.getByText(/使用者一/)).toBeInTheDocument();
-      expect(
-        screen.getByText(new Date("2026-08-09T03:21:00.000Z").toLocaleString("zh-TW"))
-      ).toBeInTheDocument();
+      expect(screen.getByText(localized("2026-08-09T03:21:00.000Z"))).toBeInTheDocument();
     });
   });
 
@@ -578,15 +601,15 @@ describe("AuditLogPage", () => {
   // **PHASE-010-CIFIX-TZ（2026-08-10）**：T-MG1-FE 原版曾以
   // `process.env.TZ = "America/Los_Angeles"`（釘死負偏移時區）執行本格，
   // 意圖使守門對「經本地時間方法之日期往返」回歸具真實鑑別力（本機
-  // `Asia/Taipei` 為正偏移，同型回歸不會位移，守門會零鑑別力）。此法在
-  // PR #19 首跑 CI（Linux）造成本檔另外三格（AC-17 Success 態／AC-15(c)
-  // 四要素／追加② createdAt 在地化）之 `toLocaleString("zh-TW")` 渲染改用
-  // 他時區、與斷言期望的台北字串不符而變紅——本機 Windows 全綠、CI Linux
-  // 才紅（與 PHASE-008 T2 SF-1 之 TZ 污染守門同族）。改用
-  // `vi.stubEnv`／`unstubAllEnvs` 之標準隔離手法仍依賴 Node 對 `Intl`／
-  // `Date` 本地時區之快取行為（構造 `Intl.DateTimeFormat`／呼叫過一次
-  // `toLocaleString` 後之時區解析在部分 Node/ICU 組合下不保證每次呼叫都
-  // 重新讀取 `process.env.TZ`，還原後仍可能殘留），跨平台不保證零洩漏。
+  // `Asia/Taipei` 為正偏移，同型回歸不會位移，守門會零鑑別力）。此法**曾
+  // 被誤判**為 PR #19 首跑 CI（Linux）本檔另外三格（AC-17 Success 態／
+  // AC-15(c) 四要素／追加② createdAt 在地化）之變紅根因（本機 Windows
+  // 全綠、CI Linux 才紅，表徵與 PHASE-008 T2 SF-1 之 TZ 污染守門同族，
+  // 診斷方向合理但**經 CIFIX-NNSP 於 Linux 容器十六進位傾印覆核後證實非
+  // 真根因**——真根因是 Testing Library 字串 matcher 之正規化不對稱，見
+  // 檔頭與下方 `localized()` helper 之說明，與本格之 `TZ` 操作無關）。
+  // 惟本格移除 `process.env.TZ` 之全域寫入**本身仍是正確的測試衛生改進**
+  // （零跨測試洩漏風險）——予以保留，不因根因判讀落差而回退。
   //
   // 改採**移除渲染面**（不釘死全域 `TZ`）：本格斷言之標的本就只是「送出
   // 之 query 字串是否逐字等於使用者所選 `YYYY-MM-DD`」，不需要、也不應該
@@ -816,7 +839,7 @@ describe("AuditLogPage", () => {
       renderAuditLogPage();
 
       await waitFor(() => {
-        expect(screen.getByText(new Date(iso).toLocaleString("zh-TW"))).toBeInTheDocument();
+        expect(screen.getByText(localized(iso))).toBeInTheDocument();
       });
       // 負向：ISO 原字串不得逐字出現在畫面（createdAt 欄自身；changes[] 內之 ISO 屬 T6 範圍不在此檢查）
       expect(screen.queryByText(iso)).not.toBeInTheDocument();
