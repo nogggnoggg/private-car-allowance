@@ -2,22 +2,35 @@
  * Fastify error handler and 404 handler for the unified error protocol.
  * Spec 5.2 (authoritative error shape) + AC-10, 11, 12, 13.
  *
- * setErrorHandler:
- *   - AppError → use its code/httpStatus/fields
- *   - Fastify schema validation errors → VALIDATION_ERROR + fields extracted from details
- *   - All other errors → INTERNAL_ERROR (500), generic message, no stack/details in body
+ * setErrorHandler — 四個分支（依序判定，見函式內編號註解）：
+ *   1. AppError → use its code/httpStatus/fields(/details)
+ *   2. Fastify schema validation errors → VALIDATION_ERROR + fields extracted from details
+ *   3. Wire-level / framework 4xx（body parser 等，CHORE-001／CHORE-002）→
+ *      413 PAYLOAD_TOO_LARGE／415 UNSUPPORTED_MEDIA_TYPE／其餘壓平為
+ *      400 VALIDATION_ERROR；記 info 級（caller-triggered，非伺服器缺陷）
+ *   4. All other errors → INTERNAL_ERROR (500), generic message, no stack/details in body
  *
  * setNotFoundHandler:
  *   - NOT_FOUND (404) in unified format
  *
  * requestId flows from request.id (set by Fastify genReqId) into response and logs.
+ *
+ * PHASE-010-T9（AC-21）：分支 4 之日誌不再記錄 `error.message` 原文，只記固定
+ * 分類標籤 ＋ `error.name` ＋ `requestId`；wire 面（500 回應 body）零變更。
+ * 站點白名單掃描與反向探針見 `test/integration/phase10-error-handler-leak.test.ts`。
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AppError, type FieldError, buildErrorBody } from "./errors.js";
-import { sanitizeForLog } from "./log-sanitize.js";
 
 /** Generic message for 500 responses — must not leak internal details (AC-11, Spec 5.2) */
 const INTERNAL_ERROR_MESSAGE = "系統發生錯誤，請稍後再試";
+
+/**
+ * 未預期例外之**固定分類標籤**（PHASE-010-T9 / AC-21(a)）。
+ * 取代原本記錄 `sanitizeForLog(error.message)` 的作法：標籤為常數，永不隨例外
+ * 內容變動，故不可能挾帶路徑／key／SQL 片段等內部細節。
+ */
+const UNEXPECTED_ERROR_CLASS = "UNEXPECTED_EXCEPTION";
 
 /**
  * Fastify validation error detail item.
@@ -155,14 +168,20 @@ export function registerErrorHandlers(fastify: FastifyInstance): void {
     }
 
     // 4. Unknown/unhandled exception → INTERNAL_ERROR
-    //    SF-1: log only sanitized name+message — no stack (stack repeats the message and
-    //    adds file paths; sanitizing multi-line stacks reliably is harder than a single
-    //    message string, and requestId is sufficient for correlation in a structured log).
+    //    SF-1（原）：log only sanitized name+message — no stack.
+    //    PHASE-010-T9 / AC-21(a)：連 `error.message` 原文也不再記錄，改記固定
+    //    分類標籤（UNEXPECTED_ERROR_CLASS）＋ `error.name`。理由：`sanitizeForLog`
+    //    只遮蔽憑證樣式字串（連線字串／`password=`），**不遮蔽絕對路徑、storage
+    //    key、SQL 片段**——而未預期例外的訊息正是最常內嵌這些內容的地方（本分支
+    //    收的是「任何非預期的例外」，其訊息形狀不可預測，無法逐一清洗）。此為
+    //    PHASE-009 終審 R-3／KNOWN_ISSUES D-1 之收斂。
+    //    診斷關聯改由 `requestId` 承擔（與回應 body 之 requestId 同值），必要時
+    //    以 requestId 於呼叫鏈上游（各服務自身的具名日誌）追查。
     //    AR-3: omit { requestId } from log object — logController already injects it.
     request.log.error(
       {
         errName: error.name,
-        errMessage: sanitizeForLog(error.message),
+        errClass: UNEXPECTED_ERROR_CLASS,
       },
       "Unhandled exception"
     );

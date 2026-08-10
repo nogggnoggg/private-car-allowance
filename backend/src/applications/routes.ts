@@ -1,19 +1,36 @@
 /**
- * Application routes — PHASE-004-T3
+ * Application routes — PHASE-004-T3／T7／T8／T9、PHASE-006、PHASE-007、
+ * PHASE-009-T4／T7／T12a
  *
- * Endpoints implemented in this Task (backend routes; nginx strips /api prefix):
+ * 【PHASE-010-T10／AC-22(c)（R-5）檔頭更正】本檔頭原停在 PHASE-004-T3 之
+ * 「Endpoints implemented in this Task」框架，僅列 7 個端點，未涵蓋其後
+ * PHASE-006（保養）／PHASE-007（折舊）／PHASE-009（作廢、修正版）陸續加入
+ * 之端點——`KNOWN_ISSUES.md` §4 R-5 登記之失準。本次改為**當前端點總覽**
+ * （依來源 Phase 分組，共 17 個路由，與檔內 `fastify.<verb>(` 註冊數相符），
+ * 各端點原有之授權／設計註記逐字保留。
+ *
+ * 端點總覽（backend routes; nginx strips /api prefix）：
+ *
+ * ── 差旅（PHASE-004-T3／T7）────────────────────────────────────────────────
  *   POST   /applications/travel      → 201 { application: TravelApplicationDto }
  *   GET    /applications/travel/:id  → 200 { application: TravelApplicationDto }
  *   PUT    /applications/travel/:id  → 200 { application: TravelApplicationDto }
- *   DELETE /applications/:id         → 200 { ok: true }
- *
- * Endpoints implemented in PHASE-004-T7 (this Task's own addition):
  *   POST   /applications/travel/preview → 200 { preview: TravelComputedDto }
  *     stateless（AC-36：絕對不寫任何 DB 資料列，only reads via
  *     resolveTravelParameters's findMany）; §8.2, §9「金額預覽（stateless）」.
  *
- * Endpoints implemented in PHASE-004-T8 (this Task's own addition):
- *   POST   /applications/:id/complete → 200 { application: TravelApplicationDto }
+ * ── 保養（PHASE-006）／折舊（PHASE-007）────────────────────────────────────
+ *   POST   /applications/maintenance          → 201 { application: MaintenanceApplicationDto }
+ *   GET    /applications/maintenance/:id      → 200 { application: MaintenanceApplicationDto }
+ *   PUT    /applications/maintenance/:id      → 200 { application: MaintenanceApplicationDto }
+ *   POST   /applications/maintenance/preview  → 200 { preview: … }（stateless，同上紀律）
+ *   POST   /applications/depreciation         → 201 { application: DepreciationApplicationDto }
+ *   GET    /applications/depreciation/:id     → 200 { application: DepreciationApplicationDto }
+ *   PUT    /applications/depreciation/:id     → 200 { application: DepreciationApplicationDto }
+ *   POST   /applications/depreciation/preview → 200 { preview: … }（stateless，同上紀律）
+ *
+ * ── 跨型別（PHASE-004-T8／T9、PHASE-009-T4／T7／T12a）──────────────────────
+ *   POST   /applications/:id/complete → 200 { application: <型別分派之詳情 DTO> }
  *     （`status=COMPLETED` + `snapshot`）; body 一律忽略（AC-54，本路由完全
  *     不讀取 request.body）; AC-49~54/43/48/59, §9「完成申請」.
  *     授權**不**使用本檔其餘端點共用的 `assertOwnershipOrAdmin`：D17（Spec
@@ -21,17 +38,22 @@
  *     完成僅能由使用者本人執行」——`assertOwnershipOrAdmin` 會放行 ADMIN，
  *     用在這裡即等同開放代完成，牴觸 D17；故此路由改為嚴格
  *     `actor.id === application.ownerId`（見下方路由本體的行內註解）。
- *
- * Endpoints implemented in PHASE-004-T9 (this Task's own addition):
- *   GET /applications → 200 ApplicationListResponse
+ *   POST   /applications/:id/void     → 200 { application: <型別分派之詳情 DTO> }
+ *     PHASE-009-T4（作廢）＋ T12a（作廢版 PDF 之產生／補償）；管理員得代作廢
+ *     （AD-US-10 明文授權，與 `/complete` 之 D17 相反——見路由本體）。
+ *   POST   /applications/:id/revision → 201 { application: <新草稿之詳情 DTO> }
+ *     PHASE-009-T7（修正版；含證明附件之位元組複製與失敗補償）。
+ *   DELETE /applications/:id          → 200 { ok: true }
+ *   GET    /applications              → 200 ApplicationListResponse
  *     個人綜合紀錄查詢：日期／類型／狀態／關鍵字篩選、分頁、排序、授權隔離。
  *     授權判定（AC-74/84）與 query 格式驗證（AC-60~66）皆委派給
  *     `./application-query.js` 的純函式（`resolveOwnerId`/
  *     `parseApplicationListQuery`）——本路由只做「呼叫 → 若有錯誤就 throw
  *     400/403 → 否則查詢並回應」的薄層編排，不重複實作任何驗證邏輯。
  *
- * Explicitly OUT of scope for this Task (see PHASE-004.md §2, Task Graph):
- *   POST /admin/users/:userId/applications/travel (T10)
+ * 不在本檔（易混淆，故明記）：管理員代建端點
+ * `POST /admin/users/:userId/applications/travel` 註冊於 `admin/routes.ts`，
+ * 非本檔。
  *
  * Auth (§6.1 授權矩陣): requireAuth + requirePasswordChanged on every route
  * here; ownership is authorized purely from the DB-loaded `ownerId`
@@ -53,7 +75,7 @@ import { createApplicationRevisionWithAttachments } from "../attachment/attachme
 import { assertOwnershipOrAdmin, requireAuth, requirePasswordChanged } from "../auth/middleware.js";
 import { formatUtcDate, parseUtcDate } from "../parameters/parameter-service.js";
 import type { FieldError } from "../platform/errors.js";
-import { AppError, buildErrorBody } from "../platform/errors.js";
+import { AppError } from "../platform/errors.js";
 import { ReportGenerationError, prepareVoidedReport } from "../reports/report-service.js";
 import type { Storage } from "../storage/index.js";
 import {
@@ -1579,30 +1601,36 @@ export const applicationsPlugin: FastifyPluginAsync<ApplicationsPluginOptions> =
         }
       } catch (err) {
         // §7.5：作廢版 PDF 產生失敗 → 500 REPORT_GENERATION_FAILED ＋
-        // `details.stage`（四值封閉，不擴充）。【PHASE-009-T18 更正】本段
-        // 「轉譯形狀逐字沿 reports/routes.ts」已失準——T18 後 reports/
-        // routes.ts 改經 `AppError` 承載，本檔仍直接呼叫 `buildErrorBody`，
-        // 實作形狀已分叉；wire 輸出（status 500、REPORT_GENERATION_FAILED、
-        // 同一組 details 鍵）仍全等。只記 `stage` ＋ `applicationId`，**不**
-        // 記錄原始錯誤訊息（storage 錯誤訊息逐字含 key、Chromium 失敗訊息
-        // 逐字含 executablePath——§7.5／AC-25 之日誌紀律）。
+        // `details.stage`（四值封閉，不擴充）。【PHASE-010-T10／AC-22(a)】
+        // 本段轉譯形狀**已與 `reports/routes.ts` 重新對齊**：兩處同型 500 皆
+        // 經 `AppError` 承載，由 error-handler 之 `AppError` 分支以**同一個**
+        // `buildErrorBody` 組出回應。繞道之歷史理由（PHASE-008-T8 撰寫當時
+        // `platform/errors.ts` 之 `ErrorCode` 聯集尚未收錄此碼）已於 T11
+        // （`51cc459`）消失；`reports/routes.ts` 於 PHASE-009-T18／AC-40(b)
+        // 先行改道，本檔因不在 T18 之 Files Allowed 而形狀分叉至今
+        // （`KNOWN_ISSUES.md` §3 D-2），本次收斂。wire 輸出（status 500、
+        // `REPORT_GENERATION_FAILED`、同一組 `details` 鍵、鍵序）**逐位元組
+        // 不變**——回歸見 `phase9-void-report.test.ts` §D-6b，「不得回退為繞
+        // 道」之結構性守門見同檔 §D-0。
+        //
+        // 日誌紀律不變（沿 `reports/routes.ts` 同一 catch 之形狀）：本檔先自行記
+        // `error` 級之 `{ stage, applicationId }`，**不**記錄原始錯誤訊息
+        // （storage 錯誤訊息逐字含 key、Chromium 失敗訊息逐字含
+        // executablePath——§7.5／AC-25 之日誌紀律）；error-handler 之
+        // `AppError` 分支另記 `info` 級之 `{ code }` ＋ 固定使用者訊息，同樣
+        // 零原文。
         if (err instanceof ReportGenerationError) {
-          const requestId = String(request.id);
           request.log.error(
             { stage: err.stage, applicationId: id },
             "Voided report generation failed"
           );
-          return reply
-            .status(500)
-            .send(
-              buildErrorBody(
-                "REPORT_GENERATION_FAILED",
-                "報表產生失敗，請稍後再試或聯絡管理員。",
-                requestId,
-                undefined,
-                { stage: err.stage }
-              )
-            );
+          throw new AppError(
+            "REPORT_GENERATION_FAILED",
+            500,
+            "報表產生失敗，請稍後再試或聯絡管理員。",
+            undefined,
+            { stage: err.stage }
+          );
         }
         throw err;
       }

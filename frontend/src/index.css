@@ -631,6 +631,37 @@ body {
   margin-top: 12px;
 }
 
+/* PHASE-010-T7 (AC-15/AC-16): 稽核紀錄清單——每列以卡片呈現（四要素標頭 +
+   AuditChangesList 之異動明細表），沿 `.user-card`/`.card-header` 之既有
+   視覺語彙，非表格（changes 明細表格無法乾淨嵌入 <table><td>）。 */
+.audit-log-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.audit-log-item {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.audit-log-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+
+.audit-log-target {
+  word-break: break-word;
+}
+
 /* Multi-segment trip form: vertical, touch-friendly, independent blocks (AC-87) — a
    flex column of cards, NOT a horizontal table, at any viewport width. */
 .trip-segment-list {

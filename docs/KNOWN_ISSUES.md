@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-07.1
 - 狀態：ACTIVE（**目前真相**文件——記錄「今天仍成立」之已知限制、技術債與運維約束）
-- 更新日期：2026-08-09（建檔；同步至 **PHASE-009（作廢與修正版）**已落地現實；DOC-SYNC `PHASE-009-DOC-SYNC-B`）
+- 更新日期：**2026-08-10**（同步至 **PHASE-010（稽核檢視與回歸）**已落地現實；DOC-SYNC `PHASE-010-DOCSYNC`——§3 D-1／D-2／D-3 結清＋D-5~D-7 改排 PHASE-011＋新增 D-9~D-11、§3.1 結清紀錄新增、§4 R-4／R-5 結清＋新增 R-6、§5 兩節重寫。前次：2026-08-09 建檔，`PHASE-009-DOC-SYNC-B`）
 - 上游：各 Phase Spec §17（已知限制與跨 Phase 銜接）、`PROJECT_STATE.md`（Review finding 與 Accepted Risk 之權威登記處）
 
 ## 本檔之定位
@@ -46,14 +46,25 @@
 
 | # | 項目 | 說明 | 排定 |
 |---|---|---|---|
-| D-1 | **error-handler 兜底路徑之洩漏面** | 未預期錯誤之兜底分支所記之 `errMessage` 可能帶原始碼路徑。**今日為零活路徑**（所有已知錯誤皆走 `AppError` 或既有的訊息固定分支），屬**縱深缺口**而非現行洩漏。新 AC 候選 | 終審裁定（PHASE-009 T18 R-3） |
-| D-2 | **`REPORT_GENERATION_FAILED` 之兩處實作形狀分歧** | 產生端點（`reports/routes.ts`）已改經 `AppError` 承載；作廢端點（`applications/routes.ts`）之同型 500 轉譯仍為 `buildErrorBody` 繞道形狀（該檔不在 T18 之 Allowed 範圍）。**兩處 wire 輸出完全一致**，僅形狀分歧 | PHASE-010 候選 |
-| D-3 | **`errorLabel` 三份同形實作** | 三處各有一份，宜收斂為單一葉節點模組 | PHASE-010（T18 R-2） |
 | D-4 | **`toDecimalConstructorArg` 同形雙拷貝** | `parameter-service.ts` 與 `depreciation-engine.ts` 各有一份；收斂須抽第三個共用葉節點（直接改用共用 helper 會改變 `deriveDepreciation` 之契約） | PHASE-011 重構候選（CHORE-003-T3） |
-| D-5 | **E2E 共用 helper 未抽取** | `e2e/` 之樣板複製沿既有慣例，`void-application.spec.ts`／`revision.spec.ts` 加入後重複面擴大 | PHASE-010 開工候選（T17 W-1） |
-| D-6 | **`e2e/` 目錄未接入 typecheck** | 全目錄有 76 個既有同型型別錯誤，`tsc` 未涵蓋該目錄 | PHASE-010 開工候選（T17 W-4） |
-| D-7 | **XSS 15 格字面／日誌掃描器 pattern／fingerprint 收斂** | 三項測試面之字面重複與收斂候選，皆 Low | PHASE-010 開工候選（T17R 歸置裁定） |
+| D-5 | **E2E 共用 helper 未抽取** | `e2e/` 之樣板複製沿既有慣例，`void-application.spec.ts`／`revision.spec.ts` 加入後重複面擴大 | **PHASE-011**（原列 PHASE-010 開工候選；**PHASE-010 §16 D7=(b) 明列不納**，見該 Spec AC-22(d)。理由：抽取觸及全部 12 個 E2E 檔，與 PHASE-010-T8 之新 E2E 檔並行時衝突面大） |
+| D-6 | **`e2e/` 目錄未接入 typecheck** | 全目錄有 76 個既有同型型別錯誤，`tsc` 未涵蓋該目錄 | **PHASE-011**（同上；修復量不可預估屬方法論風險型工作，與 PHASE-011 之部署硬化／CI 面同域） |
+| D-7 | **XSS 15 格字面／日誌掃描器 pattern／fingerprint 收斂** | 三項測試面之字面重複與收斂候選，皆 Low | **PHASE-011**（同上；收斂收益低於觸檔風險） |
 | D-8 | **E2E `serial` 序耦合** | 現行 config 下為確定性，但測試間存在順序依賴；平行化前須先解耦 | Accepted Risk（T17 AR-2） |
+| D-9 | **pino `log.error({ err })` 序列化型之洩漏面**（新） | 以物件簡寫 `{ err }`（或位置引數 `log.error(err, "…")`）交給 pino 時，其預設 error serializer 會展開 `message` 與 **`stack`**（`stack` 逐字含絕對路徑）。PHASE-010-T9／T9R 之**兩層站點白名單掃描結構上不可能命中**此型——掃描器判定的是「`.message` 之**取值語法**」，而本型從不取值。**今日狀態**：`backend/src` 之現況未見該寫法（T9R 實查，白名單基線零變動），屬**縱深缺口**而非現行洩漏；已由 `phase10-error-handler-leak.test.ts` 之**記載型反向 `it`**（`已知不可及⑫…`）固化——日後若掃描器補上該型，該 `it` 會**顯性翻紅**而非靜默失效。**判準需求（修復時）**：①`{ err }` 物件簡寫與位置引數兩式皆須涵蓋②須確認 `logger.ts` 之 serializer 設定（是否覆寫 `err` serializer／是否 `redact` `stack`） | **PHASE-011**（日誌硬化；PHASE-010 T9/T10 合併複審 **FW-A**） |
+| D-10 | **`errorLabel` 收斂後無反退化守門格**（新） | `platform/error-label.ts` 為單一葉節點（PHASE-010-T10／AC-22(b) 收斂），但**無任何斷言**阻止日後有人在他檔再寫一份私有 `function errorLabel`——退化不會使測試變紅。建議格：沿 `phase9-void-report.test.ts` §D-0 之結構性掃描同型一格（全 `backend/src` 之 `function errorLabel` 定義恰一處） | **PHASE-011**（PHASE-010 T9/T10 合併複審 **FW-D**） |
+| D-11 | **ajv 驗證錯誤之 `detail.message` 輸出面**（既有面，登記） | 結構化錯誤處理中由 ajv 產生之 `detail.message` 亦為訊息輸出面，不在 PHASE-010-T9 兩層掃描之射程內（該掃描針對**例外物件**之 `.message`）。屬既有面之登記，非本 Phase 新引入 | **PHASE-011**（PHASE-010 T9/T10 合併複審 **FW-B**） |
+
+### 3.1 本 Phase 結清紀錄（PHASE-010，2026-08-10；`PHASE-010-DOCSYNC`）
+
+> 依本檔「已修復者從本檔移除」之收錄標準，下列各項已自上表移除；**保留一列結清紀錄**係因其中 **D-3** 之失準溯源本身即為本檔之教訓（記載鏈失真），非單純的歷史備查。完整歷史見 `PROJECT_STATE.md` 與 `docs/specs/PHASE-010.md`。
+
+| 原 # | 原項目 | 結清方式 |
+|---|---|---|
+| D-1 | error-handler 兜底路徑之洩漏面 | **PHASE-010-T9（`3bae7fd`）＋T9R（`f98e7d5`）**：兜底分支改記固定分類標籤 `UNEXPECTED_EXCEPTION` ＋ `error.name`，**不再記 `error.message` 原文**；`requestId` 為唯一關聯手段；併建兩層站點白名單掃描與絕對路徑反向探針（Spec AC-21，§12 兩列 `GREEN`）。**遺留之縱深缺口另立 D-9**（pino 序列化型） |
+| D-2 | `REPORT_GENERATION_FAILED` 兩處形狀分歧 | **PHASE-010-T10（`c11045a`）**：`applications/routes.ts` 由 `buildErrorBody` 繞道改經 `AppError` 承載，與 `reports/routes.ts` 對齊；**wire 逐位元組不變**（含鍵序）。全案 `buildErrorBody(` 呼叫端歸零（僅存 `error-handler.ts` 五處＋定義本身）。守門：`phase9-void-report.test.ts` §D-0（不得回退為繞道）＋§D-6b（wire 逐位元組全等） |
+| D-3 | 「`errorLabel` **三份**同形實作」 | **PHASE-010-T10（`c11045a`）收斂為 `platform/error-label.ts`**。⚠ **本列之原記載失準（溯源）**：實際同形者恰**兩份**（`attachment/attachment-copy.ts`／`attachment/upload-service.ts`；T10 以 `git log -S` 覈實第三份從不存在）。失準成因＝PHASE-009-T18 檔頭所稱之「**慣例同型**」（同一族的零內容標籤寫法）在登記為本條目時被收斂成「**同形實作**」（同一份程式碼的複本），語意滑移一次，其後 `PHASE-010.md` AC-22(b) 再承接該字面而擴散。`platform/health.ts`（與 `error-handler.ts`）之 `errName` 取 **`err.name`**、本模組取 **`err.constructor.name`**，對未自訂 `name` 之 `Error` 子類回傳相異值，**併入即為行為變更**，故刻意不併——非漏收斂。經 T10 實查、W-1、T9/T10 合併複審**三重覈實**，大總管裁定「兩份收斂＝AC-22(b) 足額關閉」，複審 CONFIRM。**反退化守門格之缺另立 D-10** |
+| R-4／R-5 | `report-service.ts` 檔頭／`applications/routes.ts` 註解失準 | **PHASE-010-T10（`c11045a`）**：`report-service.ts` 檔頭矛盾句更正；`applications/routes.ts` 檔頭由「PHASE-004-T3 之 7 端點」改寫為**當前 17 端點總覽**（依來源 Phase 分組，與檔內 `fastify.<verb>(` 註冊數相符）。零斷言影響 |
 
 ---
 
@@ -64,20 +75,21 @@
 | R-1 | `backend/prisma/schema.prisma` `VoidedReportFile.storageKey` 之欄位註解 `"rpt/<uuid>/void.pdf"` | 實際後綴為 `void`（`rpt/<uuid>/void`）——storage key 白名單 `^(?:rpt)\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$` 之後綴不接受 `.`，`void.pdf` 會在 `put` 時被拒。註解為示意字面 |
 | R-2 | `e2e/report-print-layout.spec.ts` :709、:1058-1059 之行內註解殘留 `Type3` 字樣 | 實測為**子集字型 ＋ `Tj`／`ToUnicode`**。該檔**檔頭**已於 PHASE-009-T18 更正，兩處行內註解因不在該 Task 之 Allowed 範圍而未動（處置正確） |
 | R-3 | `docs/specs/PHASE-008.md` §11.4 之 Type0/CID 敘述 | 同上；PHASE-008 本體之更正待大總管另派 |
-| R-4 | `backend/src/reports/report-service.ts` 檔頭 | PHASE-009-T18 修 `routes.ts` 時，鄰檔 `report-service.ts` 檔頭之敘述隨之失準（「檔頭停在舊 Task」之失效模式）。**已於 DOC-SYNC-B 之前登記，程式面之檔頭更正待派** |
-| R-5 | `backend/src/applications/routes.ts` 之部分註解 | T18 之 Files Forbidden 使其未同步更新，敘述略為失準（W-2 登記） |
+| R-6 | `backend/src/platform/error-label.ts` :42-43 之函式註解「故**三處呼叫端**之日誌輸出零變更」 | 實查為 **4 個呼叫端／2 檔**（`attachment/attachment-copy.ts` :121／:321、`attachment/upload-service.ts` :319／:332）。「三處」係承 `PHASE-010.md` AC-22(b) 原文之失準字面（該 AC 已於 `SPEC-REV-010-CLOSE` 更正為「2 檔 4 個呼叫端」）；同檔 :21-36 之「收斂範圍」段本身**正確**（已明載兩份），僅此一句失準。**零斷言影響**；PHASE-010-DOCSYNC 之 Files Allowed 不含程式檔，故登記待派 |
+
+> **R-4／R-5 已結清**（PHASE-010-T10 `c11045a`），見 §3.1 結清紀錄。
 
 ---
 
 ## 5. 跨 Phase 移交
 
-### PHASE-010（稽核）
+### PHASE-010（稽核）— **五項全數處置完畢（2026-08-10）**
 
-1. 稽核檢視頁須納入 **`APPLICATION_VOIDED`**（操作者／時間／類型／受影響資料／原因摘要）。
-2. AD-US-14「重要欄位前後摘要」對作廢事件之呈現形式（`summary` 已含 `reason`／`voidedAt`）。
-3. AD-US-04「有歷史拒刪」之回歸此時已有**已作廢**資料可用（`userHasHistory` 對 `VOIDED` 天然計入，PHASE-009 零改動）。
-4. 代操作稽核之完整性回歸（作廢與修正版兩類）。
-5. 上表 D-2、D-3、D-5、D-6、D-7 之收斂。
+1. ~~稽核檢視頁須納入 **`APPLICATION_VOIDED`**（操作者／時間／類型／受影響資料／原因摘要）。~~ → **結清**：`PHASE-010.md` AC-04(d)（十值逐一可取回，含 `APPLICATION_VOIDED`）、AC-07(a)⑤（本人與管理員各寫一條）。
+2. ~~AD-US-14「重要欄位前後摘要」對作廢事件之呈現形式（`summary` 已含 `reason`／`voidedAt`）。~~ → **結清**：AC-06（`changes[]` 扁平化）＋AC-08(c)（**作廢原因逐字可見**）。**併記射程限定**：`applicationId`／`revisionOf` 兩純內部識別碼欄依 MG-3 裁定（人類 2026-08-10）**不於畫面呈現**，其可讀性改由 wire 面承載（AC-18(e)）。
+3. ~~AD-US-04「有歷史拒刪」之回歸此時已有**已作廢**資料可用。~~ → **結清**：AC-12（五類歷史逐一 `409`，`VOIDED` 一類以**真實作廢端點**構造）。
+4. ~~代操作稽核之完整性回歸（作廢與修正版兩類）。~~ → **結清**：AC-08（含「本人建修正版／管理員對自己之申請建修正版」兩向零稽核之邊界）。
+5. ~~上表 D-2、D-3、D-5、D-6、D-7 之收斂。~~ → **依 `PHASE-010.md` §16 D7=(b)（人類 leonchih 2026-08-09 Spec Gate「照推薦」）分流**：**D-2／D-3 已結清**（T10 `c11045a`，見 §3.1）；**D-5／D-6／D-7 明列不納**（AC-22(d)），排定欄已改 **PHASE-011**，見下節。
 
 ### PHASE-011（部署硬化與備份）
 
@@ -88,6 +100,18 @@
 5. 附件暫存 >24h 清理排程（BE-US-25）；含修正版草稿刪除後之複本（PHASE-009 B-20）。
 6. 統計查詢之索引評估（PHASE-005 D9(a) 定案不新增，屆時以實測決定）；統計頁與列表頁 `tripDate`／`primaryDate` 篩選語意差異之檢視。
 7. 上表 D-4 之收斂。
+
+**PHASE-010 移入（2026-08-10；`PHASE-010-DOCSYNC`）**
+
+8. **上表 D-5／D-6／D-7 之收斂**（E2E helper 抽取／`e2e/` 接入 typecheck（76 個既有型別錯誤）／XSS 字面與掃描器 pattern 收斂）——`PHASE-010.md` §16 **D7=(b)** 明列不納並移交本 Phase（AC-22(d)）。
+9. **日誌硬化：上表 D-9（pino `{ err }` 序列化型洩漏面）之判準補齊**——`{ err }` 簡寫與位置引數兩式 ＋ `logger.ts` serializer 設定確認；修好後 `phase10-error-handler-leak.test.ts` 之記載型反向 `it` 會**顯性翻紅**（設計如此），須同批改寫該格。併同上表 **D-11**（ajv `detail.message` 既有面）評估。
+10. **上表 D-10 之反退化守門格**（`errorLabel` 定義恰一處之結構性掃描）。
+11. **RUNBOOK 須載明「500 兜底不再記錄例外原文」之診斷取捨**（PHASE-010-T9 生效）：線上排障之**正解為各服務層之具名日誌**（各 catch 自行記 `{ stage, id }` 一類零內容標籤 ＋ `requestId` 關聯），**不得**以「排障不便」為由回退兜底記 `error.message`——該回退會使 T9 之反向探針與白名單掃描同時失效。〔PHASE-010 T9/T10 合併複審 **FW-C**〕
+12. **`Application.createdById` 與 `Attachment.uploaderId` 之索引補強評估**：兩欄為使用者刪除守門之 `count` 對象（`USER_RESTRICT_FK_GUARDS` 六條之二）但**無對應索引**（`schema.prisma` 實查），大表上為 seq scan。刪帳號為低頻管理操作故現況可接受；**正解是補索引而非縮小守門面**。〔PHASE-010-T5 遺留登記，`history.ts` 檔頭已明載〕
+13. **`Attachment` `TEMP` 清理排程落地後**，AD-US-04 之附件阻擋條件自然放寬——須回歸確認 `PHASE-010.md` AC-14(b)② 之期望仍成立。
+14. **PHASE-009 D2(a) 之兌現**：參數覆寫端點落地時**必須**呼叫 `parameterHasReferences` 守門（PHASE-010 明示不兌現——該 Phase 無任何參數覆寫端點）。
+15. **稽核面之三項**：①備份還原須涵蓋 `AuditLog`（含 `summary` JSON）②稽核之保留期限／封存／清理語意（含「已清理期間在檢視頁如何呈現」——`PHASE-010.md` §7.5 明示不預設）③效能實測須涵蓋稽核列表（2 s 目標）與 `action` 欄索引之實測決定（該欄現無索引，PHASE-010 明示不新增）。
+16. **帳號類五事件之稽核可靠性**：`writeAudit` 為 **fire-and-forget 且非同交易**（`audit.ts`），失敗僅 `console.error`，稽核可能靜默遺失；其餘五類事件為同交易 hook。**此不對稱為 `PHASE-010.md` §16 D11=(a)（人類 leonchih 2026-08-09）明示接受、本期零變更**，可靠性議題移交本 Phase。
 
 ---
 

@@ -1,7 +1,7 @@
 # PHASE-009 — 作廢與修正版
 
 - Governance-Version: 2026-08-04.1（勘誤：初版誤植 2026-08-05.1，與 PHASE-008 同型誤植，大總管於 Spec Gate 固化時更正）
-- 狀態：**`ACTIVE`**（人類 leonchih 2026-08-07 Spec Gate 通過：D1~D16 全數裁定＋13 項 High Task 事前批准——見 §18）
+- 狀態：**`COMPLETED`**（PR #18 經人類 leonchih 2026-08-09 批准合併 main，merge `02a7d5f`，CI 三檢全綠。Spec Gate 2026-08-07 通過：D1~D16 全數裁定＋13 項 High Task 事前批准——見 §18）
 - 建立日期：2026-08-07
 - Task ID：`PHASE-009-SPEC`
 - Base Commit：`ac56f20`（branch `phase-009`，自 `phase-008` 尖端切出；PHASE-008 已終審 APPROVE，待晨間合併後 rebase 至 `main`——本 Spec 一律以 **008 完成後之現實**為基底）

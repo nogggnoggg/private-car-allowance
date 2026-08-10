@@ -92,6 +92,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPORT_DATA_SRC_PATH = path.resolve(__dirname, "../../src/reports/report-data.ts");
 const REPORT_SERVICE_SRC_PATH = path.resolve(__dirname, "../../src/reports/report-service.ts");
 const REPORTS_ROUTES_SRC_PATH = path.resolve(__dirname, "../../src/reports/routes.ts");
+const APPLICATIONS_ROUTES_SRC_PATH = path.resolve(__dirname, "../../src/applications/routes.ts");
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -1008,6 +1009,32 @@ describe("PHASE-009-T12a §D-0 — 結構性斷言（AC-21(f) ＋ SPEC-REV-9T12 
     );
     expect(files.length).toBe(9);
   });
+
+  // -------------------------------------------------------------------------
+  // 【PHASE-010-T10／AC-22(a)（§16 D7）】結構性守門：`applications/routes.ts`
+  // 之 `REPORT_GENERATION_FAILED` 由 `buildErrorBody` 繞道改為經 `AppError`
+  // 承載。
+  //
+  // AC-22(a) 逐字（`docs/specs/PHASE-010.md` :330）：「**D-2**：
+  // `applications/routes.ts` 之 `REPORT_GENERATION_FAILED` 500 轉譯由
+  // `buildErrorBody` 繞道改經 `AppError` 承載，**wire 輸出逐位元組不變**（含
+  // 鍵序）。」
+  //
+  // 繞道之歷史理由（PHASE-008-T8 撰寫當時 `ErrorCode` 聯集尚未收錄此碼）已
+  // 於 T11（`51cc459`）消失；`reports/routes.ts` 已於 PHASE-009-T18／AC-40(b)
+  // 改道（其結構性守門在 `phase8-contract.test.ts` :326），本檔當時不在 T18 之
+  // Files Allowed 故形狀分歧至今（`KNOWN_ISSUES.md` §3 D-2）。本則釘住本檔
+  // 「已改道且不得回退為繞道」；wire 面之不變性由 §D-6b 之逐位元組回歸承擔。
+  // -------------------------------------------------------------------------
+  it("AC-22(a) 結構: applications/routes.ts 之 REPORT_GENERATION_FAILED 經 AppError 承載，零 buildErrorBody 繞道", () => {
+    const src = fs.readFileSync(APPLICATIONS_ROUTES_SRC_PATH, "utf8");
+    expect(src).toMatch(/new AppError\(\s*"REPORT_GENERATION_FAILED"/);
+    // 零繞道**呼叫端**（沿 `phase8-contract.test.ts` :329 之逐字同型斷言；
+    // 散文註解中提及該函式名不觸發——比對的是呼叫形式 `buildErrorBody(`）。
+    expect(src).not.toMatch(/buildErrorBody\(/);
+    // 併釘住具名匯入亦不得殘留（繞道消失後該匯入即為孤兒）。
+    expect(src).not.toMatch(/^import[^;]*\bbuildErrorBody\b/m);
+  });
 });
 
 // ===========================================================================
@@ -1554,6 +1581,75 @@ describeWithDb("PHASE-009-T12a §D — 作廢版 PDF 之產生與保存（AC-21(
         expect(resp.body).not.toContain(report.storageKey);
 
         await expectFullRollback(id, before);
+      } finally {
+        await prisma.voidedReportFile.delete({ where: { id: blocker.id } });
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // §D-6b【PHASE-010-T10／AC-22(a)】`buildErrorBody` 繞道改經 `AppError`
+    // 承載之 **wire 逐位元組不變**回歸
+    //
+    // 本則為**不變式回歸**（invariance regression）：改道前後皆應為綠——這正
+    // 是它要保證的性質（沿 `phase8-contract.test.ts` :718 之 AC-40(b) 同型先
+    // 例，逐字對位）。其鑑別力由 mutant 承擔：改道後若 `details.stage` 漏
+    // 傳、`message` 有一字之差、`httpStatus` 改變、或 `buildErrorBody` 之組裝
+    // 順序改變（鍵序），本則必紅（見 Task Handoff 之 mutant 自證）。期望值一
+    // 律**字面硬編碼**，不由實作反算。
+    //
+    // 注入手法沿用 §D-6：先占一列 `VoidedReportFile`（`reportId` 唯一）使
+    // PERSIST 階段之 INSERT 必然衝突 → `ReportGenerationError{stage:PERSIST}`。
+    // -----------------------------------------------------------------------
+
+    it("AC-22(a): 作廢版 PDF 產生失敗之 500 wire body 逐位元組全等（頂層恰一鍵 error；error 恰四鍵 code/message/requestId/details；details 恰一鍵 stage；鍵序釘住）", async () => {
+      const id = await seedWithReport("D6b wire 逐位元組");
+      const report = await prisma.report.findUniqueOrThrow({ where: { applicationId: id } });
+      const blocker = await prisma.voidedReportFile.create({
+        data: {
+          reportId: report.id,
+          storageKey: `rpt/${crypto.randomUUID()}/void`,
+          fileName: report.fileName,
+          byteSize: 1,
+          contentHash: sha256(Buffer.from("blocker-wire-bytes")),
+          createdById: ownerId,
+        },
+      });
+      try {
+        const resp = await voidViaEndpoint(id, "T10 wire 逐位元組不變式");
+
+        expect(resp.statusCode, resp.body).toBe(500);
+        expect(resp.headers["content-type"]).toContain("application/json");
+
+        const parsed = JSON.parse(resp.body) as Record<string, unknown>;
+        // 頂層鍵集封閉：恰一鍵 `error`（多一鍵即紅）。
+        expect(Object.keys(parsed)).toEqual(["error"]);
+
+        const err = parsed.error as Record<string, unknown>;
+        // `error` 鍵集封閉且順序無關（`fields` 不得出現——非 VALIDATION_ERROR；
+        // `AppError` 未帶 `fields` 時 `buildErrorBody` 結構性不寫入該鍵）。
+        expect(Object.keys(err).sort()).toEqual(["code", "details", "message", "requestId"]);
+
+        // 值全等（`requestId` 為每請求相異之非空字串，單獨驗型別與非空）。
+        expect(err.code).toBe("REPORT_GENERATION_FAILED");
+        expect(err.message).toBe("報表產生失敗，請稍後再試或聯絡管理員。");
+        expect(typeof err.requestId).toBe("string");
+        expect((err.requestId as string).length).toBeGreaterThan(0);
+        expect(err.details).toEqual({ stage: "PERSIST" });
+
+        // 逐位元組全等：以 `requestId` 遮蔽後之序列化字串比對固定字面
+        // （鍵**順序**亦被釘住——`buildErrorBody` 之組裝順序改變即紅）。
+        const redacted = resp.body.replace(
+          `"requestId":${JSON.stringify(err.requestId)}`,
+          '"requestId":"<redacted>"'
+        );
+        expect(redacted).toBe(
+          '{"error":{"code":"REPORT_GENERATION_FAILED","message":"報表產生失敗，請稍後再試或聯絡管理員。","requestId":"<redacted>","details":{"stage":"PERSIST"}}}'
+        );
+
+        // 零外洩（改道不得使原始錯誤訊息／storage key 沿 error-handler 之
+        // 未預期錯誤路徑進入回應）。
+        expect(resp.body).not.toContain("rpt/");
+        expect(resp.body).not.toContain(report.storageKey);
       } finally {
         await prisma.voidedReportFile.delete({ where: { id: blocker.id } });
       }

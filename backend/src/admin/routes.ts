@@ -23,6 +23,11 @@
  * Concurrent loginName collision (Spec §4.5.4):
  *   DB unique-key constraint error → 409 CONFLICT (not 500)
  *
+ * User deletion guard (AD-US-04② / PHASE-010 §16 D5=(c), T5):
+ *   事前守門 `userHasHistory`（`users/history.ts`：指向 `User` 之全部六條
+ *   `ON DELETE RESTRICT` 外鍵）→ 409 CONFLICT ＋ 停用文案；
+ *   刪除當下之 P2003（守門漏補或競態）→ 兜底轉譯為同一條 409（不得為 500）。
+ *
  * On-behalf application creation (PHASE-004-T10, AC-78/79/85, Spec §8.2):
  *   POST /admin/users/:userId/applications/travel → 201 { application: TravelApplicationDto }
  *   body shape is identical to `POST /applications/travel` (§8.2 表格：
@@ -91,6 +96,31 @@ function isPrismaUniqueConstraintError(err: unknown): boolean {
   );
 }
 
+/**
+ * Detect Prisma foreign-key constraint violation (P2003) — PHASE-010-T5。
+ *
+ * 依 Spec `docs/specs/PHASE-010.md` §16 **D5=(c)** 之裁定，`DELETE
+ * /admin/users/:id` 除了事前守門（`users/history.ts` 之
+ * `USER_RESTRICT_FK_GUARDS`）之外，另於刪除當下以本判別式做**兜底轉譯**：
+ * 任何 `ON DELETE RESTRICT` 外鍵違反一律轉成與守門相同的 `409`，而非落到
+ * `error-handler.ts` 的未預期例外分支回 `500`。
+ *
+ * 刻意**只認 `P2003` 這一個碼**（而非「凡 Prisma 例外皆視為衝突」）：P2002
+ * （唯一鍵）與 P2025（查無此列）在本 handler 各有自己的語意與狀態碼，混同
+ * 會把 404 說成 409。此鑑別力由
+ * `phase10-user-delete-regression.test.ts` 之 mutant 斷言守門，故本函式
+ * export（與同檔另兩個判別式不同——它們的分支各有端到端測試涵蓋，不需要
+ * 逐碼比對）。
+ */
+export function isPrismaForeignKeyConstraintError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code: unknown }).code === "P2003"
+  );
+}
+
 /** Detect Prisma record-not-found error (P2025) */
 function isPrismaNotFoundError(err: unknown): boolean {
   return (
@@ -100,6 +130,16 @@ function isPrismaNotFoundError(err: unknown): boolean {
     (err as { code: unknown }).code === "P2025"
   );
 }
+
+/**
+ * `DELETE /admin/users/:id` 之「有歷史 → 拒刪」文案（AD-US-04② 之「提供停用
+ * 選項」即由此文案承載；AC-12(a)(b) 逐字比對之對象）。
+ *
+ * 抽為常數是因為 PHASE-010-T5 起有**兩條**路徑會送出它：事前守門
+ * （`userHasHistory`）與 P2003 兜底（見下方 handler）。兩者必須逐字相同，
+ * 否則使用者可從文案差異推知內部走了哪一條。
+ */
+const HAS_HISTORY_CONFLICT_MESSAGE = "此帳號已有資料，無法刪除，請改用停用";
 
 // ---------------------------------------------------------------------------
 // Request schemas
@@ -133,8 +173,14 @@ const resetPasswordBodySchema = {
 interface AdminPluginOptions {
   prisma: PrismaClient;
   /**
-   * Overridable userHasHistory checker — used in tests to stub "has history=true".
-   * If omitted, uses the production checker (always false in PHASE-002).
+   * Overridable userHasHistory checker — used in tests to stub the guard in
+   * either direction（`() => true` 驗 409 分支；`() => false` 刻意打開守門以
+   * 驗證 P2003 兜底，見 PHASE-010-T5）。
+   *
+   * 省略時使用生產判定（`users/history.ts` 之 `USER_RESTRICT_FK_GUARDS`：指向
+   * `User` 之六條 `ON DELETE RESTRICT` 外鍵逐一存在性檢查）。
+   * 〔記載更正：PHASE-002 時期此處為「恆回 false」，該敘述自 PHASE-004-T15
+   * 接上 `Application` 起即已失準，PHASE-010-T5 一併更正。〕
    */
   hasHistory?: (prisma: PrismaClient, userId: string) => Promise<boolean>;
 }
@@ -403,7 +449,7 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
       // Check history (AC-23 / Spec §4.6)
       const hasHistory = await userHasHistory(prisma, id);
       if (hasHistory) {
-        throw new AppError("CONFLICT", 409, "此帳號已有資料，無法刪除，請改用停用");
+        throw new AppError("CONFLICT", 409, HAS_HISTORY_CONFLICT_MESSAGE);
       }
 
       // Snapshot loginName and displayName before deletion (for audit targetLabel)
@@ -417,6 +463,33 @@ export const adminPlugin: FastifyPluginAsync<AdminPluginOptions> = async (
         if (isPrismaNotFoundError(err)) {
           // Concurrent delete race — treat as not found
           throw new AppError("NOT_FOUND", 404, "使用者不存在");
+        }
+        // PHASE-010-T5（Spec §16 D5=(c) 之「兩邊都補」）：`ON DELETE RESTRICT`
+        // 外鍵違反之**兜底轉譯**。正常情況下上面的 `userHasHistory` 守門已擋
+        // 住全部六條 RESTRICT 路徑（`users/history.ts` 之
+        // `USER_RESTRICT_FK_GUARDS`，其與 DB 實況之相符性由 AC-14(a) 之機械
+        // 斷言保證），故這條 catch 在今日是**不可達的縱深**；它存在的理由是
+        // 未來——新增一條指向 `User` 的 RESTRICT 外鍵而漏補守門時，使用者看到
+        // 的是「拒絕並提供停用」（AD-US-04② 逐字要求），而不是退化成
+        // `error-handler.ts` 未預期例外分支的 `500 INTERNAL_ERROR`。
+        //
+        // 另一種可達路徑是競態：守門查詢與 `delete` 之間有人替該使用者建了一
+        // 筆申請／附件／稽核列——此時 409 同樣是正確答案（他確實已有資料）。
+        //
+        // 文案與守門路徑共用同一個常數（`HAS_HISTORY_CONFLICT_MESSAGE`），使
+        // 兩條路徑對外**不可區辨**：使用者不該從錯誤訊息推知系統內部是「事前
+        // 查到」還是「刪的時候才撞到」。
+        if (isPrismaForeignKeyConstraintError(err)) {
+          // PHASE-010-T9（T5 期中複審 FW-8／AR-2）：這條兜底原本**完全靜默**——
+          // 若守門真的漏補了一條 RESTRICT 外鍵，運維端只看得到 409，看不到「縱深
+          // 被觸發」這件事。記一筆 warn（`fkField` 為 Prisma 回報之外鍵欄位／約束
+          // 名，屬 schema metadata，零 PII；不記 `err.message`——見
+          // `platform/error-handler.ts` AC-21 之同一理由）。
+          request.log.warn(
+            { fkField: String((err as { meta?: { field_name?: unknown } }).meta?.field_name) },
+            "USER_DELETE_P2003_FALLBACK: RESTRICT 外鍵於刪除當下攔截，轉譯為 409（守門漏補或競態）"
+          );
+          throw new AppError("CONFLICT", 409, HAS_HISTORY_CONFLICT_MESSAGE);
         }
         throw err;
       }

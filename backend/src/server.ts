@@ -11,6 +11,7 @@ import { LogController } from "fastify";
 import { adminPlugin } from "./admin/routes.js";
 import { applicationsPlugin } from "./applications/routes.js";
 import { attachmentPlugin } from "./attachment/routes.js";
+import { auditPlugin } from "./audit/routes.js";
 import { authPlugin } from "./auth/routes.js";
 import { getEnvOrTestDefaults } from "./config/env.js";
 import { getPrismaClient } from "./db/prisma.js";
@@ -84,6 +85,10 @@ export async function buildServer(
 
   // Register admin routes (GET/POST /admin/users, deactivate/activate/reset-password/delete)
   await fastify.register(adminPlugin, { prisma });
+
+  // Register audit query route (GET /admin/audit-logs — PHASE-010-T2, §16 D1(b):
+  // 稽核之寫入（audit/audit.ts）與查詢同域內聚，故獨立於 adminPlugin 之外)
+  await fastify.register(auditPlugin, { prisma });
 
   // Register parameters routes (POST/GET /parameters/fuel, /parameters/etc — PHASE-003a-T3)
   await fastify.register(parametersPlugin, { prisma });

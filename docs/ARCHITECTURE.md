@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：2026-08-09（最後同步至 **PHASE-009（作廢與修正版）**已落地現實；DOC-SYNC `PHASE-009-DOC-SYNC-B`。前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
+- 更新日期：**2026-08-10**（最後同步至 **PHASE-010（稽核檢視與回歸）**已落地現實；DOC-SYNC `PHASE-010-DOCSYNC`——§3 `audit`／`platform` 兩列落點更新、§4.8 稽核檢視與兩種寫入交易語意、§4.9 錯誤組裝點唯一與兜底不記原文、**新增 §4.13 使用者刪除守門與 FK 對應**。前次：2026-08-09 `PHASE-009-DOC-SYNC-B`；再前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
 - 上游：`userstory.md`、`docs/PRD.md`、`CLAUDE.md`（技術棧已由人類確認）
 - 說明：本文件為概念層架構草案，不含實際套件版本細節、API 完整路徑、DB 欄位與索引、部署程式碼。這些於各 Phase Spec 與實作 Task 定案。
 
@@ -72,9 +72,9 @@
 | `mileage`（統計） | 區間/年度公務里程統計引擎（共用給差旅統計、保養、折舊）。**PHASE-005 落地，落點 `backend/src/mileage/`**，三檔各司其職：`mileage-range.ts`（純函式：區間驗證 `parseMileageRange`、過濾條件建構 `buildOfficialMileageWhere`，不碰 DB、不知道「今天」）、`mileage-engine.ts`（唯讀 DB 聚合 `sumOfficialMileage`，簽章接受 `PrismaClient \| Prisma.TransactionClient`）、`routes.ts`（薄層編排：授權 → 結構收斂 → 驗證 → 引擎 → DTO，本身不含任何業務判定）。對外**僅一個唯讀端點**；對內提供 `sumOfficialMileage(db, params)` 供 `maintenance`／`depreciation` **於交易內複用**（不重算、不繞道 HTTP） | FE-US-06, BE-US-30 |
 | `attachments` | storage 抽象、上傳/格式大小/內容檢測、數量限制、生命週期（暫存→關聯→鎖定→清理）、授權存取。**PHASE-009 落地 `backend/src/attachment/attachment-copy.ts`**：修正版之附件**位元組複製**（原圖與縮圖各自新 `storageKey`，逐位元組相同；容器對位＝差旅逐段、保養／折舊單一容器；沿既有「先 `put` 後 `INSERT`」順序，失敗時補償刪除已寫新 key 並讓整筆修正版交易回滾）。**本檔於交易客戶端（`Prisma.TransactionClient`）上直接 `create`**，未改 `attachment-service.ts` 之 `createAttachment` 簽章（其只收頂層 `PrismaClient`，改簽章會波及 PHASE-003 起既有呼叫端） | FE-US-21, BE-US-23, 24, 25, NFR-US-07, 10 |
 | `reports` | 報表編號產生、列印版 HTML 組裝、Playwright PDF 產生/保存、安全檔名、授權下載。**PHASE-008 落地，落點 `backend/src/reports/`**，**九檔**各司其職：`report-number.ts`（編號純函式：三型前綴 ＋ Asia/Taipei `YYYYMM` ＋ 序號補零）／`report-filename.ts`（安全檔名純函式：不安全字元清理、姓名段 30／整體 120 上限、`Content-Disposition` 雙形式）／`report-data.ts`（**只讀快照**之封閉白名單組裝，零重算、零計算引擎呼叫）／`report-html.ts`（列印版版型**純函式**：零時鐘、零隨機、零外部資源）／`report-labels.ts`（**顯示標籤之單一來源**：油種中文名稱窮舉 `Record<FuelType, string>`、台北時區中文時間格式化——PHASE-008 Mock Gate 裁-1／裁-3）／`report-images.ts`（附件位元組 → 降尺寸／EXIF 轉正／**取小者** → data URI）／`pdf-renderer.ts`（Playwright 封裝：啟動參數、逾時、`%PDF-`／`%%EOF` 校驗、`preferCSSPageSize` A4）／`report-service.ts`（編排、交易、冪等、補償刪檔）／`routes.ts`（四端點：產生／列印／下載／查詢）。**九檔清單有結構性測試釘住**（新增或刪除 `.ts` 而未同步清單即紅）。**PHASE-009 之作廢版 PDF 亦落於本目錄且仍為九檔**——`prepareVoidedReport`／`VoidedReportPlan` 附加於 `report-service.ts` 既有產生流程**之後**（位置為約束非風格：既有結構斷言以 `renderReportHtml(` 之**首現位置**判定「配號早於渲染」，插入於前會在零行為缺陷下轉紅），**不得**新建 `reports/*.ts`；`routes.ts` 之四端點於 `VOIDED` 之行為見 §4.7 末三條 | FE-US-22..24, BE-US-26, 27, 28 |
-| `audit` | 稽核事件寫入與查詢（操作者/擁有人/時間/類型/前後摘要；密碼不入） | AD-US-14, BE-US-31 |
+| `audit` | 稽核事件寫入與查詢（操作者/擁有人/時間/類型/前後摘要；密碼不入）。**PHASE-010 落地（查詢面）**，落點 `backend/src/audit/` **四檔**：`audit.ts`（既有——`writeAudit` 寫入助手）／`audit-query.ts`（**純函式**：`parseAuditLogQuery` 篩選與分頁解析、`buildAuditLogWhere` 條件建構；零 DB、零 Prisma 型別相依）／`audit-summary.ts`（**純函式**：`flattenAuditSummary` 將 `AuditLog.summary` 之 JSON 攤平為 `changes[]`——**對外揭露面之單一事實來源**，零 import／零時鐘／零 I/O）／`routes.ts`（薄層編排：授權 → 解析 → `where` → DB 層分頁 ＋ 獨立 `count` → DTO 投影；獨立 `auditPlugin`，於 `server.ts` 註冊）。**寫入面 PHASE-010 零變更**（見 §4.8） | AD-US-14, BE-US-31 |
 | `calculation engine` | 金額計算純函式：單段/整筆差旅、保養分攤、折舊補貼、統一四捨五入取整 | BE-US-06, 07, 12, 14, 17 |
-| `platform` | 健康檢查、結構化錯誤處理、設定/env 載入、DB 連線 | NFR-US-15, 16, 05 |
+| `platform` | 健康檢查、結構化錯誤處理、設定/env 載入、DB 連線。落點 `backend/src/platform/`：`errors.ts`（`AppError` ＋ `ErrorCode` 聯集 ＋ `buildErrorBody` **單一組裝點**）／`error-handler.ts`（四分支統一錯誤回應；**PHASE-010-T9 起，未預期例外之兜底分支不再記錄 `error.message` 原文**——見 §4.9）／`log-sanitize.ts`／`health.ts`／**`error-label.ts`（PHASE-010-T10 新增之葉節點**：零內容錯誤標籤 `errorLabel(err) = err.constructor.name`，**無任何專案內部相依**故可被任何層級 import 而不成環；現行呼叫端為 `attachment/attachment-copy.ts` 與 `attachment/upload-service.ts` 共 **4 處**） | NFR-US-15, 16, 05 |
 
 模組依賴方向（高階）：`trips/maintenance/depreciation` → `applications`（狀態/草稿/查詢）+ `calculation engine` + `parameters` + `mileage` + `attachments`；所有受保護模組 → `auth` + `authz`；寫入操作 → `audit`。
 
@@ -163,10 +163,35 @@
 - **作廢稽核定案（PHASE-009 D10(a)，已落地）**：`AuditAction` enum 新增**單一值 `APPLICATION_VOIDED`**（enum 由九值增為十值）。**本人與管理員皆寫**——與三型 PUT 之 `APPLICATION_UPDATED_ON_BEHALF` 不同，本 hook 恆傳入、不以 `actorId !== ownerId` 分野（BE-US-31② 逐字「使用者**或**管理員作廢申請 → 應記錄作廢原因、操作者及時間」；與 PHASE-004「本人自建草稿不寫稽核」之差異為刻意）。稽核 `INSERT` 於作廢之**同一交易**內、四欄寫入之後執行：hook 拋錯即連同狀態變更一併回滾（零孤兒稽核列、零狀態變更）。`summary` 為封閉四鍵並含**作廢原因**；`voidedById`／`ownerId` 等內部識別值刻意不入 `summary`（操作者已由 `actorId` 欄承載）。
 - **修正版之稽核（PHASE-009）**：沿用既有 `APPLICATION_CREATED_ON_BEHALF`，**不新增第二個 enum 值**；僅代操作（管理員為他人建立）時寫入，與既有代建端點同一紀律。
 - **參數建立稽核定案（PHASE-003a D6）**：三類參數版本建立之稽核**複用 PHASE-002 `AuditLog`** 機制（不另起爐灶）；`AuditAction` enum 新增**單一值 `PARAMETER_VERSION_CREATED`**，以 `summary.parameterType`（`FUEL`／`ETC`／`DEPRECIATION`）區分三類，`summary` 存重要設定摘要（單價或車價/年限/年里程 + `effectiveFrom`），不含密碼與敏感憑證。
+- **`AuditAction` enum 之收斂議題已結案（PHASE-010 §16 D8(a)，人類 2026-08-09 Spec Gate）**：維持現有 **10 值**，PHASE-010 **零 migration**；「修正版 vs 一般代建立」之區分由 `summary.revisionOf` 承載，不另立 enum 值；「報表產生」從未被 US 列為須稽核之事件。**此案結案，後續 Phase 不再逐期重議**（自 PHASE-008 D15 起延宕兩期之議題於此收束）；未來若 US 新增事件再議。
+
+#### 稽核**寫入**之兩種交易語意（PHASE-010 §16 D11(a) 明文記載，人類 2026-08-09 明示接受）
+
+| 語意 | 適用事件 | 形狀 | 失敗後果 |
+|---|---|---|---|
+| **同交易** | 參數版本建立（PHASE-003a 起）／代操作三型／作廢／油耗版本建立等 | 業務寫入與 `tx.auditLog.create` 同一交易，hook 於業務寫入之後執行 | hook 拋錯即**整筆回滾**——零孤兒稽核列、零狀態變更 |
+| **fire-and-forget** | **帳號類五事件**（`USER_CREATED`／`USER_DEACTIVATED`／`USER_ACTIVATED`／`USER_PASSWORD_RESET`／`USER_DELETED`，PHASE-002 起） | 業務交易 COMMIT 後，`writeAudit` 以**獨立連線**寫入；失敗僅 `console.error` | 業務操作已生效而稽核列**可能靜默遺失**（今日無觀測到之實例，屬結構性可能） |
+
+  此不對稱為 PHASE-002 之既有形狀，PHASE-010 **明示不改**（D11(a)）；可靠性議題（是否改為同交易、或補投遞保證）移交 PHASE-011，見 `docs/KNOWN_ISSUES.md` §5。**新增稽核寫入站點時須自覺選邊**：涉及授權／不可逆操作者應採同交易。稽核寫入站點之集合由 `phase10-audit-structure.test.ts` 之**白名單掃描**釘住（現行 **5 檔／13 個 `auditLog.create(` 呼叫**），新增或移除檔案即紅。
+
+#### 稽核**檢視**（PHASE-010 落地；唯一之新讀取路徑）
+
+- **端點**：`GET /admin/audit-logs`（唯讀、分頁、篩選），落於獨立之 `backend/src/audit/routes.ts` ＋ `auditPlugin`。**管理員 only**（D4(a)）——一般使用者含資料擁有人本人一律 `403`，**嚴於**申請端點之「擁有人或管理員」；授權（`requireAuth` → `requirePasswordChanged` → `requireAdmin` 三段既有 `preHandler`）**恆早於**參數解析與任何 DB 查詢，故非管理員送出畸形參數得 `403` 而非 `400`（側信道測試守門）。
+- **端點零寫入**：查詢不產生自身之稽核列（呼叫前後 `AuditLog`／`User`／`Application` 三表逐欄不變，有測試釘住）。
+- **投影之單一事實來源**：`AuditLog.summary`（`Json?`）之對外形式**只由 `audit-summary.ts` 之 `flattenAuditSummary` 一處決定**，輸出 `changes: Array<{ field, before, after }>`。其形狀分派為三層（`summary` 級之巢狀前後版本逐子鍵拆列 → 頂層之 `{before,after}`／`{from,to}` 兩鍵物件拆欄 → 其餘一律字串化入 `after`），並以**鍵守恆之集合相等**斷言封閉（刪頂層鍵或刪子鍵之 mutant 皆必紅）。**攤平不擴大揭露面**——輸出恰為同一 `summary` 之既有值，僅呈現形式改變。
+- **內部識別值不外露**：列 DTO 恰七鍵（`id`／`action`／`createdAt`／`actorDisplayName`／`targetLabel`／`targetDisplayName`／`changes`），**不含 `actorId`／`targetId`**（沿 PHASE-009 §6.3 既有紀律）。連帶後果：前端之操作者／對象篩選必須是**使用者下拉**（顯示名稱為選項文字、id 為送出值、清單複用既有使用者清單 API），不能是純文字 id 輸入——使用者無從得知可輸入之值。
+- **wire 面與呈現層之邊界（MG-3 裁定，人類 2026-08-10）**：`targetLabel`（`loginName#<id>`／`FUEL_PRICE#<id>` 等快照字串）與 `changes[]` 之 `applicationId`／`revisionOf` 於 **wire 與 DB 完整保留**（追查用）；**畫面不呈現**——`targetLabel` 只顯示第一個 `#` 前段、該兩欄之明細列整列不渲染。**兩者為不同層次**：不得以「畫面不顯示」為由縮減 wire 值，亦不得在畫面回填內部識別碼。
+- **不可變性**：`backend/src` 全域對 `auditLog` 之 `update`／`updateMany`／`delete`／`deleteMany`／`upsert` **零呼叫**（結構性掃描守門，插入任一該類呼叫之 mutant 必紅）——稽核為 append-only。
+- **時間**：後端一律回 **ISO 8601 UTC**（機器可讀之單一真值），在地化屬呈現層。**日期篩選之日界為台灣（UTC+8）日曆日**（固定 +8h，不引入時區資料庫）；**畫面顯示則沿用瀏覽器時區**（與前端既有 8 個格式化落點一致）——兩者對非台灣時區之使用者會不一致，此為 2026-08-09 兩項裁定並存之**已明示接受**後果，見 `docs/specs/PHASE-010.md` §17.1 #10／#11。
 
 ### 4.9 結構化錯誤處理
 
 - 統一錯誤回應：前端可辨識欄位與原因；不外洩堆疊、DB 結構或敏感資訊；伺服器日誌含追查識別但不含密碼/憑證（NFR-US-16）。
+- **錯誤回應之組裝點唯一（PHASE-010-T10／AC-22(a)，已落地）**：一切錯誤回應皆經 `platform/errors.ts` 之 `buildErrorBody` 由 `error-handler` 統一組出；**業務路由不得自行呼叫 `buildErrorBody` 繞道**（全案呼叫端已歸零，僅存 `error-handler.ts` 內部與定義本身）。`applications/routes.ts` 之 `REPORT_GENERATION_FAILED` 為最後一處繞道，已改經 `AppError` 承載——**wire 輸出逐位元組不變**（含鍵序），並有「不得回退為繞道」之結構性守門。
+- **未預期例外之兜底日誌不記例外原文（PHASE-010-T9／AC-21，已落地；診斷取捨已明示接受）**：`error-handler` 之第四分支（未預期例外）記**固定分類標籤 `UNEXPECTED_EXCEPTION` ＋ `error.name`**，**不記 `error.message`**——根因是 `sanitizeForLog` 只遮蔽連線字串與 `password=` 形式之憑證，**不遮蔽絕對路徑與 storage key**，而 storage／fs／Chromium 之錯誤訊息逐字含之。`requestId` 為唯一關聯手段（日誌與回應同值）。**wire 面零變更**（`500` body 逐位元組不變）。
+  - **取捨與紀律**：線上排障之正解為**各服務層之具名日誌**（各 `catch` 自記 `{ stage, id }` 一類零內容標籤 ＋ `requestId`），**不得**以排障不便為由回退兜底記原文——回退會使反向探針與站點白名單掃描同時失效（PHASE-011 RUNBOOK 須載明）。
+  - **守門形狀**：兩層站點白名單掃描（L1＝「直接送入 `log.*`／`console.*` 或回應 `details`」之 AC 字面面；L2＝全域錯誤訊息取值之保守超集，承接變數間接型）＋絕對路徑注入之反向探針。**已知不可及之型別已據實記載**（pino `log.error({ err })` 之序列化型、參數位解構），以**記載型反向 `it`** 固化，日後補上掃描能力時會顯性翻紅；見 `docs/KNOWN_ISSUES.md` §3 D-9。
+- **零內容錯誤標籤之單一來源**：需要在日誌中標示「發生了哪一類錯誤」時，一律用 `platform/error-label.ts` 之 `errorLabel`（取 `err.constructor.name`），**不記訊息**。**與 `errName: err.name` 慣例刻意不合併**——兩者對未自訂 `name` 之 `Error` 子類回傳相異值，合併即為行為變更（`health.ts`／`error-handler.ts` 維持 `err.name`）。
 
 ### 4.10 里程統計精度與引擎複用（PHASE-005 定案）
 
@@ -200,6 +225,26 @@
 - **作廢之交易邊界**：狀態守門與原因驗證皆收斂於**交易內**（列鎖後之新鮮讀取），故併發雙作廢由列鎖排隊後手確定性得 409——不靠重試碰運氣。交易內序為：列鎖 → 狀態守門 → 原因驗證 → 四欄寫入（`status` ＋ `voidReason`／`voidedAt`／`voidedById`）→〔作廢版 PDF 四階段〕→ 稽核 `INSERT` → COMMIT。**狀態寫入早於渲染**，使渲染所用之 `ReportData` 恆帶正確作廢資訊；順序不可對調。
 - **修正版之交易邊界**：讀原業務欄位（含 `TripSegment`、`LINKED` 附件清單）→ 建新 `Application`(DRAFT) ＋ 三型子列 → `supersedesId` → 附件位元組複製 →〔代操作〕稽核 → COMMIT。附件複製在**同一交易**內完成，故失敗即整筆回滾；storage 側以補償刪除回收已寫之新 key。交易顯式 `timeout: 60_000`／`maxWait: 10_000`——差旅段數極端之資料可能撞上該上限而整筆回滾（零殘留仍成立），見 `docs/KNOWN_ISSUES.md`。
 - **`VOID_TX_TIMEOUT_MS = 60_000` 為硬編常數，與 `REPORT_PDF_TIMEOUT_MS` 無程式耦合**——構成一條運維約束：後者之設定值須顯著小於 60 s（預設 30000 ms，須保留 `put`／讀回校驗／`INSERT` 之餘裕），調高至接近或超過 60 s 會使「其實只是慢」的正常作廢被 Prisma 交易逾時（P2028）搶先中止而變成 500。
+
+### 4.13 使用者刪除守門與 FK 對應（PHASE-010 §16 D5(c) 定案，人類 2026-08-09 Spec Gate 批准；已落地）
+
+- **問題形狀**：`prisma.user.delete()` 只要撞上**任何一條**指向 `User` 的 `ON DELETE RESTRICT` 外鍵即拋 P2003；該例外若未被守門攔在前面，會落入 `error-handler` 之未預期例外分支而回 **`500`**——與 AD-US-04② 逐字要求之「拒絕並提供停用選項」（`409` ＋ 停用文案）不符。故守門所查之欄位集合**必須與 DB 實際之 RESTRICT 外鍵集合一一對應：少一條就是一條 500 的缺口**。
+- **兩邊都補（D5=(c)）**：①`users/history.ts` 之 `USER_RESTRICT_FK_GUARDS` 由 2 條擴為 **6 條**（每條 FK 一個項目、每個 `count` 只查自己那一欄，使宣告與查詢之間無漂移空間；六條並行 `Promise.all`，任一 > 0 即拒刪）②`admin/routes.ts` 之 `DELETE` 端點另加 **P2003 兜底轉譯 → `409` ＋ 同一文案**（縱深：守門漏補或競態時仍不是 500），並記一筆 `warn`（`fkField` 取自 Prisma `meta.field_name`，屬 schema metadata、零 PII）。
+
+| 指向 `User` 之 FK | `ON DELETE` | 守門 |
+|---|---|---|
+| `Application.ownerId` | RESTRICT | ✅ `USER_RESTRICT_FK_GUARDS` |
+| `Application.createdById` | RESTRICT | ✅（**無索引**——大表上為 seq scan，PHASE-011 補索引候選） |
+| `Attachment.uploaderId` | RESTRICT | ✅（**無索引**，同上） |
+| `Attachment.ownerId` | RESTRICT | ✅ |
+| `AuditLog.actorId` | RESTRICT | ✅ |
+| `UserFuelConsumptionVersion.userId` | RESTRICT | ✅ |
+| `AuditLog.targetId` | **SET NULL** | ❌ **刻意不納** |
+| `Session.userId` | **CASCADE** | ❌ **刻意不納** |
+
+- **兩條刻意不納之語意（勿誤讀為漏列）**：`Session.userId` 為 CASCADE，本就不阻擋刪除；`AuditLog.targetId` 為 SET NULL——**被操作過的人可刪、操作過的人不可刪**，刪除後該欄轉 `null` 而 `targetLabel` 仍留 `loginName` 快照，正是 AD-US-04③「留下不含敏感資料的管理操作紀錄」之既有設計。
+- **對應關係不靠註解維持**：`phase10-user-delete-regression.test.ts` 以 `information_schema` 列舉 DB 實際 FK 與本宣告做**欄位級（「表.欄」集合）機械相符斷言**——日後在 schema 新增一條指向 `User` 的 RESTRICT 外鍵而未同步登記，該測試即紅；「同一表新增另一條未守門欄位」亦必紅（表級斷言對此零鑑別力，已由 mutant 實證）。
+- **使用者可見代價（人類明示接受）**：凡曾建立過帳號／改過全域參數／上傳過附件／被記過任何稽核（即成為 `AuditLog.actorId`）之管理員，**永久不可刪除，只能停用**；有油耗版本之使用者亦然（`UserFuelConsumptionVersion` 為 append-only，PHASE-005a D8(a) 之設計後果）。這是 AD-US-04② 的設計意圖而非缺陷；根治須「稽核 actor 匿名化」，屬資料保存決策，未排定。
 
 ## 5. 設計原則（不可違背）
 

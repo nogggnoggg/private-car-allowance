@@ -82,13 +82,26 @@ const SRC_DIR = path.join(BACKEND_ROOT, "src");
 /** T1 即審 FW-1 承接（§8.3）：`history.ts` 之路徑，及其零 diff 之權威來源。 */
 const HISTORY_TS_PATH = path.join(SRC_DIR, "users", "history.ts");
 /**
- * §8.3 明文宣告：本 Phase 對 `backend/src/users/history.ts` 零變更
- * （該檔自 PHASE-005a-T1 的 `35b30e7` 起未再變動）。此值為
- * PHASE-008-T1b 開工當下該檔內容的 SHA-256（`sha256(fs.readFileSync(...,
+ * `backend/src/users/history.ts` 之內容 SHA-256（`sha256(fs.readFileSync(...,
  * "utf8"))`，十六進位）——任何一個位元組的改動都會使下方比對變紅。
+ *
+ * **這道哨的射程是「本檔所屬 Phase 不得夾帶修改此檔」，不是永久凍結**：合法
+ * 修改此檔的 Task 必須連同本常數一起更新（PHASE-008 期中複審 FW-8 之明文預
+ * 告），否則哨兵會把合法變更誤報成夾帶。
+ *
+ * 基準沿革：
+ *   · 原基準（PHASE-008-T1b 開工當下）＝ PHASE-005a-T1 之 `35b30e7`，值為
+ *     `62f4841dc02d851460e46c8d747bfcffdd38a8dbeb7ff96ed57c0ca347221e89`；
+ *     PHASE-008 §8.3 明文宣告該 Phase 對此檔零變更。
+ *   · 現行基準＝ **PHASE-010-T5**：依 PHASE-010 §16 **D5=(c)**（人類 leonchih
+ *     2026-08-09 Spec Gate 授權）將 `userHasHistory` 之守門面由 2 條擴為指向
+ *     `User` 之全部 6 條 `ON DELETE RESTRICT` 外鍵——**合法變更**，非夾帶。
+ *     該次變更之守門完整性另有機械斷言把關（`phase10-user-delete-regression
+ *     .test.ts` 之 AC-14(a)：以 `information_schema` 列舉 DB 實際 FK 與
+ *     `USER_RESTRICT_FK_GUARDS` 逐欄比對）。
  */
 const HISTORY_TS_EXPECTED_SHA256 =
-  "62f4841dc02d851460e46c8d747bfcffdd38a8dbeb7ff96ed57c0ca347221e89";
+  "e46a45d8f69ae4b525fdfb5a33a0aed4214f3fa9bd67e0f0f00b2bdf8a31eab0";
 
 /**
  * The migration directories that existed immediately before this Phase

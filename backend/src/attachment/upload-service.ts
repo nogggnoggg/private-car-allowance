@@ -31,14 +31,21 @@
  * 及 `fs` 之 `EPERM: operation not permitted, unlink '<root>/att/…'`），而
  * `sanitizeForLog` 只遮蔽連線字串與 `password=` 形式之憑證，**不會**遮蔽
  * storage key 或絕對路徑。故兩條路徑改記「錯誤類別名稱」這類零內容之標籤
- * （`errorLabel`），與同專案 `attachment-copy.ts` :313 及 `health` 探針之
- * `errName` 慣例同型。使用者可見回應本即為訊息固定之 `AppError`，故本次僅
- * 改日誌內容，wire 行為零變更。
+ * （`errorLabel`），與 `health` 探針之 `errName` 慣例同族。使用者可見回應本
+ * 即為訊息固定之 `AppError`，故本次僅改日誌內容，wire 行為零變更。
+ *
+ * 【PHASE-010-T10／AC-22(b)】`errorLabel` 原為本檔私有函式，與
+ * `attachment-copy.ts` 之副本逐字相同；兩份已收斂至單一葉節點模組
+ * `platform/error-label.ts`（`KNOWN_ISSUES.md` §3 D-3），實作逐字相同，本檔
+ * 之日誌輸出零變更。**注意**：`health.ts`／`error-handler.ts` 之 `errName`
+ * 取 `err.name`，與本模組之 `err.constructor.name` 對 Error 子類回傳不同
+ * 值，屬同族**慣例**而非同一實作，故不在收斂範圍（詳見該模組檔頭）。
  */
 
 import { randomBytes } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
+import { errorLabel } from "../platform/error-label.js";
 import { AppError } from "../platform/errors.js";
 import { sanitizeForLog } from "../platform/log-sanitize.js";
 import type { Storage } from "../storage/index.js";
@@ -85,16 +92,6 @@ export interface UploadOptions {
 
 /** Number of bytes to read from stream for magic-byte detection */
 const MAGIC_HEADER_BYTES = 12;
-
-/**
- * 零內容之錯誤標籤——只取錯誤的類別名稱，**不含**訊息（storage／fs 之錯誤
- * 訊息逐字含 key 與絕對路徑）。這是補償刪檔與非預期錯誤兩條路徑唯一允許進
- * 入日誌的錯誤資訊（PHASE-009 AC-38；與 `attachment-copy.ts` :313 同型）。
- */
-function errorLabel(err: unknown): string {
-  if (err instanceof Error) return err.constructor.name;
-  return "UnknownError";
-}
 
 // ---------------------------------------------------------------------------
 // Storage key generation
