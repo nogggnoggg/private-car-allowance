@@ -29,7 +29,8 @@
  *     · `action` 一律以**中文標籤**斷言與操作（`selectOption({ label })`），
  *       全檔零 `APPLICATION_VOIDED`／`USER_CREATED` 等 enum 字面之畫面斷言。
  *     · **值層**亦一律中文：`role` → 「一般使用者」、`type` → 「差旅補助」、
- *       `fuelType` → 「95 無鉛汽油」（三個不同枚舉家族，AC-18(d) 之值層中文化）。
+ *       `fuelType` → 「柴油」（三個不同枚舉家族，AC-18(d) 之值層中文化；油種由
+ *       `95 無鉛汽油` 改為 `柴油` 之理由見「T8R 跨 spec 共享軸隔離」）。
  *       **本檔刻意不涵蓋布林「是／否」**：其唯一真實來源為
  *       `USER_DEACTIVATED`／`USER_ACTIVATED` 之 `{isActive:{from,to}}`，而
  *       AC-19(a) 指定之真實管理操作恰為「建立帳號」一項；為此加開停用／啟用
@@ -110,6 +111,42 @@
  * 此舉同時滿足 (b) 之前半「篩選一次後列表確實收斂」與後半「分頁不重複」。
  *
  * ---------------------------------------------------------------------------
+ * T8R 跨 spec 共享軸隔離（Phase 邊界 fresh-DB 自舉揭露；2026-08-10）
+ * ---------------------------------------------------------------------------
+ * **T8R 首輪紅燈**（fresh DB 全套首輪）：`fuel-model.spec.ts` 情境5 紅——
+ * `合計金額：760` vs 手算期望 `360`（serial 連帶 1 did not run，53 passed）；
+ * 單獨重跑 fuel-model 仍紅（該軸已被寫入，非一次性競態）。
+ *
+ * **根因（實查覆核）**：油價是**全站共享時間軸**，`findEffectiveVersion` 取
+ * 「`effectiveFrom` ≤ 出差日之**最新**版本」——支配權由**日期大小**決定，
+ * **與建立先後無關**。本檔原在 `fuel-model.spec.ts` 之手算軸（`GASOLINE_95`）
+ * 上以 `2020-06-01` 播種 `65.0000`，日期晚於該檔之 `2020-01-01`／`30.0000`
+ * （:64-68），因而恆為生效版本。算術逐項對得上：
+ *   · 該檔手算前提 `STAFF_FUEL_UNIT_PRICE = ROUND(30.0000 ÷ 10.0000) = 3`（:89）
+ *   · 被本檔蓋掉後之實際單價 `ROUND(65.0000 ÷ 10.0000) = 7`（0.5 進位）
+ *   · 差額 `(7 − 3) × TRIP_TOTAL_KM(100) = 400`，恰為 `760 − 360`
+ *     （ETC 側 `1.2 × 50 = 60` 兩邊相同——該檔 ETC 已於 T13R 動態化，未受害）。
+ * PHASE-009 之 50/50 通過因當時無本檔；此為本檔引入之跨 spec 汙染，非產品缺陷。
+ *
+ * **修法（採「軸分離」，僅動本檔）**：全 `e2e/` 實查後確認
+ * **`fuel-model.spec.ts` 情境5 是全套唯一硬編「油價推導金額」之處**——
+ * `mileage-statistics.spec.ts` :64 與 `travel-application.spec.ts` :75 皆自載其
+ * 播種值與金額無關（前者只斷言公里數，後者只斷言 `/合計金額：\d+/` 與 `>0`），
+ * `admin-applications.spec.ts` 同為先查後建且零金額斷言。故只要本檔離開
+ * `GASOLINE_95` 軸即根治：改用 `DIESEL`（其唯一使用者
+ * `mileage-statistics.spec.ts` 明文與金額無關）。
+ * 另加**第二保險**：本檔油價播種改用專用哨兵日 `FUEL_PRICE_EFFECTIVE_FROM`
+ * （`2010-01-01`，早於全 `e2e/` 任一油價常數），使本檔之版本在任何其他 spec
+ * 也播種同軸時**結構性必然落敗**，擋住未來新 spec 的同型再犯。
+ *
+ * **ETC 軸刻意不動**：本檔之 ETC 播種（`2020-06-01` ／ `1.8`）與
+ * `void-application.spec.ts` :122／:126 逐字同型同值，屬既存且已隨 PHASE-009
+ * 全綠之形狀；且全套唯一依賴 ETC 單價之手算（fuel-model 情境5）已於 T13R
+ * 改為動態解析，結構上免疫。無證據支持的更動不做（最小修正）。
+ *
+ * **本檔零金額斷言**，故上述改動對本檔自身之綠燈判準零影響。
+ *
+ * ---------------------------------------------------------------------------
  * 首輪紅燈（TDD 紅燈物證，2026-08-10 實跑）
  * ---------------------------------------------------------------------------
  * 首次執行本檔：測試 1~3 綠、**測試 4 紅**——
@@ -157,8 +194,33 @@ const STAFF_TEMP_PASSWORD = "TempPw@2026Audit!";
 const STAFF_NEW_PASSWORD = "NewPw@2026Audit!";
 
 const PARAM_EFFECTIVE_FROM = "2020-06-01";
-/** FW-A：值層中文化之第三個枚舉家族（`95 無鉛汽油`）。 */
-const FUEL_TYPE = "GASOLINE_95";
+
+/**
+ * FW-A：值層中文化之第三個枚舉家族（`柴油`）。
+ *
+ * **T8R 跨 spec 共享軸隔離（見檔頭同名段落）**：本檔刻意**不用** `GASOLINE_95`
+ * ——該軸為 `fuel-model.spec.ts` 情境5 之手算基準（`STAFF_FUEL_TYPE` :65 ＋
+ * `STAFF_FUEL_UNIT_PRICE = 3` :89）。`DIESEL` 軸之唯一使用者
+ * `mileage-statistics.spec.ts` 於 :64 自載「與油資金額無關……播種數值無需與任何
+ * 舊制單價換算等值」（僅斷言公里數），故本檔在該軸之播種對其零影響。
+ */
+const FUEL_TYPE = "DIESEL";
+
+/**
+ * **T8R**：本檔之油價播種**專用**生效日，刻意早於全 `e2e/` 任一 spec 之油價
+ * 常數（現行最早為 `fuel-model.spec.ts` :64 之 `2020-01-01`）。
+ *
+ * 成因：油價為**全站共享時間軸**，`findEffectiveVersion` 取「`effectiveFrom`
+ * ≤ 出差日之**最新**版本」，故支配權由**日期大小**決定，**與建立先後無關**。
+ * 本檔原以 `PARAM_EFFECTIVE_FROM`（`2020-06-01`）播種，日期晚於 fuel-model 之
+ * `2020-01-01`，因而**結構性**蓋掉該檔手算前提（見檔頭「T8R 首輪紅燈」）。
+ * 取一個恆為最早之哨兵日後，本檔之版本在任何其他 spec 也播種同軸時**必然落敗**，
+ * 僅在該軸完全空白時才生效（此時本檔之差旅得以完成，且無人依賴該軸金額）。
+ * 與 `FUEL_TYPE` 之軸分離互為**雙保險**：軸分離已足夠，此條再擋未來新 spec。
+ *
+ * 本檔零金額斷言，故哪個版本生效對本檔之綠燈皆無影響。
+ */
+const FUEL_PRICE_EFFECTIVE_FROM = "2010-01-01";
 const FUEL_KM_PER_LITER = "10.0000";
 /** 後端以 `toFixed(4)` 寫入稽核 summary（`fuel-consumption-service.ts` :187）。 */
 const FUEL_KM_PER_LITER_AUDIT = "10.0000";
@@ -253,7 +315,13 @@ async function ensureFuelPriceCovers(page: Page, fuelType: string, dateStr: stri
   const { versions } = (await res.json()) as { versions: { effectiveFrom: string }[] };
   if (versions.some((v) => v.effectiveFrom <= dateStr)) return;
   const createRes = await page.request.post(`${API_BASE}/parameters/fuel-price`, {
-    data: { fuelType, pricePerLiter: FUEL_PRICE_PER_LITER, effectiveFrom: PARAM_EFFECTIVE_FROM },
+    // T8R：專用哨兵日（見 `FUEL_PRICE_EFFECTIVE_FROM` 之 JSDoc）——**不可**改回
+    // `PARAM_EFFECTIVE_FROM`，否則本檔會重新支配全站共享油價軸。
+    data: {
+      fuelType,
+      pricePerLiter: FUEL_PRICE_PER_LITER,
+      effectiveFrom: FUEL_PRICE_EFFECTIVE_FROM,
+    },
   });
   if (!createRes.ok())
     throw new Error(`E2E 設定油價版本失敗: ${createRes.status()} ${await createRes.text()}`);
@@ -724,7 +792,7 @@ test.describe("稽核檢視端到端 Gate — PHASE-010-T8（AC-19）", () => {
       await expect(auditRow(page, LABEL_APPLICATION_VOIDED, staffLoginName)).toHaveCount(1);
     });
 
-    await test.step("依「油耗資料異動」篩選 → 值層中文化（95 無鉛汽油）", async () => {
+    await test.step("依「油耗資料異動」篩選 → 值層中文化（柴油）", async () => {
       await page.goto(`${BASE}/admin/audit-logs`, { waitUntil: "load" });
       await expect(auditList(page)).toBeVisible({ timeout: 15000 });
       await applyActionFilter(page, LABEL_FUEL_VERSION_CREATED);
@@ -737,8 +805,8 @@ test.describe("稽核檢視端到端 Gate — PHASE-010-T8（AC-19）", () => {
       // AC-06(b-0)：`{before: null, after: {...}}` 逐子欄拆列 ＋ 頂層 `basisNote`。
       const changes = await readChanges(row);
       expect(changes).toEqual([
-        // FW-A：`fuelType` 值中文化（`GASOLINE_95` 字面必紅）。
-        { field: "油種", before: "—", after: "95 無鉛汽油" },
+        // FW-A：`fuelType` 值中文化（`DIESEL` 字面必紅）。
+        { field: "油種", before: "—", after: "柴油" },
         { field: "油耗（公里／公升）", before: "—", after: FUEL_KM_PER_LITER_AUDIT },
         { field: "生效日", before: "—", after: PARAM_EFFECTIVE_FROM },
         { field: "依據備註", before: "—", after: FUEL_BASIS_NOTE },
