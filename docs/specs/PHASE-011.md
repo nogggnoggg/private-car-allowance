@@ -758,9 +758,9 @@
 | AC-01(c) | integration | `backend/test/integration/phase11-retry-exhaustion.test.ts`（新） | `PHASE-011-T1 AC-01(c)(e) — 完成保養申請之重試耗盡確定性 503` › `AC-01(c): 重試耗盡之 503 為確定性可構造 — 故障注入下 SERVICE_UNAVAILABLE ＋ DB 零寫入` | T1 | `GREEN` |
 | AC-01(d) | —（非測試） | — | **不適用**：D1=(a) 裁定（純測試面），未選 (b)/(c)，依 Packet Out of Scope #1 不執行 | T1 | `N/A（非測試）` |
 | AC-01(e) | integration | 同 AC-01(c) 檔 | `PHASE-011-T1 AC-01(c)(e) — 完成保養申請之重試耗盡確定性 503` › `AC-01(e): 本 Task 之 backend/src diff 射程（D1=(a) 時為 0）之結構性登記 — 故障注入不倚賴任何新增之 src 匯出或測試鉤子`；`git diff --stat backend/src` 實測空輸出 | T1 | `GREEN` |
-| AC-02(a)(b)(c) | unit | `backend/test/unit/e2e-seed-monotonicity.test.ts`（新，依 D2） | `AC-02: E2E 共享參數軸播種日單調性` › `(b) 下界不變式：全 e2e 零 ≤1999-05-05 之播種日`；`(c) 哨兵不變式：audit-log 之油價哨兵日嚴格早於同軸他檔` | T2 | `PENDING` |
-| AC-02(d) | unit | 同上 | `AC-02(d) 鑑別力自證` › `①合成 1990-01-01 → 下界必紅`；`②合成同軸更早 → 哨兵必紅`；`③合成同軸較晚 → 兩式皆綠（防過寬）` | T2 | `PENDING` |
-| AC-02(e)(f) | unit | 同上 | `AC-02(e): 掃描器涵蓋自證 — 解析檔案清單恰等於 e2e 現行檔案清單`；`AC-02(f): 錯誤訊息含肇事檔／行號／不變式名／修法指引` | T2 | `PENDING` |
+| AC-02(a)(b)(c) | unit | `backend/test/unit/e2e-seed-monotonicity.test.ts`（新，依 D2） | `describe("AC-02(b)(c): 真實掃描——下界與哨兵不變式")` › `it("AC-02(b): 全 e2e/ 之任一參數播種日皆晚於下界 1999-05-05")`；`it("AC-02(c): 哨兵（audit-log.spec.ts 之 FUEL_PRICE_EFFECTIVE_FROM）於 fuelPrice:DIESEL 軸嚴格早於同軸其他任一檔")`（(a) 之軸建立機制＝`extractSeedEntries`／`CATEGORIES` 軸註冊表，經 (b)(c)(d)(e) 全部測試間接驗證，無獨立 it） | T2 | `GREEN` |
+| AC-02(d) | unit | 同上 | `describe("AC-02(d): 鑑別力自證（三型 mutant，測試內合成字串，不改真實檔）")` › `it("①下界 mutant：注入 1990-01-01 之合成播種 → (b) 必紅")`；`it("②哨兵 mutant：注入與哨兵同軸（fuelPrice:DIESEL）且更早之合成播種 → (c) 必紅")`；`it("③防過寬 mutant：注入同軸（fuelPrice:DIESEL）但晚於哨兵之合成播種 → (b)(c) 兩式皆綠")` | T2 | `GREEN` |
+| AC-02(e)(f) | unit | 同上 | `describe("AC-02(e): 掃描器涵蓋自證")` › `it("掃描器實際解析到的檔案清單 ＝ 全 e2e/ 現行 .spec.ts 檔案清單")`；`describe("AC-02(f): 錯誤訊息四要素（肇事檔／行號／日期／不變式名稱）與修法指引逐字")` › `it("下界違規訊息含四要素與修法指引逐字")`；`it("哨兵違規訊息含四要素與修法指引逐字")` | T2 | `GREEN` |
 | AC-03(a)(b) | integration | `backend/test/integration/phase11-attachment-cleanup.test.ts`（新） | `AC-03: 引用判定之封閉來源集` › `(a) 實作所查來源集恰等於宣告常數`；`(b) 列舉任何可能指向 Attachment 之欄位並與清單全等（新增欄位未入清單必紅）` | T3 | `PENDING` |
 | AC-03(c) | integration | 同上 | `AC-03(c): AuditLog.summary 面之處置`（依 D4：正向 jsonb 比對格／或「刻意不含稽核面」之記載型反向 it） | T3 | `PENDING` |
 | AC-03(d) | integration | 同上 | `AC-03(d): 判定模組零副作用 — 零 create/update/delete/deleteMany/upsert 之結構斷言` | T3 | `PENDING` |
