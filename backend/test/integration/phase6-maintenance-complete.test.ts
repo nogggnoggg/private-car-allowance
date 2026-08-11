@@ -6,6 +6,11 @@
  * B-30（完成 vs 刪除附件之併發）；§7.4 完成拒絕形狀（400 VALIDATION_ERROR +
  * fields[] + details.blockers[] 永遠完整清單）。
  *
+ * PHASE-011-T1 更正（依 `docs/specs/PHASE-011.md` AC-01／D1=(a)）：B-30
+ * 迴圈之允許拒絕碼集合擴充為 [400, 403, 409, 503]（503 為重試耗盡之既有合
+ * 法契約，非缺陷）；新增第三分支終局斷言（見 `assertB30RoundOutcome`）與
+ * 其 mutant 自證 it。零 `backend/src` 變更。
+ *
  * TDD: written BEFORE `completeMaintenanceApplication`/`POST
  * /applications/:id/complete` 之 MAINTENANCE 分派存在——第一輪預期為紅
  * （complete 端點對 MAINTENANCE id 現況回 404，snapshot 恆為 null）。見 Task
@@ -829,11 +834,129 @@ describeWithDb("PHASE-006-T7 — 完成流程 + 快照寫入 + 原子性 + 僅�
     // 另加輪間 jitter（隨機微延遲、交替讓哪一方先發起）提高兩側交錯情境皆
     // 出現的機率。既有斷言意圖（絕不 500、恰一方效果生效、不得雙重完成／
     // 雙重快照）維持不變。
+    //
+    // PHASE-011-T1（依 Spec AC-01／D1=(a)）：`completeMaintenanceApplication`
+    // 於序列化衝突重試 6 次後拋 `SERVICE_UNAVAILABLE`/503 是**既有且刻意設計
+    // 之契約**（重試耗盡之誠實回應），非本迴圈之缺陷——`maintenance-service.ts`
+    // :1218 一帶。人類 Spec Gate 裁定 D1=(a)：擴充允許碼集為
+    // `[400, 403, 409, 503]`，並新增第三分支終局斷言（503 時終局須為
+    // `DRAFT` ∧ `totalAmount` null，且附件狀態須與該輪刪除方之回應一致——
+    // 不得「503 但已寫入快照」殘留）。此為**擴大鑑別力**（多驗一種終局形
+    // 狀），非放寬既有斷言（絕不 500、恰一方生效之意圖逐字保留）。零
+    // `backend/src` 變更（AC-01(e)）。
     const CONCURRENCY_ROUNDS = 12;
 
     function jitter(): Promise<void> {
       return new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 5)));
     }
+
+    /**
+     * 單輪終局斷言（自 loop 抽出為純函式，供主迴圈與下方 mutant 自證共用）：
+     * 不做任何 DB／HTTP I/O，只依已取得之結果與快照做斷言。抽出理由：讓
+     * AC-01(b) 新增之第三分支得以用偽造情境獨立驗證鑑別力（見下方
+     * `it("mutant 自證..."）`），而不必依賴真實併發競態才能觸發 503 分支。
+     */
+    function assertB30RoundOutcome(
+      completeSettled: PromiseSettledResult<unknown>,
+      deleteSettled: PromiseSettledResult<{ statusCode: number }>,
+      dbApp: { status: string; totalAmount: unknown },
+      dbAttachment: { status: string }
+    ): void {
+      // 絕不 500：complete 若失敗只能是業務 AppError（400/403/409/503——
+      // 依 D1=(a) 503 為既有合法契約），刪除回應只能是 200/403/409，皆非 500。
+      if (completeSettled.status === "rejected") {
+        const err = completeSettled.reason as { httpStatus?: number };
+        expect(err.httpStatus).not.toBe(500);
+        expect([400, 403, 409, 503]).toContain(err.httpStatus);
+      }
+      if (deleteSettled.status === "fulfilled") {
+        expect(deleteSettled.value.statusCode).not.toBe(500);
+      }
+
+      const got503 =
+        completeSettled.status === "rejected" &&
+        (completeSettled.reason as { httpStatus?: number }).httpStatus === 503;
+
+      // 終局狀態必為下列三者之一（恰一方之效果生效，不得雙重完成／雙重快照）：
+      if (dbApp.status === "COMPLETED") {
+        // 完成方勝出：附件仍是 LINKED（完成鎖定，AC-23 既有行為，刪除方應已被擋 403）。
+        expect(dbAttachment.status).toBe("LINKED");
+        expect(dbApp.totalAmount).not.toBeNull();
+      } else if (got503) {
+        // 第三分支（AC-01(b)，新增）：完成方因重試耗盡得 503 → 終局須為
+        // DRAFT ∧ totalAmount null，且附件狀態須與該輪刪除方之回應一致——
+        // 不得出現「503 但已寫入快照」之殘留。
+        expect(dbApp.status).toBe("DRAFT");
+        expect(dbApp.totalAmount).toBeNull();
+        if (deleteSettled.status === "fulfilled" && deleteSettled.value.statusCode === 200) {
+          expect(dbAttachment.status).toBe("TEMP");
+        } else {
+          expect(dbAttachment.status).toBe("LINKED");
+        }
+      } else {
+        // 刪除方勝出：附件已 detach 回 TEMP，完成因零附件被 400 擋下，status 仍 DRAFT。
+        expect(dbApp.status).toBe("DRAFT");
+        expect(dbApp.totalAmount).toBeNull();
+      }
+    }
+
+    it("mutant 自證：第三分支對「503 但已寫入快照／附件狀態不一致」之殘留必紅（鑑別力驗證，不改真實程式，不做 DB／HTTP I/O）", () => {
+      const forged503: PromiseSettledResult<unknown> = {
+        status: "rejected",
+        reason: { httpStatus: 503 },
+      };
+      const forgedDeleteOk: PromiseSettledResult<{ statusCode: number }> = {
+        status: "fulfilled",
+        value: { statusCode: 200 },
+      };
+      const forgedDeleteBlocked: PromiseSettledResult<{ statusCode: number }> = {
+        status: "fulfilled",
+        value: { statusCode: 403 },
+      };
+
+      // ① 偽造「503 但仍寫入 totalAmount」之殘留情境 → 第三分支必紅。
+      expect(() =>
+        assertB30RoundOutcome(
+          forged503,
+          forgedDeleteOk,
+          { status: "DRAFT", totalAmount: 999 },
+          { status: "TEMP" }
+        )
+      ).toThrow();
+
+      // ② 偽造「503 但附件狀態與刪除方回應不一致」（刪除已成功卻仍是
+      //    LINKED）→ 亦必紅。
+      expect(() =>
+        assertB30RoundOutcome(
+          forged503,
+          forgedDeleteOk,
+          { status: "DRAFT", totalAmount: null },
+          { status: "LINKED" }
+        )
+      ).toThrow();
+
+      // ③ 正向對照（防過緊）：刪除方亦失敗（403）時附件應仍是 LINKED——
+      //    合法之 503 終局，不得誤紅。
+      expect(() =>
+        assertB30RoundOutcome(
+          forged503,
+          forgedDeleteBlocked,
+          { status: "DRAFT", totalAmount: null },
+          { status: "LINKED" }
+        )
+      ).not.toThrow();
+
+      // ④ 正向對照（防過緊）：刪除方成功且附件已 detach 回 TEMP——合法之
+      //    503 終局，不得誤紅。
+      expect(() =>
+        assertB30RoundOutcome(
+          forged503,
+          forgedDeleteOk,
+          { status: "DRAFT", totalAmount: null },
+          { status: "TEMP" }
+        )
+      ).not.toThrow();
+    });
 
     it(`${CONCURRENCY_ROUNDS} 輪：同一保養草稿完成 vs 刪除其唯一附件同時發生 → 每輪皆恰一方成功語意上一致，不得 500`, async () => {
       for (let round = 0; round < CONCURRENCY_ROUNDS; round++) {
@@ -872,32 +995,13 @@ describeWithDb("PHASE-006-T7 — 完成流程 + 快照寫入 + 原子性 + 僅�
           })(),
         ]);
 
-        // 絕不 500：complete 若失敗只能是業務 AppError（400/403），刪除回應
-        // 只能是 200/403/409，皆非 500。
-        if (completeSettled.status === "rejected") {
-          const err = completeSettled.reason as { httpStatus?: number };
-          expect(err.httpStatus).not.toBe(500);
-          expect([400, 403, 409]).toContain(err.httpStatus);
-        }
-        if (deleteSettled.status === "fulfilled") {
-          expect(deleteSettled.value.statusCode).not.toBe(500);
-        }
-
-        // 終局狀態必為下列兩者之一（恰一方之效果生效，不得雙重完成 / 雙重快照）：
+        // 終局狀態必為下列三者之一（恰一方之效果生效，不得雙重完成 / 雙重快照）：
         const dbApp = await prisma.application.findUniqueOrThrow({ where: { id } });
         const dbAttachment = await prisma.attachment.findUniqueOrThrow({
           where: { id: attachmentId },
         });
 
-        if (dbApp.status === "COMPLETED") {
-          // 完成方勝出：附件仍是 LINKED（完成鎖定，AC-23 既有行為，刪除方應已被擋 403）。
-          expect(dbAttachment.status).toBe("LINKED");
-          expect(dbApp.totalAmount).not.toBeNull();
-        } else {
-          // 刪除方勝出：附件已 detach 回 TEMP，完成因零附件被 400 擋下，status 仍 DRAFT。
-          expect(dbApp.status).toBe("DRAFT");
-          expect(dbApp.totalAmount).toBeNull();
-        }
+        assertB30RoundOutcome(completeSettled, deleteSettled, dbApp, dbAttachment);
       }
     });
   });
