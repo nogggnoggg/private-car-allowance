@@ -19,6 +19,23 @@
  *     候選清單欄位封閉且零禁字、與實跑共用同一判定函式之結構斷言、冪等。
  *
  * ---------------------------------------------------------------------------
+ * T3R（即審 REQUEST_CHANGES 之兩項 SF；本輪僅動本測試檔，`backend/src` 零 diff）
+ * ---------------------------------------------------------------------------
+ *   · **SF-1 — 第四把鑰匙無鑑別力**：reviewer 將 `depreciationContainerExists`
+ *     整段消融為 `false`，原 29 格**全綠存活**（對照：TRIP_SEGMENT 消融 3 紅、
+ *     MAINTENANCE 消融 4 紅）。根因是種子與 `subjects` 型別皆無 DEPRECIATION，
+ *     且 AC-03(a) 之機械斷言以 **prismaModel 粒度**比對——MAINTENANCE 與
+ *     DEPRECIATION 收斂為同一個 `application` delegate，結構上分辨不出第四把
+ *     鑰匙有沒有被真的轉動。修法：新增種子 `tempDeprecRef`（指向**獨立的**
+ *     DEPRECIATION Application）＋ 一格與 MAINTENANCE 對稱之鑑別力斷言。
+ *   · **SF-2 — 寫入掃描器兩類可規避面**：`createManyAndReturn`（delegate 寫入，
+ *     名字不在清單）與 `$queryRawUnsafe("DELETE …")`（raw 面，原正則只認
+ *     `$executeRaw*`）皆零紅存活。後者尤其要緊：`$queryRaw*` 能執行
+ *     `DELETE … RETURNING`，而「本模組零寫入」正是 T4 不可逆刪除的結構性前提。
+ *     修法：`PRISMA_WRITE_METHODS` 補 `*AndReturn` 兩式；raw 正則改涵蓋任何
+ *     `$…Raw…`。兩型並各留一則常設合成 mutant 斷言，防掃描器自身退化。
+ *
+ * ---------------------------------------------------------------------------
  * 首步 spike 結論（Spec §11.6 #3；Packet Done When 第一項）
  * ---------------------------------------------------------------------------
  * **可行，採用 Prisma DMMF 路徑**，不需退回「純文字掃描」替代方案。
@@ -164,14 +181,24 @@ const PRISMA_READ_METHODS = [
   "groupBy",
 ] as const;
 
-/** Prisma delegate 之寫入方法（AC-03(d) 之「副作用」定義，逐字取自 AC）。 */
+/**
+ * Prisma delegate 之寫入方法（AC-03(d) 之「副作用」定義，逐字取自 AC，
+ * ＋ Prisma 之 `*AndReturn` 變體）。
+ *
+ * **T3R（即審 SF-2）**：原清單只列 AC 逐字的七個方法，reviewer 實證
+ * `attachment.createManyAndReturn(...)` 可零紅存活——它是**真正的寫入**，只是
+ * 名字不在清單裡。長者在前（`createManyAndReturn` 先於 `createMany` 先於
+ * `create`）純為可讀性；正則交替本身會回溯，順序不影響正確性。
+ */
 const PRISMA_WRITE_METHODS = [
-  "create",
+  "createManyAndReturn",
+  "updateManyAndReturn",
   "createMany",
-  "update",
   "updateMany",
-  "delete",
   "deleteMany",
+  "create",
+  "update",
+  "delete",
   "upsert",
 ] as const;
 
@@ -200,8 +227,15 @@ function scanQueriedPrismaModels(content: string): string[] {
 }
 
 /**
- * 掃描內容中「對 Prisma delegate 之寫入」＋ raw 執行面（`$executeRaw`／
- * `$executeRawUnsafe`），回傳 `model.method` 形式之命中清單。
+ * 掃描內容中「對 Prisma delegate 之寫入」＋ **全部 raw 面**（任何 `$…Raw…`
+ * 呼叫：`$executeRaw`／`$executeRawUnsafe`／`$queryRaw`／`$queryRawUnsafe`／
+ * `$runCommandRaw`…），回傳 `model.method`／`$rawMethod` 形式之命中清單。
+ *
+ * **T3R（即審 SF-2）**：原正則只認 `$executeRaw(Unsafe)?`，reviewer 實證
+ * `$queryRawUnsafe("DELETE …")` 可零紅存活——Postgres 的 `DELETE … RETURNING`
+ * 是合法查詢，`$queryRaw*` 因此具備**完整刪除能力**，把它排除在「零寫入」宣稱之外
+ * 是實質漏洞（且與本函式原註解自稱「涵蓋 raw 執行面」內部矛盾）。改為涵蓋任何
+ * `$…Raw…`：本模組今日零 raw 呼叫，故此擴張零偽陽性，只是把宣稱做實。
  */
 function scanPrismaWriteCalls(content: string): string[] {
   const cleaned = stripComments(content);
@@ -210,7 +244,7 @@ function scanPrismaWriteCalls(content: string): string[] {
   for (const match of cleaned.matchAll(pattern)) {
     if (PRISMA_DELEGATE_NAMES.includes(match[1])) hits.push(`${match[1]}.${match[2]}`);
   }
-  for (const match of cleaned.matchAll(/\$executeRaw(?:Unsafe)?\s*[(`]/g)) {
+  for (const match of cleaned.matchAll(/\$\w*Raw\w*\s*[(`]/g)) {
     hits.push(match[0].replace(/\s*[(`]$/, ""));
   }
   return hits.sort();
@@ -483,6 +517,13 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
   let ownerId: string;
   /** 存在之 MAINTENANCE 容器（`Application.id` 即 `refId`）。 */
   let maintenanceApplicationId: string;
+  /**
+   * 存在之 DEPRECIATION 容器（T3R／即審 SF-1）。
+   * **刻意與 `maintenanceApplicationId` 為不同列**：兩型 refType 都查同一個
+   * `application` delegate，共用同一列會讓「DEPRECIATION 分支是否真的有跑」
+   * 無法分辨（誤把 MAINTENANCE 分支的命中當成 DEPRECIATION 的證據）。
+   */
+  let depreciationApplicationId: string;
   /** 存在之 TRIP_SEGMENT 容器。 */
   let tripSegmentId: string;
   let travelApplicationId: string;
@@ -494,7 +535,7 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
     {
       id: string;
       status: string;
-      refType: "TRIP_SEGMENT" | "MAINTENANCE" | null;
+      refType: "TRIP_SEGMENT" | "MAINTENANCE" | "DEPRECIATION" | null;
       refId: string | null;
     }
   > = {};
@@ -526,6 +567,18 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
     });
     maintenanceApplicationId = maintenanceApp.id;
 
+    // T3R（即審 SF-1）：DEPRECIATION 分支專屬容器，與保養容器分屬不同列。
+    const depreciationApp = await prisma.application.create({
+      data: {
+        type: "DEPRECIATION",
+        status: "DRAFT",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2031-01-07T00:00:00.000Z"),
+      },
+    });
+    depreciationApplicationId = depreciationApp.id;
+
     const travelApp = await prisma.application.create({
       data: {
         type: "TRAVEL",
@@ -547,19 +600,23 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
     const storage = new LocalVolumeStorage(storageRoot);
 
     /**
-     * 六筆附件（合成）：
+     * 七筆附件（合成）：
      *   tempExpired         TEMP，逾期 → 候選
      *   tempFresh           TEMP，未逾期 → 非候選
      *   tempBoundary        TEMP，恰在 TTL 邊界（`elapsed = TTL`）→ 非候選
      *   linkedAncient       LINKED（MAINTENANCE 容器在場）→ 恆非候選、有引用
      *   tempDanglingRef     TEMP、逾期、`refId` 指向已不存在之容器（B-04）→ 候選
-     *   tempReferencedRef   TEMP、逾期、`refId` 指向**存在**之容器 → 有引用、非候選
+     *   tempReferencedRef   TEMP、逾期、`refId` 指向**存在**之 TripSegment → 有引用、非候選
+     *   tempDeprecRef       TEMP、逾期、`refId` 指向**存在**之 DEPRECIATION 容器
+     *                       → 有引用、非候選（**T3R／即審 SF-1**：補上第四把鑰匙的
+     *                       鑑別力——在此之前把 `depreciationContainerExists` 整段
+     *                       消融為 `false`，29 格可全綠存活）
      */
     const seeds: Array<{
       key: string;
       status: "TEMP" | "LINKED";
       createdAt: Date;
-      refType: "TRIP_SEGMENT" | "MAINTENANCE" | null;
+      refType: "TRIP_SEGMENT" | "MAINTENANCE" | "DEPRECIATION" | null;
       refId: string | null;
     }> = [
       { key: "tempExpired", status: "TEMP", createdAt: hoursAgo(25), refType: null, refId: null },
@@ -585,6 +642,13 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
         createdAt: hoursAgo(48),
         refType: "TRIP_SEGMENT",
         refId: tripSegmentId,
+      },
+      {
+        key: "tempDeprecRef",
+        status: "TEMP",
+        createdAt: hoursAgo(48),
+        refType: "DEPRECIATION",
+        refId: depreciationApplicationId,
       },
     ];
 
@@ -621,7 +685,9 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       await prisma.attachment.deleteMany({ where: { id: { in: Object.values(attachmentIds) } } });
       await prisma.tripSegment.deleteMany({ where: { travelApplicationId } });
       await prisma.application.deleteMany({
-        where: { id: { in: [maintenanceApplicationId, travelApplicationId] } },
+        where: {
+          id: { in: [maintenanceApplicationId, depreciationApplicationId, travelApplicationId] },
+        },
       });
       await prisma.user.deleteMany({ where: { loginName: { startsWith: LOGIN_PREFIX } } });
       await prisma.$disconnect();
@@ -764,9 +830,17 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       expect(scanPrismaWriteCalls(cleanupServiceSource)).toEqual([]);
     });
 
-    it("(d) 鑑別力：模組內任一寫入呼叫即必紅（合成內容 mutant）", () => {
+    it("(d) 鑑別力：模組內任一寫入呼叫即必紅（合成內容 mutant，含 AndReturn 與 raw 兩型規避）", () => {
       const mutated = `${cleanupServiceSource}\nasync function wipe(p: PrismaTxLike) { await p.attachment.deleteMany({}); }\n`;
       expect(scanPrismaWriteCalls(mutated)).toEqual(["attachment.deleteMany"]);
+
+      // T3R（即審 SF-2）：兩型「名字不在清單裡的真寫入」——修法前皆零紅存活。
+      const andReturnMutant = `${cleanupServiceSource}\nasync function bulk(p: PrismaTxLike) { await p.attachment.createManyAndReturn({ data: [] }); }\n`;
+      expect(scanPrismaWriteCalls(andReturnMutant)).toEqual(["attachment.createManyAndReturn"]);
+
+      // `$queryRawUnsafe` 具完整刪除能力（`DELETE … RETURNING` 是合法查詢）。
+      const rawMutant = `${cleanupServiceSource}\nasync function rawWipe(p: PrismaTxLike) { await p.$queryRawUnsafe('DELETE FROM "Attachment" RETURNING id'); }\n`;
+      expect(scanPrismaWriteCalls(rawMutant)).toEqual(["$queryRawUnsafe"]);
     });
 
     it("(d) 執行期零寫入：逐筆判定前後之 Attachment 全表逐欄快照全等", async () => {
@@ -819,6 +893,27 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       });
     });
 
+    it("判定：DEPRECIATION 容器存在性來源具鑑別力（容器在場 → 有引用）", async () => {
+      // T3R（即審 SF-1）：與上一格對稱，但刻意指向**另一列** Application
+      // （`depreciationApplicationId` ≠ `maintenanceApplicationId`），使本格只能
+      // 由 DEPRECIATION 分支通過——把 `depreciationContainerExists` 消融為 false
+      // 時本格必紅（SF-1 前的 29 格對該消融全數存活）。
+      const verdict = await evaluateAttachmentReference(prisma, subjects.tempDeprecRef);
+      expect(verdict.hasReference).toBe(true);
+      expect(verdict.checks).toContainEqual({
+        source: "DEPRECIATION_APPLICATION_CONTAINER",
+        referenced: true,
+      });
+      expect(verdict.checks).toContainEqual({
+        source: "MAINTENANCE_APPLICATION_CONTAINER",
+        referenced: false,
+      });
+      expect(verdict.checks).toContainEqual({
+        source: "TRIP_SEGMENT_CONTAINER",
+        referenced: false,
+      });
+    });
+
     it("判定：B-04 孤兒弱引用（容器已不存在）視為無引用", async () => {
       const verdict = await evaluateAttachmentReference(prisma, subjects.tempDanglingRef);
       expect(verdict.hasReference).toBe(false);
@@ -854,7 +949,7 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
 
       expect(dbAfter).toEqual(dbBefore);
       expect(storageAfter).toEqual(storageBefore);
-      expect(storageAfter.length).toBe(6);
+      expect(storageAfter.length).toBe(7); // T3R：seed 由 6 筆增為 7 筆（SF-1）
       expect(report.dryRun).toBe(true);
     });
 
@@ -862,7 +957,7 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       const report = await dryRunCleanup(prisma, { now: NOW, ttlHours: TTL_HOURS });
       const ids = report.candidates.map((c) => c.id).sort();
       expect(ids).toEqual([attachmentIds.tempExpired, attachmentIds.tempDanglingRef].sort());
-      expect(report.scannedCount).toBe(5); // 六筆中的五筆 TEMP（LINKED 不入掃描）
+      expect(report.scannedCount).toBe(6); // 七筆中的六筆 TEMP（LINKED 不入掃描；T3R 增 tempDeprecRef）
       expect(report.candidateCount).toBe(2);
     });
 
@@ -939,6 +1034,7 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       expect(ids).not.toContain(attachmentIds.tempFresh);
       expect(ids).not.toContain(attachmentIds.linkedAncient);
       expect(ids).not.toContain(attachmentIds.tempReferencedRef);
+      expect(ids).not.toContain(attachmentIds.tempDeprecRef); // T3R（SF-1）
     });
   });
 });
