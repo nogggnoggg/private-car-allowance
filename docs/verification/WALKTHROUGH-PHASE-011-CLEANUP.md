@@ -65,4 +65,4 @@ cd "E:\Claude Project\油資\backend" && ATTACHMENT_TEMP_TTL_HOURS=1 npx tsx src
   3. TTL=1h 候選目視：13 筆候選逐筆輸出、四項引用檢查全 false、`referenced:true` 計 0、禁字（storageKey/檔名/擁有者）計 0；LINKED 84 筆連掃描都不進（scannedCount=13 恰為 TEMP 數）；本庫無 B-04 孤兒型資料（與 AR-1 揭露一致）✅
   4. DB 計數前後全等（LINKED 84／TEMP 13 → 84／13）——dry-run 唯讀實證 ✅
 - 總結：候選判定正確、防呆有效、輸出可讀且零敏感欄位。
-- 使用者批准：
+- 使用者批准：**批准（人類 leonchih 2026-08-11，AskUserQuestion）**——清理功能進入可執行狀態；實際排程維持部署時人工設定（PRD :526）。
