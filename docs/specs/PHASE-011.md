@@ -256,10 +256,10 @@
 
 **AC-10 — HTTPS 與反向代理標頭**（依 §16 **D8**）〔來源：US 逐字（NFR-US-11①）〕
 
-- **(a)** 應用層之「是否為安全連線」判定**恰有一個來源**（結構斷言：全 `backend/src` 之 `x-forwarded-proto`／`req.protocol` 取值恰一處）。
+- **(a)** 應用層之「是否為安全連線」判定**恰有一個來源**。其結構斷言**依 §16 D8 之裁定分岔**：**D8=(a)（不信任代理）下**——代理取值面（全 `backend/src` 之 `x-forwarded-proto`／`req.protocol` 等「反向代理所提供之原始連線資訊」取值）須為**空集**（不採信即不取值；出現任何一處即代表有邏輯開始依賴可偽造之輸入，須先回 Spec 改定信任模型），**且**安全連線判定（Cookie 之 `secure:`）**恰一個來源**；**D8=(b)/(c)（信任代理）下**——該代理取值面**恰一處**。〔**D8=(a) 已裁定**（§19 `SPEC-011-GATE`）→ 本 Phase 適用前者；T7 已依此實作（代理取值面空集 ＋ `resolveSecureCookies` 恰一來源），物證見 §12 之 `AC-10(a)(b)(c)(e)` 列〕
 - **(b)** 依 D8 裁定：**(b-1)** 若採 Fastify `trustProxy`，其設定值**不得**為無條件 `true`（會使任何用戶端可偽造 `X-Forwarded-For`／`X-Forwarded-Proto`），須為**具體代理來源**或 hop 數；該值由 env 提供且有預設；**(b-2)** 若採「不信任、由平台保證」，須有記載型 `it` 明示該假設與其失效後果。
 - **(c)** **偽造防護之鑑別力**：以帶 `X-Forwarded-Proto: https` 之請求打**未設定信任**之實例，斷言應用**不因此**認定為安全連線（防「信任預設打開」）。
-- **(d)** `frontend/nginx.conf` 現行已轉發 `X-Forwarded-Proto $scheme`（實查 :24）——本 AC 不改該檔之轉發行為；若 D8 需調整，屬 infra 設定變更，須逐行說明。
+- **(d)** `frontend/nginx.conf` 現行已轉發 `X-Forwarded-Proto $scheme`（實查 :21）——本 AC 不改該檔之轉發行為；若 D8 需調整，屬 infra 設定變更，須逐行說明。
 - **(e)** **HTTP → HTTPS 導向**之落點依 D8 裁定（平台層／nginx 層／應用層擇一），並有記載型 `it` 載明「本專案之導向落於何層、應用層為何不重複做」。
 
 ### D. 環境變數與 secrets 硬化
@@ -269,7 +269,10 @@
 - **(a)** `parseEnv`／`getEnvOrTestDefaults`（`config/env.ts`）之 schema 涵蓋本 Phase 新增之全部變數（清單見 §8），每個新變數有：型別、預設值（或明示無預設）、production 是否必要。
 - **(b)** 驗證失敗之錯誤訊息**只含變數名與原因，不含值**（既有 AC-09 紀律，`env.ts` :113-119）——新增變數同受該紀律，以一格「刻意給錯值 → 訊息零值洩漏」斷言。
 - **(c)** **production fail-fast 清單完整性**：以機械斷言列出「production 下缺少即拒絕啟動」之變數集合，並與**一份常數清單** `toEqual`。現行實查基線恰二：`ATTACHMENT_STORAGE_ROOT`、`REPORT_STORAGE_ROOT`（`server.ts` :118／:157）＋ `DATABASE_URL`（schema 層必填）。**新增變數若屬必要，須同批入清單**。〔核銷 `KNOWN_ISSUES.md` :41 O-3〕
-- **(d)** **搬遷不改業務邏輯之結構性證據**：全 `backend/src` 之 `process.env` 直接取值恰限於 `config/env.ts`（＋ `index.ts` 啟動期）——其餘模組一律經 `AppConfig`；新增站點即必紅。
+- **(d)** **搬遷不改業務邏輯之結構性證據**——全 `backend/src` 之 `process.env` 分**兩面**斷言，其別在於「模組是否自己認一個 env 鍵名」（自認鍵名者，搬遷時就得改程式）：
+  - **面一（`process.env.<KEY>` 屬性取值，含 `process.env["KEY"]`）**：其**（檔案, 鍵）集合**須**等於**一份具名白名單（等於而非包含——多一筆或少一筆皆必紅），白名單**逐筆附理由**說明「為何該站點今日不經 `AppConfig`」及其收斂去向（沿 AC-12(b) 之逐筆理由紀律）。白名單外之模組一律經 `AppConfig`；新增站點即必紅。
+  - **面二（整包 `process.env` 交付予設定層**：`parseEnv(process.env)`／`getEnvOrTestDefaults(process.env)`／作為函式預設參數**）為合規形態**——這**正是**本 AC 要的「經 `AppConfig`」，不計入面一違規；其檔案集合另以封閉清單釘住（清單變動即必紅）。
+  - 〔**實查基線**（T8 覈實、T8R 關閉確認）：面一恰二——`auth/middleware.ts` :51（`SESSION_COOKIE_NAME`，T7 FW-1 移交）與 `server.ts` :63（`LOG_LEVEL`，T8 實查新發現），兩者皆依大總管預裁處置 (i) 入白名單並附理由，收斂歸 §17.2。**`config/env.ts` 與 `index.ts` 之屬性取值為零**（兩者僅整包傳遞，屬面二）〕
 - **(e)** `docker-compose.yml` 之 `environment:` 鍵集合 ⊇ production 必要清單（機械比對 compose 檔文字與常數清單）。
 
 **AC-12 — 零寫死正式敏感資訊**〔來源：US 逐字（NFR-US-05②）〕
@@ -1146,7 +1149,7 @@ T11 ──▶ T19（索引補強）
 
 ### D8 — 反向代理信任與 `X-Forwarded-Proto` 之處理　**【High：認證 ＋ 日誌可信度】【平台能力前提】**
 
-**為什麼要決定**：正式環境由平台或 nginx 終結 TLS，後端收到的是 HTTP。若應用需要知道「原始請求是否為 HTTPS」（用於導向、或用於決定 `Secure`），就必須信任 `X-Forwarded-Proto`——而**無條件信任等於讓任何用戶端可偽造**。目前 `frontend/nginx.conf` :24 已轉發該標頭，但後端**未設定 `trustProxy`**（實查 `server.ts` 無該選項），故 Fastify 目前**不採信**。
+**為什麼要決定**：正式環境由平台或 nginx 終結 TLS，後端收到的是 HTTP。若應用需要知道「原始請求是否為 HTTPS」（用於導向、或用於決定 `Secure`），就必須信任 `X-Forwarded-Proto`——而**無條件信任等於讓任何用戶端可偽造**。目前 `frontend/nginx.conf` :21 已轉發該標頭，但後端**未設定 `trustProxy`**（實查 `server.ts` 無該選項），故 Fastify 目前**不採信**。
 
 **選項**：
 
@@ -1499,6 +1502,7 @@ T11 ──▶ T19（索引補強）
 
 | 版本／Task ID | 日期 | 內容 | 狀態 |
 |---|---|---|---|
+| `SPEC-REV-011-LITE` | 2026-08-12 | **勘誤批次三項（記載面；零裁定語意變更）**——使 Spec 本文與已審定之實作事實一致，均為終審前紅線。**①AC-10(a) 括號勘誤**〔來源：**T7 即審 FW-4**〕：原括號「代理取值恰一處」與 **D8=(a)** 之直接後果（不採信即不取值＝**零處**）矛盾，改寫為**依 D8 分岔**——(a) 下代理取值面為**空集** ＋ 安全連線判定（`secure:`）恰一來源；(b)/(c) 下恰一處。T7 已依裁定實作，§12 `AC-10(a)(b)(c)(e)` 列早已如此記載，本次為本文與之對齊。**②nginx 行號勘誤兩處**〔來源：**T7 即審 AR-4**〕：AC-10(d) 本文與 §16 D8 節之「`frontend/nginx.conf` :24」→ **:21**（實查：該檔共 23 行，`21:proxy_set_header X-Forwarded-Proto $scheme`，自 PHASE-001 未變更；:24 不存在）。§12 :783 該列已由大總管先行更正，本次補本文兩處。**③AC-11(d) 本文改寫**〔來源：**T8 即審 SF-3 ＋ 大總管 W-1 追認裁定**〕：原句「`process.env` 直接取值恰限於 `config/env.ts`（＋`index.ts` 啟動期）」**經實查證實為假**（該兩檔之屬性取值為 **0**——傳整包正是合規形態）。依 reviewer 建議修法改寫為**兩面**：面一（`process.env.<KEY>` 屬性取值）之（檔案,鍵）集合**等於**具名白名單且逐筆附理由（實查基線恰二：`auth/middleware.ts` :51 `SESSION_COOKIE_NAME`／`server.ts` :63 `LOG_LEVEL`）；面二（整包交付設定層）為**合規形態**且另以封閉清單釘住。T8／T8R 測試已依此實作並經即審與關閉確認覈實。**三項皆不改變任何人類裁定之語意**；AC 條數與 §12 映射列數零變動（67 列）；§12、狀態計數行零觸碰。 | **`ACTIVE`**（不變） |
 | `SPEC-011-GATE` | 2026-08-11 | **★ Spec Gate 通過（人類 leonchih；AskUserQuestion 兩輪——三項親核（裁定方式／條件範圍／D17 預授權）＋六點複述確認）★** **D1~D18 全數照推薦**：D1=(a)／D2=(a)／D3=(c)／D4=(a)＋**條件式升級授權**（T3 首步實查 `AuditLog.summary` 曾寫入 attachment id 即自動升 (b)，免回 Gate）／D5=(c)／D6-1·2·3=(a)（**不寫稽核＝本 Phase 除 T19 外零 migration 維持**）／D7=(a)／D8=(a)（**HTTPS 保證歸平台之假設**依 §17.1＋Runbook 明載）／D9=(a)／D10=(a) 主 (b) 備／D11-1=(a)·D11-2=(a) **備份不加密**／D12=(a)／D13=(a)+(b) 併用／D14 納入／D15 全納／D16-1·2·3 納入·**D16-4 不納 D-4**（＝§15 衝突三路徑採 **(i)**）·D16-5=(i)／D17=(a)＋**二階段預授權成立**（T11 實測未達標→T19 自動生效免第二輪 Gate；全達標→不開工據實記載 §17）／D18-1·2=(a)。**High 事前批准十項**：核心 T3／T4／T5／T7／T8／T10／T12／T13＋條件 T18／T19（T6 依 D5=(c) 降 Medium 不在列；T1 依 D1=(a) 維持 Medium）。條件 AC 13 列全解鎖；來源類別（既有語意擴張 5＋建議新增 10）全數確認；§13 六項照建議處置（**#4 tripDate/primaryDate 語意差異自本 Phase 移出另立產品面工作項**）。 | **`ACTIVE`** |
 | `SPEC-011` | 2026-08-11 | **初稿建立**（`DRAFT`）。31 AC（含 6 條件 AC：AC-08／AC-27~AC-31）／§12 **67 列**映射（54 `PENDING` ＋ 13 條件列；測試列 53 ＋ 非測試載體 14）／**19 Task**（14 核心 ＋ 5 條件）／核心 High **8** 項／**D1~D18** 決策點。**四項實查新發現全列決策點或移交清單，未自行定案**：①★`KNOWN_ISSUES.md` §3 D-9 之「今日狀態」失準——`index.ts` :33 與 `audit/audit.ts` :56 為**今日即存在**之 pino／console 錯誤物件序列化站點，且 `index.ts` 因另一理由已在白名單中而被**結構性遮蔽**（§13 #1、AC-28(c)）②`e2e/` typecheck spike 實測 **48** 錯／8 檔／單一根因（非登記之 76；錯誤面為 tsconfig 依變數）（§13 #2、§11.6）③`Attachment` 在資料層**零 FK 指向**、`Report`／`VoidedReportFile` **零 `attachmentId` 欄位**——BE-US-25⑥ 之「報表／稽核引用」在現行資料層無對應形式（**D4**）④PRD :526 之「依 A3」在全案查無定義（§13 #3）。**兩項跨 AC 衝突顯性化**：AC-26(d) ⇔ AC-29(a)（金額模組零 diff vs `toDecimalConstructorArg` 收斂，三路徑交 Gate）／AC-26(c) ⇔ AC-06(f)（前端零 diff vs 清理寫稽核，僅 D6-3=(b)/(c) 時成立）。**Gate 裁定前提回查零缺口**（§0.4 八筆）。**呈現轉換樣本預確認：本 Phase 無該型決策點**（零前端變更）。**Blocking Unknowns：無。** | **停等人類 Spec Gate** |
 
