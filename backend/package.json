@@ -12,7 +12,9 @@
     "migrate:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
     "seed:admin": "node dist/seed/seed-admin.js",
-    "seed:admin:dev": "tsx src/seed/seed-admin.ts"
+    "seed:admin:dev": "tsx src/seed/seed-admin.ts",
+    "cleanup:attachments": "node dist/attachment/cleanup-cli.js",
+    "cleanup:attachments:dev": "tsx src/attachment/cleanup-cli.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

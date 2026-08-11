@@ -1,5 +1,5 @@
 /**
- * Attachment cleanup service — PHASE-011-T3
+ * Attachment cleanup service — PHASE-011-T3（批次上限 `take` 由 T4 加入）
  *
  * 附件暫存清理之**引用判定**與 **dry-run 唯讀模式**（`docs/specs/PHASE-011.md`
  * **AC-03**／**AC-04**；§16 **D4** = (a)）。
@@ -7,12 +7,15 @@
  * ---------------------------------------------------------------------------
  * 本模組的一句話定位
  * ---------------------------------------------------------------------------
- * 這裡是「哪些附件**可以被刪**」的**唯一判準來源**。實際刪除（T4）不重新判斷，
- * 只消費 `planCleanup` 的輸出——判準與執行分離，是為了讓「dry-run 說安全、
- * 實跑刪錯」在結構上不可能發生（AC-04(c)）。
+ * 這裡是「哪些附件**可以被刪**」的**唯一判準來源**。實際刪除（T4 之
+ * `cleanup-cli.ts`）不重新判斷，只消費 `planCleanup` 的輸出——判準與執行分離，
+ * 是為了讓「dry-run 說安全、實跑刪錯」在結構上不可能發生（AC-04(c)）。
  *
  * 本模組對 DB **只讀**：全檔零 `create`／`update`／`delete`／`deleteMany`／
- * `upsert`（AC-03(d)，由 `phase11-attachment-cleanup.test.ts` 之結構斷言守住）。
+ * `upsert`／任何 `$…Raw…`（AC-03(d)，由 `phase11-attachment-cleanup.test.ts`
+ * 之結構斷言守住）。**PHASE-011-T4（FW-2=(i)）維持此界線不變**：不可逆刪除
+ * 一律落在 `cleanup-cli.ts`，本檔本輪只擴充**讀路徑**（`planCleanup` 之批次
+ * 上限 `take`），零寫入斷言之射程不縮、不弱化。
  * 本模組亦**零日誌、零稽核寫入**（§16 D6-3=(a)：清理不寫稽核）。
  *
  * ---------------------------------------------------------------------------
@@ -265,13 +268,38 @@ export interface CleanupPlanOptions {
   readonly now: Date;
   /** TTL 門檻（小時），來自 env `ATTACHMENT_TEMP_TTL_HOURS`（預設 24）。 */
   readonly ttlHours: number;
+  /**
+   * 單次批次上限（AC-06(b)／§16 **D6-1**=(a)），來自 env
+   * `ATTACHMENT_CLEANUP_BATCH_LIMIT`（預設 {@link DEFAULT_CLEANUP_BATCH_LIMIT}）。
+   * 省略時仍套用預設值——**本模組沒有「無上限」模式**（§10 N-1：清理程序不得
+   * 將全表讀入記憶體）。
+   */
+  readonly limit?: number;
 }
 
 export interface CleanupPlan {
-  /** 掃描筆數（`status=TEMP` 之總數）。 */
+  /**
+   * 本次**掃描筆數**＝實際讀入的 `status=TEMP` 列數（受批次上限封頂，故此值
+   * 恆 ≤ `limit`；不是全表 TEMP 總數）。
+   */
   readonly scannedCount: number;
+  /**
+   * 掃描量已達批次上限 ⇒ **可能**仍有未掃描之 TEMP 列留待下次執行
+   * （AC-06(b)／B-07 之「尚有剩餘」）。恰好等於上限而其實已無剩餘時本旗標仍
+   * 為 `true`——刻意偏保守：多跑一次的成本遠低於漏掉一批。
+   */
+  readonly hasMore: boolean;
   readonly candidates: readonly CleanupCandidate[];
 }
+
+/**
+ * 批次上限之預設值（§8.2：env `ATTACHMENT_CLEANUP_BATCH_LIMIT` 預設 `500`）。
+ *
+ * 與 `config/env.ts` 之 `.default(500)` 是同一個數，兩處由
+ * `phase11-attachment-cleanup.test.ts` 之機械斷言釘在一起（其一改動而另一未改
+ * 即紅），故此處刻意不 import env——本模組維持零設定相依的純判定定位。
+ */
+export const DEFAULT_CLEANUP_BATCH_LIMIT = 500;
 
 function computeOverdueHours(createdAt: Date, now: Date, ttlHours: number): number {
   const elapsedHours = (now.getTime() - createdAt.getTime()) / (60 * 60 * 1000);
@@ -288,15 +316,23 @@ function computeOverdueHours(createdAt: Date, now: Date, ttlHours: number): numb
  *
  * 排序 `createdAt` → `id`：最舊者優先，且在時間相同時仍全序，使輸出冪等
  * （AC-04(d)）。
+ *
+ * **批次上限（PHASE-011-T4；T3 交接①）**：`take` 加在**這裡**，不另建第二條
+ * 列舉路徑——否則 AC-04(c)「dry-run 與實跑共用同一判定路徑」的結構前提就破了
+ * （實跑會有自己的一份 `where`／`orderBy`，兩份遲早漂移）。因為排序已是
+ * `createdAt, id` 全序，加上 `take` 後**冪等仍成立**（AC-04(d)）：同一份資料
+ * 與同一個 `now` 恆取到同一批列、同一個順序。
  */
 export async function planCleanup(
   prisma: PrismaTxLike,
   options: CleanupPlanOptions
 ): Promise<CleanupPlan> {
+  const take = options.limit ?? DEFAULT_CLEANUP_BATCH_LIMIT;
   const rows = await prisma.attachment.findMany({
     where: { status: "TEMP" },
     select: { id: true, status: true, createdAt: true, refType: true, refId: true },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take,
   });
 
   const candidates: CleanupCandidate[] = [];
@@ -314,7 +350,7 @@ export async function planCleanup(
     });
   }
 
-  return { scannedCount: rows.length, candidates };
+  return { scannedCount: rows.length, hasMore: rows.length >= take, candidates };
 }
 
 export interface CleanupDryRunReport {

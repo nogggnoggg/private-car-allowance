@@ -20,6 +20,17 @@
  *                             server.ts — out of this file's scope, schema only accepts/parses it here)
  *   REPORT_PDF_TIMEOUT_MS   — Playwright PDF render timeout in ms, passed to pdf-renderer.ts (default 30000)
  *   REPORT_IMAGE_MAX_PX     — Report image embed long-edge pixel cap, passed to report-images.ts (default 1600)
+ *
+ * PHASE-011-T4 additions (Spec §8.2, AC-06(b), §16 D6-1=(a)):
+ *   ATTACHMENT_CLEANUP_BATCH_LIMIT — 單次附件清理之批次上限（預設 500）。只被
+ *                             `attachment/cleanup-cli.ts`（一次性 CLI，D3=(c)）
+ *                             讀取；伺服器行程不讀、不排程。與
+ *                             `cleanup-service.ts` 之 DEFAULT_CLEANUP_BATCH_LIMIT
+ *                             為同一個數，兩處由 phase11 測試之機械斷言釘住。
+ *                             **移交 T8**：`.env.example` 與 `docker-compose.yml`
+ *                             之同批新增屬 T8 檔案欄，本 Task 不觸碰該兩檔。
+ *   （D3=(c) 之故，Spec §8.2 草案中的 `ATTACHMENT_CLEANUP_ENABLED` 屬「若
+ *    D3=(a) 內建排程」之條件列，**未新增**——沒有排程開關要開。）
  */
 import { z } from "zod";
 
@@ -42,6 +53,8 @@ const envSchema = z.object({
   ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(10485760), // 10 MiB
   ATTACHMENT_TEMP_TTL_HOURS: z.coerce.number().int().positive().default(24),
   ATTACHMENT_THUMBNAIL_MAX_PX: z.coerce.number().int().positive().default(512),
+  // PHASE-011-T4: Attachment cleanup batch limit (Spec §8.2, AC-06(b))
+  ATTACHMENT_CLEANUP_BATCH_LIMIT: z.coerce.number().int().positive().default(500),
   // PHASE-008-T7: Report generation configuration (Spec §8, §10-2)
   // Optional with no default, same shape as ATTACHMENT_STORAGE_ROOT — production
   // fail-fast enforcement is server.ts's responsibility (wired in T8, out of this file's scope).
@@ -90,6 +103,7 @@ export function getEnvOrTestDefaults(
       ATTACHMENT_MAX_BYTES: 10485760,
       ATTACHMENT_TEMP_TTL_HOURS: 24,
       ATTACHMENT_THUMBNAIL_MAX_PX: 512,
+      ATTACHMENT_CLEANUP_BATCH_LIMIT: 500,
       REPORT_STORAGE_ROOT: env.REPORT_STORAGE_ROOT,
       REPORT_PDF_TIMEOUT_MS: 30000,
       REPORT_IMAGE_MAX_PX: 1600,

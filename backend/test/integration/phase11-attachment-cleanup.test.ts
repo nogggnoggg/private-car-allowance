@@ -1,9 +1,16 @@
 /**
- * Integration test: PHASE-011-T3 — 附件清理之「無引用」判定與 dry-run
- * （`docs/specs/PHASE-011.md` **AC-03**／**AC-04**；§16 **D4**=(a)）
+ * Integration test: PHASE-011 附件清理 — 判定／dry-run（T3）＋ 執行／批次／觸發
+ * （T4）（`docs/specs/PHASE-011.md` **AC-03**～**AC-06**；§16 **D3**=(c)、
+ * **D4**=(a)、**D6-1·2·3**=(a)）
+ *
+ * 本檔由**兩個並列的頂層 `describe`** 組成，各自播種、各自清理：
+ *   · `PHASE-011-T3 …（AC-03／AC-04）`——引用判定之封閉來源集與 dry-run 唯讀；
+ *   · `PHASE-011-T4 …（AC-05／AC-06）`——實際刪除、批次上限、部分失敗語意、
+ *     CLI 觸發與可觀測性（**本專案唯一的不可逆刪除**；含常設之「守門缺席會誤刪」
+ *     紅燈物證格與三型 mutant 自證）。T4 段之檔頭另有 **AR-1 保護強度據實記載**。
  *
  * ---------------------------------------------------------------------------
- * 涵蓋
+ * T3 段涵蓋
  * ---------------------------------------------------------------------------
  *   · **AC-03(a)** 封閉來源集常數 `ATTACHMENT_REFERENCE_SOURCES` ⇔ 實作所查
  *     Prisma model 集合之機械相等（含合成 mutant 之鑑別力自證）；
@@ -104,11 +111,13 @@
  *     `information_schema` 三方 join 手法為**複製沿用**，非 import）。
  *
  * ---------------------------------------------------------------------------
- * 射程邊界（Out of Scope，屬 T4）
+ * 射程邊界
  * ---------------------------------------------------------------------------
- * 實際刪除、批次上限、觸發形式（CLI）、storage 孤兒盤點皆不在本檔。本檔之
- * `planCleanup` 即 T4 實跑將呼叫的**同一個**判定路徑（AC-04(c)），T4 落地後
- * 須把「實跑亦呼叫此函式」之另一半結構斷言補上。
+ * storage 孤兒盤點（§16 D5=(c)）不在本檔（屬 T6）。
+ * **AC-04(c) 之未竟義務已於 PHASE-011-T4 結清**：T3 當時只釘住 dry-run 側
+ * （「dry-run 不自帶判定，只委派 `planCleanup`」），另一半「實跑執行器亦呼叫
+ * `planCleanup`」現由 T4 段之 `AC-04(c) 另一半：實跑亦走同一判定路徑` describe
+ * 承載（結構斷言 ＋ 執行期「實刪集合 ≡ 候選集合」各一格）。
  */
 
 import * as fs from "node:fs";
@@ -116,19 +125,31 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  type CleanupLogEvent,
+  type CleanupLogger,
+  type CleanupRunOptions,
+  type CleanupRunResult,
+  runCleanup,
+  runCleanupCli,
+} from "../../src/attachment/cleanup-cli.js";
 import {
   ATTACHMENT_INBOUND_REFERENCE_FIELDS,
   ATTACHMENT_REFERENCE_SOURCES,
   type AttachmentInboundField,
   type CleanupCandidate,
+  DEFAULT_CLEANUP_BATCH_LIMIT,
   createHasReferenceQuery,
   dryRunCleanup,
   evaluateAttachmentReference,
   planCleanup,
 } from "../../src/attachment/cleanup-service.js";
+import { detachAttachmentsByIdsTx } from "../../src/attachment/lifecycle-service.js";
 import { hashPassword } from "../../src/auth/password.js";
+import { getEnvOrTestDefaults, parseEnv } from "../../src/config/env.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
+import type { Storage } from "../../src/storage/index.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -880,6 +901,13 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
     });
 
     it("判定：MAINTENANCE 容器存在性來源具鑑別力（容器在場 → 有引用）", async () => {
+      // 【T3R 關閉確認之取捨註記，PHASE-011-T4 補記】本格用的是 **inline subject**
+      // （借 `tempExpired` 的 id ＋ 就地指定 refType/refId），下一格 DEPRECIATION
+      // 則用**真實種子** `tempDeprecRef`。兩形制刻意並存：inline 便宜、可任意組合
+      // 欄位，但它繞過 DB 真值，證不了「這個組合真的存在於表裡」；種子形制較貴，
+      // 但 SF-1 那類「第四把鑰匙沒轉動也全綠」的漏洞只有種子形制擋得住（因為
+      // 消融後真實查詢會落空）。判準：**要證來源分支被真的走過就用種子；只證欄位
+      // 組合之邏輯就用 inline。**
       const verdict = await evaluateAttachmentReference(prisma, {
         id: attachmentIds.tempExpired,
         status: "TEMP",
@@ -1009,8 +1037,10 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       expect(scanQueriedPrismaModels(dryRunBody)).toEqual([]);
       expect(dryRunBody).not.toContain("evaluateAttachmentReference");
       expect(dryRunBody).not.toContain("isEligibleForCleanup");
-      // ③ 執行期：dry-run 之候選與直接呼叫共用判定路徑之結果逐欄全等
-      //    （T4 之實跑亦呼叫 `planCleanup`，屆時補上另一半結構斷言）
+      // ③ 執行期：dry-run 之候選與直接呼叫共用判定路徑之結果逐欄全等（下一格）
+      // ④ 另一半（「實跑執行器亦呼叫 `planCleanup`」）已由 PHASE-011-T4 落地，
+      //    見本檔 T4 段之 `AC-04(c) 另一半：實跑亦走同一判定路徑`——此處不再是
+      //    未竟義務。
     });
 
     it("(c) 執行期：dry-run 候選 ≡ planCleanup 候選（非兩份複本）", async () => {
@@ -1035,6 +1065,1131 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       expect(ids).not.toContain(attachmentIds.linkedAncient);
       expect(ids).not.toContain(attachmentIds.tempReferencedRef);
       expect(ids).not.toContain(attachmentIds.tempDeprecRef); // T3R（SF-1）
+    });
+  });
+});
+
+// ===========================================================================
+// PHASE-011-T4 — 清理之執行、批次、觸發與可觀測性（AC-05／AC-06）
+// ===========================================================================
+//
+// 本段與上方 T3 段共用同一個檔案（Spec §15 T4 檔案欄逐字：就地擴充），但**自帶
+// 完整的種子與清理**：T3 之 `afterAll` 會在本段之 `beforeAll` 之前跑完並清空其
+// 七筆附件，故本段起始時 `Attachment` 表為空（per-file TRUNCATE ＋ 同檔序列執
+// 行）。這一點很要緊——`planCleanup` 掃的是**全表** `status=TEMP`，沒有 owner
+// 過濾，所以每一格都必須自己控制全表內容。故本段：
+//   · 每格自行播種、`afterEach` 精確清除（含 storage 目錄），格與格之間零殘留；
+//   · 不觸碰 T3 之任何一格（T3／T3R 之 30 格一字不弱化）。
+//
+// ---------------------------------------------------------------------------
+// 【AR-1／FW-3：保護強度之據實記載——人類將據此批准不可逆刪除】
+// ---------------------------------------------------------------------------
+// T3 即審已查明：**現行寫入路徑下，`status=TEMP` 之附件其 `refType`／`refId`
+// 恆為 `null`**（上傳不帶 ref；`detachFieldSet` 於 detach 時一併清空並重設
+// `createdAt`；dev DB 零反例）。因此**今日實際生效之清理判準只有**：
+//
+//        status = TEMP  ∧  now − createdAt  嚴格大於  TTL
+//
+// 下方 `AC-05(b)②` 之三格（TRIP_SEGMENT／MAINTENANCE／DEPRECIATION 容器存在性）
+// 所用的資料**刻意違反上述不變式**（TEMP 卻帶 refId），因為在合乎不變式的資料
+// 上這三條來源恆為 false、無從測起。它們是**防禦縱深**（日後若有人寫出「TEMP
+// 仍保留 ref」的路徑，保護立即生效），**不是今天擋在最前面的那道防線**。
+// 每格內另有逐格標注，避免日後有人把「三型有引用保護」誤讀為日常防線。
+// 今天真正在擋的是：①`LINKED` 一律不進掃描 ②TTL 嚴格大於 ③實刪路徑之**條件式
+// 刪除**（`deleteCandidate` 之 `{ id, status:"TEMP", createdAt }` 三條件）。
+
+const CLEANUP_CLI_PATH = path.join(SRC_ROOT, "attachment/cleanup-cli.ts");
+const LIFECYCLE_SERVICE_PATH = path.join(SRC_ROOT, "attachment/lifecycle-service.ts");
+const SERVER_PATH = path.join(SRC_ROOT, "server.ts");
+const PACKAGE_JSON_PATH = path.join(BACKEND_ROOT, "package.json");
+/** 刻意不含 `_`／`%`（同 T3），且與 `p11t3` 不同前綴，兩段互不清到對方。 */
+const LOGIN_PREFIX_T4 = "p11t4";
+
+/** 收集 `CleanupLogger` 事件，供「日誌零禁字」與階段順序斷言使用。 */
+function makeLogCollector(): { events: CleanupLogEvent[]; logger: CleanupLogger } {
+  const events: CleanupLogEvent[] = [];
+  return { events, logger: { log: (event) => events.push(event) } };
+}
+
+interface SpyStorageOptions {
+  /** 對這些 key 之 `delete` 拋出合成錯誤（錯誤訊息**刻意含 key**，用以檢驗日誌不外洩）。 */
+  readonly failKeys?: readonly string[];
+  /** 每次 `delete` 之前呼叫——用來在「storage 刪除當下」觀察 DB 列是否已消失。 */
+  readonly onDelete?: (key: string) => Promise<void> | void;
+}
+
+/** 包一層 `Storage`，記錄刪除呼叫並可注入失敗（AC-05(c)／AC-06(d)）。 */
+function makeSpyStorage(
+  inner: Storage,
+  options: SpyStorageOptions = {}
+): { storage: Storage; deletedKeys: string[] } {
+  const deletedKeys: string[] = [];
+  const storage: Storage = {
+    put: (key, bytes, contentType) => inner.put(key, bytes, contentType),
+    get: (key) => inner.get(key),
+    exists: (key) => inner.exists(key),
+    delete: async (key) => {
+      deletedKeys.push(key);
+      if (options.onDelete) await options.onDelete(key);
+      if (options.failKeys?.includes(key)) {
+        // 訊息刻意逐字含 storage key（`LocalVolumeStorage`／`fs` 之真實錯誤即
+        // 如此），故「日誌零 storageKey」之斷言若靠 `err.message` 就會紅。
+        throw new Error(`合成 storage 刪除失敗：${key}`);
+      }
+      await inner.delete(key);
+    },
+  };
+  return { storage, deletedKeys };
+}
+
+describeWithDb("PHASE-011-T4 — 附件清理之執行、批次、觸發與可觀測性（AC-05／AC-06）", () => {
+  let prisma: PrismaClient;
+  let storageRoot: string;
+  let realStorage: Storage;
+
+  let ownerId: string;
+  let maintenanceApplicationId: string;
+  let depreciationApplicationId: string;
+  let travelApplicationId: string;
+  let tripSegmentId: string;
+
+  /** 本段所建立之全部附件 id（`afterEach` 逐一清除）。 */
+  let createdAttachmentIds: string[] = [];
+
+  const cleanupServiceSource = fs.readFileSync(CLEANUP_SERVICE_PATH, "utf8");
+  const cleanupCliSource = fs.readFileSync(CLEANUP_CLI_PATH, "utf8");
+  const lifecycleSource = fs.readFileSync(LIFECYCLE_SERVICE_PATH, "utf8");
+
+  interface SeedSpec {
+    readonly key: string;
+    readonly status: "TEMP" | "LINKED";
+    readonly createdAt: Date;
+    readonly refType?: "TRIP_SEGMENT" | "MAINTENANCE" | "DEPRECIATION" | null;
+    readonly refId?: string | null;
+    /** 預設 `true`；`false` 用於 B-05（縮圖曾降級失敗）。 */
+    readonly withThumb?: boolean;
+    /** 預設 `true`；`false` 用於 B-06（DB 列在但位元組已不存在）。 */
+    readonly withBytes?: boolean;
+  }
+
+  interface SeededAttachment {
+    readonly id: string;
+    readonly storageKey: string;
+    readonly thumbnailKey: string | null;
+  }
+
+  async function seedAttachment(spec: SeedSpec): Promise<SeededAttachment> {
+    const suffix = `${RUN_ID}-t4-${spec.key}-${createdAttachmentIds.length}`;
+    const storageKey = `att/${suffix}/original`;
+    const thumbnailKey = spec.withThumb === false ? null : `att/${suffix}/thumb`;
+    const created = await prisma.attachment.create({
+      data: {
+        status: spec.status,
+        storageKey,
+        thumbnailKey,
+        mimeType: "image/jpeg",
+        byteSize: 128,
+        originalFilename: `合成收據-${spec.key}.jpg`,
+        uploaderId: ownerId,
+        ownerId,
+        refType: spec.refType ?? null,
+        refId: spec.refId ?? null,
+        createdAt: spec.createdAt,
+        linkedAt: spec.status === "LINKED" ? spec.createdAt : null,
+      },
+    });
+    createdAttachmentIds.push(created.id);
+    if (spec.withBytes !== false) {
+      await realStorage.put(storageKey, Buffer.alloc(128, 0xbb), "image/jpeg");
+      if (thumbnailKey) await realStorage.put(thumbnailKey, Buffer.alloc(32, 0xcc), "image/jpeg");
+    }
+    return { id: created.id, storageKey, thumbnailKey };
+  }
+
+  /** 真實執行器之標準呼叫（實跑、批次上限給大值、注入決定性 `now`）。 */
+  async function runReal(
+    storage: Storage,
+    overrides: Partial<CleanupRunOptions> = {}
+  ): Promise<{ result: CleanupRunResult; events: CleanupLogEvent[] }> {
+    const collector = makeLogCollector();
+    const result = await runCleanup(prisma, storage, {
+      now: NOW,
+      ttlHours: TTL_HOURS,
+      limit: 500,
+      dryRun: false,
+      logger: collector.logger,
+      ...overrides,
+    });
+    return { result, events: collector.events };
+  }
+
+  async function rowExists(id: string): Promise<boolean> {
+    return (await prisma.attachment.findUnique({ where: { id }, select: { id: true } })) !== null;
+  }
+
+  beforeAll(async () => {
+    prisma = new PrismaClient();
+
+    const owner = await prisma.user.create({
+      data: {
+        loginName: `${LOGIN_PREFIX_T4}owner${RUN_ID}`,
+        displayName: "清理執行測試用人員",
+        passwordHash: await hashPassword("Kx4-Harbor-Juniper-2"),
+        role: "USER",
+      },
+    });
+    ownerId = owner.id;
+
+    const maintenanceApp = await prisma.application.create({
+      data: {
+        type: "MAINTENANCE",
+        status: "DRAFT",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2031-02-05T00:00:00.000Z"),
+      },
+    });
+    maintenanceApplicationId = maintenanceApp.id;
+
+    const depreciationApp = await prisma.application.create({
+      data: {
+        type: "DEPRECIATION",
+        status: "DRAFT",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2031-02-07T00:00:00.000Z"),
+      },
+    });
+    depreciationApplicationId = depreciationApp.id;
+
+    const travelApp = await prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "DRAFT",
+        ownerId,
+        createdById: ownerId,
+        primaryDate: new Date("2031-02-06T00:00:00.000Z"),
+        travel: { create: { tripDate: new Date("2031-02-06T00:00:00.000Z") } },
+      },
+    });
+    travelApplicationId = travelApp.id;
+
+    const segment = await prisma.tripSegment.create({
+      data: { travelApplicationId, sortOrder: 0, origin: "丙地", destination: "丁地" },
+    });
+    tripSegmentId = segment.id;
+
+    storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), `p11t4-${RUN_ID}-`));
+    realStorage = new LocalVolumeStorage(storageRoot);
+
+    // 本段之全表前提：T3 段已於其 `afterAll` 清空其種子。若此處非空，代表同檔
+    // 執行順序或清理紀律出了問題，讓它當場紅比讓後續格子詭異地失敗好。
+    expect(await prisma.attachment.count()).toBe(0);
+  }, 60_000);
+
+  afterEach(async () => {
+    if (createdAttachmentIds.length > 0) {
+      await prisma.attachment.deleteMany({ where: { id: { in: createdAttachmentIds } } });
+      createdAttachmentIds = [];
+    }
+    // storage 亦逐格歸零（`att/` 是本專案唯一的附件前綴）。
+    fs.rmSync(path.join(storageRoot, "att"), { recursive: true, force: true });
+  });
+
+  afterAll(async () => {
+    if (prisma) {
+      await prisma.tripSegment.deleteMany({ where: { travelApplicationId } });
+      await prisma.application.deleteMany({
+        where: {
+          id: { in: [maintenanceApplicationId, depreciationApplicationId, travelApplicationId] },
+        },
+      });
+      await prisma.user.deleteMany({ where: { loginName: { startsWith: LOGIN_PREFIX_T4 } } });
+      await prisma.$disconnect();
+    }
+    if (storageRoot && fs.existsSync(storageRoot)) {
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  // =========================================================================
+  // AC-05(a) 可刪
+  // =========================================================================
+
+  describe("AC-05(a): 可刪", () => {
+    it("TEMP ∧ 無引用 ∧ 逾期 → DB 列與 original/thumb 位元組皆不存在", async () => {
+      const seeded = await seedAttachment({
+        key: "expired",
+        status: "TEMP",
+        createdAt: hoursAgo(25),
+      });
+      expect(await realStorage.exists(seeded.storageKey)).toBe(true);
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.deletedCount).toBe(1);
+      expect(result.summary.failedCount).toBe(0);
+      expect(result.summary.skippedCount).toBe(0);
+      expect(await rowExists(seeded.id)).toBe(false);
+      expect(await realStorage.exists(seeded.storageKey)).toBe(false);
+      if (seeded.thumbnailKey) {
+        expect(await realStorage.exists(seeded.thumbnailKey)).toBe(false);
+      }
+      expect(listStorageKeys(storageRoot)).toEqual([]);
+    });
+
+    it("AC-05(a)／§5-5: 以修正版草稿刪除後之複本構造亦可刪", async () => {
+      // `KNOWN_ISSUES.md` :100 §5-5 之情境：修正版草稿被刪除後，PHASE-009-T6 複製
+      // 出來的那份附件複本會留在系統裡。它的形狀不是本測試自己編的——這裡用**真實
+      // 的 detach 路徑**（`detachAttachmentsByIdsTx`，即 `deleteApplication` 刪草稿
+      // 時走的同一個函式）把 LINKED 複本轉成該形狀，再把 `createdAt`（＝ TTL 基準，
+      // detach 會重設它）往回撥到逾期——「時間旅行」是唯一的合成成分。
+      const copy = await seedAttachment({
+        key: "revision-copy",
+        status: "LINKED",
+        createdAt: hoursAgo(200),
+        refType: "MAINTENANCE",
+        refId: maintenanceApplicationId,
+      });
+      expect(await detachAttachmentsByIdsTx(prisma, [copy.id])).toBe(1);
+      await prisma.attachment.update({
+        where: { id: copy.id },
+        data: { createdAt: hoursAgo(25) },
+      });
+
+      const detached = await prisma.attachment.findUniqueOrThrow({ where: { id: copy.id } });
+      expect(detached.status).toBe("TEMP");
+      expect(detached.refType).toBeNull();
+      expect(detached.refId).toBeNull();
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.deletedCount).toBe(1);
+      expect(await rowExists(copy.id)).toBe(false);
+      expect(await realStorage.exists(copy.storageKey)).toBe(false);
+    });
+
+    it("AC-05(a)／B-04: 孤兒弱引用（refId 指向已不存在之容器）為可刪而非不得刪", async () => {
+      // B-04 是**唯一一條**「refId 非 null 卻仍會被真刪」的路徑（判定於 T3 定案：
+      // 容器不存在＝沒有活體實體會再用到它，與 `deriveContainerState` 對同一情境
+      // 之既有處置一致）。它同時是本 Phase 最需要人眼看過的一條——故 Spec §15.4
+      // 之「清理啟用前人工 Gate」以真實 dry-run 候選清單為準，本格只保證語意。
+      const orphan = await seedAttachment({
+        key: "orphan",
+        status: "TEMP",
+        createdAt: hoursAgo(48),
+        refType: "TRIP_SEGMENT",
+        refId: `${RUN_ID}-no-such-segment`,
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.candidateCount).toBe(1);
+      expect(result.summary.deletedCount).toBe(1);
+      expect(await rowExists(orphan.id)).toBe(false);
+    });
+
+    it("B-05／B-06: 縮圖從缺與位元組已不存在皆為 no-op，不計失敗", async () => {
+      const noThumb = await seedAttachment({
+        key: "no-thumb",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+        withThumb: false,
+      });
+      const noBytes = await seedAttachment({
+        key: "no-bytes",
+        status: "TEMP",
+        createdAt: hoursAgo(31),
+        withBytes: false,
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.deletedCount).toBe(2);
+      expect(result.summary.failedCount).toBe(0);
+      expect(await rowExists(noThumb.id)).toBe(false);
+      expect(await rowExists(noBytes.id)).toBe(false);
+      expect(listStorageKeys(storageRoot)).toEqual([]);
+    });
+  });
+
+  // =========================================================================
+  // AC-05(b) 不得刪三型
+  // =========================================================================
+
+  describe("AC-05(b): 不得刪三型", () => {
+    it("①LINKED 不論多舊", async () => {
+      const linked = await seedAttachment({
+        key: "linked-ancient",
+        status: "LINKED",
+        createdAt: hoursAgo(9000),
+        refType: "MAINTENANCE",
+        refId: maintenanceApplicationId,
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.scannedCount).toBe(0); // LINKED 連掃描都不進入
+      expect(result.summary.deletedCount).toBe(0);
+      expect(await rowExists(linked.id)).toBe(true);
+      expect(await realStorage.exists(linked.storageKey)).toBe(true);
+    });
+
+    it("②TEMP 有引用 — TRIP_SEGMENT 容器在場", async () => {
+      // 【AR-1】此列 TEMP 卻帶 refId，**刻意違反現行不變式**（見本段檔頭）：今日
+      // 寫入路徑不會產生這種列，本格測的是防禦縱深而非日常防線。
+      const referenced = await seedAttachment({
+        key: "ref-trip",
+        status: "TEMP",
+        createdAt: hoursAgo(48),
+        refType: "TRIP_SEGMENT",
+        refId: tripSegmentId,
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.scannedCount).toBe(1);
+      expect(result.summary.candidateCount).toBe(0);
+      expect(await rowExists(referenced.id)).toBe(true);
+      expect(await realStorage.exists(referenced.storageKey)).toBe(true);
+    });
+
+    it("②TEMP 有引用 — MAINTENANCE 容器在場", async () => {
+      // 【AR-1】同上：合成之違反不變式資料。
+      const referenced = await seedAttachment({
+        key: "ref-maintenance",
+        status: "TEMP",
+        createdAt: hoursAgo(48),
+        refType: "MAINTENANCE",
+        refId: maintenanceApplicationId,
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.candidateCount).toBe(0);
+      expect(await rowExists(referenced.id)).toBe(true);
+    });
+
+    it("②TEMP 有引用 — DEPRECIATION 容器在場", async () => {
+      // 【AR-1】同上；另沿 T3R／即審 SF-1：DEPRECIATION 容器刻意與 MAINTENANCE
+      // 分屬不同列，否則第四把鑰匙有沒有轉動分辨不出來。
+      const referenced = await seedAttachment({
+        key: "ref-depreciation",
+        status: "TEMP",
+        createdAt: hoursAgo(48),
+        refType: "DEPRECIATION",
+        refId: depreciationApplicationId,
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.candidateCount).toBe(0);
+      expect(await rowExists(referenced.id)).toBe(true);
+    });
+
+    it("③B-01 恰在 TTL 邊界不刪（elapsed = TTL，嚴格大於）", async () => {
+      const boundary = await seedAttachment({
+        key: "boundary",
+        status: "TEMP",
+        createdAt: hoursAgo(TTL_HOURS),
+      });
+      const justOver = await seedAttachment({
+        key: "just-over",
+        status: "TEMP",
+        createdAt: new Date(NOW.getTime() - TTL_HOURS * 60 * 60 * 1000 - 1), // B-02：差 1 ms
+      });
+
+      const { result } = await runReal(realStorage);
+
+      expect(result.summary.deletedCount).toBe(1);
+      expect(await rowExists(boundary.id)).toBe(true);
+      expect(await realStorage.exists(boundary.storageKey)).toBe(true);
+      expect(await rowExists(justOver.id)).toBe(false); // B-02 對照：差 1 ms 即刪
+    });
+  });
+
+  // =========================================================================
+  // AC-05(c) 刪除順序與失敗語意
+  // =========================================================================
+
+  describe("AC-05(c): 刪除順序與失敗語意", () => {
+    it("DB 先 storage 後：storage.delete 當下 DB 列已不存在", async () => {
+      const seeded = await seedAttachment({
+        key: "order",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      const observed: boolean[] = [];
+      const spy = makeSpyStorage(realStorage, {
+        onDelete: async () => {
+          observed.push(await rowExists(seeded.id));
+        },
+      });
+
+      const { result } = await runReal(spy.storage);
+
+      expect(result.summary.deletedCount).toBe(1);
+      expect(spy.deletedKeys).toEqual([seeded.storageKey, seeded.thumbnailKey]);
+      // 每一次 storage 刪除發生時，DB 列都必須已經不在（DB 先、storage 後）。
+      expect(observed).toEqual([false, false]);
+    });
+
+    it("storage 失敗不回滾 DB 刪除、計入失敗計數，且日誌零 storageKey／零例外原文", async () => {
+      const seeded = await seedAttachment({
+        key: "sfail",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      const spy = makeSpyStorage(realStorage, { failKeys: [seeded.storageKey] });
+
+      const { result, events } = await runReal(spy.storage);
+
+      // 不回滾：DB 列確實已刪（該檔此時已不可達）
+      expect(await rowExists(seeded.id)).toBe(false);
+      expect(result.summary.deletedCount).toBe(1);
+      expect(result.summary.failedCount).toBe(1);
+
+      const failureEvents = events.filter((e) => e.stage === "storage-delete-failed");
+      expect(failureEvents).toEqual([
+        { stage: "storage-delete-failed", attachmentId: seeded.id, errName: "Error" },
+      ]);
+
+      // 日誌零禁字：storage key、縮圖 key、檔名、擁有人、以及例外訊息原文
+      // （合成錯誤之訊息刻意含 key，故若有人改記 err.message 本格必紅）。
+      const serialized = JSON.stringify(events);
+      expect(serialized).not.toContain(seeded.storageKey);
+      if (seeded.thumbnailKey) expect(serialized).not.toContain(seeded.thumbnailKey);
+      expect(serialized).not.toContain("合成 storage 刪除失敗");
+      expect(serialized).not.toContain(ownerId);
+      expect(serialized).not.toMatch(/storageKey|thumbnailKey|originalFilename|ownerId|uploaderId/);
+    });
+
+    it("結構：實刪路徑不記 err.message（只記 errorLabel 之零內容標籤）", () => {
+      const cleaned = stripComments(cleanupCliSource);
+      expect(cleaned).not.toMatch(/\.\s*message\b/);
+      expect(cleaned).toContain("errorLabel(");
+    });
+  });
+
+  // =========================================================================
+  // AC-05(d) 鑑別力自證（mutant）
+  // =========================================================================
+  //
+  // 三型 mutant 皆以**合成判定**在測試內執行，不改真實檔（沿 T3 之紀律）：把
+  // `planCleanup` 的守門逐一拔掉，看受保護的那一列會不會掉進候選集合。
+  // 【FW-5】①型（`>` → `>=`）之鑑別力另有 T3 `(d) 邊界` 格與即審 S3 之實證
+  // 3 紅背書，本處是同一結論在執行器層的重述，不是重建同型。
+
+  describe("AC-05(d): mutant 自證", () => {
+    /** 合成候選規劃：可逐一拔掉守門，回傳候選 id（排序）。 */
+    async function planWithMutatedGuards(options: {
+      /** `true` ＝ 連 LINKED 一起列舉（拔掉「LINKED 不進掃描」）。 */
+      includeLinked?: boolean;
+      /** `true` ＝ 引用查詢恆回 false（拔掉引用保護）。 */
+      forceNoReference?: boolean;
+      /** `true` ＝ TTL 比較改為大於等於（拔掉嚴格大於）。 */
+      useGteBoundary?: boolean;
+      /** `true` ＝ 拔掉 `isEligibleForCleanup` 之 `LINKED → false` 分支。 */
+      dropEligibilityLinkedBranch?: boolean;
+      /** `true` ＝ 拔掉 `ATTACHMENT_STATUS_LINKED` 這條引用來源。 */
+      dropStatusLinkedSource?: boolean;
+    }): Promise<string[]> {
+      const rows = await prisma.attachment.findMany({
+        where: options.includeLinked ? {} : { status: "TEMP" },
+        select: { id: true, status: true, createdAt: true, refType: true, refId: true },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      });
+      const ids: string[] = [];
+      for (const row of rows) {
+        const checks = options.forceNoReference
+          ? []
+          : (await evaluateAttachmentReference(prisma, row)).checks.filter(
+              (check) =>
+                !(options.dropStatusLinkedSource && check.source === "ATTACHMENT_STATUS_LINKED")
+            );
+        const hasReference = checks.some((check) => check.referenced);
+        if (!options.dropEligibilityLinkedBranch && row.status === "LINKED") continue;
+        if (hasReference) continue;
+        const elapsedMs = NOW.getTime() - row.createdAt.getTime();
+        const ttlMs = TTL_HOURS * 60 * 60 * 1000;
+        const overdue = options.useGteBoundary ? elapsedMs >= ttlMs : elapsedMs > ttlMs;
+        if (overdue) ids.push(row.id);
+      }
+      return ids.sort();
+    }
+
+    it("①把「嚴格大於」改為「大於等於」→ 邊界列即落入候選（真實判定不落）", async () => {
+      const boundary = await seedAttachment({
+        key: "mut-boundary",
+        status: "TEMP",
+        createdAt: hoursAgo(TTL_HOURS),
+      });
+
+      const real = await planCleanup(prisma, { now: NOW, ttlHours: TTL_HOURS });
+      expect(real.candidates.map((c) => c.id)).toEqual([]);
+
+      const mutated = await planWithMutatedGuards({ useGteBoundary: true });
+      expect(mutated).toEqual([boundary.id]);
+    });
+
+    it("②移除 LINKED 保護 → 上古 LINKED 附件即落入候選（真實判定不落）", async () => {
+      // 容器刻意指向**不存在**之 Application：把「容器存在性」這個混淆因子拿掉，
+      // 本格才測得到純粹的 LINKED 保護（否則是容器來源在擋，看不出 LINKED 有沒有
+      // 在工作）。
+      const linked = await seedAttachment({
+        key: "mut-linked",
+        status: "LINKED",
+        createdAt: hoursAgo(9000),
+        refType: "MAINTENANCE",
+        refId: `${RUN_ID}-no-such-application`,
+      });
+
+      const real = await planCleanup(prisma, { now: NOW, ttlHours: TTL_HOURS });
+      expect(real.candidates.map((c) => c.id)).toEqual([]);
+
+      // 逐級拔除證明 LINKED 保護是**三重**承載，缺一仍擋得住（撰寫本格時的實測
+      // 發現：原以為是雙重，拔到第二道仍回空集，追下去才看到第三道）：
+      //   ① `planCleanup` 之 `where: { status: "TEMP" }`——LINKED 連掃描都不進；
+      //   ② `isEligibleForCleanup` 之 `LINKED → false` 分支；
+      //   ③ `ATTACHMENT_STATUS_LINKED` 這條引用來源（status=LINKED ⇒ 有引用）。
+      expect(await planWithMutatedGuards({ includeLinked: true })).toEqual([]);
+      expect(
+        await planWithMutatedGuards({ includeLinked: true, dropEligibilityLinkedBranch: true })
+      ).toEqual([]);
+      expect(
+        await planWithMutatedGuards({
+          includeLinked: true,
+          dropEligibilityLinkedBranch: true,
+          dropStatusLinkedSource: true,
+        })
+      ).toEqual([linked.id]);
+    });
+
+    it("③引用查詢恆回 false → 三型有引用列全數落入候選（真實判定全不落）", async () => {
+      // 【AR-1】三列皆為刻意違反不變式之合成資料（TEMP 帶 refId）。
+      const trip = await seedAttachment({
+        key: "mut-ref-trip",
+        status: "TEMP",
+        createdAt: hoursAgo(48),
+        refType: "TRIP_SEGMENT",
+        refId: tripSegmentId,
+      });
+      const maintenance = await seedAttachment({
+        key: "mut-ref-maintenance",
+        status: "TEMP",
+        createdAt: hoursAgo(49),
+        refType: "MAINTENANCE",
+        refId: maintenanceApplicationId,
+      });
+      const depreciation = await seedAttachment({
+        key: "mut-ref-depreciation",
+        status: "TEMP",
+        createdAt: hoursAgo(50),
+        refType: "DEPRECIATION",
+        refId: depreciationApplicationId,
+      });
+
+      const real = await planCleanup(prisma, { now: NOW, ttlHours: TTL_HOURS });
+      expect(real.candidates.map((c) => c.id)).toEqual([]);
+
+      const mutated = await planWithMutatedGuards({ forceNoReference: true });
+      expect(mutated).toEqual([trip.id, maintenance.id, depreciation.id].sort());
+    });
+
+    it("紅燈物證（常設）：守門缺席之執行器會誤刪受保護三型；真實執行器全數保住", async () => {
+      // 這一格是 Packet Done When 之「守門缺席之合成情境會誤刪」的**常設化**：
+      // A 段用一個「不呼叫 `planCleanup`、直接列舉全表就刪」的合成執行器，實際
+      // 把三型受保護附件刪掉（真的刪，不是模擬）；B 段用真實執行器對同一組重播，
+      // 三型全數存活。兩段的差別只有「有沒有經過判定」這一件事。
+      const seedProtectedTrio = async (tag: string) => ({
+        linked: await seedAttachment({
+          key: `${tag}-linked`,
+          status: "LINKED",
+          createdAt: hoursAgo(9000),
+          refType: "MAINTENANCE",
+          refId: maintenanceApplicationId,
+        }),
+        referenced: await seedAttachment({
+          key: `${tag}-referenced`,
+          status: "TEMP",
+          createdAt: hoursAgo(48),
+          refType: "TRIP_SEGMENT",
+          refId: tripSegmentId, // 【AR-1】合成之違反不變式資料
+        }),
+        boundary: await seedAttachment({
+          key: `${tag}-boundary`,
+          status: "TEMP",
+          createdAt: hoursAgo(TTL_HOURS),
+        }),
+      });
+
+      // ── A：守門缺席 ────────────────────────────────────────────────────
+      const a = await seedProtectedTrio("guardless");
+      const everything = await prisma.attachment.findMany({ select: { id: true } });
+      await prisma.attachment.deleteMany({ where: { id: { in: everything.map((r) => r.id) } } });
+      expect(await rowExists(a.linked.id)).toBe(false);
+      expect(await rowExists(a.referenced.id)).toBe(false);
+      expect(await rowExists(a.boundary.id)).toBe(false);
+
+      // ── B：真實執行器 ──────────────────────────────────────────────────
+      const b = await seedProtectedTrio("guarded");
+      const { result } = await runReal(realStorage);
+      expect(result.summary.deletedCount).toBe(0);
+      expect(await rowExists(b.linked.id)).toBe(true);
+      expect(await rowExists(b.referenced.id)).toBe(true);
+      expect(await rowExists(b.boundary.id)).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // AC-05(e) 零弱化守門
+  // =========================================================================
+
+  describe("AC-05(e): 零弱化", () => {
+    it("isEligibleForCleanup 之嚴格大於與 LINKED 分支未被改動，且執行器不自帶第二套時間判斷", () => {
+      const body = extractFunctionBody(lifecycleSource, "isEligibleForCleanup");
+      expect(body).toContain("elapsedMs > ttlMs");
+      expect(body).not.toContain(">=");
+      expect(body).toContain('attachment.status === "LINKED"');
+
+      // 執行器零時間判斷、零引用判定——它只消費 `planCleanup` 的輸出。
+      const cliCleaned = stripComments(cleanupCliSource);
+      expect(countCallSites(cleanupCliSource, "isEligibleForCleanup")).toBe(0);
+      expect(countCallSites(cleanupCliSource, "evaluateAttachmentReference")).toBe(0);
+      expect(cliCleaned).not.toContain("ttlMs");
+      expect(cliCleaned).not.toContain("getTime()");
+    });
+  });
+
+  // =========================================================================
+  // AC-04(c) 之另一半（T3 之未竟義務；本 Task 落地）
+  // =========================================================================
+
+  describe("AC-04(c) 另一半：實跑亦走同一判定路徑", () => {
+    it("結構：實跑執行器恰呼叫一次 planCleanup，且不自建第二條列舉／判定路徑", () => {
+      const runBody = extractFunctionBody(cleanupCliSource, "runCleanup");
+      expect(runBody).toContain("planCleanup(");
+
+      // 全檔恰一處呼叫、零第二份實作
+      expect(countCallSites(cleanupCliSource, "planCleanup")).toBe(1);
+      expect(countDefinitions(cleanupCliSource, "planCleanup")).toBe(0);
+
+      // 執行器對 `Attachment` 的讀取只有「依 id 取 storage key」這一種，零
+      // `findMany`——候選來源因此不可能有第二條。
+      const cliCleaned = stripComments(cleanupCliSource);
+      expect(cliCleaned).not.toMatch(/attachment\s*\.\s*findMany/);
+      expect(cliCleaned).not.toMatch(/attachment\s*\.\s*findFirst/);
+
+      // 判定模組本身仍零寫入（FW-2=(i)：實刪只在 CLI 檔，判定檔界線不變）。
+      expect(scanPrismaWriteCalls(cleanupServiceSource)).toEqual([]);
+      expect(scanPrismaWriteCalls(cleanupCliSource)).toEqual(["attachment.deleteMany"]);
+    });
+
+    it("執行期：實刪集合恰等於同一組參數下 planCleanup 之候選集合", async () => {
+      const deletable = await seedAttachment({
+        key: "same-path-deletable",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      await seedAttachment({ key: "same-path-fresh", status: "TEMP", createdAt: hoursAgo(1) });
+      await seedAttachment({
+        key: "same-path-linked",
+        status: "LINKED",
+        createdAt: hoursAgo(9000),
+        refType: "MAINTENANCE",
+        refId: maintenanceApplicationId,
+      });
+
+      const plan = await planCleanup(prisma, { now: NOW, ttlHours: TTL_HOURS, limit: 500 });
+      const { result, events } = await runReal(realStorage);
+
+      expect(plan.candidates.map((c) => c.id)).toEqual([deletable.id]);
+      expect(result.candidates).toEqual(plan.candidates);
+      const deletedIds = events.filter((e) => e.stage === "deleted").map((e) => e.attachmentId);
+      expect(deletedIds).toEqual(plan.candidates.map((c) => c.id));
+    });
+  });
+
+  // =========================================================================
+  // AC-06 觸發、批次與可觀測性
+  // =========================================================================
+
+  describe("AC-06: 觸發、批次與可觀測性", () => {
+    it("(a) 觸發路徑恰一條之結構斷言", () => {
+      // ① 全 `backend/src` 零檔案 import 本模組（不進 server 組裝、不被任何服務
+      //    路徑拉進去）——註解提及不算，只認真正的 import／require。
+      const importers = listTsFilesRecursive(SRC_ROOT)
+        .filter((file) => {
+          const cleaned = stripComments(fs.readFileSync(file, "utf8"));
+          return /(?:from|require\s*\(|import\s*\()\s*["'][^"']*cleanup-cli[^"']*["']/.test(
+            cleaned
+          );
+        })
+        .map((file) => path.relative(SRC_ROOT, file).split(path.sep).join("/"));
+      expect(importers).toEqual([]);
+
+      // ② `server.ts` 全檔零提及（含註解）——連「順手掛上去」的痕跡都不允許。
+      expect(fs.readFileSync(SERVER_PATH, "utf8")).not.toContain("cleanup");
+
+      // ③ 零排程原語、零路由註冊（防「腳本 ＋ 忘了關的 interval」雙跑）。
+      const cliCleaned = stripComments(cleanupCliSource);
+      const serviceCleaned = stripComments(cleanupServiceSource);
+      for (const cleaned of [cliCleaned, serviceCleaned]) {
+        expect(cleaned).not.toMatch(
+          /\bsetInterval\s*\(|\bsetTimeout\s*\(|\bcron\b|\bschedule\s*\(/
+        );
+        expect(cleaned).not.toMatch(/\bfastify\b|\.\s*register\s*\(|\.\s*route\s*\(/);
+        expect(cleaned).not.toMatch(/\.\s*(?:get|post|put|patch|delete)\s*\(\s*["'`]\//);
+      }
+
+      // ④ package.json 中引用本模組之 script 恰兩條，且指向**同一個**模組
+      //    （`dist` 與 `tsx` 兩式是同一條路徑的編譯前後，不是兩條觸發路徑）。
+      const scripts = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8")).scripts as Record<
+        string,
+        string
+      >;
+      const cleanupScripts = Object.entries(scripts).filter(([, cmd]) =>
+        cmd.includes("cleanup-cli")
+      );
+      expect(cleanupScripts.map(([name]) => name).sort()).toEqual([
+        "cleanup:attachments",
+        "cleanup:attachments:dev",
+      ]);
+      expect(cleanupScripts.map(([, cmd]) => cmd)).toEqual([
+        "node dist/attachment/cleanup-cli.js",
+        "tsx src/attachment/cleanup-cli.ts",
+      ]);
+
+      // ⑤ 進入點守衛恰一處（`isMain`），且不在 import 時執行。
+      expect(cliCleaned.match(/\bisMain\b/g)?.length).toBe(2); // 宣告 ＋ if 判斷
+    });
+
+    it("(b)／B-07 批次上限：超量候選留待下次，且 take 在場（§10 N-1）", async () => {
+      const older = await seedAttachment({
+        key: "batch-1",
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+      const middle = await seedAttachment({
+        key: "batch-2",
+        status: "TEMP",
+        createdAt: hoursAgo(50),
+      });
+      const newer = await seedAttachment({
+        key: "batch-3",
+        status: "TEMP",
+        createdAt: hoursAgo(40),
+      });
+
+      const first = await runReal(realStorage, { limit: 2 });
+      expect(first.result.summary.scannedCount).toBe(2);
+      expect(first.result.summary.candidateCount).toBe(2);
+      expect(first.result.summary.deletedCount).toBe(2);
+      expect(first.result.summary.hasMore).toBe(true); // 摘要載明「尚有剩餘」
+      expect(await rowExists(older.id)).toBe(false); // 最舊者優先
+      expect(await rowExists(middle.id)).toBe(false);
+      expect(await rowExists(newer.id)).toBe(true); // 其餘留待下次
+
+      const second = await runReal(realStorage, { limit: 2 });
+      expect(second.result.summary.deletedCount).toBe(1);
+      expect(second.result.summary.hasMore).toBe(false);
+      expect(await rowExists(newer.id)).toBe(false);
+
+      // 結構：`take` 在 `planCleanup` 內（唯一列舉路徑），且該函式恰一次 findMany。
+      const planBody = extractFunctionBody(cleanupServiceSource, "planCleanup");
+      expect(planBody).toContain("take");
+      expect(planBody.match(/findMany\s*\(/g)?.length).toBe(1);
+    });
+
+    it("(b) 批次上限之 env 預設與模組常數為同一個數", () => {
+      expect(
+        parseEnv({ DATABASE_URL: "postgresql://localhost/x" }).ATTACHMENT_CLEANUP_BATCH_LIMIT
+      ).toBe(DEFAULT_CLEANUP_BATCH_LIMIT);
+      expect(getEnvOrTestDefaults({}).ATTACHMENT_CLEANUP_BATCH_LIMIT).toBe(
+        DEFAULT_CLEANUP_BATCH_LIMIT
+      );
+      expect(DEFAULT_CLEANUP_BATCH_LIMIT).toBe(500); // Spec §8.2 給定值
+    });
+
+    it("(c) 摘要五欄且零敏感內容", async () => {
+      const seeded = await seedAttachment({
+        key: "summary",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      await seedAttachment({ key: "summary-fresh", status: "TEMP", createdAt: hoursAgo(2) });
+
+      const { result, events } = await runReal(realStorage);
+      const summary = result.summary;
+
+      // AC-06(c) 逐字五欄：掃描筆數／候選筆數／實刪筆數／失敗筆數／耗時
+      expect(summary.scannedCount).toBe(2);
+      expect(summary.candidateCount).toBe(1);
+      expect(summary.deletedCount).toBe(1);
+      expect(summary.failedCount).toBe(0);
+      expect(typeof summary.durationMs).toBe("number");
+      expect(summary.durationMs).toBeGreaterThanOrEqual(0);
+
+      // 欄位封閉（五欄 ＋ 模式 ＋ 剩餘量 ＋ 略過數；多一欄即紅）
+      expect(Object.keys(summary).sort()).toEqual([
+        "candidateCount",
+        "deletedCount",
+        "dryRun",
+        "durationMs",
+        "failedCount",
+        "hasMore",
+        "scannedCount",
+        "skippedCount",
+      ]);
+
+      // 摘要與全部日誌零個資、零 storage key
+      const serialized = JSON.stringify({ summary, events });
+      const rows = await prisma.attachment.findMany({ where: { ownerId } });
+      for (const row of rows) {
+        expect(serialized).not.toContain(row.storageKey);
+        expect(serialized).not.toContain(row.originalFilename);
+      }
+      expect(serialized).not.toContain(seeded.storageKey);
+      expect(serialized).not.toContain(ownerId);
+      expect(serialized).not.toMatch(/storageKey|thumbnailKey|originalFilename|ownerId|uploaderId/);
+
+      // 摘要恰在日誌尾端出現一次（可觀測性之單一收斂點）
+      const summaryEvents = events.filter((e) => e.stage === "summary");
+      expect(summaryEvents.length).toBe(1);
+      expect(events[0].stage).toBe("start");
+      expect(events[events.length - 1].stage).toBe("summary");
+    });
+
+    it("(d) 部分失敗不中止，且結束碼依 D6-2=(a)（有失敗即非零）", async () => {
+      const failing = await seedAttachment({
+        key: "d-fail",
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+      const okOne = await seedAttachment({
+        key: "d-ok-1",
+        status: "TEMP",
+        createdAt: hoursAgo(50),
+      });
+      const okTwo = await seedAttachment({
+        key: "d-ok-2",
+        status: "TEMP",
+        createdAt: hoursAgo(40),
+      });
+      const spy = makeSpyStorage(realStorage, { failKeys: [failing.storageKey] });
+
+      // ① 執行器層：第一筆失敗，其餘照常處理
+      const { result } = await runReal(spy.storage);
+      expect(result.summary.candidateCount).toBe(3);
+      expect(result.summary.deletedCount).toBe(3);
+      expect(result.summary.failedCount).toBe(1);
+      expect(await rowExists(okOne.id)).toBe(false);
+      expect(await rowExists(okTwo.id)).toBe(false);
+
+      // ② CLI 層：有失敗 → 結束碼非零（排程告警之唯一介面）
+      const again = await seedAttachment({
+        key: "d-fail-2",
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+      const spy2 = makeSpyStorage(realStorage, { failKeys: [again.storageKey] });
+      const collector = makeLogCollector();
+      const failCode = await runCleanupCli([], cliEnv(), {
+        prisma,
+        storage: spy2.storage,
+        logger: collector.logger,
+        now: NOW,
+      });
+      expect(failCode).toBe(1);
+
+      // ③ 零失敗（含零候選）→ 結束碼 0
+      const okCollector = makeLogCollector();
+      const okCode = await runCleanupCli([], cliEnv(), {
+        prisma,
+        storage: realStorage,
+        logger: okCollector.logger,
+        now: NOW,
+      });
+      expect(okCode).toBe(0);
+    });
+
+    it("(e)／B-08: 強制交錯之兩份執行——後到者對已刪列為 no-op，恆不拋", async () => {
+      // 【誠實揭露：本格以**強制延遲注入**取得決定性，沿 T3 即審 B-08 先例】
+      // 純 `Promise.all` 的兩份執行，其 `planCleanup` 是否真的都在對方刪除之前完
+      // 成，取決於連線池排隊順序——實測會出現「後者只看到 2 筆」的合法但不決定性
+      // 結果（撰寫本格時的第一版即因此紅：expected 2 to be 4）。故本格改以
+      // storage spy 的 `onDelete` 當作**屏障**：左路刪完第一筆的 DB 列、正要刪其
+      // 位元組時，整個右路在此點跑完。於是右路必然看見「第一筆已消失、其餘三筆
+      // 還在」，把那三筆刪掉；控制權回到左路後，左路對那三筆的條件式刪除必然
+      // 落空——這正是 B-08 要證的「重複刪除為 no-op 而非拋錯」，且完全決定性。
+      const seeded = [
+        await seedAttachment({ key: "conc-1", status: "TEMP", createdAt: hoursAgo(60) }),
+        await seedAttachment({ key: "conc-2", status: "TEMP", createdAt: hoursAgo(59) }),
+        await seedAttachment({ key: "conc-3", status: "TEMP", createdAt: hoursAgo(58) }),
+        await seedAttachment({ key: "conc-4", status: "TEMP", createdAt: hoursAgo(57) }),
+      ];
+
+      let rightResult: CleanupRunResult | null = null;
+      const barrier = makeSpyStorage(realStorage, {
+        onDelete: async () => {
+          if (rightResult !== null) return; // 只在第一次刪除時開閘
+          rightResult = (await runReal(realStorage)).result;
+        },
+      });
+
+      const left = await runReal(barrier.storage);
+
+      expect(left.result.summary.candidateCount).toBe(4);
+      expect(left.result.summary.deletedCount).toBe(1);
+      expect(left.result.summary.skippedCount).toBe(3); // 三筆已被右路刪走 → no-op
+      expect(left.result.summary.failedCount).toBe(0);
+
+      const right = rightResult as CleanupRunResult | null;
+      expect(right?.summary.candidateCount).toBe(3);
+      expect(right?.summary.deletedCount).toBe(3);
+      expect(right?.summary.failedCount).toBe(0);
+
+      for (const item of seeded) {
+        expect(await rowExists(item.id)).toBe(false);
+      }
+      expect(listStorageKeys(storageRoot)).toEqual([]);
+    });
+
+    it("(e)／B-08: 真實併行（Promise.all）之兩份執行恆不拋，且每列恰刪一次", async () => {
+      // 上一格是強制交錯（決定性）；本格是**未強制**的真實併行，只斷言與排程順序
+      // 無關的不變式——刻意不斷言「兩份都看到 4 筆候選」，因為那取決於連線池排隊
+      // 順序，寫死它就是把不決定性寫進測試。
+      const seeded = [
+        await seedAttachment({ key: "par-1", status: "TEMP", createdAt: hoursAgo(60) }),
+        await seedAttachment({ key: "par-2", status: "TEMP", createdAt: hoursAgo(59) }),
+        await seedAttachment({ key: "par-3", status: "TEMP", createdAt: hoursAgo(58) }),
+        await seedAttachment({ key: "par-4", status: "TEMP", createdAt: hoursAgo(57) }),
+      ];
+
+      const [left, right] = await Promise.all([runReal(realStorage), runReal(realStorage)]);
+
+      // 每一列恰由其中一份刪成功；沒有任何一份因「刪不到」而失敗或拋錯。
+      expect(left.result.summary.deletedCount + right.result.summary.deletedCount).toBe(4);
+      expect(left.result.summary.failedCount).toBe(0);
+      expect(right.result.summary.failedCount).toBe(0);
+      for (const run of [left.result.summary, right.result.summary]) {
+        expect(run.deletedCount + run.skippedCount).toBe(run.candidateCount);
+      }
+
+      for (const item of seeded) {
+        expect(await rowExists(item.id)).toBe(false);
+        expect(await realStorage.exists(item.storageKey)).toBe(false);
+      }
+      expect(listStorageKeys(storageRoot)).toEqual([]);
+    });
+  });
+
+  // =========================================================================
+  // CLI 介面（D3=(c)）
+  // =========================================================================
+
+  /** CLI 之合成 env（不讀真實 `process.env` 的清理設定，使每格決定性）。 */
+  function cliEnv(overrides: Record<string, string | undefined> = {}) {
+    return {
+      DATABASE_URL: "postgresql://localhost/synthetic",
+      ATTACHMENT_STORAGE_ROOT: storageRoot,
+      ATTACHMENT_TEMP_TTL_HOURS: String(TTL_HOURS),
+      ATTACHMENT_CLEANUP_BATCH_LIMIT: "500",
+      ...overrides,
+    };
+  }
+
+  describe("CLI（D3=(c)）", () => {
+    it("--dry-run：DB 全表逐欄快照全等 ＋ storage 鍵集全等，結束碼 0，且列出候選", async () => {
+      const deletable = await seedAttachment({
+        key: "cli-dry",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      const dbBefore = await prisma.attachment.findMany({ orderBy: { id: "asc" } });
+      const storageBefore = listStorageKeys(storageRoot);
+
+      const collector = makeLogCollector();
+      // 刻意**不注入** storage：dry-run 路徑手上根本沒有刪除工具（結構性唯讀）。
+      const code = await runCleanupCli(["--dry-run"], cliEnv(), {
+        prisma,
+        logger: collector.logger,
+        now: NOW,
+      });
+
+      expect(code).toBe(0);
+      expect(await prisma.attachment.findMany({ orderBy: { id: "asc" } })).toEqual(dbBefore);
+      expect(listStorageKeys(storageRoot)).toEqual(storageBefore);
+      expect(await rowExists(deletable.id)).toBe(true);
+
+      const summaryEvent = collector.events.find((e) => e.stage === "summary");
+      expect(summaryEvent?.summary?.dryRun).toBe(true);
+      expect(summaryEvent?.summary?.candidateCount).toBe(1);
+      expect(summaryEvent?.summary?.deletedCount).toBe(0);
+      expect(collector.events.some((e) => e.stage === "deleted")).toBe(false);
+
+      // AC-04(b)：dry-run 的產出是**候選清單**本身（人工 Gate 要看的就是這個），
+      // 不是只有一行摘要。逐筆欄位封閉且零禁字。
+      const candidateEvents = collector.events.filter((e) => e.stage === "candidate");
+      expect(candidateEvents.length).toBe(1);
+      expect(candidateEvents[0].attachmentId).toBe(deletable.id);
+      const listed = candidateEvents[0].candidate;
+      expect(listed && Object.keys(listed).sort()).toEqual([
+        "createdAt",
+        "id",
+        "overdueHours",
+        "referenceChecks",
+        "status",
+      ]);
+      expect(listed?.overdueHours).toBe(6); // 30h − 24h TTL
+      expect(listed?.referenceChecks.map((c) => c.source)).toEqual(
+        ATTACHMENT_REFERENCE_SOURCES.map((s) => s.key)
+      );
+      const serialized = JSON.stringify(collector.events);
+      expect(serialized).not.toContain(deletable.storageKey);
+      expect(serialized).not.toContain(ownerId);
+      expect(serialized).not.toMatch(/storageKey|thumbnailKey|originalFilename|ownerId|uploaderId/);
+    });
+
+    it("未知旗標 → 非零結束碼且零刪除（不可逆工具不猜參數）", async () => {
+      const seeded = await seedAttachment({
+        key: "cli-bad",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      const collector = makeLogCollector();
+
+      const code = await runCleanupCli(["--force"], cliEnv(), {
+        prisma,
+        storage: realStorage,
+        logger: collector.logger,
+        now: NOW,
+      });
+
+      expect(code).toBe(1);
+      expect(collector.events).toEqual([{ stage: "invalid-argument", detail: "--force" }]);
+      expect(await rowExists(seeded.id)).toBe(true);
+    });
+
+    it("實跑但 ATTACHMENT_STORAGE_ROOT 未設 → 非零結束碼、零刪除、日誌只有鍵名", async () => {
+      const seeded = await seedAttachment({
+        key: "cli-noroot",
+        status: "TEMP",
+        createdAt: hoursAgo(30),
+      });
+      const collector = makeLogCollector();
+
+      const code = await runCleanupCli([], cliEnv({ ATTACHMENT_STORAGE_ROOT: undefined }), {
+        prisma,
+        logger: collector.logger,
+        now: NOW,
+      });
+
+      expect(code).toBe(1);
+      expect(collector.events).toEqual([
+        { stage: "config-error", detail: "ATTACHMENT_STORAGE_ROOT" },
+      ]);
+      expect(await rowExists(seeded.id)).toBe(true);
     });
   });
 });
