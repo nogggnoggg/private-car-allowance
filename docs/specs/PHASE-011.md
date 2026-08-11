@@ -1,7 +1,7 @@
 # PHASE-011 — Docker／部署硬化與備份
 
 - Governance-Version: 2026-08-11.1
-- 狀態：**`DRAFT`**（待人類 Spec Gate 裁定：D1~D18 逐條 ＋ High Task 事前批准 ＋ 條件 AC 取捨 ＋ 來源類別「既有語意擴張／建議新增」逐項確認）
+- 狀態：**`ACTIVE`**（人類 Spec Gate 通過 2026-08-11，leonchih——D1~D18 全數照推薦＋High 十項事前批准＋條件 Task 全納＋D17 二階段預授權；裁定全文見 §19 修訂紀錄 `SPEC-011-GATE` 列）
 - 建立日期：2026-08-11
 - Task ID：`SPEC-011`
 - Base Commit：`b0e22fc`（branch `phase-011`，自 `main` `834f022`＝PR #19 合併點切出）
@@ -771,11 +771,11 @@
 | AC-05(d)(e) | integration | 同上 | `AC-05(d) mutant 自證` › `①>= 改法 → 邊界格必紅`；`②移除 LINKED 保護 → 必紅`；`③引用查詢恆 false → 有引用格全紅`；`AC-05(e): isEligibleForCleanup 既有單元測試零改動` | T4 | `PENDING` |
 | AC-06(a)(b)(c) | integration | 同上 | `AC-06: 觸發、批次與可觀測性` › `(a) 觸發路徑恰一條之結構斷言`；`(b)／B-07 批次上限：超量候選留待下次且 take 在場`；`(c) 摘要五欄且零敏感內容` | T4 | `PENDING` |
 | AC-06(d)(e) | integration | 同上 | `AC-06(d): 部分失敗不中止且結束碼依裁定`；`AC-06(e)／B-08: 兩份併發執行恆不 500、重複刪除為 no-op` | T4 | `PENDING` |
-| AC-06(f) | —（非測試，條件） | — | **【僅 D6 裁定「寫稽核」時適用】** 5 處機械連動 ＋ 前端標籤表之同批更新清單（Handoff 逐處核銷） | T4 | `PENDING（Spec Gate 裁定後解鎖）` |
+| AC-06(f) | —（非測試，條件） | — | **【僅 D6 裁定「寫稽核」時適用】** 5 處機械連動 ＋ 前端標籤表之同批更新清單（Handoff 逐處核銷） | T4 | `PENDING` |
 | AC-07(a) | integration | `backend/test/integration/phase10-user-delete-regression.test.ts`（**既有檔，零改動**——重跑即證據） | 該檔全綠且 `git diff` 為空（Handoff 記載） | T5 | `PENDING` |
 | AC-07(b)(c) | integration | `backend/test/integration/phase11-user-delete-after-cleanup.test.ts`（新） | `AC-07(b): 僅有已被清理之暫存附件、其餘零歷史 → 200 ＋ USER_DELETED 稽核列`；`AC-07(c) 負向: 有未逾期暫存附件 → 仍 409（放寬不得過寬）` | T5 | `PENDING` |
 | AC-07(d) | —（非測試） | — | **Handoff 物證**：`PHASE-010.md` AC-14(b)② 期望逐字仍成立之結論 | T5 | `PENDING` |
-| AC-08(a)~(d) | integration | `backend/test/integration/phase11-orphan-inventory.test.ts`（新，條件） | `AC-08: storage 孤兒盤點`（依 D5：(c-1) 只報告 → 零刪除格；(c-2) 納刪 → 保護期 ＋ 三向 mutant）；`AC-08(d): prefixes 結構守門維持全綠` | T6 | `PENDING（Spec Gate 裁定後解鎖）` |
+| AC-08(a)~(d) | integration | `backend/test/integration/phase11-orphan-inventory.test.ts`（新，條件） | `AC-08: storage 孤兒盤點`（依 D5：(c-1) 只報告 → 零刪除格；(c-2) 納刪 → 保護期 ＋ 三向 mutant）；`AC-08(d): prefixes 結構守門維持全綠` | T6 | `PENDING` |
 | AC-09(a)(b)(c) | unit | `backend/test/unit/cookie-options.test.ts`（新） | `AC-09: Cookie 安全屬性` › `(b) isProduction=true 之屬性集 toEqual 封閉（多一／少一必紅）`；`(c) isProduction=false 逐字同既有 AC-28（HttpOnly ∧ SameSite=Lax ∧ Path=/ ∧ 無 Secure）` | T7 | `PENDING` |
 | AC-09(c)〔既有檔背書〕 | integration | `backend/test/integration/auth.test.ts`（**既有檔，零改動**） | `AC-28: non-production: cookie has HttpOnly, SameSite=Lax, Path=/ but NOT Secure`（:350，重跑即證據） | T7 | `PENDING` |
 | AC-09(d)(e) | integration | `backend/test/integration/phase11-cookie-proxy.test.ts`（新） | `AC-09(d): production 選項注入之 server 實例 — Set-Cookie 逐屬性 ＋ cookie 值於日誌零命中`；`AC-09(e)／B-12: __Host- 前綴之三項硬性前提（依 D7）` | T7 | `PENDING` |
@@ -810,22 +810,22 @@
 | AC-26(a) | 全套件 | —（終審實跑對照） | 基準線 後端 3542／前端 388／E2E 55 不下降；`tsc` 0；`biome` 0 | 全 Task | `PENDING` |
 | AC-26(b) | —（非測試） | — | 每 Task Done When 逐條；終審對照「刪除之 `it`／`expect` 行數為 0」 | 全 Task | `PENDING` |
 | AC-26(c)(d) | integration | `backend/test/integration/phase11-env-secrets.test.ts` | `AC-26(c): frontend/src 全 Phase 累計 diff 為 0`；`AC-26(d): parameters/、mileage/、計算引擎與快照模組累計 diff 為 0`（判準＝`git diff --stat <base>..HEAD` 之路徑過濾，終審執行） | 終審 | `PENDING` |
-| AC-27(a)~(d) | 條件（typecheck＋全套件） | `tsconfig.e2e.json`（新）＋ CI 步驟 | `npm run typecheck` 涵蓋 `e2e/` 且回 0；`any`／`@ts-ignore` 淨增 0；E2E 55/55 全綠；採用 config 逐條載明 | T15 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-28(a)(b)(f) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts`（既有檔，就地擴充） | `AC-28(a): pino 序列化型兩式（物件簡寫 ＋ 位置引數）必被偵測`；`AC-28(b): logger.ts serializer 設定之定案釘死`；`AC-28(f): 兩份白名單只可縮不可擴` | T16 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-28(c) | integration | 同上 | `AC-28(c): index.ts :33 server.log.error(err) 與 audit.ts :56 console.error(…, err) 兩處之處置（依 D15）` | T16 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-28(d) | integration | 同上 | **同批改寫**：`已知不可及⑫……FW-A 移交 PHASE-011` 之記載型反向 `it` 轉為正向格（commit message 逐字說明） | T16 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-28(e) | —（非測試） | — | ajv `detail.message` 面之評估結論（Handoff）＋ 納入或不納之記載型 `it` | T16 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-29(a) | unit | `backend/test/unit/decimal-arg.test.ts`（新或既有檔擴充） | `AC-29(a): toDecimalConstructorArg 收斂後 deriveDepreciation 契約逐位元組不變` | T17 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-29(b) | e2e | `e2e/**`（helper 抽取後之全套重跑） | E2E 55/55 全綠；**零播種日常數變動**之機械斷言（與 AC-02 交叉守門） | T17 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-29(c) | integration | XSS／掃描器三面之既有測試檔（派工時實查） | `AC-29(c): 收斂後三面之既有 mutant 逐一重放必紅（鑑別力不下降）` | T17 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-29(d) | integration | `backend/test/integration/phase11-structural-guards.test.ts`（新） | `AC-29(d): 全 backend/src 之 function errorLabel 定義恰一處`；`mutant：他檔新增一份私有 errorLabel → 必紅` | T17 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-30(a)~(d) | integration | `backend/test/integration/phase11-audit-reliability.test.ts`（新） | `AC-30(a): 現況固化 — writeAudit 失敗時主操作仍成功`；`(b) 依 D16 之改善形式與其失效行為`；`(c) 未經裁定不得改同交易之記載型 it`；`(d) 失敗日誌不記 summary 內容` | T18 | `PENDING（Spec Gate 裁定後解鎖）` |
-| AC-31(a)~(d) | integration | `backend/test/integration/phase11-index-migration.test.ts`（新） | `AC-31: 索引補強`（依 D17）：`(b) 純加法 migration ＋ INFRA-002 drift 與破壞性 DML 掃描全綠`；`(d) enumLabels("AuditAction") 四處聯集零變動` | T19 | `PENDING（Spec Gate 裁定後解鎖）` |
+| AC-27(a)~(d) | 條件（typecheck＋全套件） | `tsconfig.e2e.json`（新）＋ CI 步驟 | `npm run typecheck` 涵蓋 `e2e/` 且回 0；`any`／`@ts-ignore` 淨增 0；E2E 55/55 全綠；採用 config 逐條載明 | T15 | `PENDING` |
+| AC-28(a)(b)(f) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts`（既有檔，就地擴充） | `AC-28(a): pino 序列化型兩式（物件簡寫 ＋ 位置引數）必被偵測`；`AC-28(b): logger.ts serializer 設定之定案釘死`；`AC-28(f): 兩份白名單只可縮不可擴` | T16 | `PENDING` |
+| AC-28(c) | integration | 同上 | `AC-28(c): index.ts :33 server.log.error(err) 與 audit.ts :56 console.error(…, err) 兩處之處置（依 D15）` | T16 | `PENDING` |
+| AC-28(d) | integration | 同上 | **同批改寫**：`已知不可及⑫……FW-A 移交 PHASE-011` 之記載型反向 `it` 轉為正向格（commit message 逐字說明） | T16 | `PENDING` |
+| AC-28(e) | —（非測試） | — | ajv `detail.message` 面之評估結論（Handoff）＋ 納入或不納之記載型 `it` | T16 | `PENDING` |
+| AC-29(a) | unit | `backend/test/unit/decimal-arg.test.ts`（新或既有檔擴充） | `AC-29(a): toDecimalConstructorArg 收斂後 deriveDepreciation 契約逐位元組不變` | T17 | `PENDING` |
+| AC-29(b) | e2e | `e2e/**`（helper 抽取後之全套重跑） | E2E 55/55 全綠；**零播種日常數變動**之機械斷言（與 AC-02 交叉守門） | T17 | `PENDING` |
+| AC-29(c) | integration | XSS／掃描器三面之既有測試檔（派工時實查） | `AC-29(c): 收斂後三面之既有 mutant 逐一重放必紅（鑑別力不下降）` | T17 | `PENDING` |
+| AC-29(d) | integration | `backend/test/integration/phase11-structural-guards.test.ts`（新） | `AC-29(d): 全 backend/src 之 function errorLabel 定義恰一處`；`mutant：他檔新增一份私有 errorLabel → 必紅` | T17 | `PENDING` |
+| AC-30(a)~(d) | integration | `backend/test/integration/phase11-audit-reliability.test.ts`（新） | `AC-30(a): 現況固化 — writeAudit 失敗時主操作仍成功`；`(b) 依 D16 之改善形式與其失效行為`；`(c) 未經裁定不得改同交易之記載型 it`；`(d) 失敗日誌不記 summary 內容` | T18 | `PENDING` |
+| AC-31(a)~(d) | integration | `backend/test/integration/phase11-index-migration.test.ts`（新） | `AC-31: 索引補強`（依 D17）：`(b) 純加法 migration ＋ INFRA-002 drift 與破壞性 DML 掃描全綠`；`(d) enumLabels("AuditAction") 四處聯集零變動` | T19 | `PENDING` |
 
 **合計 31 條 AC ／ 67 列映射**（機械核對：`grep -c "^| AC-"` 於本表範圍 ＝ **67**）。其中**非測試載體**（層級欄為 `—（非測試…）`）之列 **14 列**——AC-01(d)／AC-06(f)／AC-07(d)／AC-10(d)／AC-12(e)／AC-15(a)(b)(c)／AC-15(d)／AC-16(a)(b)／AC-17(a)~(g)／AC-17(h)(i)／AC-18(a)~(d)／AC-21(d)(e)／AC-26(b)／AC-28(e)——故**測試列為 53 列**。
 > **另有一列為「既有檔零改動即證據」型**（AC-07(a)：`phase10-user-delete-regression.test.ts` 重跑全綠且 `git diff` 為空）——該列**層級仍為 `integration`**（有真實測試在跑，只是不新增），故**計入測試列**，與上述 14 列之性質不同。同型者另有 AC-09(c)〔既有檔背書〕與 AC-14(e)。
 
-**★ 狀態計數（Spec Gate 前＝現況，67 列）★**：`PENDING` **54**／`PENDING（Spec Gate 裁定後解鎖）` **13**（AC-06(f)／AC-08／AC-27／AC-28 四列〔含 (e)〕／AC-29 四列／AC-30／AC-31）／`GREEN` **0**／`RED` **0** ＝ **67**。
+**★ 狀態計數（Spec Gate 通過後，67 列）★**：`PENDING` **67**（原 54＋條件列 13 於 2026-08-11 Gate 全解鎖——D5(c)/D14/D15/D16-1·2·3·5/D17 全納生效；AC-29(a) 之 D-4 子項依 D16-4 不納，該列射程縮至 D-5/D-7/D-10 三項）／`GREEN` **0**／`RED` **0** ＝ **67**。
 > 三項計數皆以 `sed -n '<表範圍>p' | grep -c …` 實測取得，非估算。
 
 > **條件列之解鎖規則**：D5／D6／D14／D15／D16／D17 裁定後，由**大總管**於 Spec 狀態欄白名單內將對應列改為 `PENDING`（納入）或 `N/A（非測試）`＋逐字說明（明列不納）。**不得**於裁定前先行實作。
@@ -1499,6 +1499,7 @@ T11 ──▶ T19（索引補強）
 
 | 版本／Task ID | 日期 | 內容 | 狀態 |
 |---|---|---|---|
+| `SPEC-011-GATE` | 2026-08-11 | **★ Spec Gate 通過（人類 leonchih；AskUserQuestion 兩輪——三項親核（裁定方式／條件範圍／D17 預授權）＋六點複述確認）★** **D1~D18 全數照推薦**：D1=(a)／D2=(a)／D3=(c)／D4=(a)＋**條件式升級授權**（T3 首步實查 `AuditLog.summary` 曾寫入 attachment id 即自動升 (b)，免回 Gate）／D5=(c)／D6-1·2·3=(a)（**不寫稽核＝本 Phase 除 T19 外零 migration 維持**）／D7=(a)／D8=(a)（**HTTPS 保證歸平台之假設**依 §17.1＋Runbook 明載）／D9=(a)／D10=(a) 主 (b) 備／D11-1=(a)·D11-2=(a) **備份不加密**／D12=(a)／D13=(a)+(b) 併用／D14 納入／D15 全納／D16-1·2·3 納入·**D16-4 不納 D-4**（＝§15 衝突三路徑採 **(i)**）·D16-5=(i)／D17=(a)＋**二階段預授權成立**（T11 實測未達標→T19 自動生效免第二輪 Gate；全達標→不開工據實記載 §17）／D18-1·2=(a)。**High 事前批准十項**：核心 T3／T4／T5／T7／T8／T10／T12／T13＋條件 T18／T19（T6 依 D5=(c) 降 Medium 不在列；T1 依 D1=(a) 維持 Medium）。條件 AC 13 列全解鎖；來源類別（既有語意擴張 5＋建議新增 10）全數確認；§13 六項照建議處置（**#4 tripDate/primaryDate 語意差異自本 Phase 移出另立產品面工作項**）。 | **`ACTIVE`** |
 | `SPEC-011` | 2026-08-11 | **初稿建立**（`DRAFT`）。31 AC（含 6 條件 AC：AC-08／AC-27~AC-31）／§12 **67 列**映射（54 `PENDING` ＋ 13 條件列；測試列 53 ＋ 非測試載體 14）／**19 Task**（14 核心 ＋ 5 條件）／核心 High **8** 項／**D1~D18** 決策點。**四項實查新發現全列決策點或移交清單，未自行定案**：①★`KNOWN_ISSUES.md` §3 D-9 之「今日狀態」失準——`index.ts` :33 與 `audit/audit.ts` :56 為**今日即存在**之 pino／console 錯誤物件序列化站點，且 `index.ts` 因另一理由已在白名單中而被**結構性遮蔽**（§13 #1、AC-28(c)）②`e2e/` typecheck spike 實測 **48** 錯／8 檔／單一根因（非登記之 76；錯誤面為 tsconfig 依變數）（§13 #2、§11.6）③`Attachment` 在資料層**零 FK 指向**、`Report`／`VoidedReportFile` **零 `attachmentId` 欄位**——BE-US-25⑥ 之「報表／稽核引用」在現行資料層無對應形式（**D4**）④PRD :526 之「依 A3」在全案查無定義（§13 #3）。**兩項跨 AC 衝突顯性化**：AC-26(d) ⇔ AC-29(a)（金額模組零 diff vs `toDecimalConstructorArg` 收斂，三路徑交 Gate）／AC-26(c) ⇔ AC-06(f)（前端零 diff vs 清理寫稽核，僅 D6-3=(b)/(c) 時成立）。**Gate 裁定前提回查零缺口**（§0.4 八筆）。**呈現轉換樣本預確認：本 Phase 無該型決策點**（零前端變更）。**Blocking Unknowns：無。** | **停等人類 Spec Gate** |
 
 > **Spec Gate 之裁定清單（供人類逐項確認，共六類）**：
