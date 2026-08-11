@@ -27,10 +27,16 @@
  *                             讀取；伺服器行程不讀、不排程。與
  *                             `cleanup-service.ts` 之 DEFAULT_CLEANUP_BATCH_LIMIT
  *                             為同一個數，兩處由 phase11 測試之機械斷言釘住。
- *                             **移交 T8**：`.env.example` 與 `docker-compose.yml`
- *                             之同批新增屬 T8 檔案欄，本 Task 不觸碰該兩檔。
+ *                             **T8 已收斂**（T4 當時記為「移交 T8」）：本鍵已
+ *                             同批進入 `.env.example` 與 `docker-compose.yml`
+ *                             之 backend `environment:`，並受 AC-13(a)／
+ *                             AC-11(e) 之機械守門。
  *   （D3=(c) 之故，Spec §8.2 草案中的 `ATTACHMENT_CLEANUP_ENABLED` 屬「若
  *    D3=(a) 內建排程」之條件列，**未新增**——沒有排程開關要開。）
+ *
+ * PHASE-011-T8 additions（Spec §2 D 段 AC-11／AC-13）：本檔**零新增 env 變數**，
+ *   只新增兩份由 schema 導出的常數 `ENV_SCHEMA_KEYS` 與
+ *   `PRODUCTION_REQUIRED_ENV_KEYS`（見各自 JSDoc），供三具機械守門引用。
  */
 import { z } from "zod";
 
@@ -64,6 +70,47 @@ const envSchema = z.object({
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
+
+/**
+ * 本後端所認得的**全部** env 變數名，由 `envSchema` 直接導出、排序後凍結。
+ *
+ * 刻意由 `Object.keys(envSchema.shape)` 導出而非另抄一份清單：AC-13(a) 的守門
+ * （`.env.example` ⊇ schema 全鍵）與 AC-11(e) 的守門（compose 鍵 ⊆ schema）都
+ * 拿這份當左邊，如果它是手抄的，就會變成「兩份手抄清單互比」——兩邊一起漏掉
+ * 同一個新變數時全綠，守門歸零。
+ *
+ * 新增一個 schema 鍵時的連動點（缺一即有機械斷言必紅）：
+ *   ① 本檔 schema ＋ `getEnvOrTestDefaults` fallback
+ *   ② `.env.example`（AC-13(a)，`test/unit/env-example-sync.test.ts`）
+ *   ③ `docker-compose.yml` backend `environment:`（AC-11(e)，僅必要鍵為硬性）
+ *   ④ `test/unit/env.test.ts` 之 `ENV_SCHEMA_KEYS` 封閉集合一格
+ */
+export const ENV_SCHEMA_KEYS: readonly string[] = Object.freeze(
+  Object.keys(envSchema.shape).sort()
+);
+
+/**
+ * **production 下缺少即拒絕啟動**的變數（Spec AC-11(c)；核銷 `KNOWN_ISSUES.md`
+ * :41 O-3）。這是一份**部署契約**：清單上的每個名字都必須由部署平台提供，
+ * 否則後端行程會在啟動時硬失敗而不是帶著錯誤設定跑起來。
+ *
+ * 三個名字的拒絕點**不在同一層**，這點對維護者很重要：
+ *   · `DATABASE_URL`          — zod schema 層必填（`parseEnv` 直接拋）。
+ *   · `ATTACHMENT_STORAGE_ROOT`／`REPORT_STORAGE_ROOT`
+ *                             — schema 層是 `.optional()`（測試與開發環境要能
+ *                               不設它而落到動態暫存路徑），真正的拒絕發生在
+ *                               `server.ts` 解析 storage root 之後、判斷
+ *                               `NODE_ENV === "production"` 的分支。
+ *
+ * 故 `phase11-env-secrets.test.ts` 的 AC-11(c) 斷言是**兩路導出取聯集**再與本
+ * 常數 `toEqual`：行為導出（真的呼叫 `parseEnv` 逐鍵探針）抓第一類，結構導出
+ * （讀 `server.ts` 的 fail-fast 分支）抓第二類。只做其中一路都會漏掉另一類。
+ */
+export const PRODUCTION_REQUIRED_ENV_KEYS: readonly string[] = Object.freeze([
+  "ATTACHMENT_STORAGE_ROOT",
+  "DATABASE_URL",
+  "REPORT_STORAGE_ROOT",
+]);
 
 /**
  * Returns a parsed AppConfig, falling back to safe literal defaults when
