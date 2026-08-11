@@ -48,6 +48,13 @@ export interface BuildServerOptions {
    * of env REPORT_STORAGE_ROOT.
    */
   reportStorageRoot?: string;
+  /**
+   * Force the production session-cookie attribute set (`Secure`) on without
+   * setting NODE_ENV=production (PHASE-011-T7; Spec AC-09(d), §11.0 #5 forbids
+   * NODE_ENV=production in tests). One-way: it can only harden — see
+   * `resolveSecureCookies()` in `auth/routes.ts`.
+   */
+  forceSecureCookies?: boolean;
 }
 
 export async function buildServer(
@@ -60,6 +67,19 @@ export async function buildServer(
     logger: options.logStream ? { ...loggerOptions, stream: options.logStream } : loggerOptions,
     // Use logController to set requestIdLogLabel without deprecation warning
     logController: new LogController({ requestIdLogLabel: "requestId" }),
+    // PHASE-011-T7 (Spec AC-10(b-2); §16 D8=(a)) — do NOT trust reverse-proxy
+    // headers. This is Fastify's own default, so writing it changes nothing at
+    // runtime; it is explicit so the decision is visible here and so the
+    // structural guard in `test/integration/phase11-cookie-proxy.test.ts` can
+    // pin the VALUE (a later `true` would let any client forge
+    // `X-Forwarded-Proto` / `X-Forwarded-For`) rather than merely its absence.
+    // Nothing in this codebase needs the original protocol or client IP: logs
+    // record neither, the cookie `Secure` flag comes from NODE_ENV alone
+    // (`auth/routes.ts` resolveSecureCookies), and HTTP→HTTPS redirection is
+    // the deployment platform's job. Assumption and its failure consequence:
+    // Spec §17.1 #2 (if the platform does not enforce HTTPS, the application
+    // will not notice).
+    trustProxy: false,
   });
 
   // Set up Prisma client (use test URL if provided)
@@ -81,7 +101,10 @@ export async function buildServer(
   await fastify.register(healthPlugin, { dbProbe });
 
   // Register auth routes (POST /auth/login, POST /auth/logout, GET /me)
-  await fastify.register(authPlugin, { prisma });
+  await fastify.register(authPlugin, {
+    prisma,
+    forceSecureCookies: options.forceSecureCookies,
+  });
 
   // Register admin routes (GET/POST /admin/users, deactivate/activate/reset-password/delete)
   await fastify.register(adminPlugin, { prisma });

@@ -15,6 +15,20 @@
  *   - Secure only when NODE_ENV=production
  *   - Max-Age aligned with expiresAt
  *
+ * PHASE-011-T7 (Spec AC-09 / AC-10; §16 D7=(a), D8=(a)) — zero behaviour change:
+ *   - The attribute set above is unchanged; T7 only pins it down with closed
+ *     `toEqual` guards (`test/unit/cookie-options.test.ts` +
+ *     `test/integration/phase11-cookie-proxy.test.ts`), because until T7 the
+ *     production branch had no test coverage at all.
+ *   - `buildCookieOptions` / `buildClearCookieOptions` are exported so the
+ *     production branch can be unit-tested by argument injection — Spec §11.0 #5
+ *     forbids setting NODE_ENV=production in tests (it trips the
+ *     `global-setup.ts` :304 fail-closed guard).
+ *   - `resolveSecureCookies()` is the single source of the "is this a secure
+ *     connection" decision (AC-10(a)). It reads NODE_ENV only: per D8=(a) the
+ *     application never trusts `X-Forwarded-*`, and HTTPS is guaranteed by the
+ *     deployment platform (assumption + failure consequence: Spec §17.1 #2).
+ *
  * Session validation (Spec 4.7):
  *   - Raw token from Cookie → SHA-256 → DB lookup
  *   - revokedAt IS NULL AND expiresAt > now AND user.isActive
@@ -32,6 +46,7 @@
 
 import type { PrismaClient } from "@prisma/client";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import type { AppConfig } from "../config/env.js";
 import { getEnvOrTestDefaults } from "../config/env.js";
 import { AppError } from "../platform/errors.js";
 import { performLogin } from "./login.js";
@@ -45,10 +60,35 @@ import { revokeSession, toUserDto } from "./session.js";
 // ---------------------------------------------------------------------------
 
 /**
+ * Decide whether session cookies must carry the `Secure` attribute
+ * (PHASE-011-T7, Spec AC-10(a) — single source of the secure-connection
+ * decision; §16 D8=(a)).
+ *
+ * NODE_ENV is the only signal: proxy-supplied headers (`X-Forwarded-Proto`)
+ * are never consulted because any client can forge them and `trustProxy`
+ * stays off (`server.ts`).
+ *
+ * `forceSecureCookies` exists solely so integration tests can exercise the
+ * production branch without setting NODE_ENV=production (Spec §11.0 #5). It is
+ * deliberately ONE-WAY: it can only turn `Secure` ON. Written as `||` rather
+ * than an override (`??`) so that no caller — test or otherwise — can ever
+ * switch `Secure` off in production. Guarded by
+ * `test/unit/cookie-options.test.ts` ("單向加嚴：可開不可關").
+ */
+export function resolveSecureCookies(
+  nodeEnv: AppConfig["NODE_ENV"],
+  forceSecureCookies?: boolean
+): boolean {
+  return nodeEnv === "production" || forceSecureCookies === true;
+}
+
+/**
  * Build cookie options per Spec 4.3 / AC-28.
  * Secure only in production.
+ *
+ * Exported for PHASE-011-T7's closed attribute-set guard (AC-09(a)(b)(c)).
  */
-function buildCookieOptions(expiresAt: Date, cookieName: string, isProduction: boolean) {
+export function buildCookieOptions(expiresAt: Date, cookieName: string, isProduction: boolean) {
   const maxAgeSeconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
   return {
     httpOnly: true,
@@ -61,8 +101,12 @@ function buildCookieOptions(expiresAt: Date, cookieName: string, isProduction: b
 
 /**
  * Build clear-cookie options (Max-Age=0) for logout.
+ *
+ * Exported for PHASE-011-T7's closed attribute-set guard (AC-09(b)): the clear
+ * must carry the same attributes as the set, otherwise the browser may not
+ * treat it as the same cookie and a usable session cookie survives logout.
  */
-function buildClearCookieOptions(isProduction: boolean) {
+export function buildClearCookieOptions(isProduction: boolean) {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
@@ -103,6 +147,12 @@ const changePasswordBodySchema = {
 
 interface AuthPluginOptions {
   prisma: PrismaClient;
+  /**
+   * PHASE-011-T7: force the production cookie attribute set (i.e. `Secure`) on
+   * without setting NODE_ENV=production. Test-injection only, and one-way —
+   * see `resolveSecureCookies()`.
+   */
+  forceSecureCookies?: boolean;
 }
 
 export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
@@ -116,7 +166,7 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
 
   const cookieName = env.SESSION_COOKIE_NAME;
   const ttlHours = env.SESSION_ABSOLUTE_TTL_HOURS;
-  const isProduction = env.NODE_ENV === "production";
+  const secureCookies = resolveSecureCookies(env.NODE_ENV, options.forceSecureCookies);
   const maxFailures = env.LOGIN_MAX_FAILURES;
   const lockMinutes = env.LOGIN_LOCK_MINUTES;
 
@@ -143,7 +193,7 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
         lockMinutes
       );
 
-      const cookieOptions = buildCookieOptions(result.expiresAt, cookieName, isProduction);
+      const cookieOptions = buildCookieOptions(result.expiresAt, cookieName, secureCookies);
 
       reply.setCookie(cookieName, result.rawToken, cookieOptions);
 
@@ -174,7 +224,7 @@ export const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (
       }
 
       // Clear the cookie
-      reply.clearCookie(cookieName, buildClearCookieOptions(isProduction));
+      reply.clearCookie(cookieName, buildClearCookieOptions(secureCookies));
 
       return reply.status(200).send({ ok: true });
     }
