@@ -53,11 +53,11 @@
  * `Attachment` 表為空（`beforeAll` 內以一則斷言當場確認，不當前提用），全部種子
  * 由本檔自播、`afterAll` 自清。爆炸半徑因此限於本 worker 自己的 schema。
  * **誠實揭露**：若以 `TEST_DB_ISOLATION=off` 回退（INFRA-001 之單鍵回退模式）
- * 跑測試，全表掃描的射程與 T4 既有之 `runReal` 同型——此為 T4 已存在之性質，
- * 本檔未擴大；且另有下方之全表歸零前提（`beforeAll` 內
- * `expect(await prisma.attachment.count()).toBe(0)`）當 **fail-closed 閘門**，
- * 而 T4 之 `runReal` 沒有這一道，故 off-mode 下本檔**實務上比 T4 更早中止**、
- * 真刪射程嚴格窄於 T4（保守方向）〔T5 即審 AR-2 之更正：原句「亦未縮小」不精確〕。
+ * 跑測試，全表掃描的射程會與 T4 既有之 `runReal` 完全相同——此為 T4 已存在之
+ * 性質，本檔未擴大，亦未縮小。兩檔亦各有**同型的 fail-closed 閘門**（本檔
+ * `beforeAll` 之 `expect(await prisma.attachment.count()).toBe(0)`；
+ * `phase11-attachment-cleanup.test.ts` 之 T4 段 `beforeAll` 有逐字相同的一道，
+ * 且早於其 `runReal` 首次呼叫），故 off-mode 下兩者同樣會在真刪之前先行中止。
  *
  * ---------------------------------------------------------------------------
  * 上游 FW-5（T3 即審）：種子形狀刻意合乎現行不變式
