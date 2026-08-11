@@ -272,9 +272,12 @@ describeWithDb("PHASE-011-T7 — AC-09(d): production 注入實例之 Set-Cookie
     // Cookie 名之複雜度與 B-12 之無聲失敗風險；而 US 兩項逐字要求（安全屬性、
     // 限制用戶端讀取）已由 `Secure` ＋ `HttpOnly` 完整滿足。
     //
-    // 本格之機械價值：若日後有人把 `SESSION_COOKIE_NAME` 之預設改成
-    // `__Host-sid` 卻沒有同批處理「開發環境不套前綴」，此格必紅——B-12 之
-    // 無聲失敗（開發環境登入整體失效且無錯誤訊息）因而不可能靜默發生。
+    // 本格之機械價值與**其射程**（T7R SF-1 據實收斂）：若日後有人把
+    // `SESSION_COOKIE_NAME` 改成 `__Host-sid` 卻沒有同批處理「開發環境不套
+    // 前綴」，則**在測試所見之組態下必紅**（source 預設 ＋ 測試環境 env 兩
+    // 路）；**env 僅設於部署環境者不在射程**——`config/env.ts` :45 對該鍵無
+    // 任何格式驗證，此時本套件全綠而 B-12 之無聲失敗仍會在該環境發生。
+    // 若日後採前綴，須於 `config/env.ts` 加格式守門（T8 面）。
     const envSource = stripComments(fs.readFileSync(path.join(SRC_ROOT, "config/env.ts"), "utf8"));
     const defaultMatch = envSource.match(/SESSION_COOKIE_NAME[^\n]*default\(\s*"([^"]*)"\s*\)/);
     expect(defaultMatch, "env schema 必須有 SESSION_COOKIE_NAME 之預設值").not.toBeNull();
