@@ -64,7 +64,18 @@
  * ---------------------------------------------------------------------------
  * T3 即審已查明：**現行寫入路徑下，`status=TEMP` 的附件其 `refType`／`refId`
  * 恆為 `null`**（上傳時不帶 ref；detach 時 `detachFieldSet` 一併清空並重設
- * `createdAt`；dev DB 零反例）。因此**日常實際生效的判準只有兩條**：
+ * `createdAt`）。
+ *
+ * **證據等級之正名（PHASE-011-T4R-DOC／NF-1）**：此結論的**決定性證據是靜態
+ * 查證**——`backend/src` 全樹之 `status: "TEMP"` 寫入站點逐處實讀（恰二處：
+ * `upload-service.ts` 之建立、`lifecycle-service.ts` 之 `detachFieldSet`），兩處
+ * 皆不留 ref。資料快照**僅為佐證**，且該快照取自**測試庫 `app_test`**
+ * （`backend/.env` 之 `DATABASE_URL` 所指，t1-pg:55432），**不是** compose 的
+ * dev DB `oilexpense`——前一輪 Handoff 與本檔原註解把它寫成「dev DB」，屬記載
+ * 失準，已正名。實質判斷不受影響（靜態查證與資料庫身分無關），但引用時必須
+ * 說對是哪個庫。
+ *
+ * 因此**日常實際生效的判準只有兩條**：
  *
  *     status = TEMP  ∧  now − createdAt  嚴格大於  TTL
  *
@@ -356,8 +367,18 @@ const CLEANUP_NUMERIC_ENV_KEYS = ["ATTACHMENT_TEMP_TTL_HOURS", "ATTACHMENT_CLEAN
 const ENV_VALIDATION_FAILED = "ENV_VALIDATION_FAILED";
 
 /**
- * 回傳無效之數值型 env **鍵名**（不含值）。未設或空字串視為「未設」，交給
- * schema 的預設值處理，不算無效。
+ * 回傳無效之數值型 env **鍵名**（不含值）。
+ *
+ * **未設（`undefined`）** 者本函式回報為有效——它會落到 schema 的 `.default()`。
+ *
+ * **空字串／全空白之實際行為（PHASE-011-T4R-DOC／NF-2 勘誤）**：本函式**放行**
+ * 它（下方 `raw.trim() === ""` 分支），但**它並不會拿到預設值**——`z.coerce.number()`
+ * 把 `""`／`"  "` 轉成 `0`，`.positive()` 隨即拒絕（實測：`""` 與 `"  "` 皆
+ * REJECTED，只有 `undefined` 才回 `500`）。故空字串最終仍**硬失敗**，只是走到
+ * 下游 `parseEnv` 的 catch，日誌是通用的 `ENV_VALIDATION_FAILED` 而非具名。
+ * fail-closed 的方向正確（不可逆刪除不會因空字串而用預設值偷跑），僅「是哪個
+ * 變數」的解析度較低；本檔原註解宣稱「交給 schema 預設值處理」是**錯的**，已更正。
+ * 一致性守門（讓空字串也具名）已交 T8 順帶處理，本輪不動行為。
  */
 function invalidNumericEnvKeys(env: Record<string, string | undefined>): string[] {
   return CLEANUP_NUMERIC_ENV_KEYS.filter((key) => {

@@ -76,10 +76,16 @@
  *      `vehiclePrice`／`usefulLifeYears`／`effectiveFrom`／`before`／`after`／
  *      `basisNote`——**無任何一處寫入 attachment id**（附件 id 從不進入稽核；
  *      `targetLabel` 亦僅為 `loginName`／`loginName#applicationId` 形式）。
- *   ② **dev DB jsonb 抽查佐證**（Packet 授權之佐證手段）：dev 資料庫 136 筆
- *      `AuditLog` × 97 筆 `Attachment`，以 `summary::text` 對全部現存 attachment
- *      id 逐一比對，命中數 **0**；抽出之 `summary` 頂層鍵集合亦與 ① 相符、
- *      零附件相關鍵。
+ *   ② **jsonb 抽查佐證**（Packet 授權之佐證手段）：**測試庫 `app_test`**
+ *      （`backend/.env` 之 `DATABASE_URL` 所指，t1-pg:55432）136 筆 `AuditLog`
+ *      × 97 筆 `Attachment`，以 `summary::text` 對全部現存 attachment id 逐一
+ *      比對，命中數 **0**；抽出之 `summary` 頂層鍵集合亦與 ① 相符、零附件相關鍵。
+ *
+ * **證據等級（PHASE-011-T4R-DOC／NF-1 正名）**：① 之**靜態全站點查證才是決定性
+ * 證據**，② 之資料快照僅為佐證。且該快照取自**測試庫 `app_test`**，**不是**
+ * compose 的 dev DB `oilexpense`（後者實為 8 筆 `AuditLog`／1 筆 `Attachment`／
+ * 0 筆 TEMP）——T3 與 T4 兩輪原記為「dev DB」，屬記載失準，於此正名。實質判斷
+ * 不受影響（靜態查證與資料庫身分無關），但人工 Gate 引用數字時必須說對是哪個庫。
  * 故依 AC-03(c) 後半段，本檔以**負向記載型 `it`** 明示「本判定刻意不含稽核面」
  * 並載明理由（沿 `phase10-error-handler-leak.test.ts` 之「已知不可及」記載型
  * 格），另附一則**機械背書**：稽核寫入站點清單一旦變動（新增站點）即紅，
@@ -830,8 +836,9 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
       //   · 報表面：`Report`／`VoidedReportFile` 零 `attachmentId` 欄位（PDF 內嵌
       //     位元組而非引用）——已由本 describe 之 (b) 交叉覆核③ 機械背書；
       //   · 稽核面：`AuditLog.summary` 之 17 處組裝站點逐處實讀，無任一處寫入
-      //     attachment id；dev DB 136 筆 × 97 附件之 jsonb 抽查命中 0（檔頭
-      //     「D4 之條件式升級授權實查結果」段有完整證據）。
+      //     attachment id（決定性證據）；**測試庫 `app_test`**（非 compose 之
+      //     dev DB `oilexpense`——T4R-DOC／NF-1 正名）136 筆 × 97 附件之 jsonb
+      //     抽查命中 0，屬佐證（檔頭「D4 之條件式升級授權實查結果」段有完整證據）。
       // 故 D4 之條件式升級**未觸發**，判定維持 (a)：不查稽核面。
       // 若日後有人讓 attachment id 進入 `summary`，下一則斷言（站點清單）會先紅。
       const auditSources = ATTACHMENT_REFERENCE_SOURCES.filter((s) => s.key.includes("AUDIT"));
@@ -1086,7 +1093,10 @@ describeWithDb("PHASE-011-T3 — 附件清理之引用判定與 dry-run（AC-03�
 // ---------------------------------------------------------------------------
 // T3 即審已查明：**現行寫入路徑下，`status=TEMP` 之附件其 `refType`／`refId`
 // 恆為 `null`**（上傳不帶 ref；`detachFieldSet` 於 detach 時一併清空並重設
-// `createdAt`；dev DB 零反例）。因此**今日實際生效之清理判準只有**：
+// `createdAt`）。**決定性證據為靜態查證**——`status: "TEMP"` 之寫入站點恰二處，
+// 兩處皆不留 ref；資料快照僅為佐證，且取自**測試庫 `app_test`** 而非 compose 之
+// dev DB `oilexpense`（T4R-DOC／NF-1 正名，詳見本檔檔頭 ② 段）。
+// 因此**今日實際生效之清理判準只有**：
 //
 //        status = TEMP  ∧  now − createdAt  嚴格大於  TTL
 //
