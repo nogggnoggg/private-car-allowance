@@ -47,6 +47,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -454,6 +455,20 @@ function envExampleKeys(): string[] {
   return keys;
 }
 
+/**
+ * **轉發例外**（T8R 即審 SF-1）：`.env.example` 列了、屬於 env schema、但**刻意
+ * 不由 compose 轉發**的鍵。每一筆都必須說明「為什麼部署者在 `.env` 設它是合理
+ * 地無效的」。
+ *
+ * **今日為空集**，而且空集才是正確的狀態：範本裡的每一個 schema 鍵，compose
+ * 都真的把它交進容器。若日後有人以「這個鍵只在本機開發用」為由不轉發，他必須
+ * 在這裡具名並寫下理由——而不是讓範本繼續做出 compose 不兌現的承諾。
+ */
+const COMPOSE_FORWARDING_EXCEPTIONS: ReadonlyArray<{
+  readonly key: string;
+  readonly reason: string;
+}> = [];
+
 describe("PHASE-011-T8 — AC-11(e): docker-compose 與 env 之三向一致性", () => {
   it("compose backend 之 environment 鍵集非空（解析器自身之活性檢查）", () => {
     expect(composeBackendEnvKeys(COMPOSE_SOURCE).length).toBeGreaterThan(5);
@@ -477,6 +492,32 @@ describe("PHASE-011-T8 — AC-11(e): docker-compose 與 env 之三向一致性",
     expect(missing).toEqual([]);
   });
 
+  // ── T8R 即審 SF-1：消滅「假可調性」 ────────────────────────────────────
+  //
+  // T8 首版把四個 session／lockout 鍵補進 `.env.example` 卻沒補進 compose，
+  // 造成一個比「範本沒寫」更糟的狀態：範本**明示**它可調，但 compose 不轉發
+  // ——沒有 `env_file`、Dockerfile 無 `ENV`、entrypoint 不 source `.env`、
+  // `.dockerignore` 排除 `.env`——部署者照著範本設 `LOGIN_MAX_FAILURES=3` 再
+  // `docker compose up`，容器裡**看不到這個變數**，鎖定門檻仍是 5，且**零錯誤
+  // 訊息**。範本沒寫至少會讓人去查原始碼；範本寫了而不生效只會讓人相信自己
+  // 調過了。本格把「範本承諾」與「compose 兌現」釘成同一件事。
+  it("SF-1：範本中屬 schema 之鍵，皆由 compose backend 轉發（例外須具名附理由）", () => {
+    const schemaKeys = new Set<string>(ENV_SCHEMA_KEYS);
+    const composeKeys = new Set(composeBackendEnvKeys(COMPOSE_SOURCE));
+    const notForwarded = envExampleKeys()
+      .filter((key) => schemaKeys.has(key) && !composeKeys.has(key))
+      .sort();
+    const excepted = COMPOSE_FORWARDING_EXCEPTIONS.map((e) => e.key).sort();
+    expect(notForwarded).toEqual(excepted);
+  });
+
+  it("SF-1：轉發例外清單逐筆有理由（今日為空集——空集本身即最強的狀態）", () => {
+    for (const entry of COMPOSE_FORWARDING_EXCEPTIONS) {
+      expect(entry.reason.length, entry.key).toBeGreaterThan(40);
+      expect(ENV_SCHEMA_KEYS, entry.key).toContain(entry.key);
+    }
+  });
+
   it("mutant：compose 少一個必要鍵 → ⊇ 斷言必紅", () => {
     const mutated = COMPOSE_SOURCE.split(/\r?\n/)
       .filter((line) => !/^ {6}REPORT_STORAGE_ROOT:/.test(line))
@@ -485,6 +526,26 @@ describe("PHASE-011-T8 — AC-11(e): docker-compose 與 env 之三向一致性",
     const composeKeys = new Set(composeBackendEnvKeys(mutated));
     const missing = PRODUCTION_REQUIRED_ENV_KEYS.filter((key) => !composeKeys.has(key));
     expect(missing).toEqual(["REPORT_STORAGE_ROOT"]);
+  });
+
+  it("mutant：compose 刪掉一個**非必要**新鍵（LOGIN_MAX_FAILURES）→ SF-1 格必紅", () => {
+    // 這一格證明 SF-1 的守門面**大於**「production 必要清單」那一格：
+    // `LOGIN_MAX_FAILURES` 有 schema 預設、不在必要清單內，上面的 ⊇ 斷言對它
+    // 完全無感——它正是 T8 首版漏掉四個鍵而全綠的原因。
+    const mutated = COMPOSE_SOURCE.split(/\r?\n/)
+      .filter((line) => !/^ {6}LOGIN_MAX_FAILURES:/.test(line))
+      .join("\n");
+    expect(mutated).not.toBe(COMPOSE_SOURCE);
+
+    const schemaKeys = new Set<string>(ENV_SCHEMA_KEYS);
+    const composeKeys = new Set(composeBackendEnvKeys(mutated));
+    const notForwarded = envExampleKeys()
+      .filter((key) => schemaKeys.has(key) && !composeKeys.has(key))
+      .sort();
+    expect(notForwarded).toEqual(["LOGIN_MAX_FAILURES"]);
+
+    // 對照：必要清單那一格在同一個突變下仍是綠的（故非重複斷言）。
+    expect(PRODUCTION_REQUIRED_ENV_KEYS.filter((key) => !composeKeys.has(key))).toEqual([]);
   });
 
   it("還原自證：docker-compose.yml 磁碟位元組全等", () => {
@@ -525,14 +586,48 @@ const SECRET_PATTERNS: readonly SecretPattern[] = [
   },
 ];
 
-/** AC-12(a) 逐字之受控範圍，另加 `.env.example`（AC-12(b)／AC-13(c) 明文要求其入掃描）。 */
+/** AC-12(a) 逐字之受控範圍（目錄面）。 */
 const SCAN_DIRS = ["backend/src", "frontend/src", "e2e", ".github/workflows", "docs"];
-const SCAN_FILES = [
-  "docker-compose.yml",
+
+/**
+ * AC-12(a) 之**glob 型**射程逐字為 `docker-compose*.yml` 與 `*\/Dockerfile`。
+ *
+ * **T8R 即審 SF-2 之修法**：T8 首版把它們寫死成三個檔名。那是**漏報方向**的
+ * 缺陷，且恰好破了本檔自陳的紀律（「漏報才是不可接受的方向」）——新增一個
+ * `docker-compose.override.yml`（compose 的標準覆寫檔，正是放環境專屬設定與
+ * 憑證的地方）或一個新服務的 `*\/Dockerfile`，會**靜默**落在射程外，掃描照樣
+ * 全綠。改為**實查 glob** 之後，新增同型檔會立刻進入掃描（而非等人記得補），
+ * 同時下方 `射程完整性` 一格會紅，逼維護者確認它是該納入還是該具名豁免。
+ */
+function discoverGlobScanFiles(root: string): string[] {
+  const found: string[] = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (entry.isFile() && /^docker-compose.*\.ya?ml$/.test(entry.name)) {
+      found.push(entry.name);
+      continue;
+    }
+    if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) {
+      // `*/Dockerfile` 為**一層**子目錄（AC-12(a) 逐字之 glob 深度），不遞迴。
+      if (fs.existsSync(path.join(root, entry.name, "Dockerfile"))) {
+        found.push(`${entry.name}/Dockerfile`);
+      }
+    }
+  }
+  return found.sort();
+}
+
+/**
+ * 今日 glob 實查應得之集合。這份常數**不參與掃描**（掃描吃的是實查結果），
+ * 它只負責讓「射程長出新成員」這件事被看見。
+ */
+const DECLARED_GLOB_SCAN_FILES = [
   "backend/Dockerfile",
+  "docker-compose.yml",
   "frontend/Dockerfile",
-  ".env.example",
 ];
+
+/** glob 實查 ＋ `.env.example`（AC-12(b)／AC-13(c) 明文要求其入掃描，非 glob 來源）。 */
+const SCAN_FILES = [...discoverGlobScanFiles(REPO_ROOT), ".env.example"];
 
 type SecretHit = { readonly file: string; readonly patternId: string; readonly literal: string };
 
@@ -692,6 +787,48 @@ describe("PHASE-011-T8 — AC-12: 零寫死正式敏感資訊", () => {
     const actual = [...new Set(SECRET_HITS.map(hitKey))].sort();
     const expected = [...new Set(SECRET_SCAN_WHITELIST.map(hitKey))].sort();
     expect(actual).toEqual(expected);
+  });
+
+  // ── T8R 即審 SF-2：射程完整性（防靜默漏掃） ──────────────────────────
+  it("(a) 射程完整性：glob 實查之檔案集合恰等於宣告清單（新增同型檔必紅）", () => {
+    expect(discoverGlobScanFiles(REPO_ROOT)).toEqual(DECLARED_GLOB_SCAN_FILES);
+  });
+
+  it("(a) 射程完整性：實際掃描目標確實包含 glob 實查結果 ＋ .env.example", () => {
+    expect(SCAN_FILES).toEqual([...DECLARED_GLOB_SCAN_FILES, ".env.example"]);
+  });
+
+  it("(a) 射程完整性之鑑別力：override 檔與新服務 Dockerfile 皆會被 glob 拾起", () => {
+    // 在 **os.tmpdir() 之下**建合成目錄樹做實驗，刻意不在倉庫內建臨時檔——
+    // 平行測試或中途失敗都可能把一個假的 `docker-compose.override.yml` 留在
+    // 工作樹裡，那正是本檔其他突變格一律走「記憶體 ＋ 位元組還原」的理由。
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "t8r-globscope-"));
+    try {
+      fs.writeFileSync(path.join(fixture, "docker-compose.yml"), "services: {}\n");
+      fs.writeFileSync(path.join(fixture, "docker-compose.override.yml"), "services: {}\n");
+      fs.writeFileSync(path.join(fixture, "docker-compose.prod.yaml"), "services: {}\n");
+      fs.mkdirSync(path.join(fixture, "worker"));
+      fs.writeFileSync(path.join(fixture, "worker/Dockerfile"), "FROM node:20\n");
+      fs.mkdirSync(path.join(fixture, "node_modules"));
+      fs.writeFileSync(path.join(fixture, "node_modules/Dockerfile"), "FROM node:20\n");
+
+      expect(discoverGlobScanFiles(fixture)).toEqual([
+        "docker-compose.override.yml",
+        "docker-compose.prod.yaml",
+        "docker-compose.yml",
+        "worker/Dockerfile",
+      ]);
+      // 三項一起證明：①`*.override.yml`／`.yaml` 副檔名兩式都拾得起
+      // ②新服務目錄之 Dockerfile 拾得起 ③`node_modules` 之 Dockerfile 不誤入
+      // （SKIP_DIRS 生效——否則相依套件裡的 Dockerfile 會把射程灌爆）。
+      expect(discoverGlobScanFiles(fixture)).not.toContain("node_modules/Dockerfile");
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("(a) 射程完整性之還原自證：實驗後倉庫根零殘留同型檔", () => {
+    expect(discoverGlobScanFiles(REPO_ROOT)).toEqual(DECLARED_GLOB_SCAN_FILES);
   });
 
   it("(b) 白名單逐筆有理由，且理由長度足以說明『為何它不是真憑證』", () => {
