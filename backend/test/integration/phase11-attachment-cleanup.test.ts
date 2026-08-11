@@ -1724,9 +1724,16 @@ describeWithDb("PHASE-011-T4 — 附件清理之執行、批次、觸發與可�
       });
 
       // ── A：守門缺席 ────────────────────────────────────────────────────
+      // 【T4R／SF-3】原寫法先 `findMany()` 全表再依 id 刪——雖不是字面上的
+      // `deleteMany({})`，實質等價，違反本檔檔頭「清理一律以本檔前綴／id 精確
+      // 比對」之紀律；且在 `TEST_DB_ISOLATION=off` 回退模式（INFRA-001 明文保留
+      // 之一鍵回滾，該分支不註冊 TRUNCATE）下會跨檔誤刪其他測試檔的附件。
+      // 改為只刪本格自己播的三筆——鑑別力不減反增：被刪的必定是這三筆，
+      // 不會被「反正全表都刪光了」稀釋。
       const a = await seedProtectedTrio("guardless");
-      const everything = await prisma.attachment.findMany({ select: { id: true } });
-      await prisma.attachment.deleteMany({ where: { id: { in: everything.map((r) => r.id) } } });
+      await prisma.attachment.deleteMany({
+        where: { id: { in: [a.linked.id, a.referenced.id, a.boundary.id] } },
+      });
       expect(await rowExists(a.linked.id)).toBe(false);
       expect(await rowExists(a.referenced.id)).toBe(false);
       expect(await rowExists(a.boundary.id)).toBe(false);
@@ -2082,6 +2089,108 @@ describeWithDb("PHASE-011-T4 — 附件清理之執行、批次、觸發與可�
       }
       expect(listStorageKeys(storageRoot)).toEqual([]);
     });
+
+    // =======================================================================
+    // 條件式刪除之三條件（T4R／SF-1）
+    // =======================================================================
+    //
+    // `deleteCandidate` 的 `where: { id, status:"TEMP", createdAt }` 有三個條件，
+    // 檔頭也鄭重宣稱它們各自擋住什麼；但即審實證：拔掉 `status`（S1）、拔掉
+    // `createdAt`（S2）、乃至只留 `id`（S10），原 59 格**全綠存活**——三道被寫在
+    // 註解裡的安全機制，實際上沒有任何一格守著（T3R SF-1「宣稱有、測試無」之同型
+    // 復發）。以下兩格把「判定之後、刪除之前」這段時間差關起來：用 storage spy 的
+    // `onDelete` 當屏障，在**第一筆已進刪除迴圈**時去改動**後面那筆**的狀態，
+    // 模擬另一個請求在這段空窗插進來。
+
+    /**
+     * 播三筆逾期候選，並在執行器刪掉第一筆（storage 階段）時對第三筆做 `mutate`。
+     * 回傳三筆與本次執行結果。
+     */
+    async function runWithMidFlightMutation(
+      tag: string,
+      mutate: (victimId: string) => Promise<void>
+    ) {
+      const first = await seedAttachment({
+        key: `${tag}-1`,
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+      const second = await seedAttachment({
+        key: `${tag}-2`,
+        status: "TEMP",
+        createdAt: hoursAgo(59),
+      });
+      const victim = await seedAttachment({
+        key: `${tag}-3`,
+        status: "TEMP",
+        createdAt: hoursAgo(58),
+      });
+
+      let opened = false;
+      const barrier = makeSpyStorage(realStorage, {
+        onDelete: async () => {
+          if (opened) return;
+          opened = true;
+          await mutate(victim.id);
+        },
+      });
+
+      const { result } = await runReal(barrier.storage);
+      return { first, second, victim, summary: result.summary };
+    }
+
+    it("(e)／SF-1: 判定後被 link 到容器者不刪（條件式刪除之 status 條件）", async () => {
+      const { first, second, victim, summary } = await runWithMidFlightMutation(
+        "toctou-link",
+        async (victimId) => {
+          // 另一個請求在空窗期把它 link 到容器上（`linkAttachment` 之寫入形狀）。
+          await prisma.attachment.update({
+            where: { id: victimId },
+            data: {
+              status: "LINKED",
+              refType: "MAINTENANCE",
+              refId: maintenanceApplicationId,
+              linkedAt: NOW,
+            },
+          });
+        }
+      );
+
+      expect(summary.candidateCount).toBe(3);
+      expect(summary.deletedCount).toBe(2); // 前兩筆照刪
+      expect(summary.skippedCount).toBe(1); // 第三筆落空
+      expect(summary.failedCount).toBe(0);
+      expect(await rowExists(first.id)).toBe(false);
+      expect(await rowExists(second.id)).toBe(false);
+      // 關鍵：它已經是別人的附件了，不能因為「判定當時它還是 TEMP」就刪掉。
+      expect(await rowExists(victim.id)).toBe(true);
+      expect(await realStorage.exists(victim.storageKey)).toBe(true);
+    });
+
+    it("(e)／SF-1: 判定後 TTL 基準被重設者不刪（條件式刪除之 createdAt 條件）", async () => {
+      const { first, second, victim, summary } = await runWithMidFlightMutation(
+        "toctou-detach",
+        async (victimId) => {
+          // detach（LINKED → TEMP）會把 `createdAt` 重設為當下＝TTL 基準重新起算
+          // （`lifecycle-service.ts` 之 `detachFieldSet`）。此時它已「不逾期」，
+          // 但我們手上的候選是舊版那一列。
+          await prisma.attachment.update({
+            where: { id: victimId },
+            data: { createdAt: NOW },
+          });
+        }
+      );
+
+      expect(summary.candidateCount).toBe(3);
+      expect(summary.deletedCount).toBe(2);
+      expect(summary.skippedCount).toBe(1);
+      expect(summary.failedCount).toBe(0);
+      expect(await rowExists(first.id)).toBe(false);
+      expect(await rowExists(second.id)).toBe(false);
+      // 關鍵：TTL 基準已重新起算，這筆現在是「新的暫存檔」，不得刪。
+      expect(await rowExists(victim.id)).toBe(true);
+      expect(await realStorage.exists(victim.storageKey)).toBe(true);
+    });
   });
 
   // =========================================================================
@@ -2188,6 +2297,139 @@ describeWithDb("PHASE-011-T4 — 附件清理之執行、批次、觸發與可�
       expect(code).toBe(1);
       expect(collector.events).toEqual([
         { stage: "config-error", detail: "ATTACHMENT_STORAGE_ROOT" },
+      ]);
+      expect(await rowExists(seeded.id)).toBe(true);
+    });
+
+    // =======================================================================
+    // env → 執行器之接線（T4R／SF-2）
+    // =======================================================================
+    //
+    // 即審實證：把 CLI 內的 `config.ATTACHMENT_TEMP_TTL_HOURS`／
+    // `ATTACHMENT_CLEANUP_BATCH_LIMIT` 換成硬編的 24／500（S7），原 59 格全綠——
+    // 因為 `cliEnv()` 給的就是與預設相同的值，結構上分辨不出「有沒有真的讀 env」。
+    // AC-06(b) 逐字要求「批次上限**可由 env 設定**」，那就得用**非預設值**來證。
+
+    it("SF-2: ATTACHMENT_CLEANUP_BATCH_LIMIT 之非預設值確實傳達到執行器", async () => {
+      await seedAttachment({ key: "wire-limit-1", status: "TEMP", createdAt: hoursAgo(60) });
+      await seedAttachment({ key: "wire-limit-2", status: "TEMP", createdAt: hoursAgo(59) });
+      const third = await seedAttachment({
+        key: "wire-limit-3",
+        status: "TEMP",
+        createdAt: hoursAgo(58),
+      });
+      const collector = makeLogCollector();
+
+      const code = await runCleanupCli([], cliEnv({ ATTACHMENT_CLEANUP_BATCH_LIMIT: "2" }), {
+        prisma,
+        storage: realStorage,
+        logger: collector.logger,
+        now: NOW,
+      });
+
+      expect(code).toBe(0);
+      const summary = collector.events.find((e) => e.stage === "summary")?.summary;
+      // 硬編 500 會讓 scanned/candidate/deleted 皆為 3、hasMore 為 false。
+      expect(summary?.scannedCount).toBe(2);
+      expect(summary?.candidateCount).toBe(2);
+      expect(summary?.deletedCount).toBe(2);
+      expect(summary?.hasMore).toBe(true);
+      expect(await rowExists(third.id)).toBe(true); // 最新的一筆留待下次
+    });
+
+    it("SF-2: ATTACHMENT_TEMP_TTL_HOURS 之非預設值確實傳達到執行器", async () => {
+      const withinLongerTtl = await seedAttachment({
+        key: "wire-ttl-30h",
+        status: "TEMP",
+        createdAt: hoursAgo(30), // 逾 24h 但未逾 48h
+      });
+      const beyondLongerTtl = await seedAttachment({
+        key: "wire-ttl-60h",
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+      const collector = makeLogCollector();
+
+      const code = await runCleanupCli([], cliEnv({ ATTACHMENT_TEMP_TTL_HOURS: "48" }), {
+        prisma,
+        storage: realStorage,
+        logger: collector.logger,
+        now: NOW,
+      });
+
+      expect(code).toBe(0);
+      const summary = collector.events.find((e) => e.stage === "summary")?.summary;
+      // 硬編 24 會讓兩筆都成為候選並被刪。
+      expect(summary?.candidateCount).toBe(1);
+      expect(summary?.deletedCount).toBe(1);
+      expect(await rowExists(beyondLongerTtl.id)).toBe(false);
+      expect(await rowExists(withinLongerTtl.id)).toBe(true);
+    });
+
+    // =======================================================================
+    // env 驗證失敗一律硬失敗（T4R／MF-1）
+    // =======================================================================
+
+    it("MF-1: 無關變數無效（PORT）→ 非零結束碼、零刪除，不得靜默回退預設值", async () => {
+      // 即審 probe：改法前 `getEnvOrTestDefaults` 會吞掉這個錯、回退 TTL=24，
+      // 然後**照樣執行不可逆刪除**，零訊息零非零結束碼。
+      const seeded = await seedAttachment({
+        key: "cli-badenv",
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+      const collector = makeLogCollector();
+
+      const code = await runCleanupCli([], cliEnv({ PORT: "not-a-number" }), {
+        prisma,
+        storage: realStorage,
+        logger: collector.logger,
+        now: NOW,
+      });
+
+      expect(code).toBe(1);
+      expect(collector.events).toEqual([
+        { stage: "config-error", detail: "ENV_VALIDATION_FAILED" },
+      ]);
+      expect(await rowExists(seeded.id)).toBe(true);
+      expect(await realStorage.exists(seeded.storageKey)).toBe(true);
+    });
+
+    it("MF-1: 批次上限非法值（0／負數／非整數）→ 具名 config-error、零刪除", async () => {
+      const seeded = await seedAttachment({
+        key: "cli-badlimit",
+        status: "TEMP",
+        createdAt: hoursAgo(60),
+      });
+
+      for (const bad of ["0", "-1", "1.5", "abc"]) {
+        const collector = makeLogCollector();
+        const code = await runCleanupCli([], cliEnv({ ATTACHMENT_CLEANUP_BATCH_LIMIT: bad }), {
+          prisma,
+          storage: realStorage,
+          logger: collector.logger,
+          now: NOW,
+        });
+        expect(code).toBe(1);
+        // 具名到變數（不含值）——Spec §8.2 之 `int > 0` 在唯一消費端確實生效。
+        expect(collector.events).toEqual([
+          { stage: "config-error", detail: "ATTACHMENT_CLEANUP_BATCH_LIMIT" },
+        ]);
+        expect(JSON.stringify(collector.events)).not.toContain(bad === "abc" ? "abc" : `"${bad}"`);
+        expect(await rowExists(seeded.id)).toBe(true);
+      }
+
+      // TTL 亦同（同一具名檢查涵蓋兩鍵）
+      const collector = makeLogCollector();
+      const code = await runCleanupCli([], cliEnv({ ATTACHMENT_TEMP_TTL_HOURS: "0" }), {
+        prisma,
+        storage: realStorage,
+        logger: collector.logger,
+        now: NOW,
+      });
+      expect(code).toBe(1);
+      expect(collector.events).toEqual([
+        { stage: "config-error", detail: "ATTACHMENT_TEMP_TTL_HOURS" },
       ]);
       expect(await rowExists(seeded.id)).toBe(true);
     });

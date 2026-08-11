@@ -80,7 +80,8 @@
  */
 
 import { PrismaClient } from "@prisma/client";
-import { getEnvOrTestDefaults } from "../config/env.js";
+import type { AppConfig } from "../config/env.js";
+import { parseEnv } from "../config/env.js";
 import { errorLabel } from "../platform/error-label.js";
 import { LocalVolumeStorage } from "../storage/index.js";
 import type { Storage } from "../storage/index.js";
@@ -342,6 +343,31 @@ export const CLEANUP_EXIT_FAILURE = 1;
 /** 全數成功（含零候選、含 dry-run）之結束碼。 */
 export const CLEANUP_EXIT_OK = 0;
 
+/**
+ * 本 CLI 消費之數值型 env 鍵。規則與 `config/env.ts` 之 schema 同義
+ * （`int > 0`），此處另做一次**具名**檢查的唯一理由，是要在拒絕時能報出
+ * **是哪一個變數**——`parseEnv` 只以 `Error` 拋出（訊息依契約只含名稱不含值），
+ * 而本檔受兩具全樹掃描器約束**不得讀 `err.message`**（PHASE-010-T9／AC-21(b)：
+ * 具名日誌零內容標籤；把本檔加進掃描器白名單不在本輪授權範圍）。
+ */
+const CLEANUP_NUMERIC_ENV_KEYS = ["ATTACHMENT_TEMP_TTL_HOURS", "ATTACHMENT_CLEANUP_BATCH_LIMIT"];
+
+/** `parseEnv` 失敗但無法逐一具名時之標籤（值永不外洩，連原因都不記）。 */
+const ENV_VALIDATION_FAILED = "ENV_VALIDATION_FAILED";
+
+/**
+ * 回傳無效之數值型 env **鍵名**（不含值）。未設或空字串視為「未設」，交給
+ * schema 的預設值處理，不算無效。
+ */
+function invalidNumericEnvKeys(env: Record<string, string | undefined>): string[] {
+  return CLEANUP_NUMERIC_ENV_KEYS.filter((key) => {
+    const raw = env[key];
+    if (raw === undefined || raw.trim() === "") return false;
+    const value = Number(raw);
+    return !Number.isInteger(value) || value <= 0;
+  });
+}
+
 /** 測試用注入點；正式執行一律省略（自行建立並持有 PrismaClient／Storage）。 */
 export interface CleanupCliDeps {
   readonly prisma?: PrismaTxLike;
@@ -359,6 +385,16 @@ export interface CleanupCliDeps {
  *
  * 旗標恰一個：`--dry-run`（唯讀預覽）。未知旗標一律拒絕並以非零結束——對一個
  * 不可逆刪除工具，「看不懂的參數」必須是硬失敗，不能猜。
+ *
+ * **env 亦然（PHASE-011-T4R／MF-1）**：本函式用 `parseEnv`，**不用**
+ * `getEnvOrTestDefaults`。後者在驗證失敗時會逐欄硬編回退（TTL=24／limit=500）並
+ * 靜默繼續——即審 probe 實證：env 中任一**無關**變數無效（如 `PORT="not-a-number"`）
+ * 就會讓 `parseEnv` 拋出、回退預設值、然後**照樣執行不可逆刪除**，零訊息零非零
+ * 結束碼；且 `ATTACHMENT_CLEANUP_BATCH_LIMIT="0"` 會被吞掉換成 500，使 Spec §8.2
+ * 之 `int > 0` 驗證在唯一消費端從不生效。這與上一段「看不懂的參數必須硬失敗」
+ * 自相矛盾。改法：**任何 env 驗證失敗一律 `config-error` ＋ 非零結束碼、零刪除**。
+ * （`getEnvOrTestDefaults` 本身不動——其回退語意對伺服器與測試環境仍是刻意的，
+ * 只是不適用於不可逆刪除工具。）
  */
 export async function runCleanupCli(
   argv: readonly string[],
@@ -377,7 +413,22 @@ export async function runCleanupCli(
     return CLEANUP_EXIT_FAILURE;
   }
 
-  const config = getEnvOrTestDefaults(env);
+  // 先做具名檢查（能報出是哪個變數），再讓 `parseEnv` 做全域 fail-closed 背書。
+  const invalidKeys = invalidNumericEnvKeys(env);
+  if (invalidKeys.length > 0) {
+    logger.log({ stage: "config-error", detail: invalidKeys.join(",") });
+    return CLEANUP_EXIT_FAILURE;
+  }
+
+  let config: AppConfig;
+  try {
+    config = parseEnv(env);
+  } catch {
+    // 刻意不記錄例外內容：`parseEnv` 的訊息依契約只含變數名，但本檔受
+    // AC-21(b) 掃描器約束不得讀 `err.message`（見上方 JSDoc）。
+    logger.log({ stage: "config-error", detail: ENV_VALIDATION_FAILED });
+    return CLEANUP_EXIT_FAILURE;
+  }
   const storageRoot = config.ATTACHMENT_STORAGE_ROOT;
 
   // dry-run 不需要 storage（也刻意不建立一個）——唯讀模式手上沒有刪除工具。
