@@ -2,6 +2,15 @@
 
 State: ACTIVE
 
+> **PHASE-011（Docker／部署硬化與備份）開工記錄（2026-08-11，使用者授權「按照你的建議推薦」）**
+> - **★ 開工授權＋開局方向四點採納（人類 leonchih 2026-08-11；方向性採納，最終取捨仍在 Spec Gate）★**：①開局 Task＝測試決定性先行（PHASE-006 B-30 併發 503 縫隙收斂＋E2E 播種日單調性機械守門格）再進主軸②暫存清理排程先於備份（清理改變物件生命週期，備份定義於最終版圖；清理落地後回歸 AC-14(b)②——KNOWN_ISSUES §5 #13）③#16 帳號類稽核 fire-and-forget 可靠性＋#9 pino 日誌硬化建議納入④D-6 e2e 接入 typecheck（76 個既有型別錯誤）列條件 Task（方法論風險型，照 PHASE-010 T9/T10 模式）。
+> - §15 重錨定（Phase 開工第一步）：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令；治理變更權責歸管理協作 agent。治理四檔 **2026-08-11.1** 一致（本 session 啟動自檢已驗；新版四條款本 Phase 首次適用：§14 code-only 口徑／連動盤點機械檢查／AC↔映射回填常設條款／§19 跳過即審對帳承接）。Effort high ✓；模型 best 確認提醒已向使用者發出。
+> - branch：`phase-011` @ `b2e20e0`（自 main `834f022` 切出，已與 origin 同步）。基準線起點：後端 3542/前端 388/E2E 55（PHASE-010 終審實測，零 skip）；15 migrations。
+> - 範圍（PRD :523-543）：HTTPS/Cookie Secure、健康檢查完善、env/secrets 硬化、附件/PDF volume 持久化與分離部署驗證、24h 暫存清理排程（引用保護）、效能目標驗證（2s/3s/10s/20 併發）、備份腳本＋Runbook（DB/附件/PDF、保留 ≥14 天、異地）、還原驗證流程。PRD 初始 Task 概要 T1~T8（6 High：T1/T3/T4/T5/T7/T8）。US：NFR-US-01~07/11~15＋BE-US-25。Mock Gate 不觸發（無新業務 UI）；整合 Gate 必觸發（部署/健康檢查/備份還原流程）。Risk **High**。
+> - Packet 必讀（跨 Phase 核銷）：①KNOWN_ISSUES §5 PHASE-011 全 16 項（:96-114）＋D-4/D-5/D-6/D-7/D-9/D-10/D-11 表列②e2e 共享參數軸播種規約四條（PROJECT_STATE PHASE-010 節末列；「播種日單調性機械守門格」reviewer 評應排最上因唯此為機械強制）③PHASE-006 B-30 併發 503 flaky 登記（PR #19 合併批准時人類裁定接受、候選本期收斂）④PHASE-009 D2(a) 兌現義務（參數覆寫端點若落地必呼叫 parameterHasReferences——#14）。usage 預算帶：`docs/retrospective/PHASE-010-usage.md`。
+> - 流程：spec-writer 產 SPEC-011（DRAFT）→ **★人類 Spec Gate（停等；6 High 事前批准＋16 項處置逐項確認）★** → TDD → Review 照 §19 → 整合 Gate → Draft PR #20＋CI → 停等合併批准。
+> - **SPEC-011 派工中**（spec-writer，高推理層，背景執行）。
+
 > **PHASE-010（稽核檢視與回歸）開工記錄（2026-08-09，使用者指令「繼續」）**
 > - **★ PHASE-009 COMPLETED：PR #18 合併 main（merge `02a7d5f`，人類 leonchih 2026-08-09 06:00 UTC 批准；CI 三檢全綠——Lint/Typecheck/Frontend、Backend Build & Tests、Docker Build）★** Spec 轉 COMPLETED（狀態欄白名單回填）。**Phase 邊界常設判斷（大總管依授權記錄）**：整合 Gate 準備（同日合併前）已完成全量 dev DB 重置（DROP SCHEMA→15 migrations 重放→重播種）＋E2E 自舉 50/50 全綠＋容器 stack `down -v` 全新重建，且 merge 未引入任何新內容（main＝phase-009 尖端＋merge commit，內容全等）——判定該輪已滿足「合併後 DB 重置＋E2E 自舉」常設要求，**不重跑**；後續 session 重建 dev 環境沿 KNOWN_ISSUES O-2 之 `.env` 既有 STORAGE_ROOT。
 > - §15 重錨定（Phase 開工第一步）：大總管零程式修改（白名單僅 PROJECT_STATE／Spec 狀態欄與修訂紀錄／ADR／CHANGELOG／治理節／復盤與走查腳本治理產出物）；所有程式一律派 implementer；每份 Packet 含巢狀派工禁令；治理變更權責歸管理協作 agent。模型/effort 確認提醒：session 應為 best+high（請使用者確認）。
