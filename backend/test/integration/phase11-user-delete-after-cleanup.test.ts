@@ -26,7 +26,12 @@
  *     `stage: "deleted"` 日誌事件、以及 storage 位元組確實消失；
  *   ②**結構哨兵**：本檔 arrange／act／assert 全區（teardown 以外）零附件刪除
  *     呼叫、零 raw SQL 刪除——由 `FW4_TEARDOWN_SENTINEL` 之下方分界與一則自我
- *     掃描的 `it` 機械保證（見 `AC-07(b)／FW-4` 兩格）；
+ *     掃描的 `it` 承載（見 `AC-07(b)／FW-4` 兩格）。**射程據實揭露（T5 即審 AR-1）**：
+ *     它擋住的是**慣用寫法**（`prisma.attachment.delete*`／raw SQL）；
+ *     `prisma["attachment"]` 之動態索引與別名 delegate **可繞過**，即審已實測
+ *     （變異 A：繞哨兵 ＋ 直寫刪 → 僅 ①紅；變異 B：偽造執行器 → 僅 ②紅）。
+ *     **不補正則**——抬門檻不等於證明。真正的承重防線是 ① 之執行物證四面一致
+ *     ＋「`runCleanup` 呼叫點恰一處」，②③ 對該攻擊類與 ① 聯合完備；
  *   ③**時序對照**：同一名使用者、同一個端點，**清理前 409 → 清理後 200**
  *     （`preRelaxUploaderProbe` vs `relaxUploaderProbe`），與**逾期但清理未涵蓋
  *     → 仍 409 → 再跑一輪清理 → 200**（`lateProbe` vs `lateAfterSecondRunProbe`）。
@@ -48,8 +53,11 @@
  * `Attachment` 表為空（`beforeAll` 內以一則斷言當場確認，不當前提用），全部種子
  * 由本檔自播、`afterAll` 自清。爆炸半徑因此限於本 worker 自己的 schema。
  * **誠實揭露**：若以 `TEST_DB_ISOLATION=off` 回退（INFRA-001 之單鍵回退模式）
- * 跑測試，全表掃描的射程會與 T4 既有之 `runReal` 完全相同——此為 T4 已存在之
- * 性質，本檔未擴大，亦未縮小。
+ * 跑測試，全表掃描的射程與 T4 既有之 `runReal` 同型——此為 T4 已存在之性質，
+ * 本檔未擴大；且另有下方之全表歸零前提（`beforeAll` 內
+ * `expect(await prisma.attachment.count()).toBe(0)`）當 **fail-closed 閘門**，
+ * 而 T4 之 `runReal` 沒有這一道，故 off-mode 下本檔**實務上比 T4 更早中止**、
+ * 真刪射程嚴格窄於 T4（保守方向）〔T5 即審 AR-2 之更正：原句「亦未縮小」不精確〕。
  *
  * ---------------------------------------------------------------------------
  * 上游 FW-5（T3 即審）：種子形狀刻意合乎現行不變式
@@ -784,8 +792,13 @@ describeWithDb("PHASE-011-T5 — 清理落地後之 AD-US-04 拒刪守門回歸�
         const user = otherHistoryUsers.get(testCase.key) as CreatedUser;
         const probe = otherHistoryProbes.get(testCase.key) as DeleteProbe;
 
-        // 鑑別力前提：該人名下之附件確已被清理歸零，故 409 只能來自
-        // `${testCase.guardColumn}` 這一條路徑，而不是殘留的附件列。
+        // 鑑別力前提：該人名下之附件確已被清理歸零，故本格之 409 不是殘留的
+        // 附件列造成的。**不可由本格推論 409 恰來自 `${testCase.guardColumn}`**：
+        // `admin/routes.ts` :479-493 之 P2003 兜底把 FK RESTRICT 違反轉譯為逐字
+        // 相同的 409（該處生產註解明載「兩條路徑對外不可區辨」），T5 即審實測
+        // 六條守門 count 全部中性化本檔仍 14/14 全綠。欄位級歸因由
+        // `phase10-user-delete-regression.test.ts` 之 AC-14(a)／(d) 承擔，
+        // 本檔不重覆。
         await expect(attachmentCountFor(user.id)).resolves.toBe(0);
 
         expect(probe.statusCode).toBe(409);
