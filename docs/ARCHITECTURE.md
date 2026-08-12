@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：**2026-08-10**（最後同步至 **PHASE-010（稽核檢視與回歸）**已落地現實；DOC-SYNC `PHASE-010-DOCSYNC`——§3 `audit`／`platform` 兩列落點更新、§4.8 稽核檢視與兩種寫入交易語意、§4.9 錯誤組裝點唯一與兜底不記原文、**新增 §4.13 使用者刪除守門與 FK 對應**。前次：2026-08-09 `PHASE-009-DOC-SYNC-B`；再前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
+- 更新日期：**2026-08-12**（最後同步至 **PHASE-011（部署硬化與備份）**已落地現實；DOC-SYNC `PHASE-011-DOCSYNC`——**新增 §4.14 PHASE-011 之維運元件**（清理執行器、備份／還原、持久化與效能驗證腳本、日誌 err serializer 全域防線、e2e 型別防線、test/support 共用測試基建）。前次：2026-08-10 `PHASE-010-DOCSYNC`——§3 `audit`／`platform` 兩列落點更新、§4.8 稽核檢視與兩種寫入交易語意、§4.9 錯誤組裝點唯一與兜底不記原文、新增 §4.13 使用者刪除守門與 FK 對應；再前次：2026-08-09 `PHASE-009-DOC-SYNC-B`）
 - 上游：`userstory.md`、`docs/PRD.md`、`CLAUDE.md`（技術棧已由人類確認）
 - 說明：本文件為概念層架構草案，不含實際套件版本細節、API 完整路徑、DB 欄位與索引、部署程式碼。這些於各 Phase Spec 與實作 Task 定案。
 
@@ -245,6 +245,18 @@
 - **兩條刻意不納之語意（勿誤讀為漏列）**：`Session.userId` 為 CASCADE，本就不阻擋刪除；`AuditLog.targetId` 為 SET NULL——**被操作過的人可刪、操作過的人不可刪**，刪除後該欄轉 `null` 而 `targetLabel` 仍留 `loginName` 快照，正是 AD-US-04③「留下不含敏感資料的管理操作紀錄」之既有設計。
 - **對應關係不靠註解維持**：`phase10-user-delete-regression.test.ts` 以 `information_schema` 列舉 DB 實際 FK 與本宣告做**欄位級（「表.欄」集合）機械相符斷言**——日後在 schema 新增一條指向 `User` 的 RESTRICT 外鍵而未同步登記，該測試即紅；「同一表新增另一條未守門欄位」亦必紅（表級斷言對此零鑑別力，已由 mutant 實證）。
 - **使用者可見代價（人類明示接受）**：凡曾建立過帳號／改過全域參數／上傳過附件／被記過任何稽核（即成為 `AuditLog.actorId`）之管理員，**永久不可刪除，只能停用**；有油耗版本之使用者亦然（`UserFuelConsumptionVersion` 為 append-only，PHASE-005a D8(a) 之設計後果）。這是 AD-US-04② 的設計意圖而非缺陷；根治須「稽核 actor 匿名化」，屬資料保存決策，未排定。
+
+### 4.14 PHASE-011 之維運元件（部署硬化與備份；已落地）
+
+本 Phase**零前端變更**（PRD :529 明定 Mock Gate 不觸發）、核心產品邏輯（金額計算、狀態機、授權）**零 diff**——落地內容全屬維運／基礎設施層，依「判準與執行分離」之一貫分工原則（沿 `cleanup-cli.ts` 首倡，`backup.sh`／`verify-restore.sh` 沿用）：純函式判準置於 `backend/src/`（有單元測試與 mutant 守門），bash／Node 腳本只負責**執行**該判準之結論，不得另行判斷。
+
+- **附件清理（暫存 >24h）**：`backend/src/attachment/cleanup-service.ts`（純判定、對 DB **零寫入**——封閉之引用來源集常數 `ATTACHMENT_REFERENCE_SOURCES`，四項來源：`Attachment.status=LINKED`／`TripSegment`／`MaintenanceApplication`／`DepreciationApplication` 容器存在性；`dryRunCleanup`／`planCleanup` 為 dry-run 與實跑共用之唯一判定路徑）／`backend/src/attachment/cleanup-cli.ts`（唯一持有 DB 寫入與 storage 刪除能力之處，一次性 CLI 進入點；批次上限與失敗語意；**不寫稽核**——`docs/specs/PHASE-011.md` §16 D6-3=(a)，系統排程無 `actorId`，可稽查性改由結構化日誌與執行摘要承載）。
+- **備份**：`scripts/backup.sh`（執行器：`docker exec` ＋ `pg_dump -Fc`、`att/`／`rpt/` 前綴物件、manifest 產生、涵蓋完整性自檢、摘要輸出）／`backend/src/platform/backup-policy.ts`（純函式：保留期判定 ＋ 目的地路徑樹守門，唯一判準來源，有 mutant 守門）。兩者以**標準輸入**（`KEY=VALUE` 逐行）交付設定值，不走命令列參數（避免進主機行程表）、不讓執行器自讀環境（避免在 `backend/src` 新增未登記之 env 讀取站點）。
+- **還原驗證**：`scripts/verify-restore.sh`（執行器：前置守門 → 取最近備份 → 還原至**隔離目標** → 三項確認 → 成功／失敗紀錄，隔離目標用畢即刪、正式面全程唯讀）／`backend/src/platform/restore-check.ts`（純函式：關聯完整性判準——七項固定清單＋`information_schema` 動態列舉之雙重守門，唯一守 DB 保證不了之弱引用面：`Attachment.refType`／`refId` 之 `LINKED` 列其容器存在性）。
+- **持久化與效能驗證（腳本，`backend/src` 零 diff）**：`scripts/verify-persistence.sh`（容器重建前後三指紋比對：DB 值／附件位元組 sha256／PDF 位元組 sha256；`preserve`／`destroy`／`rebuild-backend` 三模式）／`scripts/measure-performance.mjs`（打 compose stack 之 nginx 端到端量測 AC-17／AC-18 七類回應時間目標與約 20 併發可用性）。
+- **日誌 err serializer 全域防線**：`backend/src/logger.ts` 覆寫 pino 之 `err` serializer（只保留 `type`＝`err.name`，不再展開 `message`／`stack`——`stack` 逐字含絕對路徑）；`backend/test/integration/phase10-error-handler-leak.test.ts` 就地擴充兩式偵測（`{ err }` 物件簡寫／位置引數）併入既有 L1 站點白名單掃描。兩處今日即存在之洩漏站點（`index.ts` 之 `server.log.error(err)`／`audit/audit.ts` 之 `console.error(..., err)`）已依此修復。
+- **e2e 型別防線**：`tsconfig.e2e.json`（涵蓋 `e2e/**/*.ts`）接入根目錄 typecheck script；`e2e/helpers.ts` 新增共用 `loginAsAdmin`／`uploadAttachment` 等 helper，收斂既有 12 個 spec 檔之樣板複製。
+- **test/support 共用測試基建**：`backend/test/support/fingerprint.ts`（跨測試檔共用之部件指紋計算邏輯）／`backend/test/support/secret-patterns.ts`（AC-12 secrets 掃描器與備份／還原測試共用之 secrets 樣式定義，同一份、不同來源分別 import）。
 
 ## 5. 設計原則（不可違背）
 

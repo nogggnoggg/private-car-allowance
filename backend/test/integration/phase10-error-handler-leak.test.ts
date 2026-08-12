@@ -17,8 +17,9 @@
  *   · AC-28(a) 掃描器擴充：`{ err }` 物件簡寫／`err` 位置引數兩式，見下方
  *     `buildPinoSerializePatterns`（併入 L1）。
  *   · AC-28(b) `logger.ts` serializer 定案釘死（見對應 `describe`）。
- *   · AC-28(c) 兩處今日即存在站點（`index.ts` :33／`audit/audit.ts` :56）之
- *     修復（原始碼側，非本檔）；本檔以白名單零變動佐證修復生效。
+ *   · AC-28(c) 兩處今日即存在站點（`index.ts` :33／`audit/audit.ts` :98——
+ *     PHASE-011-DOCSYNC 行號勘誤：後者原 :56，檔頭於 PHASE-011-T18 增長後
+ *     現況 :98）之修復（原始碼側，非本檔）；本檔以白名單零變動佐證修復生效。
  *   · AC-28(d) 原「已知不可及⑫」it 已改寫為正向格（見該 it）。
  *   · AC-28(e) ajv `detail.message` 面評估（見對應 `describe`）。
  *
@@ -337,8 +338,9 @@ const LOG_CALL_PREFIX =
  *       Handoff 之「反向對照①」）。
  *   B1（位置引數，首位）：`log.*(err, "…")`／`log.*(err)`——AC 原文之逐字形，
  *       緊接呼叫開括號之後，以此天然排除巢狀呼叫誤判。
- *   B2（位置引數，非首位）：`console.error("msg", err)`——`audit.ts` :56 之
- *       今日實際形。刻意排除 `()`／`{}` 於 err 之前的可跳過內容——否則
+ *   B2（位置引數，非首位）：`console.error("msg", err)`——`audit.ts` :98
+ *       （PHASE-011-DOCSYNC 行號勘誤：原 :56，現況實查）之今日實際形。刻意
+ *       排除 `()`／`{}` 於 err 之前的可跳過內容——否則
  *       `errorLabel(err)`／`{ errLabel: errorLabel(err) }`（`upload-service.ts`
  *       :319/:332，皆為安全站點）之巢狀呼叫右括號會被誤認成本呼叫自身之右括
  *       號而誤報（T16 開發期以全 `backend/src` 實跑踩過此坑並修正，見 Handoff）。
@@ -607,7 +609,7 @@ describe("AC-21(b): 站點白名單掃描 — 錯誤訊息之輸出面", () => {
     expect(scanContent(fixture, "L1")).toEqual([1]);
   });
 
-  it("⑫ 改寫：console.error(msg, err) 之位置引數（非首位）必被 L1 偵測 — audit.ts :56 之今日實際形（AC-28(a)(c))", () => {
+  it("⑫ 改寫：console.error(msg, err) 之位置引數（非首位）必被 L1 偵測 — audit.ts :98 之今日實際形（AC-28(a)(c))", () => {
     const fixture = 'console.error("[audit] Failed to write AuditLog:", err);';
     expect(scanContent(fixture, "L1")).toEqual([1]);
   });
