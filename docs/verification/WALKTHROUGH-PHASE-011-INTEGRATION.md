@@ -435,4 +435,4 @@ rm -rf "$WD"                                                                    
   6. **§6 備份還原 ✅（本 Gate 核心）**：6-0 副本 1499=1499；6-1 備份 `EXIT=0`、`coverage 1499/1499 missing=0`；6-2 manifest 六欄齊＋`allowEmpty:false`；6-3 兩守門必拒（`EXIT=1`）且零寫入（僅 `att`）；6-4 還原三確認全過（`fk=15`＋`fixed=1`、`fixed-list=7/7`、`evidence=full`）、`target=dropped`、`EXIT=0`；6-5 無 `restore_verify_scratch` 殘留＋紀錄檔 JSON 六欄；6-6 改一位元組 → `stage=a db-dump-hash-mismatch`、`EXIT=1`、連還原庫都未建立、紀錄追加不覆蓋；6-7 正式面前後計數 `629|229|12|66|1653`／`1499` **逐項全等**（唯讀實證）；6-8 走查目錄已刪。
   - 額外收穫：6-4 首跑曾因 MSYS 路徑形（`/c/…`）誤報 `backup-not-found`（改 `C:/` 形即過）——**該次失敗也被寫入紀錄檔且未覆蓋成功列**，意外實證 AC-24(b) 追加語意；路徑形提醒已由本檔 §6-0 之 `$WD` 範例（`C:/` 形）涵蓋。
 - 終態：三服務 `healthy`、全鏈 `/api/health` 200；`t1-pg` 全程零觸碰。
-- 使用者批准：
+- 使用者批准：**批准（人類 leonchih 2026-08-12，AskUserQuestion）**——部署硬化之驗證程序可信、分離重建不失資料；正式上線／真實資料遷移／正式網域 TLS 屬部署時決策不在本 Gate 射程。
