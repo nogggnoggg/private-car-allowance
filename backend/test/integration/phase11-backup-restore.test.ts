@@ -1,10 +1,14 @@
 /**
- * Integration test: PHASE-011 備份（T12）— `scripts/backup.sh` 之實跑驗證
- * （`docs/specs/PHASE-011.md` **AC-19**／**AC-22**；§16 **D11-1**=(a)
- * `docker exec` ＋ `pg_dump -Fc`、**D11-2**=(a) 不加密、**D12**=(a) 路徑樹守門）
+ * Integration test: PHASE-011 備份（T12）＋ 還原驗證（T13）—
+ * `scripts/backup.sh` 與 `scripts/verify-restore.sh` 之實跑驗證
+ * （`docs/specs/PHASE-011.md` **AC-19**／**AC-22**／**AC-23**／**AC-24**；
+ * §16 **D11-1**=(a) `docker exec` ＋ `pg_dump -Fc`、**D11-2**=(a) 不加密、
+ * **D12**=(a) 路徑樹守門、**D13**=(a)+(b) 併用）
  *
- * 本檔由 T12 建立，**T13 就地擴充**還原驗證（AC-23／AC-24）——故檔名為
- * `backup-restore` 而非 `backup`。今日本檔零還原斷言，那是 T13 的射程。
+ * 本檔由 T12 建立、**T13 就地擴充**，故檔名為 `backup-restore` 而非 `backup`。
+ * 兩段各自獨立（`describeWithDb` 兩個）：**不共用臨時樹、不共用 `PrismaClient`、
+ * 不共用備份**。分開的理由是 T12 之 AC-19(f) 以「整份 DB 快照前後全等」為斷言，
+ * T13 的播種若落在它的射程內就會把它弄紅。T13 段之總覽見該段開頭之區塊註解。
  *
  * ---------------------------------------------------------------------------
  * §11.6 spike #1 之實測結論（T12 首步，三件事逐一實跑；逐字輸出見 Handoff）
@@ -41,6 +45,15 @@
  *   · **AC-19(f)** 執行前後正式面 DB 與 storage 逐項全等（唯讀證明）；
  *   · **AC-22(a)(b)(c)** 產物零命中、日誌七類禁字零命中、憑證不經命令列。
  *
+ * **T13 段（下半檔）另涵蓋**：
+ *   · **AC-23(a)(b)(c)** 三項確認之端到端實跑（對本段自己以 `backup.sh` 產出的
+ *     真備份）；(d) 三元組守門與正式面前後全等；(e) **防恆真**兩型 mutant
+ *     （截斷／改位元組）＋ 一則深層對照（連 manifest 雜湊一起改寫，證明 (a) 不是
+ *     單純的雜湊比對）；
+ *   · **AC-24(a)~(d)** 驗證紀錄之五欄／追加／成功亦留／掃描器零命中；
+ *   · **走廊條款兩則**（T10R FW-2）與**判準 mutant 自證六則**（D13 之完整性守門、
+ *     抽樣三條件、B-19、M-6+M-8 證據等級、紀錄摘要封閉集合）。
+ *
  * ---------------------------------------------------------------------------
  * 「正式面」在本檔指的是什麼（射程據實記載）
  * ---------------------------------------------------------------------------
@@ -60,6 +73,17 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+// T13：判準模組之純函式直接入格（mutant 自證）——CLI 之實跑面則由腳本端到端承擔。
+import {
+  FIXED_RELATION_CHECKS,
+  NON_FK_CHECK_ID,
+  type RelationRow,
+  assessCoverageEvidence,
+  evaluateRelationalIntegrity,
+  evaluateRestoreTarget,
+  formatVerificationRecord,
+  selectAttachmentSample,
+} from "../../src/platform/restore-check.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
 
 const DB_URL = process.env.DATABASE_URL;
@@ -829,9 +853,859 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
   });
 });
 
+// ===========================================================================
+// PHASE-011-T13 — 還原驗證流程 ＋ 失敗紀錄（AC-23／AC-24；§16 D13=(a)+(b) 併用）
+// ===========================================================================
+//
+// 與上方 T12 段之關係：本段**不共用**臨時樹，也不共用 `prisma` 實例——它自己
+// 播種、自己跑一次 `scripts/backup.sh` 取得一份**真備份**，再對那份備份跑
+// `scripts/verify-restore.sh`。分開的理由是 T12 之 AC-19(f) 以「整份 DB 快照
+// 前後全等」為斷言，本段的播種若落在它的射程內就會把它弄紅。
+//
+// 「正式面」在本段指的是：本 worker schema 之資料 ＋ 本段自己的 storage 臨時樹
+// ＋ **來源資料庫本身**（`app_test`）。還原一律進到一個**本段建立、用畢即刪**的
+// 獨立資料庫，故 AC-23(d) 之前後全等以此三者為對象。
+
+const T13_TMP = fs.mkdtempSync(path.join(os.tmpdir(), "t13-restore-"));
+const T13_ATT = path.join(T13_TMP, "live", "att");
+const T13_RPT = path.join(T13_TMP, "live", "rpt");
+const T13_DEST = path.join(T13_TMP, "backups");
+const T13_LOG = path.join(T13_TMP, "verify-restore.log");
+const VERIFY_SCRIPT = path.join(REPO_ROOT, "scripts", "verify-restore.sh");
+
+const T13_RUN = `${Date.now().toString(36)}${crypto.randomBytes(3).toString("hex")}`;
+/** 不含 `-`／大寫：要當 PostgreSQL 資料庫名與 schema 名用。 */
+const T13_TAG = `t13${T13_RUN.replace(/[^0-9a-z]/g, "")}`;
+/**
+ * 走廊條款專用之 scratch schema：五張**無外鍵、無資料**之樁表 ＋ 一列
+ * `_prisma_migrations`。用途有二，皆為「可用性與結論分離」之負向對照：
+ *   ①`Attachment` 零列 → 抽樣抽不到 → 不得與「抽樣通過」同結局；
+ *   ②零外鍵 → 動態列舉回零列 → 不得與「無孤兒」同結局。
+ * 命名刻意落在 `WORKER_SCHEMA_PATTERN`（`^vitest_w[0-9]+$`）之外。
+ */
+const T13_SCRATCH = `${T13_TAG}_scratch`;
+
+let t13Prisma: PrismaClient;
+let t13BackupId = "";
+let t13TargetSeq = 0;
+
+interface VerifyTarget {
+  readonly db: string;
+  readonly url: string;
+}
+
+/** 以來源之主機／憑證為底、指向另一個資料庫名的目標連線字串。 */
+function targetUrlFor(db: string): VerifyTarget {
+  const url = new URL(DB_URL as string);
+  url.pathname = `/${db}`;
+  url.search = "";
+  return { db, url: url.toString() };
+}
+
+/** 每次執行取一個新的隔離目標名（同一名字重用會被「目標已存在」守門擋下）。 */
+function nextVerifyTarget(): VerifyTarget {
+  t13TargetSeq += 1;
+  return targetUrlFor(`${T13_TAG}_r${t13TargetSeq}`);
+}
+
+/** 以來源連線字串為底、換掉 `schema=` 參數（走廊條款用）。 */
+function sourceUrlWithSchema(schema: string): string {
+  const url = new URL(DB_URL as string);
+  url.searchParams.set("schema", schema);
+  return url.toString();
+}
+
+function runVerify(
+  target: VerifyTarget,
+  overrides: Record<string, string> = {},
+  destRoot: string = T13_DEST
+): RunResult {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    BACKUP_DEST_ROOT: destRoot,
+    RESTORE_TARGET_DATABASE_URL: target.url,
+    RESTORE_VERIFY_LOG: T13_LOG,
+    ...overrides,
+  };
+  try {
+    const stdout = execFileSync("bash", [VERIFY_SCRIPT], {
+      cwd: REPO_ROOT,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 240_000,
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string; stderr?: string; message?: string };
+    return { status: e.status ?? -1, stdout: e.stdout ?? "", stderr: e.stderr ?? e.message ?? "" };
+  }
+}
+
+interface VerificationRecord {
+  readonly timestamp: string;
+  readonly backupId: string;
+  readonly stage: string;
+  readonly summary: string;
+  readonly exitCode: number;
+  readonly evidence: string;
+}
+
+function readRecords(): VerificationRecord[] {
+  if (!fs.existsSync(T13_LOG)) return [];
+  return fs
+    .readFileSync(T13_LOG, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as VerificationRecord);
+}
+
+/** 目標資料庫是否存在（用畢零殘留之自證）。 */
+function databaseExists(name: string): boolean {
+  const out = execFileSync(
+    "docker",
+    [
+      "exec",
+      "-i",
+      discoverPgContainer(),
+      "psql",
+      "-U",
+      new URL(DB_URL as string).username,
+      "-d",
+      "postgres",
+      "-tAc",
+      `SELECT 1 FROM pg_database WHERE datname = '${name}'`,
+    ],
+    { encoding: "utf8" }
+  );
+  return out.trim() === "1";
+}
+
+/** 複製一份備份到獨立目的地（防恆真 mutant 之工作區，不動原件）。 */
+function cloneBackupTo(dir: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const target = path.join(dir, t13BackupId);
+  fs.cpSync(path.join(T13_DEST, t13BackupId), target, { recursive: true });
+  return target;
+}
+
+/**
+ * T13 播種：一組**含修正版關係**之真實形狀資料。
+ *
+ * AC-23(b) 要求抽樣須含「至少一個修正版副本」——本專案之「修正版」語意在
+ * `Application.supersedesId`（PHASE-009 D7），附件則是**掛在修正版申請之
+ * `TripSegment` 上的那一份**。T12 的播種沒有這條關係（它只需要「多一個物件」），
+ * 故本段自行播種一組：原申請 A（含附件）＋ 修正版申請 B（`supersedesId = A`，
+ * 含其自己的附件副本）＋ A 之正式報表與作廢版檔。
+ */
+async function seedT13() {
+  const attStorage = new LocalVolumeStorage(T13_ATT, { prefixes: ["att"] });
+  const rptStorage = new LocalVolumeStorage(T13_RPT, { prefixes: ["rpt"] });
+
+  const user = await t13Prisma.user.create({
+    data: {
+      loginName: `t13-owner-${T13_RUN}`,
+      displayName: "T13 還原驗證測試擁有人",
+      passwordHash: `synthetic-placeholder-${T13_RUN}`,
+      role: "USER",
+    },
+  });
+
+  const makeTravel = async (suffix: string, supersedesId?: string) => {
+    const app = await t13Prisma.application.create({
+      data: {
+        type: "TRAVEL",
+        status: "COMPLETED",
+        ownerId: user.id,
+        createdById: user.id,
+        primaryDate: new Date("2026-08-01T00:00:00Z"),
+        totalAmount: 999,
+        completedAt: new Date("2026-08-02T00:00:00Z"),
+        ...(supersedesId === undefined ? {} : { supersedesId }),
+      },
+    });
+    await t13Prisma.travelApplication.create({
+      data: { applicationId: app.id, tripDate: new Date("2026-08-01T00:00:00Z") },
+    });
+    const segment = await t13Prisma.tripSegment.create({
+      data: { id: `seg-${suffix}-${T13_RUN}`, travelApplicationId: app.id, sortOrder: 0 },
+    });
+    return { app, segment };
+  };
+
+  const origin = await makeTravel("origin");
+  const revision = await makeTravel("revision", origin.app.id);
+
+  const attach = async (label: string, segmentId: string) => {
+    const id = `${label}${T13_RUN}`;
+    const storageKey = `att/${id}/original`;
+    const thumbnailKey = `att/${id}/thumb`;
+    await attStorage.put(storageKey, Buffer.from(`orig-${label}-${T13_RUN}`, "utf8"), "image/png");
+    await attStorage.put(
+      thumbnailKey,
+      Buffer.from(`thumb-${label}-${T13_RUN}`, "utf8"),
+      "image/png"
+    );
+    await t13Prisma.attachment.create({
+      data: {
+        id,
+        status: "LINKED",
+        storageKey,
+        thumbnailKey,
+        mimeType: "image/png",
+        byteSize: 32,
+        originalFilename: "synthetic.png",
+        uploaderId: user.id,
+        ownerId: user.id,
+        refType: "TRIP_SEGMENT",
+        refId: segmentId,
+        linkedAt: new Date("2026-08-02T00:00:00Z"),
+      },
+    });
+  };
+
+  await attach("o", origin.segment.id); // 原申請之附件（非修正版）
+  await attach("v", revision.segment.id); // 修正版申請之附件副本（AC-23(b) 必含）
+
+  const reportKey = `rpt/r13${T13_RUN}/pdf`;
+  const voidKey = `rpt/v13${T13_RUN}/void`;
+  await rptStorage.put(reportKey, Buffer.from(`pdf-${T13_RUN}`, "utf8"), "application/pdf");
+  await rptStorage.put(voidKey, Buffer.from(`void-${T13_RUN}`, "utf8"), "application/pdf");
+
+  const report = await t13Prisma.report.create({
+    data: {
+      applicationId: origin.app.id,
+      reportNumber: `TRV-T13-${T13_RUN}`,
+      numberPrefix: "TRV",
+      numberPeriod: "202608",
+      sequence: 2,
+      storageKey: reportKey,
+      fileName: "TRV-T13.pdf",
+      byteSize: 24,
+      contentHash: crypto.createHash("sha256").update("pdf13").digest("hex"),
+      generatedById: user.id,
+    },
+  });
+  await t13Prisma.voidedReportFile.create({
+    data: {
+      reportId: report.id,
+      storageKey: voidKey,
+      fileName: "TRV-T13.pdf",
+      byteSize: 24,
+      contentHash: crypto.createHash("sha256").update("void13").digest("hex"),
+      createdById: user.id,
+    },
+  });
+}
+
+/** 走廊條款 fixture：零外鍵、零資料，但 `_prisma_migrations` 有尾筆（讓 (a) 過得去）。 */
+async function createScratchSchema() {
+  await t13Prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${T13_SCRATCH}"`);
+  await t13Prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."_prisma_migrations" ("migration_name" text, "finished_at" timestamptz)`
+  );
+  await t13Prisma.$executeRawUnsafe(
+    `INSERT INTO "${T13_SCRATCH}"."_prisma_migrations" VALUES ('scratch_only', now())`
+  );
+  await t13Prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."Attachment" ("storageKey" text, "thumbnailKey" text, "status" text, "refType" text, "refId" text)`
+  );
+  await t13Prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."TripSegment" ("id" text, "travelApplicationId" text)`
+  );
+  await t13Prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."Application" ("id" text, "supersedesId" text)`
+  );
+  for (const table of ["MaintenanceApplication", "DepreciationApplication"]) {
+    await t13Prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."${table}" ("applicationId" text)`
+    );
+  }
+  // `Report`／`VoidedReportFile` 要有列，否則備份腳本之涵蓋自檢會因「四來源皆空」
+  // 而拒跑（T12R SF-1）——本 fixture 要證的是**還原驗證**的走廊，不是備份的。
+  await t13Prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."Report" ("storageKey" text)`
+  );
+  await t13Prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${T13_SCRATCH}"."VoidedReportFile" ("storageKey" text)`
+  );
+}
+
+describeWithDb("PHASE-011-T13 — 還原驗證流程（AC-23／AC-24）", () => {
+  let mainRun: RunResult;
+  let mainTarget: VerifyTarget;
+  let dbBefore: unknown;
+  let attBefore: Record<string, string>;
+  let rptBefore: Record<string, string>;
+
+  beforeAll(async () => {
+    fs.mkdirSync(T13_ATT, { recursive: true });
+    fs.mkdirSync(T13_RPT, { recursive: true });
+    fs.mkdirSync(T13_DEST, { recursive: true });
+    t13Prisma = new PrismaClient();
+    await seedT13();
+    await createScratchSchema();
+
+    // 一份**真備份**（同一支 T12 腳本，非本段自製產物）
+    const backup = execFileSync("bash", [BACKUP_SCRIPT], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        BACKUP_DEST_ROOT: T13_DEST,
+        ATTACHMENT_STORAGE_ROOT: T13_ATT,
+        REPORT_STORAGE_ROOT: T13_RPT,
+      },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 240_000,
+    });
+    expect(backup).toMatch(/done id=/);
+    const ids = fs
+      .readdirSync(T13_DEST, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    expect(ids).toHaveLength(1);
+    t13BackupId = ids[0] as string;
+
+    dbBefore = await snapshotT13Db();
+    attBefore = snapshotStorage(T13_ATT);
+    rptBefore = snapshotStorage(T13_RPT);
+
+    mainTarget = nextVerifyTarget();
+    mainRun = runVerify(mainTarget);
+    if (mainRun.status !== 0) {
+      throw new Error(
+        `verify-restore.sh exited ${mainRun.status}\n--- stdout ---\n${mainRun.stdout}\n--- stderr ---\n${mainRun.stderr}`
+      );
+    }
+  }, 300_000);
+
+  afterAll(async () => {
+    await t13Prisma.voidedReportFile.deleteMany({ where: { fileName: "TRV-T13.pdf" } });
+    await t13Prisma.report.deleteMany({ where: { reportNumber: `TRV-T13-${T13_RUN}` } });
+    await t13Prisma.attachment.deleteMany({
+      where: { uploader: { loginName: `t13-owner-${T13_RUN}` } },
+    });
+    await t13Prisma.tripSegment.deleteMany({ where: { id: { contains: T13_RUN } } });
+    await t13Prisma.travelApplication.deleteMany({
+      where: { application: { owner: { loginName: `t13-owner-${T13_RUN}` } } },
+    });
+    await t13Prisma.application.deleteMany({
+      where: { owner: { loginName: `t13-owner-${T13_RUN}` }, supersedesId: { not: null } },
+    });
+    await t13Prisma.application.deleteMany({
+      where: { owner: { loginName: `t13-owner-${T13_RUN}` } },
+    });
+    await t13Prisma.user.deleteMany({ where: { loginName: `t13-owner-${T13_RUN}` } });
+    await t13Prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${T13_SCRATCH}" CASCADE`);
+    await t13Prisma.$disconnect();
+    fs.rmSync(T13_TMP, { recursive: true, force: true });
+  }, 60_000);
+
+  // =========================================================================
+  // AC-23 — 三項確認
+  // =========================================================================
+
+  describe("AC-23: 還原驗證三項", () => {
+    it("(a) DB 可開啟 ＋ _prisma_migrations 尾筆相符", () => {
+      expect(mainRun.status).toBe(0);
+      expect(mainRun.stdout).toMatch(/\(a\) [^\n]*migration-tail=match/);
+      expect(mainRun.stdout).toMatch(/target=created/);
+    });
+
+    it("(b) 附件抽樣 ≥3（含 thumb、含修正版副本）雜湊對 manifest 全等", () => {
+      // 部件層：三份產物之 sha256 逐一對 manifest 全等（T12 交接：`parts[].sha256`）
+      expect(mainRun.stdout).toMatch(/parts-verified=3/);
+      // 物件層：抽樣自**還原之 storage**，樣本數 ≥3 且含 thumb、含修正版副本
+      const sample = /sample n=(\d+) thumb=(\d+) revision=(\d+) readable=(\d+)/.exec(
+        mainRun.stdout
+      );
+      expect(sample).not.toBeNull();
+      const [, n, thumb, revision, readable] = sample as RegExpExecArray;
+      expect(Number(n)).toBeGreaterThanOrEqual(3);
+      expect(Number(thumb)).toBeGreaterThanOrEqual(1);
+      expect(Number(revision)).toBeGreaterThanOrEqual(1);
+      expect(Number(readable)).toBe(Number(n));
+    });
+
+    it("(c) 關聯完整性七項逐一無孤兒", () => {
+      const line = /\(c\) relations checked=(\d+) fk=(\d+) fixed=(\d+) orphans=(\d+)/.exec(
+        mainRun.stdout
+      );
+      expect(line).not.toBeNull();
+      const [, checked, fk, fixed, orphans] = line as RegExpExecArray;
+      expect(Number(orphans)).toBe(0);
+      expect(Number(fixed)).toBe(1); // 七項中唯一之非外鍵項（Attachment.refId）
+      expect(Number(fk)).toBeGreaterThanOrEqual(8); // 七項展開後之外鍵邊 ≥8
+      expect(Number(checked)).toBe(Number(fk) + Number(fixed));
+      // 七項固定清單 ⊆ 動態列舉（D13 之完整性守門）——清單過時即紅
+      expect(mainRun.stdout).toMatch(/fixed-list=7\/7/);
+    });
+  });
+
+  it("AC-23(d)／B-19: 還原目標與正式為同一三元組 → 拒絕；流程前後正式面逐項全等", async () => {
+    const before = readRecords().length;
+    const run = runVerify({ db: "unused", url: DB_URL as string });
+    const output = `${run.stdout}${run.stderr}`;
+
+    expect(run.status).not.toBe(0);
+    expect(output).toContain("RESTORE_TARGET_DATABASE_URL");
+    expect(output).toMatch(/summary=restore-target-equals-source/);
+    expect(output).not.toMatch(/postgres(ql)?:\/\//);
+    const records = readRecords();
+    expect(records).toHaveLength(before + 1);
+    expect(records[records.length - 1]?.stage).toBe("guard");
+
+    // 流程前後正式面逐項全等（AC-23(d)）：主跑 ＋ 本格之拒跑皆未觸及正式面
+    expect(await snapshotT13Db()).toEqual(dbBefore);
+    expect(snapshotStorage(T13_ATT)).toEqual(attBefore);
+    expect(snapshotStorage(T13_RPT)).toEqual(rptBefore);
+    expect(Object.keys(attBefore).length).toBeGreaterThan(0);
+    expect(Object.keys(rptBefore).length).toBeGreaterThan(0);
+  }, 300_000);
+
+  it("AC-23(e)／B-20: 截斷／改位元組之備份 → 驗證必然失敗且被三項之一捕捉（防恆真）", () => {
+    // ── 型①：截斷 tar → 部件雜湊不符 → 被 (b) 捕捉 ──────────────────────────
+    const truncDest = path.join(T13_TMP, "mutant-truncate");
+    const truncDir = cloneBackupTo(truncDest);
+    const tarPath = path.join(truncDir, "attachments.tar");
+    const original = fs.readFileSync(tarPath);
+    fs.writeFileSync(tarPath, original.subarray(0, original.byteLength - 2048));
+
+    const truncTarget = nextVerifyTarget();
+    const trunc = runVerify(truncTarget, {}, truncDest);
+    expect(trunc.status).not.toBe(0);
+    expect(`${trunc.stdout}${trunc.stderr}`).toMatch(/stage=b summary=archive-hash-mismatch/);
+    expect(databaseExists(truncTarget.db)).toBe(false); // 失敗路徑亦零殘留
+
+    // ── 型②：改一位元組（db.dump）→ 被 (a) 捕捉 ────────────────────────────
+    const flipDest = path.join(T13_TMP, "mutant-flip");
+    const flipDir = cloneBackupTo(flipDest);
+    const dumpPath = path.join(flipDir, "db.dump");
+    const dump = fs.readFileSync(dumpPath);
+    const victim = Math.floor(dump.byteLength / 2);
+    dump[victim] = (dump[victim] as number) ^ 0xff;
+    fs.writeFileSync(dumpPath, dump);
+
+    const flipTarget = nextVerifyTarget();
+    const flip = runVerify(flipTarget, {}, flipDest);
+    expect(flip.status).not.toBe(0);
+    expect(`${flip.stdout}${flip.stderr}`).toMatch(/stage=a summary=db-dump-hash-mismatch/);
+    expect(databaseExists(flipTarget.db)).toBe(false);
+  }, 600_000);
+
+  it("AC-23(e) 深層: 改位元組**並同步改寫 manifest 雜湊** → pg_restore 自身仍必然失敗（證明 (a) 不只是雜湊比對）", () => {
+    const deepDest = path.join(T13_TMP, "mutant-deep");
+    const deepDir = cloneBackupTo(deepDest);
+    const dumpPath = path.join(deepDir, "db.dump");
+    const dump = fs.readFileSync(dumpPath);
+    // 挑 dump 前段（TOC／資料區塊）動手，確保不是只改到尾端填充
+    for (let i = 0; i < 4096; i += 1) {
+      dump[600 + i] = (dump[600 + i] as number) ^ 0x5a;
+    }
+    fs.writeFileSync(dumpPath, dump);
+
+    const manifestPath = path.join(deepDir, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+      parts: Array<{ file: string; bytes: number; sha256: string }>;
+    };
+    for (const part of manifest.parts) {
+      if (part.file === "db.dump") {
+        part.sha256 = crypto.createHash("sha256").update(dump).digest("hex");
+      }
+    }
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const target = nextVerifyTarget();
+    const run = runVerify(target, {}, deepDest);
+    const output = `${run.stdout}${run.stderr}`;
+    expect(run.status).not.toBe(0);
+    // 雜湊那道已被繞過，故必須是還原本身失敗
+    expect(output).not.toMatch(/db-dump-hash-mismatch/);
+    expect(output).toMatch(/stage=a summary=(pg-restore-failed|restored-database-unreachable)/);
+    expect(databaseExists(target.db)).toBe(false);
+  }, 600_000);
+
+  // =========================================================================
+  // T10R FW-2 走廊條款（可用性斷言與結論斷言分離）
+  // =========================================================================
+
+  it("T10R FW-2 走廊條款①: 抽不到樣本 → 與「抽樣通過」異結局且可辨識", () => {
+    const target = nextVerifyTarget();
+    const run = runVerify(target, { DATABASE_URL: sourceUrlWithSchema(T13_SCRATCH) });
+    const output = `${run.stdout}${run.stderr}`;
+
+    expect(run.status).not.toBe(0);
+    expect(output).toMatch(/stage=b summary=attachment-sample-unavailable/);
+    // 與成功跑之形狀明確不同（不得只是「數字剛好是 0」）
+    expect(output).not.toMatch(/result=pass/);
+    expect(databaseExists(target.db)).toBe(false);
+  }, 600_000);
+
+  it("T10R FW-2 走廊條款②: 關聯查詢回零列 → 與「無孤兒」異結局且可辨識", () => {
+    const target = nextVerifyTarget();
+    const run = runVerify(target, {
+      DATABASE_URL: sourceUrlWithSchema(T13_SCRATCH),
+      RESTORE_ALLOW_INCOMPLETE_SAMPLE: "1",
+    });
+    const output = `${run.stdout}${run.stderr}`;
+
+    expect(run.status).not.toBe(0);
+    // 抽樣以明示承認之降級通過，於是走到 (c)——那裡零外鍵，必須自己拒絕
+    expect(output).toMatch(/stage=c summary=relation-enumeration-empty/);
+    expect(output).not.toMatch(/result=pass/);
+    // 降級標記必然出現在該次紀錄上（產物自身可辨識）
+    const last = readRecords().at(-1) as VerificationRecord;
+    expect(last.evidence).toContain("sample-incomplete");
+    expect(databaseExists(target.db)).toBe(false);
+  }, 600_000);
+
+  // =========================================================================
+  // AC-24 — 驗證紀錄
+  // =========================================================================
+
+  describe("AC-24: 驗證紀錄", () => {
+    it("(a) 失敗紀錄五欄 ＋ 非零結束碼", () => {
+      const failures = readRecords().filter((r) => r.exitCode !== 0);
+      expect(failures.length).toBeGreaterThan(0);
+      for (const record of failures) {
+        // 五欄逐項（AC-24(a) 逐字）：時間戳／備份識別／失敗階段／失敗摘要／非零結束碼
+        expect(record.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+        expect(record.backupId).toMatch(/^(\d{8}T\d{6}Z|unknown)$/);
+        expect(["guard", "a", "b", "c"]).toContain(record.stage);
+        expect(record.summary).toMatch(/^[a-z0-9-]+$/);
+        expect(record.exitCode).not.toBe(0);
+        // 第六欄（證據等級）為 M-6+M-8 之降級標記，非 AC-24(a) 五欄之一
+        expect(Object.keys(record).sort()).toEqual([
+          "backupId",
+          "evidence",
+          "exitCode",
+          "stage",
+          "summary",
+          "timestamp",
+        ]);
+      }
+    });
+
+    it("(b) 追加不覆蓋", () => {
+      const before = readRecords();
+      expect(before.length).toBeGreaterThan(1);
+      const target = nextVerifyTarget();
+      runVerify(target, { DATABASE_URL: sourceUrlWithSchema(T13_SCRATCH) });
+      const after = readRecords();
+      expect(after).toHaveLength(before.length + 1);
+      // 既有各筆逐字不變（追加語意，非覆蓋）
+      expect(after.slice(0, before.length)).toEqual(before);
+    }, 600_000);
+
+    it("(c) 成功亦留紀錄", () => {
+      const success = readRecords().filter((r) => r.exitCode === 0);
+      expect(success.length).toBeGreaterThan(0);
+      const first = success[0] as VerificationRecord;
+      expect(first.stage).toBe("none");
+      expect(first.summary).toBe("all-three-confirmations-passed");
+      expect(first.backupId).toBe(t13BackupId);
+      expect(first.evidence).toBe("full");
+    });
+
+    it("(d) 紀錄經 AC-12 掃描器零命中", () => {
+      const raw = fs.readFileSync(T13_LOG, "utf8");
+      expect(raw.length).toBeGreaterThan(0);
+      expect(scanText(raw)).toEqual([]);
+      for (const absolute of [T13_ATT, T13_RPT, T13_DEST, T13_TMP]) {
+        expect(raw).not.toContain(absolute);
+        expect(raw).not.toContain(absolute.split(path.sep).join("/"));
+      }
+      expect(raw).not.toMatch(/postgres(ql)?:\/\//);
+      expect(raw).not.toMatch(/att\/|rpt\//);
+    });
+  });
+
+  // =========================================================================
+  // 隔離目標之守門與零殘留
+  // =========================================================================
+
+  it("AC-23(a): 隔離還原目標用畢即刪（零殘留），且既存資料庫一律拒絕覆寫", () => {
+    // 主跑建立的那個目標已被刪除
+    expect(databaseExists(mainTarget.db)).toBe(false);
+
+    // 目標已存在 → 拒跑（不可逆動作之前置：絕不覆寫既有資料庫）
+    const container = discoverPgContainer();
+    const user = new URL(DB_URL as string).username;
+    const occupied = `${T13_TAG}_occupied`;
+    execFileSync("docker", [
+      "exec",
+      "-i",
+      container,
+      "psql",
+      "-U",
+      user,
+      "-d",
+      "postgres",
+      "-tAc",
+      `CREATE DATABASE "${occupied}"`,
+    ]);
+    try {
+      const run = runVerify(targetUrlFor(occupied));
+      expect(run.status).not.toBe(0);
+      expect(`${run.stdout}${run.stderr}`).toMatch(/summary=restore-target-database-exists/);
+      expect(databaseExists(occupied)).toBe(true); // 未被刪：本次沒有建立它
+    } finally {
+      execFileSync("docker", [
+        "exec",
+        "-i",
+        container,
+        "psql",
+        "-U",
+        user,
+        "-d",
+        "postgres",
+        "-tAc",
+        `DROP DATABASE IF EXISTS "${occupied}"`,
+      ]);
+    }
+  }, 600_000);
+
+  it("M-6+M-8: 涵蓋無機械背書之備份 → 驗證紀錄帶 coverage-unverified，且不得以還原成功反推涵蓋完整", () => {
+    // `BACKUP_ALLOW_EMPTY=1` 產出的備份，其涵蓋自檢**沒有可驗證之對象**（T12R SF-1）。
+    // 本格證明該事實一路傳到驗證紀錄上——否則一份「沒驗過涵蓋」的備份還原成功後，
+    // 紀錄看起來與一份「驗過都在」的完全一樣。
+    const dest = path.join(T13_TMP, "allow-empty-dest");
+    fs.mkdirSync(dest, { recursive: true });
+    execFileSync("bash", [BACKUP_SCRIPT], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        BACKUP_DEST_ROOT: dest,
+        ATTACHMENT_STORAGE_ROOT: T13_ATT,
+        REPORT_STORAGE_ROOT: T13_RPT,
+        BACKUP_DATABASE_URL: sourceUrlWithSchema(T13_SCRATCH),
+        BACKUP_ALLOW_EMPTY: "1",
+      },
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+
+    const target = nextVerifyTarget();
+    const run = runVerify(
+      target,
+      {
+        DATABASE_URL: sourceUrlWithSchema(T13_SCRATCH),
+        RESTORE_ALLOW_INCOMPLETE_SAMPLE: "1",
+      },
+      dest
+    );
+    expect(run.status).not.toBe(0);
+    expect(run.stdout).toMatch(/evidence=coverage-unverified/);
+    const last = readRecords().at(-1) as VerificationRecord;
+    expect(last.evidence.split(",").sort()).toEqual(["coverage-unverified", "sample-incomplete"]);
+    expect(databaseExists(target.db)).toBe(false);
+  }, 600_000);
+
+  // =========================================================================
+  // 判準之鑑別力（mutant 自證；D13 之完整性守門與走廊條款皆非恆真）
+  // =========================================================================
+
+  describe("判準 mutant 自證", () => {
+    /** 主跑實際列舉到的形狀之最小重建（15 條外鍵邊 ＋ 第⑤項）。 */
+    const healthyRows = (): RelationRow[] => [
+      ...FIXED_RELATION_CHECKS.filter((c) => c.fkBacked).flatMap((c) =>
+        c.edges.map((edge) => ({
+          kind: "fk",
+          constraintName: `${edge.replace(".", "_")}_fkey`,
+          id: edge,
+          target: "X.id",
+          orphans: 0,
+        }))
+      ),
+      {
+        kind: "fixed",
+        constraintName: "weak-reference",
+        id: NON_FK_CHECK_ID,
+        target: "container",
+        orphans: 0,
+      },
+    ];
+
+    it("mutant①: 動態列舉少掉一條七項所宣告之邊 → relation-list-stale（固定清單過時即紅）", () => {
+      expect(evaluateRelationalIntegrity(healthyRows()).ok).toBe(true);
+      const stale = healthyRows().filter((r) => r.id !== "Session.userId");
+      const verdict = evaluateRelationalIntegrity(stale);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.code).toBe("relation-list-stale");
+      expect(verdict.satisfiedFixedItems).toBe(FIXED_RELATION_CHECKS.length - 1);
+    });
+
+    it("mutant②: 第⑤項被外鍵化 → 亦必紅（雙向釘死「唯一非恆真項」之地位）", () => {
+      const rows = [
+        ...healthyRows(),
+        {
+          kind: "fk",
+          constraintName: "Attachment_refId_fkey",
+          id: "Attachment.refId",
+          target: "TripSegment.id",
+          orphans: 0,
+        },
+      ];
+      expect(evaluateRelationalIntegrity(rows).code).toBe("relation-list-stale");
+    });
+
+    it("mutant③: 孤兒 ≥1／零列／複合外鍵交叉積 → 三種各自可辨識之非通過結局", () => {
+      const withOrphan = healthyRows();
+      (withOrphan[0] as { orphans: number }).orphans = 1;
+      expect(evaluateRelationalIntegrity(withOrphan).code).toBe("relation-orphans-found");
+
+      expect(evaluateRelationalIntegrity([]).code).toBe("relation-enumeration-empty");
+      // 只有第⑤項而零外鍵，仍是「沒有東西可驗」——不得與「無孤兒」同結局
+      expect(
+        evaluateRelationalIntegrity(healthyRows().filter((r) => r.kind === "fixed")).code
+      ).toBe("relation-enumeration-empty");
+
+      const duplicated = [...healthyRows(), healthyRows()[0] as RelationRow];
+      expect(evaluateRelationalIntegrity(duplicated).code).toBe(
+        "relation-unsupported-composite-fk"
+      );
+    });
+
+    it("mutant④: 抽樣三條件（≥3／含 thumb／含修正版副本）各自缺一皆不得通過", () => {
+      const obj = (key: string, kind: "original" | "thumb", revision: boolean) => ({
+        key,
+        kind,
+        revision,
+      });
+      const full = [
+        obj("att/a/original", "original", false),
+        obj("att/a/thumb", "thumb", false),
+        obj("att/b/original", "original", true),
+      ];
+      const ok = selectAttachmentSample(full);
+      expect(ok.ok).toBe(true);
+      expect(ok.sample).toHaveLength(3);
+      // 決定性：同一輸入恆抽到同一組（D13(c) 之「隨機使失敗不可重現」不適用於本實作）
+      expect(selectAttachmentSample([...full].reverse()).sample).toEqual(ok.sample);
+
+      expect(selectAttachmentSample(full.slice(0, 2)).ok).toBe(false); // 不足 3
+      expect(selectAttachmentSample(full.filter((o) => o.kind !== "thumb")).ok).toBe(false);
+      expect(selectAttachmentSample(full.map((o) => obj(o.key, o.kind, false))).ok).toBe(false);
+    });
+
+    it("mutant⑤／B-19: 三元組全同必拒（port 不同亦拒——刻意較嚴）；只有 db 不同則放行", () => {
+      const src = "postgresql://localhost:5432/app?schema=public";
+      expect(evaluateRestoreTarget({ sourceUrl: src, targetUrl: src }).ok).toBe(false);
+      // Spec §5 B-19 之三元組為 host＋db＋schema，**不含 port**：port 不同仍判為同一目標
+      const otherPort = "postgresql://localhost:6543/app?schema=public";
+      const rejected = evaluateRestoreTarget({ sourceUrl: src, targetUrl: otherPort });
+      expect(rejected.ok).toBe(false);
+      expect(rejected.ok === false && rejected.code).toBe("restore-target-equals-source");
+      // 另一個庫名 → 放行（本 Task 之主跑走的就是這條）
+      expect(
+        evaluateRestoreTarget({
+          sourceUrl: src,
+          targetUrl: "postgresql://localhost:5432/scratch",
+        }).ok
+      ).toBe(true);
+      // 庫名非單純識別字 → 拒（本工具會把它嵌進 CREATE/DROP DATABASE）
+      expect(
+        evaluateRestoreTarget({ sourceUrl: src, targetUrl: 'postgresql://localhost:5432/a"b' }).ok
+      ).toBe(false);
+    });
+
+    it("mutant⑥: 證據等級之單一判準（allowEmpty／腳本版號）＋ 紀錄摘要之封閉集合", () => {
+      const good = { coverage: { allowEmpty: false }, tools: { script: "PHASE-011-T12/2" } };
+      expect(assessCoverageEvidence(good)).toEqual([]);
+      expect(assessCoverageEvidence({ ...good, coverage: { allowEmpty: true } })).toEqual([
+        "coverage-unverified",
+      ]);
+      // 涵蓋自檢 fail-closed 之前的版本 → 無機械背書
+      expect(assessCoverageEvidence({ ...good, tools: { script: "PHASE-011-T12" } })).toEqual([
+        "coverage-unverified",
+      ]);
+      expect(assessCoverageEvidence({})).toEqual(["coverage-unverified"]);
+
+      // AC-24(d) 之結構保證：摘要不是自由文字，寫不進去就洩不出去
+      const base = {
+        timestamp: "2026-08-12T00:00:00Z",
+        backupId: "20260812T000000Z",
+        stage: "b",
+        exitCode: 1,
+        evidence: "full",
+      };
+      expect(formatVerificationRecord({ ...base, summary: "attachment-object-missing" }).ok).toBe(
+        true
+      );
+      expect(
+        formatVerificationRecord({ ...base, summary: "failed reading C:/data/att/x/original" }).ok
+      ).toBe(false);
+      expect(
+        formatVerificationRecord({ ...base, stage: "z", summary: "pg-restore-failed" }).ok
+      ).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // 結構紀律（沿 T12 之三條硬規則）
+  // =========================================================================
+
+  it("結構: 判準委由 restore-check、憑證零命令列、外部命令失敗路徑零絕對路徑", () => {
+    const script = fs.readFileSync(VERIFY_SCRIPT, "utf8");
+    const code = script
+      // 續行先接起來：零路徑紀律是**每個命令**一條，不是每個實體行一條——
+      // `docker exec … psql \` 換行後才接 `2>/dev/null` 的寫法是合規的。
+      .replace(/\\\n\s*/g, " ")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+
+    // 判準不在腳本內（T12 分工裁定之延續）
+    expect(code).toContain("check-target");
+    expect(code).toContain("check-relations");
+    expect(code).toContain("check-sample");
+    expect(code).toContain("record");
+    // 腳本不自己比三元組、不自己判孤兒
+    expect(code).not.toMatch(/information_schema/);
+
+    // 憑證零命令列（AC-22(c) 同源紀律）
+    expect(code).not.toMatch(/--password/);
+    expect(code).not.toMatch(/PGPASSWORD=/);
+    expect(code).not.toMatch(/-e\s+PGPASSWORD/);
+    expect(code).not.toMatch(/postgres(ql)?:\/\/[^\s'"]*:[^\s'"]*@/);
+    expect(scanText(script)).toEqual([]);
+
+    // 硬規則③：失敗路徑零路徑紀律一次涵蓋**所有**外部命令（含 rm／mkdir——
+    // T12 三輪逐一補漏之教訓，這裡一次列全）
+    for (const tool of ["pg_restore ", "psql ", "tar -", "mkdir ", "rm -", "mktemp"]) {
+      const uses = code.split("\n").filter((line) => line.includes(tool));
+      expect(uses.length).toBeGreaterThan(0);
+      for (const line of uses) {
+        expect(line).toMatch(/2>\/dev\/null|2>&1|>\/dev\/null/);
+      }
+    }
+
+    // AR-2 同型：INT／TERM 亦收斂到同一份 cleanup（半途中斷不得留下隔離資料庫）
+    expect(code).toMatch(/trap cleanup EXIT/);
+    expect(code).toMatch(/trap '[^']*' INT/);
+    expect(code).toMatch(/trap '[^']*' TERM/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
+
+/** T13 段之正式面 DB 快照（與 T12 段之 `snapshotDb` 同形，但用本段自己的 client）。 */
+async function snapshotT13Db() {
+  const [attachments, reports, voided, applications, users, segments] = await Promise.all([
+    t13Prisma.attachment.findMany({ orderBy: { id: "asc" } }),
+    t13Prisma.report.findMany({ orderBy: { id: "asc" } }),
+    t13Prisma.voidedReportFile.findMany({ orderBy: { id: "asc" } }),
+    t13Prisma.application.findMany({ orderBy: { id: "asc" } }),
+    t13Prisma.user.findMany({ orderBy: { id: "asc" } }),
+    t13Prisma.tripSegment.findMany({ orderBy: { id: "asc" } }),
+  ]);
+  return JSON.parse(
+    JSON.stringify({ attachments, reports, voided, applications, users, segments })
+  );
+}
 
 /** 目的地根下之備份目錄名（依名稱排序，供「這一跑新增了誰」之差集比對）。 */
 function listBackupDirs(): string[] {
