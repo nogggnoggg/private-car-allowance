@@ -434,7 +434,7 @@ async function exerciseReportEndToEnd(
   const reportDl = reportSection.locator("dl.detail-list");
   await expect(reportDl).toBeVisible({ timeout: 15000 });
   const fields = await readDetailList(reportDl);
-  const reportNumber = fields.報表編號;
+  const reportNumber = fields.報表編號 ?? "";
   expect(reportNumber).toMatch(new RegExp(`^${prefix}-\\d{6}-\\d{4,5}$`));
 
   // FW-4：GET→Success 再釘——reload 詳情頁後編號仍逐字在場。

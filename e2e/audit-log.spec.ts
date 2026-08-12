@@ -541,7 +541,7 @@ async function readTotal(page: Page): Promise<number> {
   const text = (await page.locator(".pagination span").first().textContent()) ?? "";
   const m = text.match(/共\s*(\d+)\s*筆/);
   if (!m) throw new Error(`E2E 無法自分頁列讀出總筆數: ${JSON.stringify(text)}`);
-  return Number.parseInt(m[1], 10);
+  return Number.parseInt(m[1] ?? "", 10);
 }
 
 /**
@@ -590,12 +590,12 @@ async function measureOverflow(page: Page): Promise<{ scrollWidth: number; clien
 function taipeiDayFromDisplayedTime(displayed: string): string {
   const m = displayed.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
   if (!m) throw new Error(`E2E 無法自操作時間反推台北日曆日: ${JSON.stringify(displayed)}`);
-  return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  return `${m[1]}-${(m[2] ?? "").padStart(2, "0")}-${(m[3] ?? "").padStart(2, "0")}`;
 }
 
 /** `YYYY-MM-DD` ± n 日（`Date.UTC` 進位，跨月／跨年／閏日安全）。 */
 function shiftIsoDay(isoDay: string, deltaDays: number): string {
-  const [y, m, d] = isoDay.split("-").map((v) => Number.parseInt(v, 10));
+  const [y = 0, m = 1, d = 1] = isoDay.split("-").map((v) => Number.parseInt(v, 10));
   return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
 }
 
@@ -706,11 +706,14 @@ test.describe("稽核檢視端到端 Gate — PHASE-010-T8（AC-19）", () => {
       // 異動明細：AC-24 之封閉四鍵中，`applicationId` 依 MG-3 不呈現 → 恰三列。
       const changes = await readChanges(row);
       expect(changes.map((c) => c.field)).toEqual(["申請類型", "作廢原因", "作廢時間"]);
+      // 上一斷言已釘死 changes 恰三筆，故索引 0/1/2 必存在（同批窄化，非弱化）。
+      const [change0, change1, change2] = changes;
+      if (!change0 || !change1 || !change2) throw new Error("E2E 內部錯誤：changes 應恰三筆");
       // FW-A：`type` 值中文化（`TRAVEL` 字面必紅）。
-      expect(changes[0].after).toBe("差旅補助");
-      expect(changes[1].after).toBe(VOID_REASON);
+      expect(change0.after).toBe("差旅補助");
+      expect(change1.after).toBe(VOID_REASON);
       // AC-18(c)：`voidedAt` 為 ISO 8601，畫面須在地化（不得出現原始 ISO 字面）。
-      expect(changes[2].after).toMatch(/^\d{4}\/\d{1,2}\/\d{1,2} \S*\d{1,2}:\d{2}:\d{2}$/);
+      expect(change2.after).toMatch(/^\d{4}\/\d{1,2}\/\d{1,2} \S*\d{1,2}:\d{2}:\d{2}$/);
       // 三列之「改前」皆為 `null` → 「—」（(b-2) 分支）。
       expect(changes.map((c) => c.before)).toEqual(["—", "—", "—"]);
       // FW-C 逐字負向：畫面零「申請編號」列。

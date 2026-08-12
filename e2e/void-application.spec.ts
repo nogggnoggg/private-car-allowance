@@ -411,7 +411,7 @@ async function exerciseVoidEndToEnd(
 
   const reportDl = reportSection.locator("dl.detail-list");
   await expect(reportDl).toBeVisible({ timeout: 15000 });
-  const reportNumber = (await readDetailList(reportDl)).報表編號;
+  const reportNumber = (await readDetailList(reportDl)).報表編號 ?? "";
   expect(reportNumber).toMatch(new RegExp(`^${reportPrefix}-\\d{6}-\\d{4,5}$`));
 
   // ---- 2. FW-2(a)：作廢前先取得原始報表 PDF 之位元組與檔名 ----

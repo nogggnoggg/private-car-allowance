@@ -816,7 +816,7 @@
 | AC-26(a) | 全套件 | —（終審實跑對照） | 基準線 後端 3542／前端 388／E2E 55 不下降；`tsc` 0；`biome` 0 | 全 Task | `PENDING` |
 | AC-26(b) | —（非測試） | — | 每 Task Done When 逐條；終審對照「刪除之 `it`／`expect` 行數為 0」 | 全 Task | `PENDING` |
 | AC-26(c)(d) | integration | `backend/test/integration/phase11-env-secrets.test.ts` | `AC-26(c): frontend/src 全 Phase 累計 diff 為 0`；`AC-26(d): parameters/、mileage/、計算引擎與快照模組累計 diff 為 0`（判準＝`git diff --stat <base>..HEAD` 之路徑過濾，終審執行） | 終審 | `PENDING` |
-| AC-27(a)~(d) | 條件（typecheck＋全套件） | `tsconfig.e2e.json`（新）＋ CI 步驟 | `npm run typecheck` 涵蓋 `e2e/` 且回 0；`any`／`@ts-ignore` 淨增 0；E2E 55/55 全綠；採用 config 逐條載明 | T15 | `PENDING` |
+| AC-27(a)~(d) | 條件（typecheck＋全套件） | `tsconfig.e2e.json`（新，根目錄）＋ root `package.json` `typecheck` script（併入既有 `npm run typecheck`，`ci.yml` 之「Typecheck」步驟即自動涵蓋，**零 `ci.yml` diff**——屬 Packet 授權之「或併入既有步驟」） | `npx tsc -p tsconfig.e2e.json --noEmit` 回 0（修復前 48 錯基線，`TS2345`17／`TS2532`10／`TS18048`10／`TS2322`9／`TS2769`1／`TS2488`1，8 檔）；`any`／`@ts-ignore`／`@ts-expect-error` 淨增 0（實測：0 處新增，修復手法一律為顯式非空檢查／`?? fallback`／`.entries()` 型別守衛，**零 `!` 非空斷言**）；`npx playwright test` 55/55 全綠 | T15 | `GREEN` |
 | AC-28(a)(b)(f) | integration | `backend/test/integration/phase10-error-handler-leak.test.ts`（既有檔，就地擴充） | `AC-28(a): pino 序列化型兩式（物件簡寫 ＋ 位置引數）必被偵測`；`AC-28(b): logger.ts serializer 設定之定案釘死`；`AC-28(f): 兩份白名單只可縮不可擴` | T16 | `PENDING` |
 | AC-28(c) | integration | 同上 | `AC-28(c): index.ts :33 server.log.error(err) 與 audit.ts :56 console.error(…, err) 兩處之處置（依 D15）` | T16 | `PENDING` |
 | AC-28(d) | integration | 同上 | **同批改寫**：`已知不可及⑫……FW-A 移交 PHASE-011` 之記載型反向 `it` 轉為正向格（commit message 逐字說明） | T16 | `PENDING` |

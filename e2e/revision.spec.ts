@@ -293,7 +293,7 @@ async function generateReport(page: Page, detailPath: string): Promise<string> {
   await reportSection.getByRole("button", { name: "產生正式報表", exact: true }).click();
   const reportDl = reportSection.locator("dl.detail-list");
   await expect(reportDl).toBeVisible({ timeout: 15000 });
-  const number = (await readDetailList(reportDl)).報表編號;
+  const number = (await readDetailList(reportDl)).報表編號 ?? "";
   expect(number).toMatch(/^TRV-\d{6}-\d{4,5}$/);
   return number;
 }
@@ -304,7 +304,7 @@ async function readReportNumber(page: Page, detailPath: string): Promise<string>
   await page.waitForURL(`${BASE}${detailPath}`);
   const reportDl = page.locator("section[aria-labelledby='report-heading'] dl.detail-list");
   await expect(reportDl).toBeVisible({ timeout: 10000 });
-  return (await readDetailList(reportDl)).報表編號;
+  return (await readDetailList(reportDl)).報表編號 ?? "";
 }
 
 // ---------------------------------------------------------------------------

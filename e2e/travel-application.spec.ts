@@ -371,9 +371,8 @@ test.describe("差旅補助申請 — PHASE-004 Gate E2E", () => {
 
     const segments = page.locator(".trip-segment");
     const uploadedAttachmentIds: string[] = [];
-    for (let i = 0; i < segmentDefs.length; i++) {
+    for (const [i, def] of segmentDefs.entries()) {
       const seg = segments.nth(i);
-      const def = segmentDefs[i];
       await seg.getByLabel("出發地點").fill(def.origin);
       await seg.getByLabel("到達地點").fill(def.destination);
       await seg.getByLabel("總里程（公里）").fill(def.totalKm);

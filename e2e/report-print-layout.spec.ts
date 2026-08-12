@@ -362,8 +362,7 @@ async function seedTravelFixture(page: Page): Promise<string> {
   const tripId = application.id;
 
   const segments = [];
-  for (let i = 0; i < SEGMENT_PLANS.length; i++) {
-    const plan = SEGMENT_PLANS[i];
+  for (const [i, plan] of SEGMENT_PLANS.entries()) {
     let attachmentId: string;
     if (i === BIG_IMAGE_SEGMENT_INDEX) {
       const buf = await makeBigOrientedIndexPng(2400, 1800, 6);
@@ -500,19 +499,23 @@ function parseToUnicodeCMap(text: string): Map<string, string> {
     const re = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
     let mm: RegExpExecArray | null;
     // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex 迭代慣用寫法
-    while ((mm = re.exec(block))) map.set(mm[1].toUpperCase().padStart(4, "0"), hexToUtf16(mm[2]));
+    while ((mm = re.exec(block)))
+      map.set((mm[1] ?? "").toUpperCase().padStart(4, "0"), hexToUtf16(mm[2] ?? ""));
   }
   for (const block of text.match(/beginbfrange([\s\S]*?)endbfrange/g) ?? []) {
     const re = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g;
     let mm: RegExpExecArray | null;
     // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex 迭代慣用寫法
     while ((mm = re.exec(block))) {
-      const lo = Number.parseInt(mm[1], 16);
-      const hi = Number.parseInt(mm[2], 16);
-      const dstBase = Number.parseInt(mm[3], 16);
+      const lo = Number.parseInt(mm[1] ?? "", 16);
+      const hi = Number.parseInt(mm[2] ?? "", 16);
+      const dstBase = Number.parseInt(mm[3] ?? "", 16);
       for (let c = lo; c <= hi; c++) {
         map.set(
-          c.toString(16).toUpperCase().padStart(mm[1].length, "0"),
+          c
+            .toString(16)
+            .toUpperCase()
+            .padStart((mm[1] ?? "").length, "0"),
           String.fromCharCode(dstBase + (c - lo))
         );
       }
@@ -565,7 +568,7 @@ function extractPdfTextPerPage(pdfBytes: Buffer): string[] {
             const re = /(\d+)\s+0\s+R/g;
             let mm: RegExpExecArray | null;
             // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex 迭代慣用寫法
-            while ((mm = re.exec(kidsMatch[1]))) walk(Number(mm[1]));
+            while ((mm = re.exec(kidsMatch[1] ?? ""))) walk(Number(mm[1]));
           }
         } else if (/\/Type\s*\/Page\b/.test(o.dict)) {
           pageNums.push(num);
@@ -594,7 +597,7 @@ function extractPdfTextPerPage(pdfBytes: Buffer): string[] {
       const re = /\/(\w+)\s+(\d+)\s+0\s+R/g;
       let mm: RegExpExecArray | null;
       // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex 迭代慣用寫法
-      while ((mm = re.exec(fontBlockMatch[1]))) fontNameToObj.set(mm[1], Number(mm[2]));
+      while ((mm = re.exec(fontBlockMatch[1] ?? ""))) fontNameToObj.set(mm[1] ?? "", Number(mm[2]));
     }
     const fontCmaps = new Map<string, Map<string, string>>();
     for (const [name, fontObjNum] of fontNameToObj) {
@@ -637,7 +640,7 @@ function extractPdfTextPerPage(pdfBytes: Buffer): string[] {
           let hm: RegExpExecArray | null;
           // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex 迭代慣用寫法
           while ((hm = hexRe.exec(tm[3])))
-            pageText += decodeHexWithFont(hm[1], currentFont, fontCmaps);
+            pageText += decodeHexWithFont(hm[1] ?? "", currentFont, fontCmaps);
         }
       }
     }
@@ -698,7 +701,7 @@ function geomOverlap(a: GeomRect, b: GeomRect): boolean {
 const BORDER_RG: [number, number, number] = [0xd1 / 255, 0xd5 / 255, 0xdb / 255];
 function isBorderColor(rgb: [number, number, number] | null): boolean {
   if (!rgb) return false;
-  return rgb.every((v, i) => Math.abs(v - BORDER_RG[i]) < 0.01);
+  return rgb.every((v, i) => Math.abs(v - (BORDER_RG[i] ?? Number.NaN)) < 0.01);
 }
 
 /**
@@ -714,7 +717,7 @@ function isBorderColor(rgb: [number, number, number] | null): boolean {
 const HINT_BORDER_RG: [number, number, number] = [0xf5 / 255, 0x9e / 255, 0x0b / 255];
 function isHintBorderColor(rgb: [number, number, number] | null): boolean {
   if (!rgb) return false;
-  return rgb.every((v, i) => Math.abs(v - HINT_BORDER_RG[i]) < 0.01);
+  return rgb.every((v, i) => Math.abs(v - (HINT_BORDER_RG[i] ?? Number.NaN)) < 0.01);
 }
 
 interface PageGeometry {
@@ -749,7 +752,7 @@ function extractPageGeometry(pdfBytes: Buffer): PageGeometry[] {
             const re = /(\d+)\s+0\s+R/g;
             let mm: RegExpExecArray | null;
             // biome-ignore lint/suspicious/noAssignInExpressions: 標準 regex 迭代慣用寫法
-            while ((mm = re.exec(kidsMatch[1]))) walk(Number(mm[1]));
+            while ((mm = re.exec(kidsMatch[1] ?? ""))) walk(Number(mm[1]));
           }
         } else if (/\/Type\s*\/Page\b/.test(o.dict)) {
           pageNums.push(num);
@@ -799,9 +802,11 @@ function extractPageGeometry(pdfBytes: Buffer): PageGeometry[] {
       let currentStartsWithBorderColor = false;
 
       const flush = (painted: boolean): void => {
-        if (currentPoints.length >= 2) {
-          const [sx, sy] = currentPoints[0];
-          const [ex, ey] = currentPoints[currentPoints.length - 1];
+        const first = currentPoints[0];
+        const last = currentPoints[currentPoints.length - 1];
+        if (currentPoints.length >= 2 && first && last) {
+          const [sx, sy] = first;
+          const [ex, ey] = last;
           const closed = Math.abs(sx - ex) < 0.6 && Math.abs(sy - ey) < 0.6;
           if (painted && closed && currentStartsWithBorderColor) {
             segmentRects.push(rectOf(currentPoints));
@@ -825,9 +830,9 @@ function extractPageGeometry(pdfBytes: Buffer): PageGeometry[] {
           currentPoints.push(applyMat(ctm, Number(tm[9]), Number(tm[10])));
         } else if (tm[11] !== undefined) {
           const nums = [tm[11], tm[12], tm[13], tm[14], tm[15], tm[16]].map(Number);
-          currentPoints.push(applyMat(ctm, nums[0], nums[1]));
-          currentPoints.push(applyMat(ctm, nums[2], nums[3]));
-          currentPoints.push(applyMat(ctm, nums[4], nums[5]));
+          currentPoints.push(applyMat(ctm, nums[0] ?? 0, nums[1] ?? 0));
+          currentPoints.push(applyMat(ctm, nums[2] ?? 0, nums[3] ?? 0));
+          currentPoints.push(applyMat(ctm, nums[4] ?? 0, nums[5] ?? 0));
         } else if (tm[17] !== undefined) {
           currentRG = [Number(tm[17]), Number(tm[18]), Number(tm[19])];
         } else if (tm[20] === "q") {
@@ -1098,9 +1103,10 @@ test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () =>
     for (const [page, rects] of byPage) {
       for (let i = 0; i < rects.length; i++) {
         for (let j = i + 1; j < rects.length; j++) {
-          expect(geomOverlap(rects[i], rects[j]), `第 ${page} 頁區塊 #${i} 與 #${j} 不得重疊`).toBe(
-            false
-          );
+          const ri = rects[i];
+          const rj = rects[j];
+          if (!ri || !rj) throw new Error(`E2E 內部錯誤：矩形索引 ${i}/${j} 越界`);
+          expect(geomOverlap(ri, rj), `第 ${page} 頁區塊 #${i} 與 #${j} 不得重疊`).toBe(false);
         }
       }
     }
@@ -1117,10 +1123,12 @@ test.describe("報表列印版面機械驗證 — PHASE-008-T14 Gate E2E", () =>
     for (const [page, rects] of maintByPage) {
       for (let i = 0; i < rects.length; i++) {
         for (let j = i + 1; j < rects.length; j++) {
-          expect(
-            geomOverlap(rects[i], rects[j]),
-            `保養報表第 ${page} 頁圖片 #${i} 與 #${j} 不得重疊`
-          ).toBe(false);
+          const ri = rects[i];
+          const rj = rects[j];
+          if (!ri || !rj) throw new Error(`E2E 內部錯誤：矩形索引 ${i}/${j} 越界`);
+          expect(geomOverlap(ri, rj), `保養報表第 ${page} 頁圖片 #${i} 與 #${j} 不得重疊`).toBe(
+            false
+          );
         }
       }
     }

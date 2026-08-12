@@ -191,7 +191,9 @@ async function getEffectiveEtcUnitPrice(page: Page, dateStr: string): Promise<nu
     throw new Error(`E2E 前置假設破壞：查無涵蓋 ${dateStr} 之 ETC 版本`);
   }
   candidates.sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1));
-  return Number(candidates[0].unitPrice);
+  const top = candidates[0];
+  if (!top) throw new Error(`E2E 前置假設破壞：查無涵蓋 ${dateStr} 之 ETC 版本`);
+  return Number(top.unitPrice);
 }
 
 /** 以 API 建立一個合成使用者，回傳 { id, loginName, displayName }。 */
@@ -375,7 +377,7 @@ test.describe("油資模型修正 — PHASE-005a Gate E2E（Spec §11.4）", () 
     await expect(row).toHaveCount(1, { timeout: 10000 });
     await expect(row.locator(".status-badge")).toContainText("目前生效");
     await expect(row).toContainText(PARAM_EFFECTIVE_FROM);
-    await expect(row).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE]);
+    await expect(row).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE] ?? "");
   });
 
   // ---- 情境3：staff01 登入 → 個人頁看到油種／油耗／生效日，且無編輯入口 ----
@@ -386,7 +388,7 @@ test.describe("油資模型修正 — PHASE-005a Gate E2E（Spec §11.4）", () 
 
     const section = page.locator(".my-fuel-consumption-section");
     await expect(section).toBeVisible();
-    await expect(section).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE]);
+    await expect(section).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE] ?? "");
     await expect(section).toContainText(STAFF_KM_PER_LITER);
     await expect(section).toContainText(PARAM_EFFECTIVE_FROM);
 

@@ -492,11 +492,11 @@ test.describe("年度折舊補貼（新模型）— PHASE-007-R12 Gate E2E", () 
     expect(snapshot["年度補貼金額（四捨五入後，實際核發）"]).toBe(preview.年度補貼金額);
 
     baselineFive = {
-      annualDepreciation: preview.每年折舊費用,
-      officialKm: preview.年度公務里程,
-      annualTotalKm: preview.年度總里程,
-      ratioPercent: preview.公務比例,
-      amount: preview.年度補貼金額,
+      annualDepreciation: preview.每年折舊費用 ?? "",
+      officialKm: preview.年度公務里程 ?? "",
+      annualTotalKm: preview.年度總里程 ?? "",
+      ratioPercent: preview.公務比例 ?? "",
+      amount: preview.年度補貼金額 ?? "",
     };
 
     // 折舊證明區塊：零附件之唯讀空狀態，無任何上傳／刪除入口（AC-54(b)／AC-42）。
