@@ -33,7 +33,9 @@ cd C:\oilexp-build && COMPOSE_PROJECT_NAME=oilexpense docker compose up -d --bui
 COMPOSE_PROJECT_NAME=oilexpense docker compose ps
 ```
 
-- 預期：`db` 與 `backend` 為 `healthy`；`frontend` 為 `running`（**compose 未替 frontend 定義 healthcheck**，其「可用」以下一步的 HTTP 200 為準——此處據實記載，不宣稱 frontend 有 health 狀態）。
+- 預期：`db`／`backend`／`frontend` **三者皆為 `healthy`**（frontend 之 healthcheck 由 PHASE-011-FR2 補上，`3ca7092`）。
+  - frontend 之健檢指令為 `curl -fsS http://localhost/`（容器內對自己），`start_period` **30s**——**首次 `up` 後約 30~40 秒內顯示 `starting` 屬正常，不是缺陷**；請等它轉 `healthy` 再判定，勿在 30 秒內就判失敗。
+  - ⚠ **判讀界線**：frontend `healthy` **只代表 nginx 正在服務**（SPA fallback 使任意路徑皆回 200），**不代表 `/api` 反向代理通**；前端經 `/api` 打到後端之全鏈證明仍看下一步 §1-2 的 `GET http://localhost:8080/api/health`。
 - 結果：
 
 ### 1-2 健康檢查「正常態」
