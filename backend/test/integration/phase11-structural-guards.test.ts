@@ -1,8 +1,10 @@
 /**
- * PHASE-011 — 結構守門批次（兩組）
+ * PHASE-011 — 結構守門批次（三組）
  *
  *   §D-10   `errorLabel` 反退化守門（PHASE-011-T17／AC-29(d)／D16-1）
  *   §SF-1   `scripts/*.sh` 之 index 執行位元（PHASE-011-FR1／終審 SF-1）
+ *   §FR2   `docker-compose.yml` 三服務 healthcheck 集合斷言（PHASE-011-FR2／
+ *          終審 GATE-011-CONFIRM 列④）
  *
  * ---------------------------------------------------------------------------
  * §D-10 — errorLabel 反退化守門格（AC-29(d)）
@@ -204,5 +206,97 @@ describe("PHASE-011-FR1 §SF-1 — scripts/*.sh 之 index 執行位元（終審 
     expect(entries.length).toBeGreaterThan(0);
     // 在場即可：本格證明的是「.mjs 沒有被斷言」是刻意排除，不是掃描器看不見它。
     expect(entries.map((e) => e.relPath)).toContain("scripts/measure-performance.mjs");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §FR2 — docker-compose.yml 三服務 healthcheck 集合斷言
+// ---------------------------------------------------------------------------
+//
+// 規範出處：PHASE-011 Spec §19 `GATE-011-CONFIRM` 列④（人類 2026-08-12 裁定
+// 「補上」）——`frontend` 服務缺 healthcheck；終審報告原文：
+// 「`grep -n "healthcheck" docker-compose.yml` → :10 (db)、:66 (backend)；
+// frontend 無」。
+//
+// 解析法沿 `phase11-env-secrets.test.ts` §`composeBackendEnvKeys` 之縮排式
+// parser 同型：不引入 YAML 套件，理由同前——本檔只需要「已知服務是否有
+// healthcheck 鍵」，解析失敗的方向是回報 `hasHealthcheck: false` 或漏收服務
+// 名，兩者都會讓下方斷言翻紅，不會靜默放行。
+//
+// **集合斷言之 fail-closed 設計**：先釘死服務名清單為
+// `["db", "backend", "frontend"]`（今日事實），再斷言三者皆
+// `hasHealthcheck: true`。若日後新增第四個服務，`parseComposeServices` 會把
+// 它一併收進回傳陣列，服務名清單的 `toEqual` 斷言即因多一筆而翻紅——不需要
+// 額外維護一份「新服務要不要 healthcheck」的白名單，新服務永遠會先被名單
+// 斷言攔下，逼人類回頭決定是否補健檢或明確排除（射程當下鎖死為 3 服務，不
+// 做「未知第四服務自動要求 healthcheck」之外推）。
+
+const COMPOSE_SOURCE_FOR_HEALTHCHECK = fs.readFileSync(
+  path.join(REPO_ROOT, "docker-compose.yml"),
+  "utf8"
+);
+
+type ComposeService = { readonly name: string; readonly hasHealthcheck: boolean };
+
+/**
+ * 解析 `docker-compose.yml` 之 `services:` 區塊：逐服務回報是否定義
+ * `healthcheck:` 鍵。僅在 `services:`（0 縮排頂層鍵）之下辨識 2 縮排的服務名，
+ * 避免誤收頂層 `volumes:` 區塊底下同縮排的具名項（`pgdata:`／`storage:`）。
+ */
+function parseComposeServices(source: string): ComposeService[] {
+  const lines = source.split(/\r?\n/);
+  const services: ComposeService[] = [];
+  let inServices = false;
+  let current: { name: string; hasHealthcheck: boolean } | null = null;
+
+  const flush = () => {
+    if (current) services.push({ name: current.name, hasHealthcheck: current.hasHealthcheck });
+    current = null;
+  };
+
+  for (const line of lines) {
+    if (/^[A-Za-z0-9_-]+:\s*$/.test(line)) {
+      flush();
+      inServices = line.trim() === "services:";
+      continue;
+    }
+    if (!inServices) continue;
+    if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)) {
+      flush();
+      current = { name: line.trim().replace(/:$/, ""), hasHealthcheck: false };
+      continue;
+    }
+    if (!current) continue;
+    if (/^ {4}healthcheck:\s*$/.test(line)) {
+      current.hasHealthcheck = true;
+    }
+  }
+  flush();
+  return services;
+}
+
+describe("PHASE-011-FR2 §GATE-011-CONFIRM④ — docker-compose.yml 三服務皆定義 healthcheck", () => {
+  it("解析器自身之活性檢查：services 區塊解出恰三個服務", () => {
+    const services = parseComposeServices(COMPOSE_SOURCE_FOR_HEALTHCHECK);
+    expect(services.map((s) => s.name)).toEqual(["db", "backend", "frontend"]);
+  });
+
+  it("db／backend／frontend 三服務皆定義 healthcheck（新增第四服務會先使上一格服務名斷言翻紅）", () => {
+    const services = parseComposeServices(COMPOSE_SOURCE_FOR_HEALTHCHECK);
+    expect(services).toEqual([
+      { name: "db", hasHealthcheck: true },
+      { name: "backend", hasHealthcheck: true },
+      { name: "frontend", hasHealthcheck: true },
+    ]);
+  });
+
+  it("mutant：frontend 缺 healthcheck → 斷言必紅（合成字串，不改真實檔）", () => {
+    const mutated = COMPOSE_SOURCE_FOR_HEALTHCHECK.replace(
+      / {2}frontend:\n(?:.*\n)*? {4}healthcheck:\n(?: {6}.*\n)*/,
+      "  frontend:\n"
+    );
+    const services = parseComposeServices(mutated);
+    const frontend = services.find((s) => s.name === "frontend");
+    expect(frontend?.hasHealthcheck).toBe(false);
   });
 });
