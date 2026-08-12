@@ -1,4 +1,18 @@
 /**
+ * One stored object as returned by `Storage.list()` (PHASE-011-T6).
+ *
+ * Mirrors the subset of an S3 `ListObjectsV2` entry (`Key`/`LastModified`)
+ * that read-only inventory tooling needs — kept minimal, not a general
+ * metadata API.
+ */
+export interface StorageListEntry {
+  /** System-generated storage key (same format as `put`/`get`/`delete`). */
+  readonly key: string;
+  /** Last write time of the object (used to distinguish very-recent writes). */
+  readonly lastModified: Date;
+}
+
+/**
  * Storage interface — PHASE-003 §4.1
  *
  * Abstraction layer for attachment byte storage. Business logic depends only
@@ -51,4 +65,21 @@ export interface Storage {
    * @returns true if the key exists, false otherwise
    */
   exists(key: string): Promise<boolean>;
+
+  /**
+   * List every object currently stored by this instance (PHASE-011-T6,
+   * §16 D5=(c) read-only orphan inventory).
+   *
+   * **Optional** — existing test-only `Storage` implementations (fakes/failure
+   * injectors in `backend/test/integration/`) do not implement this method
+   * and are not required to; only read-only tooling that explicitly needs a
+   * full listing depends on it. Implementations that do provide it must:
+   *   - return only keys in this instance's own accepted format (same
+   *     whitelist as `put`/`get`/`delete` — garbage entries under the root
+   *     that do not match are silently excluded, never surfaced);
+   *   - never mutate anything (pure read).
+   *
+   * @returns All stored objects, each with its storage key and last-write time.
+   */
+  list?(): Promise<StorageListEntry[]>;
 }
