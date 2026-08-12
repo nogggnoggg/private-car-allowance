@@ -5,32 +5,51 @@
  * D2=(a)：本檔刻意讀 workspace 外之 `e2e/`（理由與射程）
  * ---------------------------------------------------------------------------
  * `e2e/` 屬 root workspace（非 `backend`／`frontend`），本檔以 Node 內建
- * `fs`／`path` 直讀 `../../../e2e/*.spec.ts`（相對 `backend/test/unit`），
+ * `fs`／`path` 直讀 `../../../e2e/*.ts`（相對 `backend/test/unit`；語料已依
+ * T17 AR-1 由 `*.spec.ts` 擴為全 `*.ts`，理由見下方「T17 AR-1」節），
  * 沿既有掃描器形狀（`phase10-error-handler-leak.test.ts` 掃 `backend/src`）
  * 僅改讀取根目錄之 `e2e/`。零新增依賴、零新增 CI 步驟、零 DB／瀏覽器依賴，
  * 隨 `npm run test --workspace=backend` 自動執行（見 Spec §16 D2 選項 (a)）。
  * `e2e/` 若整批搬移路徑會導致本檔紅燈——此為刻意行為（見下方涵蓋自證）。
  *
  * ---------------------------------------------------------------------------
+ * T17 AR-1（2026-08-12 即審）：語料由 `*.spec.ts` 擴為 `*.ts`
+ * ---------------------------------------------------------------------------
+ * PHASE-011-T17 之 D-5（E2E helper 抽取）新增 `e2e/helpers.ts`——一個**非**
+ * `.spec.ts` 之 e2e 原始檔。當時射程 `.filter(f => f.endsWith(".spec.ts"))`
+ * 不涵蓋它：今日零風險（`helpers.ts` 零播種日字面），但屬「收斂降低重複、
+ * 同時降低守門覆蓋」之典型副作用——日後若有人把某條播種日常數搬進
+ * `helpers.ts`（例如給多檔共用某個生效日），本守門會**靜默**失去對它的覆
+ * 蓋，而非顯性失敗。修法＝**語料擴充**（比只補「`helpers.ts` 零日期字面」
+ * 一格更強）：`listE2eSourceFiles()` 與涵蓋自證格皆由 `.spec.ts` 改為 `.ts`
+ * （e2e/ 現行為扁平目錄、零子目錄，`*.ts` 等效於 `**\/*.ts`）。`extractSeedEntries`
+ * 本身自始即與副檔名無關（吃 `fileName` 純作標籤用），故此修法**不**改動擷
+ * 取邏輯本身，只擴大被餵入之檔案集合——見下方 mutant ④ 之自證。
+ *
+ * ---------------------------------------------------------------------------
  * 涵蓋（AC-02 六子項逐字，`docs/specs/PHASE-011.md` :190-197）
  * ---------------------------------------------------------------------------
- *   (a) 掃描 `e2e/**\/*.spec.ts` 之全部參數版本播種日字面（油價
- *       `FuelPriceVersion.effectiveFrom`、ETC、折舊、使用者油耗），對每一條
- *       共享時間軸（以「參數類別（＋油種）」為鍵）建立播種日全序清單。
+ *   (a) 掃描 `e2e/**\/*.ts`（T17 AR-1 擴充前為 `*.spec.ts`）之全部參數版本
+ *       播種日字面（油價 `FuelPriceVersion.effectiveFrom`、ETC、折舊、使用
+ *       者油耗），對每一條共享時間軸（以「參數類別（＋油種）」為鍵）建立播
+ *       種日全序清單。
  *   (b) 下界不變式（硬）：任一播種日不得 ≤ `1999-05-05`（＝
  *       `travel-application.spec.ts` :62 `NO_PARAM_TRIP_DATE`）。
  *   (c) 哨兵不變式：`audit-log.spec.ts` 之 `FUEL_PRICE_EFFECTIVE_FROM`
  *       （`fuelPrice:DIESEL` 軸）須嚴格早於同軸其他任一檔之播種日。
- *   (d) 鑑別力自證（三型 mutant，測試內合成字串，不改真實檔）。
- *   (e) 掃描器之涵蓋自證：全 `e2e/` 現行檔案清單 ＝ 掃描器實際解析到的清單。
+ *   (d) 鑑別力自證（四型 mutant，測試內合成字串，不改真實檔；第④型為 T17
+ *       AR-1 新增，證明射程已涵蓋非 `.spec.ts` 之 e2e 原始檔）。
+ *   (e) 掃描器之涵蓋自證：全 `e2e/` 現行 `.ts` 檔案清單 ＝ 掃描器實際解析到
+ *       的清單（T17 AR-1 起含 `helpers.ts` 等非 `.spec.ts` 檔）。
  *   (f) 錯誤訊息逐字含修法指引。
  *
  * ---------------------------------------------------------------------------
  * 擷取器設計與誠實已知限制（沿本專案既有掃描器「據實記載」慣例）
  * ---------------------------------------------------------------------------
  * 本檔不做完整 TS/AST 解析，改以「已知端點 ＋ 已知 UI 選取器前綴 ＋ 一層常數
- * 別名鏈 ＋ 一層函式參數→呼叫端引數回溯」之機械規則，涵蓋現行 13 個 e2e 檔
- * 之全部播種寫法（已逐檔實查）：
+ * 別名鏈 ＋ 一層函式參數→呼叫端引數回溯」之機械規則，涵蓋現行 13 個 `.spec.ts`
+ * 檔（AC-02(a) 之全部播種寫法，已逐檔實查）＋（T17 AR-1 起）`helpers.ts` 之
+ * 全部播種寫法：
  *   ① `page.request.post(...)` 打 4 個已知端點（`/parameters/fuel-price`／
  *      `/parameters/etc`／`/parameters/depreciation`／`/fuel-consumption`），
  *      自其 `data: {...}` 物件字面擷取 `effectiveFrom`／`fuelType`（冒號式或
@@ -45,7 +64,8 @@
  *      函式」之參數名——若是，掃描該函式在檔內之呼叫處，取同位引數（僅解析
  *      引數本身為字面或可鏈式解析之識別字；引數為函式呼叫或運算式者視為
  *      「動態」而略過，因 AC-02(a) 之射程限定「播種日字面」）。一次函式參數
- *      回溯已足以涵蓋現行全部 13 檔（已逐檔核對）。
+ *      回溯已足以涵蓋現行全部 13 個 `.spec.ts` 檔（已逐檔核對）；`helpers.ts`
+ *      同一套規則亦適用（擷取邏輯與副檔名無關，見 T17 AR-1 節）。
  *   ④ 已知不可及（誠實記載，非本 Task 射程）：任意巢狀／型別解構之參數位、
  *      非本檔識別之其他迴圈型樣、跨兩層以上之參數轉呼叫鏈。今日全 e2e/ 無此
  *      用法（逐檔核對），新增此類寫法若同時引入危險播種日，本掃描器可能
@@ -53,12 +73,14 @@
  *      不可漏報」之誠實表述同調。
  *
  * ---------------------------------------------------------------------------
- * 真實檔案逐檔核對結果（實作前人工核對，記入 Handoff）
+ * 真實檔案逐檔核對結果（實作前人工核對，記入 Handoff；T17 AR-1 補查 helpers.ts）
  * ---------------------------------------------------------------------------
- * 全 13 檔之參數播種日字面經人工逐檔核對，現行最早值為 `audit-log.spec.ts`
- * 之哨兵 `2010-01-01`（`fuelPrice:DIESEL` 軸），其餘全數 ≥ `2020-01-01`；
- * 零筆 ≤ `1999-05-05`。故本檔之「真實掃描」測試組（AC-02(b)(c)）預期為
- * 綠燈——若非如此即代表現行 e2e 檔違規（見 Packet Stop Condition (c)）。
+ * 全 13 個 `.spec.ts` 檔之參數播種日字面經人工逐檔核對，現行最早值為
+ * `audit-log.spec.ts` 之哨兵 `2010-01-01`（`fuelPrice:DIESEL` 軸），其餘全數
+ * ≥ `2020-01-01`；零筆 ≤ `1999-05-05`。`helpers.ts`（T17 AR-1 補查）零筆播種
+ * 日字面（`loginAsAdmin`／`generateRunSuffix`／`uploadAttachment` 三函式皆不
+ * 觸碰本掃描器之 4 個已知端點）。故本檔之「真實掃描」測試組（AC-02(b)(c)）
+ * 預期為綠燈——若非如此即代表現行 e2e 檔違規（見 Packet Stop Condition (c)）。
  */
 
 import * as fs from "node:fs";
@@ -537,17 +559,22 @@ function extractSeedEntries(fileName: string, rawContent: string): SeedEntry[] {
 // 檔案列舉與真實掃描
 // ---------------------------------------------------------------------------
 
-function listE2eSpecFiles(): string[] {
+/**
+ * T17 AR-1：語料由 `.spec.ts` 擴為全 `.ts`（`e2e/` 現行扁平、零子目錄，故
+ * `*.ts` 等效於 Packet 所稱之 `**\/*.ts`）——涵蓋 `helpers.ts` 等非 `.spec.ts`
+ * 之 e2e 原始檔，防止播種日常數日後被搬進共用 helper 而使本守門靜默失效。
+ */
+function listE2eSourceFiles(): string[] {
   return fs
     .readdirSync(E2E_DIR)
-    .filter((f) => f.endsWith(".spec.ts"))
+    .filter((f) => f.endsWith(".ts"))
     .sort();
 }
 
 function scanAllRealFiles(): { entries: SeedEntry[]; filesScanned: string[] } {
   const entries: SeedEntry[] = [];
   const filesScanned: string[] = [];
-  for (const file of listE2eSpecFiles()) {
+  for (const file of listE2eSourceFiles()) {
     const content = fs.readFileSync(path.join(E2E_DIR, file), "utf8");
     filesScanned.push(file);
     entries.push(...extractSeedEntries(file, content));
@@ -600,13 +627,22 @@ function formatViolation(v: Violation): string {
 const { entries: realEntries, filesScanned: realFilesScanned } = scanAllRealFiles();
 
 describe("AC-02(e): 掃描器涵蓋自證", () => {
-  it("掃描器實際解析到的檔案清單 ＝ 全 e2e/ 現行 .spec.ts 檔案清單", () => {
+  it("掃描器實際解析到的檔案清單 ＝ 全 e2e/ 現行 .ts 檔案清單（T17 AR-1：含非 .spec.ts 檔）", () => {
     const expected = fs
       .readdirSync(E2E_DIR)
-      .filter((f) => f.endsWith(".spec.ts"))
+      .filter((f) => f.endsWith(".ts"))
       .sort();
     expect(expected.length).toBeGreaterThan(0);
     expect([...realFilesScanned].sort()).toEqual(expected);
+  });
+
+  it("T17 AR-1 涵蓋自證：helpers.ts 確實在掃描清單內", () => {
+    expect(realFilesScanned).toContain("helpers.ts");
+  });
+
+  it("T17 AR-1 誤報自證：helpers.ts 之真實內容零播種日字面命中（非本掃描器射程之 4 端點，天然不中）", () => {
+    const helperEntries = realEntries.filter((e) => e.file === "helpers.ts");
+    expect(helperEntries).toEqual([]);
   });
 });
 
@@ -628,7 +664,7 @@ describe("AC-02(b)(c): 真實掃描——下界與哨兵不變式", () => {
   });
 });
 
-describe("AC-02(d): 鑑別力自證（三型 mutant，測試內合成字串，不改真實檔）", () => {
+describe("AC-02(d): 鑑別力自證（四型 mutant，測試內合成字串，不改真實檔；④為 T17 AR-1 新增）", () => {
   it("①下界 mutant：注入 1990-01-01 之合成播種 → (b) 必紅", () => {
     const mutantContent = [
       'const MUTANT_LOWER_EFFECTIVE_FROM = "1990-01-01";',
@@ -692,6 +728,28 @@ describe("AC-02(d): 鑑別力自證（三型 mutant，測試內合成字串，�
     const combined = [...realEntries, ...mutantEntries];
     expect(checkLowerBound(combined)).toEqual([]);
     expect(checkSentinel(combined)).toEqual([]);
+  });
+
+  it("④ T17 AR-1：合成 helpers.ts（非 .spec.ts）內之壞播種日 → 掃描器仍必紅（證明語料擴充後之非 .spec.ts e2e 原始檔亦受守門）", () => {
+    const mutantContent = [
+      'const MUTANT_HELPER_EFFECTIVE_FROM = "1990-03-01";',
+      "export async function seedMutantFromHelper(page: Page): Promise<void> {",
+      "  await page.request.post(`${API_BASE}/parameters/etc`, {",
+      "    data: { unitPrice: 1.0, effectiveFrom: MUTANT_HELPER_EFFECTIVE_FROM },",
+      "  });",
+      "}",
+    ].join("\n");
+    // 檔名故意用 "helpers.ts"（非 .spec.ts）——驗證 extractSeedEntries 本身
+    // 自始即與副檔名無關（過濾邏輯只在 listE2eSourceFiles，非此函式），故
+    // T17 AR-1 之修法（擴大被餵入之檔案集合）足以使此類壞播種日必紅。
+    const mutantEntries = extractSeedEntries("helpers.ts", mutantContent);
+    expect(mutantEntries.length).toBe(1);
+    expect(mutantEntries[0].date).toBe("1990-03-01");
+
+    const violations = checkLowerBound([...realEntries, ...mutantEntries]);
+    expect(violations.length).toBe(1);
+    expect(violations[0].file).toBe("helpers.ts");
+    expect(violations[0].date).toBe("1990-03-01");
   });
 });
 
