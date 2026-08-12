@@ -1,5 +1,11 @@
 /**
- * PHASE-011-T17 — 結構守門批次（AC-29(d)／D16-1／D-10）
+ * PHASE-011 — 結構守門批次（兩組）
+ *
+ *   §D-10   `errorLabel` 反退化守門（PHASE-011-T17／AC-29(d)／D16-1）
+ *   §SF-1   `scripts/*.sh` 之 index 執行位元（PHASE-011-FR1／終審 SF-1）
+ *
+ * ---------------------------------------------------------------------------
+ * §D-10 — errorLabel 反退化守門格（AC-29(d)）
  *
  * ---------------------------------------------------------------------------
  * 規範出處（`docs/specs/PHASE-011.md`，逐字引用）
@@ -31,7 +37,36 @@
  * 恆回報 1 筆，mutant 案例會先失敗於「不等於 2」）；確認 mutant 案例綠燈
  * （掃描器正確回報 2 筆）後，才回頭確認真實 `backend/src` 目前恰一處（1 筆，
  * 即 `platform/error-label.ts`）。兩者皆綠即完整覆蓋本 AC 之正負兩面。
+ *
+ * ---------------------------------------------------------------------------
+ * §SF-1 — `scripts/*.sh` 之 index 執行位元（PHASE-011 終審 SF-1）
+ * ---------------------------------------------------------------------------
+ * 三支維運腳本（`backup.sh`／`verify-restore.sh`／`verify-persistence.sh`）入庫
+ * 時為 mode `100644`。**在部署目標平台（Linux）上這是壞的**：`RUNBOOK.md` :73
+ * 與 :86 皆以裸路徑呼叫（`scripts/backup.sh`），且排程（cron／平台 Job）依 shebang
+ * 執行——644 必然 `Permission denied`。
+ *
+ * **既有測試為何沒攔下來**：`phase11-backup-restore.test.ts` 一律以
+ * `execFileSync("bash", [script, …])` 呼叫，把腳本當**資料**餵給 `bash`，這條路徑
+ * 不需要執行位元，故守門與真實呼叫形之間有落差。本格補的正是那道落差。
+ *
+ * **為何讀 git index 而非檔案系統**：開發機為 Windows，NTFS 無 POSIX 執行位元，
+ * `fs.statSync().mode` 對每個檔案都回同一組值——以 fs 判定會得到**恆真或恆假**的
+ * 無效斷言。真正會被部署端 `git clone` 取出的是 **index 裡的 mode**，故以
+ * `git ls-files -s scripts/` 為唯一事實來源。
+ *
+ * **射程（據實界定，不過度宣稱）**：只斷言 `scripts/` 下 `.sh` 副檔名者。
+ * `measure-performance.mjs` **明確排除**——它經 `node scripts/measure-performance.mjs`
+ * 呼叫（`RUNBOOK` 與其檔頭用法皆為此形），直譯器在命令列上，不需要執行位元；
+ * 對它斷言 755 會是一條沒有需求支撐的斷言。本格另有一則涵蓋自證格，確認掃描
+ * 確實走訪到該 `.mjs`（防「掃描器射程窄化到看不見它」被誤讀為「它不存在」）。
+ *
+ * **mutant 自證（PHASE-011-FR1 實跑）**：先在 mode 仍為 100644 時跑本格 → 紅
+ * （逐檔列出 `100644`）；`git update-index --chmod=+x` 三支後 → 綠；再把
+ * `verify-persistence.sh` 單獨 `--chmod=-x` → 該格再紅（證明不是恆真）；還原
+ * `--chmod=+x` → 綠。
  */
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +74,8 @@ import { describe, expect, it } from "vitest";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_SRC_DIR = path.resolve(__dirname, "../../src");
+/** 倉庫根（`backend/test/integration` → 上三層）——`git ls-files` 之執行位置。 */
+const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 type SourceFile = { readonly relPath: string; readonly content: string };
 
@@ -117,5 +154,55 @@ describe("PHASE-011-T17 §D-10 — errorLabel 反退化守門格（AC-29(d)）",
     }
     expect(listSrcFiles(BACKEND_SRC_DIR).length).toBe(countTsFiles(BACKEND_SRC_DIR));
     expect(listSrcFiles(BACKEND_SRC_DIR).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §SF-1 — scripts/*.sh 之 index 執行位元
+// ---------------------------------------------------------------------------
+
+type IndexEntry = { readonly mode: string; readonly relPath: string };
+
+/**
+ * `git ls-files -s scripts/` 之逐行解析：`<mode> <object> <stage>\t<path>`。
+ * 讀的是 **git index**，不是檔案系統——理由見檔頭 §SF-1。
+ */
+function listScriptIndexEntries(): IndexEntry[] {
+  const stdout = execFileSync("git", ["ls-files", "-s", "scripts/"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  const entries: IndexEntry[] = [];
+  for (const line of stdout.split("\n")) {
+    const m = /^(\d{6}) [0-9a-f]{40} \d\t(.+)$/.exec(line.trimEnd());
+    if (m) entries.push({ mode: m[1], relPath: m[2] });
+  }
+  return entries;
+}
+
+describe("PHASE-011-FR1 §SF-1 — scripts/*.sh 之 index 執行位元（終審 SF-1）", () => {
+  it("三支維運腳本於 git index 之 mode 皆為 100755（644 在 Linux 上必然 Permission denied）", () => {
+    const shEntries = listScriptIndexEntries()
+      .filter((e) => e.relPath.endsWith(".sh"))
+      .sort((a, b) => a.relPath.localeCompare(b.relPath));
+
+    // 集合本身也釘死：日後新增一支 .sh 而忘了給執行位元，會落在這裡而不是靜默通過。
+    expect(shEntries.map((e) => e.relPath)).toEqual([
+      "scripts/backup.sh",
+      "scripts/verify-persistence.sh",
+      "scripts/verify-restore.sh",
+    ]);
+    expect(shEntries.map((e) => `${e.relPath}=${e.mode}`)).toEqual([
+      "scripts/backup.sh=100755",
+      "scripts/verify-persistence.sh=100755",
+      "scripts/verify-restore.sh=100755",
+    ]);
+  });
+
+  it("涵蓋自證：掃描確實走訪到 measure-performance.mjs（其執行位元刻意不斷言——經 node 呼叫）", () => {
+    const entries = listScriptIndexEntries();
+    expect(entries.length).toBeGreaterThan(0);
+    // 在場即可：本格證明的是「.mjs 沒有被斷言」是刻意排除，不是掃描器看不見它。
+    expect(entries.map((e) => e.relPath)).toContain("scripts/measure-performance.mjs");
   });
 });
