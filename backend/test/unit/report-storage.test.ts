@@ -233,7 +233,14 @@ describe('LocalVolumeStorage — default prefixes parameter stays ["att"]', () =
 
 describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 nginx location 靜態直出", () => {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const NGINX_CONF_PATH = path.resolve(__dirname, "..", "..", "..", "frontend", "nginx.conf");
+  const NGINX_CONF_PATH = path.resolve(
+    __dirname,
+    "..",
+    "..",
+    "..",
+    "frontend",
+    "nginx.conf.template"
+  );
 
   const VOLUME_LITERALS = ["/data/storage", "att/", "rpt/"];
 
@@ -307,7 +314,7 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     const blocks = parseLocations(confText);
     const apiBlock = blocks.find((b) => b.pattern === "/api/");
     expect(apiBlock).toBeDefined();
-    expect(apiBlock?.body).toMatch(/proxy_pass\s+http:\/\/backend:3000\//);
+    expect(apiBlock?.body).toMatch(/proxy_pass\s+http:\/\/\$BACKEND_UPSTREAM\//);
   });
 
   it("AC-26: nginx.conf 現況零 location 之 root/alias 指向 storage/report volume 路徑", () => {

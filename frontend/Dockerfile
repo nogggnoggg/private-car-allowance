@@ -28,8 +28,14 @@ FROM nginx:stable AS runtime
 # Copy built assets
 COPY --from=builder /app/frontend/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx configuration as a template: the nginx:stable base image's
+# entrypoint (/docker-entrypoint.d/20-envsubst-on-templates.sh, run before
+# `exec "$@"`) runs envsubst on every /etc/nginx/templates/*.template file
+# and writes the result to /etc/nginx/conf.d/ under the same base name.
+# BACKEND_UPSTREAM defaults to the docker-compose service name; override at
+# deploy time (e.g. Zeabur's <service>.zeabur.internal:3000).
+ENV BACKEND_UPSTREAM=backend:3000
+COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
 
 EXPOSE 80
 

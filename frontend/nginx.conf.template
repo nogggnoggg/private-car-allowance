@@ -12,8 +12,13 @@ server {
 
     # Reverse proxy /api/* to backend, stripping the /api prefix
     # e.g. /api/health -> http://backend:3000/health
+    # BACKEND_UPSTREAM is substituted by the nginx:stable entrypoint's
+    # envsubst-on-templates step (this file lives at /etc/nginx/templates/
+    # default.conf.template in the image); default value baked into the
+    # image via ENV BACKEND_UPSTREAM=backend:3000 in frontend/Dockerfile,
+    # overridable at deploy time (e.g. Zeabur's <service>.zeabur.internal).
     location /api/ {
-        proxy_pass http://backend:3000/;
+        proxy_pass http://$BACKEND_UPSTREAM/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
