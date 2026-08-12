@@ -530,6 +530,16 @@ describe("PHASE-011-T18 §4 AC-30(c) 未經裁定不得改同交易 — 記載�
     // 業務寫入同交易，僅帳號類五事件經 `writeAudit` 走非交易之 best-effort 路徑。
     // 任何人把五處改成同交易（或反向擴散 fire-and-forget），本格即紅，強迫他回到
     // §16 D16-5 重新取得人類裁定。
+    //
+    // PHASE-011-T18R（AR-4）翻紅之後怎麼辦，兩種情形不同：
+    //   · **合法新增（或移除）同交易稽核站點**（本格與 D16-5 之語意無關）：同批更新
+    //     此處三個數字 ＋ `phase10-audit-structure.test.ts` 之 `AUDIT_CREATE_SITE_BASELINE`
+    //     ＋ `phase11-attachment-cleanup.test.ts` 之 `DECLARED_AUDIT_WRITE_SITES`
+    //     （三處互為佐證：同交易 ＋ fire-and-forget ＝ 站點總數），並於 commit message
+    //     說明新增之站點與理由。**不需**回 §16。
+    //   · **改變 fire-and-forget 之語意本身**（把帳號類五事件改成同交易、或把 best-effort
+    //     擴散到其他站點）：屬 AC-30(c) 之範圍，**必須**先回 §16 D16-5 取得人類裁定，
+    //     不得逕行改數字消紅。
     expect(countAuditShapesInSrc()).toEqual({
       sameTransaction: 12,
       fireAndForget: 1,

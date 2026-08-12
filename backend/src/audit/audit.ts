@@ -89,6 +89,12 @@ export async function writeAudit(params: WriteAuditParams): Promise<void> {
     // 10 值封閉列舉、零自由文字、零 PII，故不受 AC-30(d) 之限制，卻能答回
     // 「是哪一類稽核寫失敗」這個在 T16 拿掉 err.message 之後失去的脈絡。
     // 刻意**不**記 targetLabel／targetId（帳號名與識別碼），亦不記 detail。
+    // PHASE-011-T18R（AR-2）：下面這個三元式**刻意 inline**——勿抽成 `err*`／
+    // `error*`（或含 exception／cause 字樣）開頭之變數再當位置引數傳入
+    // `console.*`：那會誤觸 L1 之 B2 位置引數判準，使
+    // `test/integration/phase10-error-handler-leak.test.ts` 之檔案集合封閉格翻紅。
+    // 屆時正確修法是改回不含錯誤字樣的寫法，**不是**把本檔加進白名單——
+    // 白名單只可縮不可擴（AC-28(f)，擴張須人類批准）。
     console.error(
       "[audit] Failed to write AuditLog:",
       action,
