@@ -49,7 +49,7 @@ production 下 Cookie 屬性集為固定值：`HttpOnly` ∧ `SameSite=Lax` ∧ 
 
 **健康檢查不涵蓋 storage**（`docs/specs/PHASE-011.md` §17.1 #12，D9=(a) 刻意設計）：附件／報表存放的 volume 不可寫時，`/health` 仍然回 `200`——因為重啟這個行為對 volume 故障沒有任何幫助。儲存故障的偵測方式見下方 **(h) 故障處置**，不要以為 `/health` 綠燈就代表儲存正常。
 
-`docker-compose.yml` 對 `db`／`backend` 兩服務皆定義了 `healthcheck`（`db` 用 `pg_isready`，`backend` 用容器內對自己 `/health` 的請求）；**`frontend` 未定義 `healthcheck`**，它的可用性以人工執行 `curl -i http://localhost:8080/api/health` 應回 `200` 來判斷，不宣稱 compose 對 frontend 有機械化的健康狀態。
+`docker-compose.yml` 對 `db`／`backend`／`frontend` 三服務皆定義了 `healthcheck`（`db` 用 `pg_isready`，`backend` 用容器內對自己 `/health` 的請求，`frontend` 用容器內對自己 `curl -fsS http://localhost/` 的請求——`frontend` 之 healthcheck 由 PHASE-011-FR2 補上，`3ca7092`，先前本節此處記載其未定義健檢已過時）。frontend 之 healthcheck **只證明 nginx 正在服務**（SPA fallback 使任意路徑皆回 200），**不證明 `/api` 反向代理通**；`/api` 全鏈是否可用仍以人工執行 `curl -i http://localhost:8080/api/health` 應回 `200` 來判斷。
 
 ### 測試環境隔離（`TEST_DB_ISOLATION`）之維運禁令
 

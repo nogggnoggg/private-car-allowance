@@ -107,6 +107,8 @@
    **`<backend 服務名>` 以 Zeabur 後台 §3 建立時實際顯示的服務名為準**——Zeabur 私網主機名格式固定為 `<服務名>.zeabur.internal`（DEPLOY-ZB-T1 背景研究引官方 docs deploy/private-networking，本 Task 未重新查證原文，僅轉引；部署當天若行為與此不符，以 Zeabur 當下實際文件為準並回報）。官方警語重點：**改服務名不改主機名**——即服務改名後，主機名會跟著變（因為主機名本來就是由服務名當下的值組成），若之前已把舊主機名寫死在別處會失效；**不是**「主機名一旦產生就固定不再隨服務改名而變」。
    
    埠號 `3000` 需與 §3-2 之 backend `PORT`（預設 3000，未覆寫）一致。
+
+   **不需另外設定** `NGINX_ENVSUBST_FILTER`（DEPLOY-ZB-T2 SF-6 硬化）：`frontend/Dockerfile` 已將其烘進映像預設值 `^BACKEND_UPSTREAM$`，把 nginx entrypoint 之 envsubst 代換範圍限縮到僅 `BACKEND_UPSTREAM` 一個變數——避免 Zeabur 平台或其他來源注入的環境變數若恰好同名於 nginx 內建變數（如 `host`／`uri`／`scheme`）而被靜默誤代換。此為映像層防線，部署當天無需在 Zeabur 後台額外設定。
 3. 綁定公開網域：Zeabur 提供的 `*.zeabur.app` 子網域，或使用者自有網域（現場決定，見 §0）。
 
 - 判定準則：frontend 服務建置成功且啟動；容器內 `/etc/nginx/conf.d/default.conf` 之 `proxy_pass` 應解析為 `http://<backend 服務名>.zeabur.internal:3000/`（Zeabur 若提供服務終端機，可比照 DEPLOY-ZB-T1R 本機驗證手法 `cat /etc/nginx/conf.d/default.conf` 核對；若無終端機介面，以 §5 之 `/api/health` 全鏈是否連通作為間接證明）。

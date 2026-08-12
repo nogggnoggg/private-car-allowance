@@ -1,6 +1,14 @@
 /**
  * Unit tests for storage/local-volume-storage.ts — PHASE-008-T8a (AC-26)
  *
+ * Also hosts two later, unrelated structural guard suites appended at the
+ * bottom of this file (not about local-volume-storage.ts itself): the
+ * `frontend/nginx.conf.template` AC-26 location-block scan (PHASE-008-T14R),
+ * and the `frontend/Dockerfile` / `docker-compose.yml` default-value guard
+ * (DEPLOY-ZB-T2, AR-11) — both piggyback here rather than in a new file
+ * because they share this file's zero-DB/zero-network structural-scan style
+ * and existing `fs`/`path` imports.
+ *
  * Scope (Spec §9.4, §11.2, D6, AC-26):
  *   - Key whitelist is parameterised via constructor option `{ prefixes: string[] }`,
  *     default remains `["att"]` — existing `storage.test.ts` MUST stay untouched
@@ -226,12 +234,12 @@ describe('LocalVolumeStorage — default prefixes parameter stays ["att"]', () =
 });
 
 // AC-26 末句（Spec §229 逐字）: PDF 位元組一律經後端授權端點回傳，volume 不得由
-// nginx 靜態直出（結構性斷言：nginx.conf 無 volume 路徑之 location）。掃描字面取
+// nginx 靜態直出（結構性斷言：nginx.conf.template 無 volume 路徑之 location）。掃描字面取
 // 自 docker-compose.yml（STORAGE_PATH 預設 /data/storage）與 .env.example（D4/D6
 // 之 att/ rpt/ 金鑰前綴）。取捨見 Handoff：解析 location 區塊逐一查 root/alias，
 // 優於裸字面 grep（可精確定位命中位置、不誤判 proxy_pass／註解文字）。
 
-describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 nginx location 靜態直出", () => {
+describe("AC-26: nginx.conf.template 結構性斷言 — PDF/附件 volume 不得由 nginx location 靜態直出", () => {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const NGINX_CONF_PATH = path.resolve(
     __dirname,
@@ -260,7 +268,7 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
       const bodyStart = match.index + match[0].length;
       const closeIdx = confText.indexOf("}", bodyStart);
       if (closeIdx === -1) {
-        throw new Error(`nginx.conf: location ${pattern} 缺少對應的 '}'`);
+        throw new Error(`nginx.conf.template: location ${pattern} 缺少對應的 '}'`);
       }
       blocks.push({ pattern, body: confText.slice(bodyStart, closeIdx) });
     }
@@ -309,7 +317,7 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     assertNoVolumeLiteral(confText, source);
   }
 
-  it("正向對照：nginx.conf 存在 /api proxy 之 location 區塊（證明解析器確實讀到並解析了 location，非恆真）", () => {
+  it("正向對照：nginx.conf.template 存在 /api proxy 之 location 區塊（證明解析器確實讀到並解析了 location，非恆真）", () => {
     const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
     const blocks = parseLocations(confText);
     const apiBlock = blocks.find((b) => b.pattern === "/api/");
@@ -317,14 +325,14 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     expect(apiBlock?.body).toMatch(/proxy_pass\s+http:\/\/\$BACKEND_UPSTREAM\//);
   });
 
-  it("AC-26: nginx.conf 現況零 location 之 root/alias 指向 storage/report volume 路徑", () => {
+  it("AC-26: nginx.conf.template 現況零 location 之 root/alias 指向 storage/report volume 路徑", () => {
     const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
-    expect(() => assertNoVolumeLocation(confText, "frontend/nginx.conf")).not.toThrow();
+    expect(() => assertNoVolumeLocation(confText, "frontend/nginx.conf.template")).not.toThrow();
   });
 
-  it("AC-26: nginx.conf 現況全文字面零命中 volume 路徑（全檔字面兜底之正向對照）", () => {
+  it("AC-26: nginx.conf.template 現況全文字面零命中 volume 路徑（全檔字面兜底之正向對照）", () => {
     const confText = fs.readFileSync(NGINX_CONF_PATH, "utf8");
-    expect(() => assertNoVolumeLiteral(confText, "frontend/nginx.conf")).not.toThrow();
+    expect(() => assertNoVolumeLiteral(confText, "frontend/nginx.conf.template")).not.toThrow();
   });
 
   it("鑑別力自證（mutant）：加入直出 volume 路徑的 location 後，斷言邏輯必須偵測並拋錯", () => {
@@ -373,5 +381,71 @@ describe("AC-26: nginx.conf 結構性斷言 — PDF/附件 volume 不得由 ngin
     expect(() => assertNoVolumeExposure(mutated, "mutant-N3")).toThrow(
       /疑似直出 volume 路徑|檔案全文出現疑似 volume 路徑字面/
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AR-11 — frontend/Dockerfile 與 docker-compose.yml 之預設值在場守門
+// ---------------------------------------------------------------------------
+//
+// 規範出處：DEPLOY-ZB-T2 複審 AR-11（採納）。防兩類退化：①`frontend/Dockerfile`
+// 之 `ENV BACKEND_UPSTREAM=backend:3000` 若被移除，裸 `docker run`（未經
+// compose 之 `environment:` 覆寫）會渲染出 `proxy_pass http:///;`（空上游）而
+// nginx 啟動即失敗；同批一併釘死 SF-6 之 `ENV NGINX_ENVSUBST_FILTER=
+// ^BACKEND_UPSTREAM$`（見同檔 Dockerfile 之硬化說明——限縮 envsubst 代換範圍，
+// 避免注入之環境變數同名巧合覆寫 nginx 內建變數如 $host/$uri/$scheme）。
+// ②`docker-compose.yml` 之 `frontend.environment.BACKEND_UPSTREAM` 若失去
+// `:-backend:3000` 後援，`.env` 未設該變數時 compose 會把空字串傳入容器，同型
+// 故障。三格皆為結構性字面在場檢查（零 docker 依賴、零磁碟寫入），各配一條
+// mutant 自證，防「格子本身失效仍恆綠」。
+describe("AR-11: frontend/Dockerfile 與 docker-compose.yml 之預設值在場守門", () => {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const DOCKERFILE_PATH = path.resolve(__dirname, "..", "..", "..", "frontend", "Dockerfile");
+  const COMPOSE_PATH = path.resolve(__dirname, "..", "..", "..", "docker-compose.yml");
+
+  const BACKEND_UPSTREAM_DEFAULT_RE = /^ENV BACKEND_UPSTREAM=backend:3000$/m;
+  const ENVSUBST_FILTER_RE = /^ENV NGINX_ENVSUBST_FILTER=\^BACKEND_UPSTREAM\$$/m;
+  const COMPOSE_FALLBACK_RE = /BACKEND_UPSTREAM:\s*\$\{BACKEND_UPSTREAM:-backend:3000\}/;
+
+  it("frontend/Dockerfile 含 ENV BACKEND_UPSTREAM=backend:3000（本機／裸 docker run 之預設上游）", () => {
+    const dockerfileText = fs.readFileSync(DOCKERFILE_PATH, "utf8");
+    expect(dockerfileText).toMatch(BACKEND_UPSTREAM_DEFAULT_RE);
+  });
+
+  it("frontend/Dockerfile 含 ENV NGINX_ENVSUBST_FILTER=^BACKEND_UPSTREAM$（SF-6：限縮 envsubst 代換範圍至目標變數）", () => {
+    const dockerfileText = fs.readFileSync(DOCKERFILE_PATH, "utf8");
+    expect(dockerfileText).toMatch(ENVSUBST_FILTER_RE);
+  });
+
+  it("docker-compose.yml frontend 服務之 BACKEND_UPSTREAM 帶 :-backend:3000 後援", () => {
+    const composeText = fs.readFileSync(COMPOSE_PATH, "utf8");
+    expect(composeText).toMatch(COMPOSE_FALLBACK_RE);
+  });
+
+  it("鑑別力自證（mutant）：拿掉 Dockerfile 之 ENV BACKEND_UPSTREAM 行 → 對應格必紅（防恆真）", () => {
+    const dockerfileText = fs.readFileSync(DOCKERFILE_PATH, "utf8");
+    const mutated = dockerfileText.replace(/^ENV BACKEND_UPSTREAM=backend:3000\n/m, "");
+    expect(mutated).not.toBe(dockerfileText);
+    expect(mutated).not.toMatch(BACKEND_UPSTREAM_DEFAULT_RE);
+  });
+
+  it("鑑別力自證（mutant）：拿掉 Dockerfile 之 ENV NGINX_ENVSUBST_FILTER 行 → 對應格必紅（防恆真）", () => {
+    const dockerfileText = fs.readFileSync(DOCKERFILE_PATH, "utf8");
+    const mutated = dockerfileText.replace(
+      /^ENV NGINX_ENVSUBST_FILTER=\^BACKEND_UPSTREAM\$\n/m,
+      ""
+    );
+    expect(mutated).not.toBe(dockerfileText);
+    expect(mutated).not.toMatch(ENVSUBST_FILTER_RE);
+  });
+
+  it("鑑別力自證（mutant）：拿掉 docker-compose.yml 之 :-backend:3000 後援 → 對應格必紅（防恆真）", () => {
+    const composeText = fs.readFileSync(COMPOSE_PATH, "utf8");
+    const mutated = composeText.replace(
+      "BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:3000}",
+      "BACKEND_UPSTREAM: ${BACKEND_UPSTREAM}"
+    );
+    expect(mutated).not.toBe(composeText);
+    expect(mutated).not.toMatch(COMPOSE_FALLBACK_RE);
   });
 });
