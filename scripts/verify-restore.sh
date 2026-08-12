@@ -28,10 +28,16 @@
 # ---------------------------------------------------------------------------
 # 不可逆動作之前置（§11.0 #3／T12 硬規則②：先全驗後執行）
 # ---------------------------------------------------------------------------
-# 本檔會 `CREATE DATABASE` 與 `DROP DATABASE`。三道前置，全部在建立之前完成：
+# 本檔會 `CREATE DATABASE` 與 `DROP DATABASE`。**四道**前置，全部在建立之前完成：
 #   ①**B-19 三元組守門**（host＋db＋schema 與正式相同 → 拒跑；判準在 TS）；
-#   ②**目標庫不得已存在**——已存在即拒跑，**絕不覆寫**任何既有資料庫；
-#   ③`DROP` 只對「本次執行親手建立的那一個名字」發出（`CREATED_DB` 為空即不刪），
+#   ②**三個識別字之形狀檢查**——目標庫名、目標 schema、**要驗的 schema**
+#     （`RESTORE_VERIFY_SCHEMA`，預設取來源之 `schema=`）須為單純小寫識別字。
+#     **T13R SF-1**：這一道原本落在 `sql-*` 子命令裡，而那些跑在建庫與整份
+#     `pg_restore` **之後**——即審以 `RESTORE_VERIFY_SCHEMA='Bad-Schema'` 實測，
+#     庫建好了、還原也跑完了才拒，且紀錄之階段歸屬失真。形狀檢查零 I/O，
+#     沒有任何理由排在不可逆動作後面，現已全部併入 `check-target`；
+#   ③**目標庫不得已存在**——已存在即拒跑，**絕不覆寫**任何既有資料庫；
+#   ④`DROP` 只對「本次執行親手建立的那一個名字」發出（`CREATED_DB` 為空即不刪），
 #     且刪除前再比對一次它不等於來源庫名。守門攔截時零刪除。
 #
 # ---------------------------------------------------------------------------
@@ -66,6 +72,14 @@
 #    `migration-tail-differs-from-source`——那代表這份備份還原回來的 schema 已
 #    對不上今天的程式，是個真的該留紀錄的發現，不是誤報。處置歸 Runbook（改用
 #    較新的備份重跑）。
+# ④ **同實例之資源／磁碟風險（T13R SF-3）**：`RESTORE_TARGET_DATABASE_URL` 預設
+#    多半與來源指向**同一個 PostgreSQL 實例**（本檔對此不作限制，B-19 只要求庫名
+#    ／schema 不同）。那意味著每月演練期間，該實例上會**瞬間多出一份全庫副本**，
+#    佔用等量磁碟直到 `DROP`；正式 volume 若已近水位，**一次演練就足以把正式服務
+#    寫爆**。本檔不驗證容量，也無法在還原中途安全回頭。**建議以
+#    `RESTORE_PG_CONTAINER` 指向一個獨立實例**（或至少獨立磁碟）；沿用同實例時，
+#    演練前之可用空間檢核與時段選擇歸 Runbook（T14）。這條與 AC-21 的「備份不落在
+#    正式資料樹內」是同一個道理的另一面：守門管的是路徑，管不到容量。
 #
 # ---------------------------------------------------------------------------
 # 平台前提（同 `backup.sh`，D11-1(a) 之已知代價）
@@ -101,7 +115,10 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="PHASE-011-T13/1"
+# T13R 之四項修法（形狀檢查上移至不可逆動作之前／降級綠燈換摘要碼／中斷紀錄記
+# 實際結束碼與實際階段／同實例資源風險入檔頭）改變了本腳本的**行為與產物**，
+# 故版號同步進位——沿 `backup.sh` 之 `SCRIPT_VERSION` 慣例。
+SCRIPT_VERSION="PHASE-011-T13/2"
 
 log() { printf '[verify-restore] %s\n' "$*"; }
 
@@ -112,6 +129,9 @@ BACKUP_ID="unknown"
 EVIDENCE="full"
 RECORD_WRITTEN=0
 COMPLETED=0
+# 中斷時之階段歸屬（T13R AR-2）：硬編 `guard` 會讓「還原到一半被 Ctrl-C」與
+# 「前置守門就拒了」在紀錄上長得一樣。逐段推進，中斷紀錄取當下值。
+CURRENT_STAGE="guard"
 SRC_DB=""
 TGT_DB=""
 TGT_CONTAINER=""
@@ -203,12 +223,19 @@ drop_target() {
 }
 
 cleanup() {
+  # **T13R AR-2**：`$?` 必須在 trap 一進來就取——下面每一個命令都會覆寫它。原本
+  # 中斷紀錄把結束碼硬編成 1，與行程實際回給排程器的碼可以不一致（即審探針實測：
+  # 紀錄 1、實出 2），排障時對不上。
+  local rc=$?
   drop_target
   if [ -n "$TMP_WORK" ] && [ -d "$TMP_WORK" ]; then rm -rf "$TMP_WORK" 2>/dev/null || true; fi
   # 半途中斷（Ctrl-C／排程器 timeout）同樣是一次「沒跑完」的演練，必須留下紀錄，
   # 否則稽核時看不出這個月試過但被打斷（AC-24(a) 之同一理由）。
   if [ "$COMPLETED" -eq 0 ] && [ "$RECORD_WRITTEN" -eq 0 ]; then
-    write_record "guard" "verification-interrupted" 1
+    # 沒跑完卻回 0 是不該發生的組合；真出現時記 1，不讓一筆 `exitCode: 0` 的
+    # 中斷紀錄被當成成功（AC-24(a) 之「非零結束碼」不得被繞過）。
+    if [ "$rc" -eq 0 ]; then rc=1; fi
+    write_record "$CURRENT_STAGE" "verification-interrupted" "$rc"
   fi
 }
 trap cleanup EXIT
@@ -240,12 +267,16 @@ TMP_WORK=$(mktemp -d 2>/dev/null) || {
 ERR_FILE="$TMP_WORK/tool.err"
 
 # ---------------------------------------------------------------------------
-# 3. 前置守門（B-19 三元組；判準在 TS）
+# 3. 前置守門（B-19 三元組 ＋ 三個識別字之形狀；判準在 TS）
 # ---------------------------------------------------------------------------
+# **T13R SF-1**：`RESTORE_VERIFY_SCHEMA` 一併在這裡交出去驗形狀並取回有效值——
+# 它是使用者可覆寫的值，形狀不對時必須在**建庫之前**就拒。本檔因此不自行套用
+# 「沒設就用來源 schema」這條預設（那會讓有效值有兩份來源而可能漂移）。
 
 TARGET_SETTINGS=$(printf '%s\n' \
   "DATABASE_URL=$DATABASE_URL" \
-  "RESTORE_TARGET_DATABASE_URL=$RESTORE_TARGET_DATABASE_URL")
+  "RESTORE_TARGET_DATABASE_URL=$RESTORE_TARGET_DATABASE_URL" \
+  "RESTORE_VERIFY_SCHEMA=${RESTORE_VERIFY_SCHEMA:-}")
 
 if ! TARGET_INFO=$(printf '%s\n' "$TARGET_SETTINGS" | "${CHECK_CMD[@]}" check-target 2>"$ERR_FILE"); then
   GUARD_MSG=$(cat "$ERR_FILE" 2>/dev/null || true)
@@ -257,12 +288,12 @@ SRC_HOST=$(field "$TARGET_INFO" "src.host")
 SRC_PORT=$(field "$TARGET_INFO" "src.port")
 SRC_USER=$(field "$TARGET_INFO" "src.user")
 SRC_DB=$(field "$TARGET_INFO" "src.db")
-SRC_SCHEMA=$(field "$TARGET_INFO" "src.schema")
 TGT_HOST=$(field "$TARGET_INFO" "tgt.host")
 TGT_PORT=$(field "$TARGET_INFO" "tgt.port")
 TGT_USER=$(field "$TARGET_INFO" "tgt.user")
 TGT_DB=$(field "$TARGET_INFO" "tgt.db")
-VERIFY_SCHEMA="${RESTORE_VERIFY_SCHEMA:-$SRC_SCHEMA}"
+# 有效值來自判準端（已驗形狀）——本檔零推導（T13R SF-1）。
+VERIFY_SCHEMA=$(field "$TARGET_INFO" "verify.schema")
 
 # ---------------------------------------------------------------------------
 # 4. 找出承載來源與目標之容器（同 `backup.sh` :244 之探索法）
@@ -314,6 +345,7 @@ log "start id=$BACKUP_ID evidence=$EVIDENCE schema-scope=RESTORE_VERIFY_SCHEMA v
 # 在 `CREATE DATABASE` 之前，損毀備份就不會在實例上留下半個空庫（B-20 之兩個
 # mutant 各自證明了這條順序：改位元組者連庫都沒建，截斷 tar 者建了但被 trap 刪掉）。
 
+CURRENT_STAGE="a"
 EXPECTED_DB_SHA=$(field "$PICK_INFO" "sha.db.dump")
 ACTUAL_DB_SHA=$(sha256_of "$BACKUP_DIR/db.dump")
 if [ "$EXPECTED_DB_SHA" != "$ACTUAL_DB_SHA" ]; then
@@ -363,6 +395,7 @@ log "(a) db-opened=yes migration-tail=match"
 # 7. ②「附件可讀取」（AC-23(b)／B-21）
 # ---------------------------------------------------------------------------
 
+CURRENT_STAGE="b"
 PARTS_VERIFIED=1 # db.dump 已於 ① 驗過
 for archive in attachments reports; do
   expected=$(field "$PICK_INFO" "sha.$archive.tar")
@@ -421,6 +454,7 @@ fi
 # 8. ③「主要資料關聯存在」（AC-23(c)；D13=(a)+(b) 併用）
 # ---------------------------------------------------------------------------
 
+CURRENT_STAGE="c"
 RELATION_SQL=$(printf '%s\n' "RESTORE_VERIFY_SCHEMA=$VERIFY_SCHEMA" | "${CHECK_CMD[@]}" sql-relations)
 if ! RELATION_ROWS=$(docker exec -i "$TGT_CONTAINER" psql -U "$TGT_USER" -d "$TGT_DB" -tAc "$RELATION_SQL" 2>/dev/null); then
   fail "c" "relation-query-failed"
@@ -440,5 +474,17 @@ log "(c) $(printf '%s' "$RELATION_OUT" | sed -n '1p')"
 # ---------------------------------------------------------------------------
 
 COMPLETED=1
-write_record "none" "all-three-confirmations-passed" 0
-log "done id=$BACKUP_ID result=pass evidence=$EVIDENCE"
+CURRENT_STAGE="none"
+
+# **T13R SF-2**：成功摘要依證據等級二選一。`evidence` 一旦不是 `full`，就有某一項
+# 確認**沒有真的執行**（今日唯一的入口是 `RESTORE_ALLOW_INCOMPLETE_SAMPLE=1` 之下
+# 的 (b) 項），此時再寫「三項全過」，主欄位本身就是假的——而那個旗標一旦常設在
+# 排程器的 env 裡，這句假話會每個月靜默重複一次。摘要與證據之耦合另由 `record`
+# 判準雙向釘死，本檔選錯碼會被它擋下來（寫不出紀錄，不會靜默通過）。
+if [ "$EVIDENCE" = "full" ]; then
+  PASS_SUMMARY="all-three-confirmations-passed"
+else
+  PASS_SUMMARY="confirmations-passed-with-degraded-evidence"
+fi
+write_record "none" "$PASS_SUMMARY" 0
+log "done id=$BACKUP_ID result=pass summary=$PASS_SUMMARY evidence=$EVIDENCE"

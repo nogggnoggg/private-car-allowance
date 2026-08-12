@@ -92,6 +92,7 @@ export type RecordStage = (typeof RECORD_STAGES)[number];
 /** AC-24(a) 之「失敗摘要」封閉集合（見檔頭訊息紀律）。 */
 export const SUMMARY_CODES = [
   "all-three-confirmations-passed",
+  "confirmations-passed-with-degraded-evidence",
   "restore-target-equals-source",
   "restore-target-unusable",
   "restore-target-database-exists",
@@ -119,6 +120,19 @@ export type SummaryCode = (typeof SUMMARY_CODES)[number];
 /** 證據降級標記（可並存；皆無 → `full`）。 */
 export const EVIDENCE_TOKENS = ["coverage-unverified", "sample-incomplete"] as const;
 export const EVIDENCE_FULL = "full";
+
+/**
+ * 成功摘要**兩碼**，依證據等級二選一（**T13R SF-2**）。
+ *
+ * 為什麼要兩碼而不是一碼配一個旗標欄：即審實測，`RESTORE_ALLOW_INCOMPLETE_SAMPLE=1`
+ * ＋ 抽樣不可得時，(b) 項**全程未執行**，紀錄卻寫著 `all-three-confirmations-passed`
+ * ——「三項全過」這句話在主欄位上就是假的，可辨識性全靠第六欄。而那個旗標一旦常設
+ * 在排程器的 env 裡，這個失真就會**每個月靜默發生一次**。故：`evidence` 一旦不是
+ * `full`，成功摘要必須換碼，讓**單看 `summary` 一欄**就知道這次演練不是完整的三項。
+ * 兩者之耦合由 `formatVerificationRecord` 雙向釘死，不是靠腳本自律。
+ */
+export const SUMMARY_PASSED_FULL = "all-three-confirmations-passed";
+export const SUMMARY_PASSED_DEGRADED = "confirmations-passed-with-degraded-evidence";
 
 /** AC-24(a) 逐字之五欄 ＋ 第六欄之證據等級（M-6+M-8；見檔頭）。 */
 export const RECORD_REQUIRED_FIELDS = [
@@ -173,6 +187,21 @@ export function formatVerificationRecord(
   );
   if (tokens.length === 0 || !known) {
     return { ok: false, message: "record evidence must be 'full' or known degradation tokens" };
+  }
+  // **T13R SF-2 之雙向耦合**：成功摘要與證據等級必須一致，兩個方向都擋。
+  // 只擋一邊沒有用——漏掉哪一邊，「三項全過」這句話就能在該邊被寫成假的。
+  const full = input.evidence === EVIDENCE_FULL;
+  if (input.summary === SUMMARY_PASSED_FULL && !full) {
+    return {
+      ok: false,
+      message: `record summary '${SUMMARY_PASSED_FULL}' requires evidence '${EVIDENCE_FULL}' (use '${SUMMARY_PASSED_DEGRADED}')`,
+    };
+  }
+  if (input.summary === SUMMARY_PASSED_DEGRADED && full) {
+    return {
+      ok: false,
+      message: `record summary '${SUMMARY_PASSED_DEGRADED}' must not be used with evidence '${EVIDENCE_FULL}'`,
+    };
   }
   // 欄位順序固定：紀錄檔是給人讀的，欄序漂移會讓 `diff` 與目視對照全部失效。
   return {
@@ -240,9 +269,15 @@ export type TargetRejection = "restore-target-equals-source" | "restore-target-u
  * 「誤擋」那一側。（Packet 轉述為 `host,port,db`，與 Spec 原文不同，依治理以
  * Spec 為準——差異已記入 Handoff。）
  *
- * 另有兩道與三元組無關但同等必要的形狀守門：目標之資料庫名與 schema 名須為安全
- * 識別字（本工具要把它嵌進 `CREATE DATABASE`／`DROP DATABASE`），任一條不合即
- * `restore-target-unusable`。
+ * 另有三道與三元組無關但同等必要的**形狀**守門：目標之資料庫名與 schema 名、
+ * **以及來源之 schema 名**，須為安全識別字（本工具要把它們嵌進 `CREATE DATABASE`
+ * ／`DROP DATABASE` 與查詢），任一條不合即 `restore-target-unusable`。
+ *
+ * **T13R SF-1**：來源 schema 這一道原本不在這裡——它落在 `sql-*` 子命令裡，而那些
+ * 子命令跑在 `CREATE DATABASE` 與整份 `pg_restore` **之後**。即審實測
+ * `RESTORE_VERIFY_SCHEMA='Bad-Schema'`：庫建好了、整份還原也跑完了才拒，且紀錄之
+ * 階段歸屬失真。一個「不可逆動作先全驗後執行」的工具不該把任何一道形狀檢查留在
+ * 動手之後——形狀檢查零成本、零 I/O，沒有任何理由排在建庫後面。
  */
 export function evaluateRestoreTarget(args: {
   readonly sourceUrl: string;
@@ -282,6 +317,13 @@ export function evaluateRestoreTarget(args: {
       ok: false,
       code: "restore-target-unusable",
       message: `${TARGET_URL_ENV} database/schema name is not a plain lower-case identifier`,
+    };
+  }
+  if (!SAFE_IDENTIFIER.test(source.schema)) {
+    return {
+      ok: false,
+      code: "restore-target-unusable",
+      message: `${SOURCE_URL_ENV} schema name is not a plain lower-case identifier`,
     };
   }
   return { ok: true, source, target };
@@ -751,9 +793,24 @@ export function runRestoreCheckCli(
     });
     if (!verdict.ok) return reject(verdict.code, verdict.message);
     const { source, target } = verdict;
+    // **T13R SF-1**：要驗哪個 schema 也在這裡定案並驗形狀——`RESTORE_VERIFY_SCHEMA`
+    // 是**使用者可覆寫**的值，它的形狀檢查若留在 `sql-*`（建庫之後）就會出現
+    // 「庫建了、整份還原跑完了才拒」。本子命令是唯一一個保證跑在任何不可逆動作
+    // 之前的判準入口，故有效值由它算出並回傳，腳本不自行推導。
+    const overrideSchema = settings[VERIFY_SCHEMA_ENV];
+    const verifySchema =
+      overrideSchema === undefined || overrideSchema.trim() === ""
+        ? source.schema
+        : overrideSchema.trim();
+    if (!SAFE_IDENTIFIER.test(verifySchema)) {
+      return reject(
+        "restore-target-unusable",
+        `${VERIFY_SCHEMA_ENV} is not a plain lower-case identifier`
+      );
+    }
     return {
       code: CHECK_EXIT_OK,
-      stdout: `target-ok src.host=${source.host} src.port=${source.port} src.user=${source.user} src.db=${source.database} src.schema=${source.schema} tgt.host=${target.host} tgt.port=${target.port} tgt.user=${target.user} tgt.db=${target.database}\n`,
+      stdout: `target-ok src.host=${source.host} src.port=${source.port} src.user=${source.user} src.db=${source.database} src.schema=${source.schema} tgt.host=${target.host} tgt.port=${target.port} tgt.user=${target.user} tgt.db=${target.database} verify.schema=${verifySchema}\n`,
       stderr: "",
     };
   }

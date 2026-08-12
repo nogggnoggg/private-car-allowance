@@ -888,6 +888,9 @@ const T13_SCRATCH = `${T13_TAG}_scratch`;
 let t13Prisma: PrismaClient;
 let t13BackupId = "";
 let t13TargetSeq = 0;
+/** 修正版申請之 id ＋ 其 `supersedesId`（T13R SF-2 之降級 fixture 要暫時解開這條關係）。 */
+let t13RevisionAppId = "";
+let t13SupersedesId = "";
 
 interface VerifyTarget {
   readonly db: string;
@@ -1035,6 +1038,8 @@ async function seedT13() {
 
   const origin = await makeTravel("origin");
   const revision = await makeTravel("revision", origin.app.id);
+  t13RevisionAppId = revision.app.id;
+  t13SupersedesId = origin.app.id;
 
   const attach = async (label: string, segmentId: string) => {
     const id = `${label}${T13_RUN}`;
@@ -1501,6 +1506,152 @@ describeWithDb("PHASE-011-T13 — 還原驗證流程（AC-23／AC-24）", () => 
     expect(last.evidence.split(",").sort()).toEqual(["coverage-unverified", "sample-incomplete"]);
     expect(databaseExists(target.db)).toBe(false);
   }, 600_000);
+
+  // =========================================================================
+  // T13R 即審修法（SF-1／SF-2／AR-2）
+  // =========================================================================
+
+  it("T13R SF-1: schema 形狀不合 → 在 CREATE DATABASE **之前**即拒（不可逆動作先全驗後執行）", () => {
+    // 即審實測之缺口：形狀檢查原本落在 `sql-*` 子命令，跑在建庫與整份 pg_restore
+    // 之後——`Bad-Schema` 會讓腳本先建庫、先還原完，才以 EXIT 2 收場，且紀錄之
+    // 階段歸屬失真（stage=guard summary=verification-interrupted）。
+    for (const [label, overrides] of [
+      ["RESTORE_VERIFY_SCHEMA 覆寫值", { RESTORE_VERIFY_SCHEMA: "Bad-Schema" }],
+      ["來源 URL 之 schema 參數", { DATABASE_URL: sourceUrlWithSchema("Bad-Schema") }],
+    ] as const) {
+      const target = nextVerifyTarget();
+      const before = readRecords().length;
+      const run = runVerify(target, overrides);
+      const output = `${run.stdout}${run.stderr}`;
+
+      expect(run.status, label).not.toBe(0);
+      // **關鍵鑑別**：`databaseExists === false` 單獨不足（用畢刪除後也是 false）。
+      // 「建庫之前就拒」的物證是：連 `target=created` 這行都不曾印出。
+      expect(output, label).not.toMatch(/target=created/);
+      expect(output, label).not.toMatch(/\(a\) db-opened/);
+      expect(output, label).toMatch(/stage=guard summary=restore-target-unusable/);
+      expect(databaseExists(target.db), label).toBe(false);
+
+      // 階段歸屬正確：不再是 verification-interrupted
+      const record = readRecords().at(-1) as VerificationRecord;
+      expect(readRecords()).toHaveLength(before + 1);
+      expect(record.stage, label).toBe("guard");
+      expect(record.summary, label).toBe("restore-target-unusable");
+      expect(record.exitCode, label).not.toBe(0);
+    }
+
+    // 不誤傷：合法之明示 schema 覆寫（＝來源同一個）仍走完整流程並通過
+    const okTarget = nextVerifyTarget();
+    const ok = runVerify(okTarget, {
+      RESTORE_VERIFY_SCHEMA: new URL(DB_URL as string).searchParams.get("schema") as string,
+    });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toMatch(/target=created/);
+    expect(ok.stdout).toMatch(/result=pass/);
+    expect(databaseExists(okTarget.db)).toBe(false);
+  }, 600_000);
+
+  it("T13R SF-2: 降級綠燈路徑之摘要必換碼（(b) 未執行時不得宣稱三項全過）", async () => {
+    // fixture：暫時解開「修正版」關係 → 抽樣湊不出修正版副本，但 (a)(c) 完全正常。
+    // 這是旗標之綠燈路徑，即審指出它原本 EXIT 0 ＋ summary=all-three-confirmations-passed。
+    await t13Prisma.application.update({
+      where: { id: t13RevisionAppId },
+      data: { supersedesId: null },
+    });
+    try {
+      const dest = path.join(T13_TMP, "degraded-pass-dest");
+      fs.mkdirSync(dest, { recursive: true });
+      execFileSync("bash", [BACKUP_SCRIPT], {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          BACKUP_DEST_ROOT: dest,
+          ATTACHMENT_STORAGE_ROOT: T13_ATT,
+          REPORT_STORAGE_ROOT: T13_RPT,
+        },
+        encoding: "utf8",
+        timeout: 240_000,
+      });
+
+      const target = nextVerifyTarget();
+      const run = runVerify(target, { RESTORE_ALLOW_INCOMPLETE_SAMPLE: "1" }, dest);
+
+      expect(run.status).toBe(0); // (a)(c) 過、(b) 以明示承認放行
+      expect(run.stdout).toMatch(/allow-incomplete=yes/);
+      expect(run.stdout).toMatch(/\(c\) relations/); // (c) 確實跑過
+      expect(run.stdout).toMatch(/summary=confirmations-passed-with-degraded-evidence/);
+      expect(run.stdout).not.toMatch(/summary=all-three-confirmations-passed/);
+
+      const record = readRecords().at(-1) as VerificationRecord;
+      expect(record.exitCode).toBe(0);
+      expect(record.stage).toBe("none");
+      // **單看 summary 一欄**就知道這次不是完整的三項（不必倚賴第六欄）
+      expect(record.summary).toBe("confirmations-passed-with-degraded-evidence");
+      expect(record.evidence).toBe("sample-incomplete");
+      expect(databaseExists(target.db)).toBe(false);
+    } finally {
+      await t13Prisma.application.update({
+        where: { id: t13RevisionAppId },
+        data: { supersedesId: t13SupersedesId },
+      });
+    }
+  }, 600_000);
+
+  it("T13R SF-2 反向 ＋ AR-2: 完整證據仍用原碼；中斷紀錄之結束碼與階段取實際值（結構）", () => {
+    // 反向：主跑之 evidence=full，摘要仍為原碼（新碼不得把原碼吃掉）
+    expect(mainRun.stdout).toMatch(/summary=all-three-confirmations-passed/);
+    const full = readRecords().find((r) => r.exitCode === 0 && r.evidence === "full");
+    expect(full?.summary).toBe("all-three-confirmations-passed");
+
+    // 兩碼之耦合由判準端雙向釘死（腳本選錯碼會寫不出紀錄，不會靜默通過）
+    const base = {
+      timestamp: "2026-08-12T00:00:00Z",
+      backupId: "20260812T000000Z",
+      stage: "none",
+      exitCode: 0,
+    };
+    expect(
+      formatVerificationRecord({
+        ...base,
+        summary: "all-three-confirmations-passed",
+        evidence: "sample-incomplete",
+      }).ok
+    ).toBe(false);
+    expect(
+      formatVerificationRecord({
+        ...base,
+        summary: "confirmations-passed-with-degraded-evidence",
+        evidence: "full",
+      }).ok
+    ).toBe(false);
+    expect(
+      formatVerificationRecord({
+        ...base,
+        summary: "confirmations-passed-with-degraded-evidence",
+        evidence: "coverage-unverified,sample-incomplete",
+      }).ok
+    ).toBe(true);
+
+    // AR-2 **結構斷言（據實：非行為格）**——SIGINT 在 Windows dev 上無法穩定投遞給
+    // bash 子行程，故此處以結構釘死「cleanup 一進來就取 $?、並把它傳給 write_record」，
+    // 不宣稱已以實跑中斷證明。
+    const code = fs
+      .readFileSync(VERIFY_SCRIPT, "utf8")
+      .replace(/\\\n\s*/g, " ")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    const cleanupBody = /cleanup\(\) \{[\s\S]*?\n\}/.exec(code);
+    expect(cleanupBody).not.toBeNull();
+    const body = (cleanupBody as RegExpExecArray)[0];
+    expect(body).toMatch(/^\s*local rc=\$\?/m); // 第一件事就取，之後每個命令都會覆寫它
+    expect(body).toMatch(/write_record "\$CURRENT_STAGE" "verification-interrupted" "\$rc"/);
+    expect(body).not.toMatch(/verification-interrupted" 1/); // 硬編 1 不得再出現
+    // 階段隨流程推進（中斷時之歸屬才不會全部落在 guard）
+    for (const stage of ['CURRENT_STAGE="a"', 'CURRENT_STAGE="b"', 'CURRENT_STAGE="c"']) {
+      expect(code).toContain(stage);
+    }
+  });
 
   // =========================================================================
   // 判準之鑑別力（mutant 自證；D13 之完整性守門與走廊條款皆非恆真）
