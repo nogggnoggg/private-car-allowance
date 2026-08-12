@@ -45,6 +45,13 @@
 # 對路徑、`att/`／`rpt/` 之完整 key 一律不印——那是七類禁字的第四、五類
 # （`DATA_FLOW.md` :565③）。要對照設定值請看自己的 `.env`，不是看排程器日誌。
 #
+# **T12R SF-4 之修法與其代價（據實記載）**：上面這句原本只對本檔自己的 `log`／`die`
+# 成立——外部工具的 stderr 會直接穿透，`tar: /tmp/…/live/att: Cannot open` 逐字把絕對
+# 路徑印了出去（reviewer 實測）。現在 `pg_dump`／`psql`／`tar` 的 stderr 一律導入
+# `/dev/null`，失敗改由本檔以**變數名**回報（與 AC-21(b) 同一紀律）。**代價是失敗時
+# 少了外部工具的原文診斷**：這是刻意的取捨（沿 PHASE-010-T9「兜底不記例外原文，正解
+# 是具名日誌」之裁定）。排障方式歸 Runbook——以相同 env 手動跑該工具一次即可看到原文。
+#
 # ---------------------------------------------------------------------------
 # ⚠ 射程限制（**不得被誤讀**，Spec §17.1 ／ D12 逐字）
 # ---------------------------------------------------------------------------
@@ -73,9 +80,13 @@
 #   BACKUP_RETENTION_DAYS   選用，預設 14；**< 14 拒絕啟動**（AC-20(c)）
 #   BACKUP_PGDATA_PATH      選用；PG data 目錄之主機路徑（設了才納入守門比對）
 #   BACKUP_PG_CONTAINER     選用；指定 DB 容器名（非 localhost 目標時**必要**）
+#   BACKUP_ALLOW_EMPTY      選用；`1` ＝明示承認「四來源鍵集為空、涵蓋自檢無對象」
+#                           而仍要備份（空庫之初始備份）。**預設拒跑**——見下方 §7
+#                           之 T12R SF-1；放行時日誌與 manifest 皆帶 allow-empty 標記。
 #
 # 結束碼：0＝備份完成且自檢通過；非 0＝任一步失敗（**失敗時本次的半成品備份目錄
-# 會被刪除**——半份備份留在目的地會被下一次的保留期清理當成一份真備份計數）。
+# 會被刪除**——半份備份留在目的地會被下一次的保留期清理當成一份真備份計數；
+# 該清理於 EXIT／INT／TERM 三條路徑上都會執行，見 `cleanup`）。
 #
 # ⚠ bash 陷阱紀律（PHASE-011-T10 三犯之教訓，見 `verify-persistence.sh` 檔頭）：
 #   本檔一律 `if ! cmd; then die; fi` 或 `X=$(cmd) || die`，**不寫 `cmd && die`**
@@ -105,7 +116,12 @@ cleanup() {
     log "incomplete backup directory removed"
   fi
 }
+# **T12R AR-2**：只掛 EXIT 時，Ctrl-C／排程器 timeout 送來的 INT／TERM 會讓 bash 直接
+# 收攤而**不跑** EXIT trap，半成品備份目錄與中繼檔就留在目的地了（檔頭 :77-78 自己點名
+# 的危害）。改為把兩個訊號轉成正常的 `exit`，EXIT trap 因而必然執行、清理只有一份實作。
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------
 # 0. 前置：必要 env 與外部工具
@@ -251,19 +267,20 @@ log "start id=$BACKUP_ID container=$PG_CONTAINER schema=$DB_SCHEMA"
 # 6. ①DB 全庫（AC-19(a)）②att/（AC-19(b)）③rpt/（AC-19(c)）
 # ---------------------------------------------------------------------------
 
-if ! docker exec "$PG_CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$WORK_DIR/db.dump"; then
+if ! docker exec "$PG_CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc \
+  > "$WORK_DIR/db.dump" 2>/dev/null; then
   die "pg_dump failed"
 fi
 log "part db-dump bytes=$(bytes_of "$WORK_DIR/db.dump")"
 
 # `-cf -` ＋ 重導向而非 `-f <檔名>`：tar 會把含 `:` 的檔名當成遠端主機（Windows
 # 的 `C:/…` 必踩），走 stdout 就完全繞開那條解析。
-if ! tar -C "$ATTACHMENT_STORAGE_ROOT" -cf - . > "$WORK_DIR/attachments.tar"; then
+if ! tar -C "$ATTACHMENT_STORAGE_ROOT" -cf - . > "$WORK_DIR/attachments.tar" 2>/dev/null; then
   die "tar of ATTACHMENT_STORAGE_ROOT failed"
 fi
 log "part attachments bytes=$(bytes_of "$WORK_DIR/attachments.tar")"
 
-if ! tar -C "$REPORT_STORAGE_ROOT" -cf - . > "$WORK_DIR/reports.tar"; then
+if ! tar -C "$REPORT_STORAGE_ROOT" -cf - . > "$WORK_DIR/reports.tar" 2>/dev/null; then
   die "tar of REPORT_STORAGE_ROOT failed"
 fi
 log "part reports bytes=$(bytes_of "$WORK_DIR/reports.tar")"
@@ -282,14 +299,21 @@ UNION ALL SELECT \"storageKey\" FROM \"$DB_SCHEMA\".\"Report\"
 UNION ALL SELECT \"storageKey\" FROM \"$DB_SCHEMA\".\"VoidedReportFile\""
 
 if ! docker exec "$PG_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$COVERAGE_SQL" \
-  > "$TMP_WORK/keys.txt"; then
+  > "$TMP_WORK/keys.txt" 2>/dev/null; then
   die "coverage query failed"
 fi
 
-{
-  tar -tf - < "$WORK_DIR/attachments.tar"
-  tar -tf - < "$WORK_DIR/reports.tar"
-} | sed -e 's#^\./##' -e '/\/$/d' > "$TMP_WORK/entries.txt" || die "cannot list archive entries"
+# **T12R SF-2**：原本兩個 `tar -tf` 包在 `{ …; …; } | sed > f || die` 裡——那是
+# **群組**的語意：第一個 tar 失敗時，群組的結束碼取自最後一個命令，`|| die` 不觸發、
+# `set -e` 不觸發、`pipefail` 也只看 pipeline 最後一段，於是「只列到一半的條目清單」
+# 會被當成完整清單拿去比對，**缺席的鍵反而全數判定為在場**。逐個列、逐個守門。
+: > "$TMP_WORK/entries.txt"
+for archive in attachments reports; do
+  if ! tar -tf - < "$WORK_DIR/$archive.tar" 2>/dev/null \
+    | sed -e 's#^\./##' -e '/\/$/d' >> "$TMP_WORK/entries.txt"; then
+    die "cannot list archive entries: $archive"
+  fi
+done
 
 KEYS_TOTAL=0
 KEYS_MISSING=0
@@ -303,7 +327,25 @@ while IFS= read -r key; do
 done < "$TMP_WORK/keys.txt"
 
 KEYS_PRESENT=$((KEYS_TOTAL - KEYS_MISSING))
-log "coverage: sources=4 keys=$KEYS_TOTAL present=$KEYS_PRESENT missing=$KEYS_MISSING"
+ALLOW_EMPTY_APPLIED=false
+
+# **T12R SF-1（fail-closed）**：四來源鍵集為空時，`missing=0` 會讓自檢**恆真**——
+# 日誌形狀與真正驗證過的那一次一模一樣（reviewer 以 `?schema=` 指向空 schema 實測：
+# keys=0／missing=0／exit 0，還產出兩份空 tar）。「沒有東西可驗」不得與「驗過了都在」
+# 同結局，故預設**拒跑**；確為空庫初始備份時，由維運人員以 `BACKUP_ALLOW_EMPTY=1`
+# **明示承認**，且該次備份於日誌與 manifest 皆帶 `allow-empty` 標記使產物可辨識。
+if [ "$KEYS_TOTAL" -eq 0 ]; then
+  if [ "${BACKUP_ALLOW_EMPTY:-}" = "1" ]; then
+    ALLOW_EMPTY_APPLIED=true
+    log "coverage: sources=4 keys=0 present=0 missing=0 allow-empty=yes (unverifiable coverage, explicitly acknowledged)"
+  else
+    log "coverage: sources=4 keys=0 present=0 missing=0"
+    die "coverage self-check has nothing to verify: the four key sources are empty. Check the DATABASE_URL schema and the storage roots; if this really is an initial backup of an empty database, acknowledge it explicitly with BACKUP_ALLOW_EMPTY=1"
+  fi
+else
+  log "coverage: sources=4 keys=$KEYS_TOTAL present=$KEYS_PRESENT missing=$KEYS_MISSING"
+fi
+
 if [ "$KEYS_MISSING" -ne 0 ]; then
   # 刻意不印是哪一個 key（AC-22(b) 之 storageKey 禁字）——查法見 Runbook。
   die "coverage self-check failed: missing=$KEYS_MISSING of $KEYS_TOTAL (AC-19(d))"
@@ -313,7 +355,7 @@ fi
 # 8. manifest（AC-19(e) 六欄：時間戳／涵蓋範圍／各部分／位元組數／雜湊／工具版本）
 # ---------------------------------------------------------------------------
 
-PG_DUMP_VERSION=$(docker exec "$PG_CONTAINER" pg_dump --version | awk '{print $3}' | tr -d '"\\')
+PG_DUMP_VERSION=$(docker exec "$PG_CONTAINER" pg_dump --version 2>/dev/null | awk '{print $3}' | tr -d '"\\')
 TAR_VERSION=$(tar --version 2>/dev/null | sed -n '1p' | tr -d '"\\')
 
 manifest_part() {   # $1=name $2=scope $3=file
@@ -333,8 +375,11 @@ manifest_part() {   # $1=name $2=scope $3=file
   printf '  ],\n'
   printf '  "tools": { "pg_dump": "%s", "tar": "%s", "script": "%s" },\n' \
     "$PG_DUMP_VERSION" "$TAR_VERSION" "$SCRIPT_VERSION"
-  printf '  "coverage": { "keys": %s, "present": %s, "missing": %s },\n' \
-    "$KEYS_TOTAL" "$KEYS_PRESENT" "$KEYS_MISSING"
+  # `allowEmpty`＝這份備份的涵蓋自檢**無可驗證之對象**（四來源鍵集為空），由維運人員
+  # 明示承認而放行（T12R SF-1）。寫進 manifest 使產物自身可辨識——否則一份「沒驗過」
+  # 的備份與一份「驗過都在」的備份在檔案層完全長得一樣。
+  printf '  "coverage": { "keys": %s, "present": %s, "missing": %s, "allowEmpty": %s },\n' \
+    "$KEYS_TOTAL" "$KEYS_PRESENT" "$KEYS_MISSING" "$ALLOW_EMPTY_APPLIED"
   printf '  "retentionDays": %s\n' "$RETENTION_DAYS"
   printf '}\n'
 } > "$WORK_DIR/manifest.json" || die "cannot write manifest"
@@ -348,20 +393,30 @@ COMPLETED=1
 
 REMOVE_LIST=$(policy_settings | "${POLICY_CMD[@]}" plan-retention) || die "retention planning failed"
 
-REMOVED=0
+# **T12R AR-1：先全部驗完，通過才開始刪。**
+# 原本是邊驗邊刪：清單第 3 筆撞上防呆而中止時，第 1、2 筆**已經刪掉了**——一個不可逆
+# 刪除工具不該把「守門攔截」變成「刪了一半」。§11.0 #3 的紀律要求兩階段：
+#   階段一（唯讀）三重防呆逐筆驗證，任一筆不合格即中止，**此時零刪除**；
+#   階段二 才動 `rm`。
+VALIDATED_IDS=()
 while IFS= read -r id; do
   id="${id%$'\r'}"
   if [ -z "$id" ]; then continue; fi
   # 三重防呆（不可逆刪除）：形狀、不是本次剛做好的那份、確實是個目錄。
   case "$id" in
-    *[!0-9A-Za-z]*) die "refusing to remove an unexpected directory name" ;;
+    *[!0-9A-Za-z]*) die "refusing to remove an unexpected directory name (nothing has been removed)" ;;
   esac
-  if [ "$id" = "$BACKUP_ID" ]; then die "retention plan targeted the backup just created"; fi
-  if [ -d "$BACKUP_DEST_ROOT/$id" ]; then
-    rm -rf "${BACKUP_DEST_ROOT:?}/$id"
-    REMOVED=$((REMOVED + 1))
+  if [ "$id" = "$BACKUP_ID" ]; then
+    die "retention plan targeted the backup just created (nothing has been removed)"
   fi
+  if [ -d "$BACKUP_DEST_ROOT/$id" ]; then VALIDATED_IDS+=("$id"); fi
 done <<< "$REMOVE_LIST"
+
+REMOVED=0
+for id in ${VALIDATED_IDS[@]+"${VALIDATED_IDS[@]}"}; do
+  rm -rf "${BACKUP_DEST_ROOT:?}/$id"
+  REMOVED=$((REMOVED + 1))
+done
 
 log "retention: days=$RETENTION_DAYS removed=$REMOVED"
 log "done id=$BACKUP_ID parts=3"

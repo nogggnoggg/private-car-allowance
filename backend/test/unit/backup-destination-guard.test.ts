@@ -107,6 +107,26 @@ describe("PHASE-011-T12 — AC-21: 目的地路徑樹守門", () => {
     expect(verdict.violations).toEqual([{ envName: REPORT_ROOT_ENV, relation: "same-path" }]);
   });
 
+  it("(a)／T12R SF-3 目的地為**磁碟根**（最極端之祖先關係）→ 必拒", () => {
+    // `path.resolve()` 只有對磁碟根會留下尾分隔符（`C:\`／`/`），使祖先判定式
+    // `protected.startsWith(dest + sep)` 變成比 `C:\\`／`//` 而落空——**把備份
+    // 目的地設成整顆磁碟根反而被放行**。此格釘死該邊界（T12R SF-3 之回歸格）。
+    const diskRoot = path.parse(ATT_ROOT).root;
+    const verdict = evaluateDestination({ destination: diskRoot, protectedRoots: PROTECTED });
+
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.violations).toEqual([
+      { envName: ATTACHMENT_ROOT_ENV, relation: "ancestor-of-protected" },
+      { envName: REPORT_ROOT_ENV, relation: "ancestor-of-protected" },
+    ]);
+
+    // 尾分隔符之有無不得改變判決（`C:\` 與 `C:` 是同一個地方）
+    const withoutTrailing = diskRoot.endsWith(path.sep) ? diskRoot.slice(0, -1) : diskRoot;
+    expect(
+      evaluateDestination({ destination: withoutTrailing, protectedRoots: PROTECTED }).violations
+    ).toEqual(verdict.violations);
+  });
+
   it("(a) 名字前綴相同但不是後裔者不得誤擋（`att` vs `att-backup`）", () => {
     const verdict = evaluateDestination({
       destination: `${ATT_ROOT}-backup`,

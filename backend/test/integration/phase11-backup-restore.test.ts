@@ -96,6 +96,16 @@ let backupId = "";
 let backupDir = "";
 let firstRunStdout = "";
 
+/**
+ * T12R SF-1 專用之**空 schema**：四張來源表都在、但一列都沒有。
+ *
+ * 刻意不借用某個 `vitest_w<N>`（那是別的 worker 的地盤，它有沒有列不由本檔決定，
+ * 借來當「空」的前提隨時會失效）。命名刻意落在 `WORKER_SCHEMA_PATTERN`
+ * （`^vitest_w[0-9]+$`）之外，避免撞上 INFRA-001 的孤兒清理正則——沿
+ * `infra002-schema-drift.test.ts` 之 scratch-schema 紀律。
+ */
+const EMPTY_SCHEMA = `t12r_empty_${RUN_ID}`;
+
 // ---------------------------------------------------------------------------
 // 腳本執行 helper
 // ---------------------------------------------------------------------------
@@ -341,6 +351,26 @@ async function seed() {
   });
 }
 
+/**
+ * 建 T12R SF-1 之空 schema：只造涵蓋查詢會讀到的那幾個欄位，不複製整份 schema
+ * ——本 fixture 的用途是「四來源鍵集為空」，不是模擬一個可用的資料庫。
+ */
+async function createEmptySchema() {
+  await prisma.$executeRawUnsafe(`CREATE SCHEMA IF NOT EXISTS "${EMPTY_SCHEMA}"`);
+  await prisma.$executeRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "${EMPTY_SCHEMA}"."Attachment" ("storageKey" text, "thumbnailKey" text)`
+  );
+  for (const table of ["Report", "VoidedReportFile"]) {
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "${EMPTY_SCHEMA}"."${table}" ("storageKey" text)`
+    );
+  }
+}
+
+async function dropEmptySchema() {
+  await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${EMPTY_SCHEMA}" CASCADE`);
+}
+
 async function cleanupSeed() {
   await prisma.voidedReportFile.deleteMany({ where: { fileName: "TRV-T12.pdf" } });
   await prisma.report.deleteMany({ where: { reportNumber: `TRV-T12-${RUN_ID}` } });
@@ -362,6 +392,7 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
     fs.mkdirSync(DEST_ROOT, { recursive: true });
     prisma = new PrismaClient();
     await seed();
+    await createEmptySchema();
 
     dbBefore = await snapshotDb();
     attBefore = snapshotStorage(ATT_ROOT);
@@ -385,6 +416,7 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
 
   afterAll(async () => {
     await cleanupSeed();
+    await dropEmptySchema();
     await prisma.$disconnect();
     fs.rmSync(TMP_ROOT, { recursive: true, force: true });
   });
@@ -456,6 +488,8 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
     // 故取「不小於」而非全等——但**缺一必紅**由下一格的紅燈物證承擔）
     expect(manifest.coverage.keys).toBeGreaterThanOrEqual(union.length);
     expect(manifest.coverage.present).toBe(manifest.coverage.keys);
+    // 這一次確實驗過（非 T12R SF-1 之「無對象而放行」）
+    expect(manifest.coverage.allowEmpty).toBe(false);
   });
 
   it("AC-19(d) 紅燈物證：storage 少一個物件 → 腳本自檢必然失敗且非零結束（守門非恆真）", () => {
@@ -504,6 +538,14 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
       "retentionDays",
       "scope",
       "tools",
+    ]);
+    // `coverage` 之子鍵亦封閉（T12R SF-1 新增 `allowEmpty`——這種「證據強度」欄位
+    // 悄悄消失比悄悄新增更危險，故一併釘死）
+    expect(Object.keys(manifest.coverage).sort()).toEqual([
+      "allowEmpty",
+      "keys",
+      "missing",
+      "present",
     ]);
     expect(manifest.backupId).toBe(backupId);
     expect(manifest.retentionDays).toBeGreaterThanOrEqual(14);
@@ -679,11 +721,106 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
     expect(remaining.length).toBeGreaterThanOrEqual(4);
     expect(fs.readFileSync(path.join(DEST_ROOT, stranger, "marker.txt"), "utf8")).toBe(stranger);
   }, 240_000);
+
+  // =========================================================================
+  // T12R 即審修法之回歸格（SF-1／SF-2／SF-4／AR-1／AR-2）
+  // =========================================================================
+
+  it("T12R SF-1: 四來源鍵集為空 → **拒跑**（涵蓋自檢不得在無對象時恆真）", () => {
+    // 指向一個沒有任何附件／報表列的 schema：舊版會 keys=0／missing=0／exit 0，
+    // 且日誌形狀與「真的驗過」那一次一模一樣——「沒東西可驗」與「驗過都在」同結局，
+    // 正是 T10／T10R MF-1 明令禁止的走廊。
+    const emptySchemaUrl = `${DB_URL as string}${(DB_URL as string).includes("?") ? "&" : "?"}schema=${EMPTY_SCHEMA}`;
+    const before = listBackupDirs();
+
+    const run = runBackup({ BACKUP_DATABASE_URL: emptySchemaUrl });
+    const output = `${run.stdout}${run.stderr}`;
+
+    expect(run.status).not.toBe(0);
+    expect(output).toMatch(/keys=0/);
+    expect(output).toMatch(/nothing to verify/);
+    expect(output).toContain("BACKUP_ALLOW_EMPTY=1"); // 訊息含承認旗標之用法
+    expect(output).toContain("DATABASE_URL"); // 與 storage root 之排查指引
+    // 拒跑之後不得留下半成品（它會被下次保留期清理當成一份真備份）
+    expect(listBackupDirs()).toEqual(before);
+  }, 240_000);
+
+  it("T12R SF-1 反向：`BACKUP_ALLOW_EMPTY=1` → 放行，且日誌與 manifest 皆帶 allow-empty 標記", () => {
+    const emptySchemaUrl = `${DB_URL as string}${(DB_URL as string).includes("?") ? "&" : "?"}schema=${EMPTY_SCHEMA}`;
+    const before = listBackupDirs();
+
+    const run = runBackup({ BACKUP_DATABASE_URL: emptySchemaUrl, BACKUP_ALLOW_EMPTY: "1" });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/allow-empty=yes/);
+
+    const created = listBackupDirs().filter((id) => !before.includes(id));
+    expect(created).toHaveLength(1);
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(DEST_ROOT, created[0] as string, "manifest.json"), "utf8")
+    ) as Manifest;
+
+    // 產物自身可辨識：一份「沒驗過涵蓋」的備份不得與「驗過都在」的長得一樣
+    expect(manifest.coverage.allowEmpty).toBe(true);
+    expect(manifest.coverage.keys).toBe(0);
+
+    fs.rmSync(path.join(DEST_ROOT, created[0] as string), { recursive: true, force: true });
+  }, 240_000);
+
+  it("T12R SF-4: 失敗路徑之輸出零絕對路徑（外部工具 stderr 不得穿透）", () => {
+    const missingRoot = path.join(TMP_ROOT, "live", "gone-missing");
+    expect(fs.existsSync(missingRoot)).toBe(false);
+
+    const run = runBackup({ ATTACHMENT_STORAGE_ROOT: missingRoot });
+    const output = `${run.stdout}${run.stderr}`;
+
+    expect(run.status).not.toBe(0);
+    expect(output).toContain("ATTACHMENT_STORAGE_ROOT"); // 以變數名回報
+    // `tar: <絕對路徑>: Cannot open …` 之逐字穿透是本格要擋的東西
+    expect(output).not.toContain(missingRoot);
+    expect(output).not.toContain(missingRoot.split(path.sep).join("/"));
+    expect(output).not.toContain(TMP_ROOT);
+    expect(output).not.toContain(TMP_ROOT.split(path.sep).join("/"));
+    expect(output).not.toMatch(/^tar:/m);
+  }, 240_000);
+
+  it("T12R SF-2／AR-1／AR-2: 三處結構紀律（群組 pipeline／先驗證後刪除／訊號清理）", () => {
+    const script = fs.readFileSync(BACKUP_SCRIPT, "utf8");
+    const code = script
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+
+    // SF-2：`{ …; …; } | … || die` 之群組形狀不得再出現（群組取最後一個命令之結束碼，
+    // 第一個 tar 失敗時三道守門全不觸發）。改為逐個 archive 各自守門。
+    expect(code).not.toMatch(/\}\s*\|\s*sed[^\n]*\|\|\s*die/);
+    expect(code).toMatch(/for archive in attachments reports/);
+
+    // AR-1：`rm -rf` 不得出現在讀取 policy 輸出的驗證迴圈裡（先全驗完才准刪）
+    const validationLoop = /while IFS= read -r id;[\s\S]*?done <<< "\$REMOVE_LIST"/.exec(code);
+    expect(validationLoop).not.toBeNull();
+    expect((validationLoop as RegExpExecArray)[0]).not.toContain("rm -rf");
+    expect((validationLoop as RegExpExecArray)[0]).toContain("VALIDATED_IDS+=");
+    expect(code).toMatch(/nothing has been removed/);
+
+    // AR-2：INT／TERM 亦須收斂到同一份 cleanup（半成品目錄不得因 Ctrl-C 而殘留）
+    expect(code).toMatch(/trap cleanup EXIT/);
+    expect(code).toMatch(/trap '[^']*' INT/);
+    expect(code).toMatch(/trap '[^']*' TERM/);
+  });
 });
 
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
+
+/** 目的地根下之備份目錄名（依名稱排序，供「這一跑新增了誰」之差集比對）。 */
+function listBackupDirs(): string[] {
+  return fs
+    .readdirSync(DEST_ROOT, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+}
 
 /** tar 內之條目（去掉 `./` 前綴與目錄項），即「storage key」之集合。 */
 function tarEntries(tarPath: string): string[] {
@@ -709,7 +846,13 @@ interface Manifest {
     readonly sha256: string;
   }>;
   readonly tools: Readonly<Record<string, string>>;
-  readonly coverage: { readonly keys: number; readonly present: number; readonly missing: number };
+  readonly coverage: {
+    readonly keys: number;
+    readonly present: number;
+    readonly missing: number;
+    /** T12R SF-1：`true` ＝涵蓋自檢無可驗證之對象，由維運人員明示承認而放行。 */
+    readonly allowEmpty: boolean;
+  };
   readonly retentionDays: number;
 }
 

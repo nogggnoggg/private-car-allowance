@@ -215,15 +215,27 @@ export interface DestinationVerdict {
 }
 
 /**
- * 比較用正規化：絕對化 ＋ 去尾斜線 ＋（Windows）大小寫折疊。
+ * 比較用正規化：絕對化 ＋ **去尾分隔符** ＋（Windows）大小寫折疊。
  *
  * Windows 之檔案系統對大小寫不敏感，若逐字比對，`C:\Data\att` 與 `c:\data\att`
  * 會被判成兩個不同的樹——那是**漏報**方向的錯，在一個「不准寫進正式資料樹」的
  * 守門上不可接受。POSIX 側維持大小寫敏感（那裡確實是兩個不同目錄）。
+ *
+ * **去尾分隔符為 T12R SF-3 之修法**：`path.resolve()` 對一般路徑不留尾分隔符，
+ * **唯獨磁碟根例外**——`path.resolve("C:\\")` ＝ `"C:\"`、`path.resolve("/")` ＝
+ * `"/"`，兩者都自帶尾分隔符。下方祖先判定式 `protected.startsWith(dest + sep)`
+ * 於是變成 `startsWith("C:\\\\")` 而比不中，**「把備份目的地設成整顆磁碟根」這個
+ * 最極端的違規反而被放行**（reviewer 實測：`e:\` vs `e:\data\storage\att` 判定為
+ * false）。正規化後根變成 `"C:"`／`""`，`startsWith("C:\")`／`startsWith("/")`
+ * 即正確命中。此處補一格「目的地＝磁碟根」之邊界斷言釘死。
  */
 function normalizeForComparison(p: string): string {
   const resolved = path.resolve(p);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const folded = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  // 只去尾分隔符，不去其他字元。**POSIX 之根 `/` 會變成空字串，那正是要的**：
+  // 祖先判定 `protected.startsWith("" + "/")` 才會命中；留成 `/` 則變 `//` 而失效
+  // （與 Windows 的 `C:\\` 同一個坑，只是另一種寫法）。
+  return folded !== "" && folded.endsWith(path.sep) ? folded.slice(0, -1) : folded;
 }
 
 /**
