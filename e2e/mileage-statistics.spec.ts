@@ -32,8 +32,8 @@
  */
 
 import { type Page, expect, test } from "@playwright/test";
+import { loginAsAdmin } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -82,15 +82,6 @@ let targetLoginName = "";
 const TARGET_PASSWORD = "E2eMileageT8@789!";
 const createdApplicationIds: string[] = [];
 const createdAttachmentIds: string[] = [];
-
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
 
 // CHORE-E2E-BOOTSTRAP：`POST /parameters/fuel` 已於 PHASE-005a-T3b（§16
 // D1(a)、AC-37）退場回 404——油資本身之覆蓋改由下方 `ensureFuelModelCoversDate`

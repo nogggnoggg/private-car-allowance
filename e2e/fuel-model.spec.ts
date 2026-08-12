@@ -46,8 +46,8 @@
  */
 
 import { type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -113,15 +113,6 @@ const NO_CONS_NEW_PASSWORD = "E2eFuelNoConsChanged1!";
 
 const createdApplicationIds: string[] = [];
 const createdAttachmentIds: string[] = [];
-
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
 
 /**
  * T13R 修復：dev DB 為跨多次 E2E 執行共用之持久化資料庫，且油價版本無 DELETE
@@ -202,7 +193,7 @@ async function createSyntheticUser(
   namePrefix: string,
   tempPassword: string
 ): Promise<{ id: string; loginName: string; displayName: string }> {
-  const suffix = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+  const suffix = generateRunSuffix();
   const loginName = `e2e-${namePrefix}-${suffix}`;
   const displayName = `T13${namePrefix}使用者${suffix}`;
   const res = await page.request.post(`${API_BASE}/admin/users`, {

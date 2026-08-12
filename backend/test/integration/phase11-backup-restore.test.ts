@@ -85,6 +85,7 @@ import {
   selectAttachmentSample,
 } from "../../src/platform/restore-check.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
+import { SECRET_PATTERNS } from "../support/secret-patterns.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -92,7 +93,7 @@ const describeWithDb = DB_URL ? describe : describe.skip;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const BACKUP_SCRIPT = path.join(REPO_ROOT, "scripts", "backup.sh");
-const ENV_SECRETS_TEST = path.join(__dirname, "phase11-env-secrets.test.ts");
+const SECRET_PATTERNS_SRC = path.join(__dirname, "../support/secret-patterns.ts");
 
 const RUN_ID = `${Date.now().toString(36)}${crypto.randomBytes(3).toString("hex")}`;
 
@@ -236,23 +237,11 @@ async function snapshotDb() {
 // AC-12 掃描器之樣式（AC-22(a) 要求「同一掃描器」）
 // ===========================================================================
 
-/**
- * 這四條與 `phase11-env-secrets.test.ts` 之 `SECRET_PATTERNS` **必須逐字相同**，
- * 下方有一格以讀取該檔原始碼的方式機械證明此事（該檔為既有測試，本 Task 不得
- * 修改，故以複製 ＋ 機械比對代替 import）。
- */
-const SECRET_PATTERNS: ReadonlyArray<{ readonly id: string; readonly regex: RegExp }> = [
-  { id: "conn-string", regex: /postgres(?:ql)?:\/\/[^\s:/@'"`]+:[^\s@'"`]+@/g },
-  { id: "private-key", regex: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g },
-  {
-    id: "argon2-hash",
-    regex: /\$argon2(?:id|i|d)\$[^$\s]+\$[^$\s]+\$[A-Za-z0-9+/]{16,}\$[A-Za-z0-9+/]{22,}/g,
-  },
-  {
-    id: "long-secret",
-    regex: /(?:secret|token|key|password)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?[A-Za-z0-9+/=]{32,}/gi,
-  },
-];
+// PHASE-011-T17／AC-29(c)（D16-2）：`SECRET_PATTERNS` 已收斂至
+// `test/support/secret-patterns.ts`（與 `phase11-env-secrets.test.ts` 共用同
+// 一常數，取代原本「本 Task 不得修改前者，故複製 ＋ 機械比對代替 import」之
+// 權宜寫法）。下方 AC-22(a) 之「同一掃描器」格已改為驗證兩檔皆從該共用模組
+// 匯入同一常數。
 
 function scanText(content: string): Array<{ patternId: string; literal: string }> {
   const hits: Array<{ patternId: string; literal: string }> = [];
@@ -614,12 +603,24 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
     expect(tar).toContain(RUN_ID);
   });
 
-  it("AC-22(a): 本檔之掃描樣式與 phase11-env-secrets.test.ts 逐字同一份（同一掃描器）", () => {
-    const source = fs.readFileSync(ENV_SECRETS_TEST, "utf8");
+  it("AC-22(a): 本檔與 phase11-env-secrets.test.ts 之掃描樣式同出一源（test/support/secret-patterns.ts），逐字同一份（同一掃描器）", () => {
+    // ①本檔匯入之 SECRET_PATTERNS 逐字對應共用模組原始碼之宣告（防執行期竄改）。
+    const sharedSrc = fs.readFileSync(SECRET_PATTERNS_SRC, "utf8");
     const declared = [
-      ...source.matchAll(/regex:\s*(\/(?:\\.|\[[^\]]*\]|[^/\\])+\/[gimsuy]*)/g),
+      ...sharedSrc.matchAll(/regex:\s*(\/(?:\\.|\[[^\]]*\]|[^/\\])+\/[gimsuy]*)/g),
     ].map((m) => m[1]);
     expect(declared).toEqual(SECRET_PATTERNS.map((p) => p.regex.toString()));
+
+    // ② phase11-env-secrets.test.ts 確實從同一共用模組匯入，而非另立一份本地
+    //    宣告——防止「同一掃描器」之保證日後因有人重新寫死一份而靜默失真。
+    const envSecretsSrc = fs.readFileSync(
+      path.join(__dirname, "phase11-env-secrets.test.ts"),
+      "utf8"
+    );
+    expect(envSecretsSrc).toMatch(
+      /import\s*\{\s*SECRET_PATTERNS\s*\}\s*from\s*"\.\.\/support\/secret-patterns\.js"/
+    );
+    expect(envSecretsSrc).not.toMatch(/const\s+SECRET_PATTERNS\s*[:=]/);
   });
 
   it("AC-22(b): 腳本日誌輸出七類禁字零命中（含目的地與 storage 絕對路徑、storageKey 完整值）", () => {

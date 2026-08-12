@@ -64,8 +64,8 @@
  */
 
 import { type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -85,7 +85,7 @@ const FUEL_PRICE_PER_LITER = "65.0000";
 const ETC_UNIT_PRICE = 1.8;
 const FUEL_BASIS_NOTE = "PHASE-009-T17 E2E 合成資料（修正版 Gate E2E 播種用）";
 
-const RUN_ID = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+const RUN_ID = generateRunSuffix();
 const STAFF_TEMP_PASSWORD = "TempPw@2026Rev!";
 const STAFF_NEW_PASSWORD = "NewPw@2026Rev!";
 
@@ -109,15 +109,6 @@ const ATTACHMENT_FILENAME = "t17-rev.jpg";
 // ---------------------------------------------------------------------------
 // Auth / 播種 helpers
 // ---------------------------------------------------------------------------
-
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
 
 async function createSyntheticUser(page: Page): Promise<{ id: string; loginName: string }> {
   const loginName = `e2e-rev-${RUN_ID}`;

@@ -51,6 +51,7 @@ import { hashPassword } from "../../src/auth/password.js";
 import { getReportNumberPeriod } from "../../src/reports/report-number.js";
 import { buildServer } from "../../src/server.js";
 import { LocalVolumeStorage } from "../../src/storage/index.js";
+import { fingerprintRow } from "../support/fingerprint.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -74,38 +75,12 @@ describeWithDb("PHASE-009-T5 修正版複製 service（AC-09／AC-10／AC-11）"
   }
 
   // -------------------------------------------------------------------------
-  // fingerprintRow —— 沿 `phase9-void.test.ts:466-489`（T5pre 修復後語意）
-  //
-  // 【第三份複製之理由，Packet FW-1⑤ 大總管裁定】抽為共用 helper 需新增
-  // `backend/test/**` 之共用模組並改寫 `phase7-depreciation-draft.test.ts`／
-  // `phase9-void.test.ts` 兩個既有檔案——後者為本 Task 之 Files Forbidden
-  // （唯讀參考），前者屬 phase7 測試檔（亦 Forbidden）。故依裁定於本新檔就地
-  // 複製第三份，維持三處語意逐字一致。
-  //
-  // 修復後語意（AR-5／M13）：
-  //   · Date → toISOString()（保留毫秒；String(Date) 會截斷至秒，使「同秒內
-  //     毫秒位移之竄改」不可鑑別——AC-11(a)「原列不得被 touch」正是此場景）。
-  //   · Prisma.Decimal → String()（維持既有數值序列化行為；需 scale 保真時
-  //     另以 toFixed 逐欄斷言，見 AC-10 各 it）。
-  //   · 其餘物件（含陣列）→ JSON.stringify（避免 String(object) 退化為
-  //     `[object Object]` 而掩蓋內容差異）。
+  // fingerprintRow —— PHASE-011-T17／AC-29(c)（D16-2）已收斂至
+  // `test/support/fingerprint.ts`。此前因 `phase7-depreciation-draft.test.ts`／
+  // `phase9-void.test.ts` 兩檔於 PHASE-009-T5 當時皆為 Files Forbidden，依裁定
+  // （Packet FW-1⑤）於本檔就地複製第三份；本 Task 已補上共用模組，三處來源
+  // 合一，行為與簽章逐字不變（見該檔頭之語意記載，含 AR-5／M13 之毫秒修復）。
   // -------------------------------------------------------------------------
-  function fingerprintRow(
-    row: Record<string, unknown>,
-    excludeKeys: string[] = []
-  ): Array<[string, string | null]> {
-    return Object.entries(row)
-      .filter(([key]) => !excludeKeys.includes(key))
-      .map(([key, value]): [string, string | null] => {
-        if (value === null || value === undefined) return [key, null];
-        if (value instanceof Date) return [key, value.toISOString()];
-        if (typeof value === "object" && !(value instanceof Prisma.Decimal)) {
-          return [key, JSON.stringify(value)];
-        }
-        return [key, String(value)];
-      })
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  }
 
   // -------------------------------------------------------------------------
   // fixtures

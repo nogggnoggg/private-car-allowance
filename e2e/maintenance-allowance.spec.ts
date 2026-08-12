@@ -34,8 +34,8 @@
  */
 
 import { type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -74,20 +74,11 @@ const EXPECTED_AMOUNT = "1000";
 // Helpers（沿 fuel-model.spec.ts / travel-application.spec.ts 既有模式）
 // ---------------------------------------------------------------------------
 
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
-
 async function createSyntheticUser(
   page: Page,
   tempPassword: string
 ): Promise<{ id: string; loginName: string }> {
-  const suffix = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+  const suffix = generateRunSuffix();
   const loginName = `e2e-maint-${suffix}`;
   const displayName = `T14保養使用者${suffix}`;
   const res = await page.request.post(`${API_BASE}/admin/users`, {

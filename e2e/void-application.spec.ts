@@ -101,8 +101,8 @@
 
 import { readFile } from "node:fs/promises";
 import { type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin, uploadAttachment } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -136,7 +136,7 @@ const VOID_REASON_MAINT = "T17 保養金額有誤，作廢原申請";
 // ---------------------------------------------------------------------------
 // FW-7：播種冪等——單次執行之唯一識別
 // ---------------------------------------------------------------------------
-const RUN_ID = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+const RUN_ID = generateRunSuffix();
 
 const STAFF_TEMP_PASSWORD = "TempPw@2026Void!";
 const STAFF_NEW_PASSWORD = "NewPw@2026Void!";
@@ -144,15 +144,6 @@ const STAFF_NEW_PASSWORD = "NewPw@2026Void!";
 // ---------------------------------------------------------------------------
 // Auth / 播種 helpers（沿 report-pdf.spec.ts 既有慣例：API 直接播種）
 // ---------------------------------------------------------------------------
-
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
 
 async function createSyntheticUser(page: Page): Promise<{ id: string; loginName: string }> {
   const loginName = `e2e-void-${RUN_ID}`;
@@ -255,16 +246,6 @@ async function makeNoiseJpeg(width: number, height: number, seed: number): Promi
   return sharp(raw, { raw: { width, height, channels: 3 } })
     .jpeg({ quality: 80 })
     .toBuffer();
-}
-
-async function uploadAttachment(page: Page, buffer: Buffer, name: string): Promise<string> {
-  const res = await page.request.post(`${API_BASE}/attachments`, {
-    multipart: { file: { name, mimeType: "image/jpeg", buffer } },
-  });
-  if (!res.ok())
-    throw new Error(`E2E 上傳附件失敗（${name}）: ${res.status()} ${await res.text()}`);
-  const { attachment } = (await res.json()) as { attachment: { id: string } };
-  return attachment.id;
 }
 
 // ---------------------------------------------------------------------------

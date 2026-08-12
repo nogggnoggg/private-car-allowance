@@ -183,6 +183,7 @@
  */
 
 import { type Locator, type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin, uploadAttachment } from "./helpers";
 
 const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
@@ -205,7 +206,7 @@ const LABEL_FUEL_VERSION_CREATED = "油耗資料異動";
 // ---------------------------------------------------------------------------
 // 播種常數
 // ---------------------------------------------------------------------------
-const RUN_ID = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+const RUN_ID = generateRunSuffix();
 
 const STAFF_TEMP_PASSWORD = "TempPw@2026Audit!";
 const STAFF_NEW_PASSWORD = "NewPw@2026Audit!";
@@ -290,15 +291,6 @@ const VOID_REASON = `T8稽核端到端作廢原因${"因重複申報而作廢本
 // ---------------------------------------------------------------------------
 // Auth / 播種 helpers（沿 void-application.spec.ts 既有慣例）
 // ---------------------------------------------------------------------------
-
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
 
 interface UserRow {
   id: string;
@@ -451,16 +443,6 @@ async function makeNoiseJpeg(width: number, height: number, seed: number): Promi
   return sharp(raw, { raw: { width, height, channels: 3 } })
     .jpeg({ quality: 80 })
     .toBuffer();
-}
-
-async function uploadAttachment(page: Page, buffer: Buffer, name: string): Promise<string> {
-  const res = await page.request.post(`${API_BASE}/attachments`, {
-    multipart: { file: { name, mimeType: "image/jpeg", buffer } },
-  });
-  if (!res.ok())
-    throw new Error(`E2E 上傳附件失敗（${name}）: ${res.status()} ${await res.text()}`);
-  const { attachment } = (await res.json()) as { attachment: { id: string } };
-  return attachment.id;
 }
 
 /** 播種一筆已完成之差旅申請（供測試 1 之真實作廢用）。 */
