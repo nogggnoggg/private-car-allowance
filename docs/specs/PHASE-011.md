@@ -1,7 +1,7 @@
 # PHASE-011 — Docker／部署硬化與備份
 
 - Governance-Version: 2026-08-11.1
-- 狀態：**`ACTIVE`**（人類 Spec Gate 通過 2026-08-11，leonchih——D1~D18 全數照推薦＋High 十項事前批准＋條件 Task 全納＋D17 二階段預授權；裁定全文見 §19 修訂紀錄 `SPEC-011-GATE` 列）
+- 狀態：**`COMPLETED`**（2026-08-12——終審 APPROVE（`535ea25`→FR2 `3ca7092`→FR3 `c79c4f1`）＋整合 Gate 人類批准＋PR #20 CI 三 job 全綠＋人類批准合併 `c0a570d`。§12 終態：GREEN 65／N/A 5／PENDING 0／RED 0＝70。Spec Gate 通過 2026-08-11，leonchih——D1~D18 全數照推薦＋High 十項事前批准＋D17 二階段預授權；裁定全文見 §19 `SPEC-011-GATE`／`GATE-011-CONFIRM` 列）
 - 建立日期：2026-08-11
 - Task ID：`SPEC-011`
 - Base Commit：`b0e22fc`（branch `phase-011`，自 `main` `834f022`＝PR #19 合併點切出）
