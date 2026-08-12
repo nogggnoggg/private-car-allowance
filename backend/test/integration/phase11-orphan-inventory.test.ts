@@ -40,6 +40,19 @@
  * 欄位不同，讀者不會把「沒掃到東西」誤讀為「已驗證乾淨」。
  *
  * ---------------------------------------------------------------------------
+ * T6R（即審 REQUEST_CHANGES）修訂——本檔新增第 10 格＋既有格之型別修法
+ * ---------------------------------------------------------------------------
+ *   · **AR-1**：新增「越界檔（不合 key 格式）不進入任何掃描／計數欄位」一
+ *     格，釘住 `LocalVolumeStorage.list()` 的 keyRegex 過濾（此前零覆蓋，
+ *     移除該過濾之變異可存活；補格後重跑轉紅，見 T6R Handoff）；
+ *   · **SF-1**：`inventoryOrphans` 之依賴收斂為 `OrphanListableStorage`／
+ *     `OrphanInventoryDb` 兩結構型介面（僅讀方法）之後，「list() 契約」格改
+ *     以 `as unknown as OrphanListableStorage` 建構違規值（靜態型別已不能
+ *     表達「宣告為必要卻缺 `list()`」這種違規，執行期守門因此仍必要）；
+ *     `attStorage`／`rptStorage` 之宣告型別由 `Storage` 改 `LocalVolumeStorage`
+ *     （前者含選用 `list?`，與收斂後要求必要 `list` 之參數型別不相容）。
+ *
+ * ---------------------------------------------------------------------------
  * 測試紀律（§11.0／`CLAUDE.md`）
  * ---------------------------------------------------------------------------
  *   · 全程合成資料；`loginName` 前綴 `p11t6`（不含 `_`／`%`）＋ 每次執行之隨機
@@ -60,12 +73,14 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ORPHAN_OBJECT_TYPES,
+  type OrphanGroupSummary,
   type OrphanInventoryReport,
+  type OrphanListableStorage,
+  type OrphanObjectType,
   inventoryOrphans,
 } from "../../src/attachment/orphan-inventory.js";
 import { hashPassword } from "../../src/auth/password.js";
 import { LocalVolumeStorage } from "../../src/storage/local-volume-storage.js";
-import type { Storage } from "../../src/storage/storage.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -111,8 +126,8 @@ describeWithDb("PHASE-011-T6 — storage 孤兒盤點（AC-08；D5=(c) 只報告
 
   let attRoot: string;
   let rptRoot: string;
-  let attStorage: Storage;
-  let rptStorage: Storage;
+  let attStorage: LocalVolumeStorage;
+  let rptStorage: LocalVolumeStorage;
 
   // 舊（早於保護期，24h）／新（保護期窗內）之時間基準
   const OLD = new Date(NOW.getTime() - 25 * 60 * 60 * 1000);
@@ -260,7 +275,10 @@ describeWithDb("PHASE-011-T6 — storage 孤兒盤點（AC-08；D5=(c) 只報告
   it("AC-08(a): 四型各恰一筆 confirmed 孤兒、逐型非零（mutant①之功能面——漏掃任一型即該格單獨翻紅）", async () => {
     const report = await inventoryOrphans(prisma, attStorage, rptStorage, { now: NOW });
 
-    const byType = Object.fromEntries(report.groups.map((g) => [g.type, g]));
+    const byType = Object.fromEntries(report.groups.map((g) => [g.type, g])) as Record<
+      OrphanObjectType,
+      OrphanGroupSummary
+    >;
     expect(byType.ATT_ORIGINAL.confirmedOrphanCount).toBe(1);
     expect(byType.ATT_THUMB.confirmedOrphanCount).toBe(1);
     expect(byType.RPT_PDF.confirmedOrphanCount).toBe(1);
@@ -332,7 +350,7 @@ describeWithDb("PHASE-011-T6 — storage 孤兒盤點（AC-08；D5=(c) 只報告
     const withDefaultWindow = await inventoryOrphans(prisma, attStorage, rptStorage, { now: NOW });
     const pendingByType = Object.fromEntries(
       withDefaultWindow.groups.map((g) => [g.type, g.pendingCount])
-    );
+    ) as Record<OrphanObjectType, number>;
     expect(pendingByType.ATT_ORIGINAL).toBe(1); // 預設保護期下：剛寫入者不算孤兒
 
     const withZeroWindow: OrphanInventoryReport = await inventoryOrphans(
@@ -343,7 +361,7 @@ describeWithDb("PHASE-011-T6 — storage 孤兒盤點（AC-08；D5=(c) 只報告
     );
     const confirmedByType = Object.fromEntries(
       withZeroWindow.groups.map((g) => [g.type, g.confirmedOrphanCount])
-    );
+    ) as Record<OrphanObjectType, number>;
     // 保護期歸零 → 原本 pending 的那一筆現在也被算進 confirmed（+1，仍是同一筆）
     expect(confirmedByType.ATT_ORIGINAL).toBe(2); // 原本 1 筆舊孤兒 + 1 筆剛寫入者
     expect(withZeroWindow.totalPendingCount).toBe(0);
@@ -408,13 +426,39 @@ describeWithDb("PHASE-011-T6 — storage 孤兒盤點（AC-08；D5=(c) 只報告
     }
   });
 
-  it("list() 契約：未實作 list() 之 Storage → inventoryOrphans 立即拋錯（不得靜默略過，違反 MF-1 走廊）", async () => {
-    const noListStorage: Storage = {
+  // =========================================================================
+  // AR-1（T6R）：keyRegex 過濾覆蓋——越界檔不得進入任何掃描/計數欄位
+  // =========================================================================
+
+  it("AR-1：越界檔（不合 key 格式，如亂放的 stray.bin）不進入任何掃描／計數欄位（keyRegex 過濾覆蓋；此前為零覆蓋、變異可存活）", async () => {
+    // 直接寫檔（繞過 `storage.put`——`put` 自身的 `validateKey` 會拒絕不合格式
+    // 的 key，故要重現「越界檔如何出現在 volume 上」只能繞過 Storage 抽象層，
+    // 這正是 AR-1 要釘住的情境：非經本系統寫入路徑落地的雜項檔案）。
+    const strayPath = path.join(attRoot, "stray.bin");
+    fs.writeFileSync(strayPath, "junk-not-a-storage-object");
+    try {
+      const report = await inventoryOrphans(prisma, attStorage, rptStorage, { now: NOW });
+      // 既有五筆之掃描量／分類完全不受越界檔影響——它在 list() 這一層已被濾除。
+      expect(report.attScannedKeyCount).toBe(5);
+      expect(report.unclassifiedKeyCount).toBe(0);
+      expect(report.totalConfirmedOrphanCount).toBe(4);
+    } finally {
+      fs.rmSync(strayPath, { force: true });
+    }
+  });
+
+  it("list() 契約：未實作 list() 之 storage → inventoryOrphans 立即拋錯（不得靜默略過，違反 MF-1 走廊）", async () => {
+    // `OrphanListableStorage.list()` 為必要（非選用）屬性——型別上已不可能建
+    // 出一個「宣告為 OrphanListableStorage 但缺 list()」的值。本格刻意模擬
+    // 「型別宣稱符合、執行期其實沒有」的違規呼叫端（如透過 `as unknown as`
+    // 繞過型別檢查），故用 `as unknown as` 建構，執行期守門即本格的驗證對象
+    // （T6R／SF-1：靜態型別已不能表達這個違規，執行期守門因此仍必要）。
+    const noListStorage = {
       put: async () => {},
       get: async () => Buffer.alloc(0),
       delete: async () => {},
       exists: async () => false,
-    };
+    } as unknown as OrphanListableStorage;
     await expect(inventoryOrphans(prisma, noListStorage, rptStorage, { now: NOW })).rejects.toThrow(
       /list/
     );

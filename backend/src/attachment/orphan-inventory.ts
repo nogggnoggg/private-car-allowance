@@ -7,11 +7,29 @@
  * ---------------------------------------------------------------------------
  * 找出「storage 有檔、DB 無對應列」的物件（`KNOWN_ISSUES.md` :97 §5-2 之孤兒／
  * in-doubt 殘留），**只讀、只報告，零刪除**——D5=(c) 之推薦理由是「孤兒規模今日
- * 未知，先量測再決定刪除策略」，故本模組**沒有任何刪除能力**：全檔零呼叫
- * `storage.delete`／`storage.put`／任一 Prisma 寫入方法（`create`／`update`／
- * `delete`／`upsert`／`*Many`／`*AndReturn`），這不是靠自律，而是本模組的函式
- * 簽章只收 `Storage`（讀方法）與 Prisma 之查詢，結構上沒有拿到刪除工具
- * （沿 `cleanup-service.ts` 之 `dryRunCleanup` 同一紀律：唯讀不是自律而是結構）。
+ * 未知，先量測再決定刪除策略」。
+ *
+ * **本模組沒有任何刪除能力，這是型別層級可驗證的事實，不是宣稱**（T6R 即審
+ * SF-1 修法 (b)）：`inventoryOrphans` 之簽章只收 `OrphanListableStorage`
+ * （僅 `list()`）與 `OrphanInventoryDb`（僅三個 delegate 之 `findMany()`）
+ * 兩個**收斂過的結構型介面**，兩者皆不含任何寫入方法——TypeScript 在編譯期
+ * 就會拒絕本模組呼叫任何未宣告於這兩型上的方法（含 `put`／`delete`／
+ * `create`／`update`／`upsert`／`*Many`／`*AndReturn`）。真實的
+ * `LocalVolumeStorage`／`PrismaClient` 具有遠多於此的方法（含完整刪除能
+ * 力），但結構型別只看「傳入值是否具備介面要求的方法」，多出的方法不會被
+ * 本模組拿到——呼叫端因此**零改動**（真實實例結構相容，沿
+ * 本專案測試輔助層 `setup-file.ts` 之 `WorkerSchemaSqlExecutor` 同一慣例）。
+ *
+ * 【對照 `cleanup-service.ts` 之 `dryRunCleanup`，避免同型誤引第三次】
+ * `dryRunCleanup` 先例的價值**恰在於區分**兩種不同強度的保證：storage 面是
+ * 結構性的（`dryRunCleanup` 的簽章**完全不收** storage 參數，連控制代碼都
+ * 沒有）；DB 面則是**測試性**的（`planCleanup` 仍收完整 `PrismaTxLike`，唯
+ * 讀是由 `phase11-attachment-cleanup.test.ts` 的寫入方法掃描 ＋ 執行期快照
+ * 全等斷言守住，不是型別擋下）。本檔先前的版本誤把這兩種保證混為一談、逕
+ * 稱「結構上沒有拿到刪除工具」，但當時的簽章其實收的是完整 `Storage`（含
+ * `put`／`delete`）與 `PrismaTxLike`（完整 client）——屬偽陳述，已由本次
+ * 介面收斂修正。修正後，本模組在 storage 面與 DB 面**都**達到
+ * `dryRunCleanup` 原本只在 storage 面達到的那種結構性保證。
  *
  * ---------------------------------------------------------------------------
  * 掃描範圍（四型物件；AC-08(a)）
@@ -58,8 +76,42 @@
  * 兩個結構上可分辨的狀態，讀者不會把前者誤讀成「已驗證乾淨」。
  */
 
-import type { Storage, StorageListEntry } from "../storage/storage.js";
-import type { PrismaTxLike } from "./lifecycle-service.js";
+import type { StorageListEntry } from "../storage/storage.js";
+
+// ---------------------------------------------------------------------------
+// 依賴之結構型介面收斂（T6R／SF-1 修法 (b)）
+// ---------------------------------------------------------------------------
+
+/**
+ * `inventoryOrphans` 之 storage 依賴——收斂為僅 `list()`（讀）。
+ *
+ * 真實 `LocalVolumeStorage` 結構相容，呼叫端零改；刻意不用完整 `Storage`
+ * 介面（其含 `put`／`delete`），使「本模組拿不到刪除工具」成為型別事實。
+ */
+export interface OrphanListableStorage {
+  list(): Promise<StorageListEntry[]>;
+}
+
+/**
+ * `inventoryOrphans` 之 DB 依賴——收斂為僅三個 delegate 的 `findMany()`（讀）。
+ *
+ * 真實 `PrismaClient`／`Prisma.TransactionClient` 結構相容，呼叫端零改
+ * （沿本專案測試輔助層 `setup-file.ts` 之 `WorkerSchemaSqlExecutor` 同一慣例）。
+ * 刻意不用完整 `PrismaTxLike`（其含全部 model 的完整 CRUD delegate）。
+ */
+export interface OrphanInventoryDb {
+  readonly attachment: {
+    findMany(args: {
+      select: { storageKey: true; thumbnailKey: true };
+    }): Promise<Array<{ storageKey: string; thumbnailKey: string | null }>>;
+  };
+  readonly report: {
+    findMany(args: { select: { storageKey: true } }): Promise<Array<{ storageKey: string }>>;
+  };
+  readonly voidedReportFile: {
+    findMany(args: { select: { storageKey: true } }): Promise<Array<{ storageKey: string }>>;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // 封閉宣告：四型物件（AC-08(a)）
@@ -108,8 +160,16 @@ function classifyKey(key: string): OrphanObjectType | null {
  * D5(c) 節本身未給只報告分支之具體數值（AC-08(c-2) 之「如 24 h」是**刪除**
  * 分支的範例）；本模組取同一數量級而非另立門檻，理由：①避免無依據地另編一個
  * 數字；②本模組零刪除，此值只影響報告分類，選用偏保守（較長）的窗口不會有
- * 「誤刪」代價，只會讓極少數剛好卡在窗內的真孤兒暫緩一輪才被計入
- * `confirmedOrphanCount`——下一次盤點會自然趕上。
+ * 「誤刪」代價。
+ *
+ * **`pendingCount` 之規模並非恆小**（T6R／SF-3 修正——原文「只會讓極少數…
+ * 暫緩一輪」為未經驗證之臆測，已刪除）：低寫入頻率的正式環境下，
+ * `pendingCount` 應僅佔少數；但**高寫入頻率環境下（如本專案共用之開發／
+ * 測試 storage 根目錄）`pendingCount` 可遠大於 `confirmedOrphanCount`**——
+ * T6 對 dev storage 之首次實測即為反例：`confirmedOrphanCount` 合計
+ * 7,255，`pendingCount` 合計 14,357（約為前者兩倍）。**讀者取用本報告時，
+ * `pendingCount` 必須與 `confirmedOrphanCount` 併讀，不得逕行忽略**——它
+ * 不是「即將自動消失的雜訊」，在高寫入環境下可能是報告中量體最大的一格。
  */
 export const ORPHAN_PROTECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -138,7 +198,16 @@ export interface OrphanInventoryReport {
   readonly rptScannedKeyCount: number;
   /** DB 四來源鍵集之聯集大小（去重後）。 */
   readonly dbKeyCount: number;
-  /** 不合 `ORPHAN_OBJECT_TYPES` 任一型之鍵數（今日應恆為 0；非零代表新型物件出現而未入宣告）。 */
+  /**
+   * 不合 `ORPHAN_OBJECT_TYPES` 任一型、但仍通過 `list()` 之 key 白名單之鍵
+   * 數（今日應恆為 0；非零代表新型物件出現而未入宣告）。
+   *
+   * **射程限定**（AR-1／T6R）：不合 `LocalVolumeStorage` 自身 key 格式（如
+   * 亂放的 `stray.bin`）者，在 `list()` 這一層就已被過濾、本報告完全看不
+   * 見——不出現在本欄，也不出現在 `attScannedKeyCount`／`rptScannedKeyCount`
+   * 或任何 group 計數中。故本報告之各項數字皆為**下限**：真實孤兒數只會
+   * **大於等於**報告所示，不會更小。
+   */
   readonly unclassifiedKeyCount: number;
   readonly groups: readonly OrphanGroupSummary[];
   readonly totalConfirmedOrphanCount: number;
@@ -157,18 +226,20 @@ export interface OrphanInventoryOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * 執行一次孤兒盤點。**唯讀**：只呼叫 `storage.list()`（讀）與 Prisma
- * `findMany`（讀），零 `storage.delete`／`storage.put`、零 Prisma 寫入方法。
+ * 執行一次孤兒盤點。**唯讀**——且自本輪（T6R／SF-1）起，這是型別層級的事
+ * 實：`OrphanInventoryDb`／`OrphanListableStorage` 兩型結構上不含任何寫入
+ * 方法（見檔頭）。只呼叫 `storage.list()`（讀）與 Prisma `findMany`（讀）。
  *
- * `attStorage`／`rptStorage` 須支援 `list()`（`Storage` 介面之選用方法；
- * `LocalVolumeStorage` 已實作，PHASE-011-T6）——未支援者本函式直接拋錯，不
- * 靜默略過（靜默略過會讓「掃不到東西」與「零孤兒」在輸出上無法分辨，違反
- * MF-1 走廊）。
+ * `attStorage`／`rptStorage` 之靜態型別已要求 `list()` 存在（非選用），但
+ * 本函式**仍保留執行期守門**：真實世界可能有「型別上宣稱符合、執行期其實
+ * 沒有」的情況（如透過 `as unknown as` 繞過型別檢查之呼叫端、或未來非
+ * TypeScript 之呼叫路徑）——靜默略過會讓「掃不到東西」與「零孤兒」在輸出上
+ * 無法分辨，違反 MF-1 走廊，故一律直接拋錯。
  */
 export async function inventoryOrphans(
-  prisma: PrismaTxLike,
-  attStorage: Storage,
-  rptStorage: Storage,
+  prisma: OrphanInventoryDb,
+  attStorage: OrphanListableStorage,
+  rptStorage: OrphanListableStorage,
   options: OrphanInventoryOptions
 ): Promise<OrphanInventoryReport> {
   if (typeof attStorage.list !== "function") {

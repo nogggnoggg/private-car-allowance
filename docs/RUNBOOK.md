@@ -255,7 +255,31 @@ npm run cleanup:attachments -- --dry-run
 
 **批次饑餓監測**：若某次執行的摘要顯示 `hasMore=true` 但候選筆數為 `0`，代表候選集合的頭部持續卡在無法刪除的項目上，需要**人工介入**查看，不要自動當作「還有更多待清理」的正常狀態。
 
-**已知限制**：storage 刪除失敗不會回滾對應的 DB 刪除（計入失敗計數），可能穩定產生「DB 已無此列但 storage 仍有檔案」的孤兒物件。storage 孤兒物件的盤點與後續處置（本 Phase 之裁定為**只盤點、不刪除**）為獨立的收斂項，尚未落地為可執行的操作指令；落地後本節將補充相關指令。目前若需查看孤兒物件，需人工比對 DB 中的 storage 鍵集合與 volume 中的實際檔案。
+**已知限制**：storage 刪除失敗不會回滾對應的 DB 刪除（計入失敗計數），可能穩定產生「DB 已無此列但 storage 仍有檔案」的孤兒物件。
+
+**孤兒盤點（PHASE-011-T6，已落地；D5=(c) 只盤點、不刪除）**：判定模組 `backend/src/attachment/orphan-inventory.ts`（`inventoryOrphans`）已存在，比對 storage 四型物件（`att/original`／`att/thumb`／`rpt/pdf`／`rpt/void`）與 DB 四來源鍵集（`Attachment.storageKey`／`thumbnailKey`／`Report.storageKey`／`VoidedReportFile.storageKey`）之差集，唯讀、零刪除。**目前仍無 CLI**（D5=(c) 只到「量測」為止，未授權操作面）；開發者需要盤點時，以一次性 `tsx` 腳本呼叫，例如：
+
+```ts
+// 存於任一暫存位置（不進 repo），從 backend/ 目錄以 `npx tsx <script>.ts` 執行
+import { config as loadDotenv } from "dotenv";
+loadDotenv();
+import { PrismaClient } from "@prisma/client";
+import { inventoryOrphans } from "./src/attachment/orphan-inventory.js";
+import { LocalVolumeStorage } from "./src/storage/local-volume-storage.js";
+
+const attStorage = new LocalVolumeStorage(process.env.ATTACHMENT_STORAGE_ROOT!, { prefixes: ["att"] });
+const rptStorage = new LocalVolumeStorage(process.env.REPORT_STORAGE_ROOT!, { prefixes: ["rpt"] });
+const prisma = new PrismaClient();
+console.log(JSON.stringify(await inventoryOrphans(prisma, attStorage, rptStorage, { now: new Date() }), null, 2));
+await prisma.$disconnect();
+```
+
+**判讀本報告時的三項警語**：
+1. **「無對應 DB 列」之高佔比不等於高洩漏率**——T6 首次對本機共用開發 storage 根目錄實測，21,612／22,173（約 97%）之物件無對應 DB 列。主因是 **Phase 邊界之 DB 重置（見上方 (f) 節）未同步清空 storage volume**：DB 清空重來，舊 Phase 遺留的 storage 檔案仍在，因而每個 Phase 邊界都會製造一批「合法但過期」的無對應物件——這不是清理程序的洩漏率，是共用開發環境的操作副作用。正式環境（DB 與 storage 生命週期一致、無這種週期性重置）之比例預期遠低於此。
+2. **`pendingCount` 必須與 `confirmedOrphanCount` 併讀，不得逕行忽略**——`pendingCount` 是仍在保護期窗（預設 24 小時）內、尚未被判定為孤兒的物件；在高寫入頻率環境下它可能遠大於 `confirmedOrphanCount`（T6 首測：7,255 confirmed／14,357 pending），並非可安全略過的雜訊。
+3. **報告數字為下限**——不合 `LocalVolumeStorage` key 格式（如非本系統寫入路徑落地的雜項檔案）之物件在 `list()` 這一層已被過濾、報告完全看不見，故實際孤兒數只會**大於等於**報告所示。
+
+目前若需要盤點以外的操作（刪除、封存等），仍需人工比對上述輸出後自行執行——尚未落地為可執行的操作指令；落地後本節將補充相關指令。
 
 ---
 
