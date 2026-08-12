@@ -65,7 +65,7 @@
  * 亦以本 worker schema 之資料 ＋ 本檔自己的 storage 臨時樹為對象。
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -945,6 +945,60 @@ function runVerify(
   }
 }
 
+/**
+ * 起一次 `verify-restore.sh`，**等到指定日誌行出現的當下**送 `SIGTERM`（T13R2 NF-2）。
+ *
+ * 為什麼以日誌行而非固定秒數為觸發點：時間常數在別台機器上會漂移，而每一行日誌都
+ * 恰好印在某個階段的邊界上，以它為觸發點，中斷落在哪個階段是**由腳本自己的進度決定
+ * 的**，不是由計時器決定的。
+ *
+ * 訊號投遞有兩個坑，兩個都繞掉了：
+ *   ①Node 於 Windows 之 `child.kill('SIGTERM')` 走 `TerminateProcess`（不是 POSIX
+ *     訊號，bash 的 trap 收不到）→ 改由另一個 Git Bash 發 `kill -TERM`；
+ *   ②`child.pid` 是 **Windows PID**，而 MSYS 的 `kill` 認的是 **MSYS PID**——直接拿
+ *     前者去 kill 會得到 `No such process`（實測）。故以一層 `bash -c 'echo $$ >
+ *     pidfile; exec bash script'` 把自己的 MSYS PID 寫出來；`exec` 不換行程，寫出來
+ *     的就是腳本本身的 PID。
+ * `SIGINT` 即使這樣繞也投不進去（T13R 已據實記載），故本格只驗 `SIGTERM`。
+ */
+function runVerifyThenTerm(
+  target: VerifyTarget,
+  marker: RegExp,
+  overrides: Record<string, string> = {}
+): Promise<{ readonly code: number | null; readonly output: string; readonly signalled: boolean }> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    BACKUP_DEST_ROOT: T13_DEST,
+    RESTORE_TARGET_DATABASE_URL: target.url,
+    RESTORE_VERIFY_LOG: T13_LOG,
+    ...overrides,
+  };
+  const pidFile = path.join(T13_TMP, `term-${target.db}.pid`).split(path.sep).join("/");
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "bash",
+      ["-c", 'echo $$ > "$1"; exec bash "$2"', "sh", pidFile, VERIFY_SCRIPT],
+      { cwd: REPO_ROOT, env, stdio: ["ignore", "pipe", "pipe"] }
+    );
+    let output = "";
+    let signalled = false;
+    const maybeKill = (chunk: Buffer) => {
+      output += chunk.toString();
+      if (!signalled && marker.test(output)) {
+        signalled = true;
+        const msysPid = fs.readFileSync(pidFile, "utf8").trim();
+        execFileSync("bash", ["-c", `kill -TERM ${msysPid}`]);
+      }
+    };
+    child.stdout.on("data", maybeKill);
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, output, signalled }));
+  });
+}
+
 interface VerificationRecord {
   readonly timestamp: string;
   readonly backupId: string;
@@ -1554,6 +1608,10 @@ describeWithDb("PHASE-011-T13 — 還原驗證流程（AC-23／AC-24）", () => 
   it("T13R SF-2: 降級綠燈路徑之摘要必換碼（(b) 未執行時不得宣稱三項全過）", async () => {
     // fixture：暫時解開「修正版」關係 → 抽樣湊不出修正版副本，但 (a)(c) 完全正常。
     // 這是旗標之綠燈路徑，即審指出它原本 EXIT 0 ＋ summary=all-three-confirmations-passed。
+    //
+    // ⚠ **本格之後不得再插入任何正式面 DB 快照斷言**（T13R2 順手註記）：`supersedesId`
+    // 之來回更新已擾動該列的 `updatedAt`，`toEqual` 整份快照的格子若排在本格之後會
+    // 因這個副作用而紅。既有的快照比對（`AC-23(d)／B-19`）宣告在本格之前，不受影響。
     await t13Prisma.application.update({
       where: { id: t13RevisionAppId },
       data: { supersedesId: null },
@@ -1595,6 +1653,47 @@ describeWithDb("PHASE-011-T13 — 還原驗證流程（AC-23／AC-24）", () => 
         data: { supersedesId: t13SupersedesId },
       });
     }
+  }, 600_000);
+
+  it("T13R2 NF-2／AR-2: SIGTERM 中斷 → 階段歸屬正確、exitCode=143、目標零殘留，且**紀錄必有一筆**", async () => {
+    // 末項（紀錄必有一筆）即 NF-1 之守門：補救分支的判準只該是「這次有沒有留下
+    // 紀錄」，不該再被一個「跑完沒」的旗標關掉。
+    for (const [label, marker, expected] of [
+      ["(b) 階段", /\(a\) db-opened/, "b"],
+      ["(c) 階段", /\(b\) parts-verified/, "c"],
+    ] as const) {
+      const target = nextVerifyTarget();
+      const before = readRecords().length;
+      const run = await runVerifyThenTerm(target, marker);
+
+      expect(run.signalled, label).toBe(true); // 觸發點確實出現過（可用性斷言）
+      expect(run.code, label).toBe(143); // trap 'exit 143' TERM 走完 EXIT trap
+      expect(run.output, label).not.toMatch(/result=pass/);
+
+      const records = readRecords();
+      expect(records, label).toHaveLength(before + 1); // ← NF-1：零紀錄不可接受
+      const record = records[records.length - 1] as VerificationRecord;
+      expect(record.summary, label).toBe("verification-interrupted");
+      expect(record.exitCode, label).toBe(143); // AR-2：實際結束碼，非硬編 1
+      expect(record.stage, label).toBe(expected); // AR-2：實際階段，非硬編 guard
+      // 中斷路徑亦零殘留（訊號轉 exit → EXIT trap → drop_target）
+      expect(databaseExists(target.db), label).toBe(false);
+    }
+
+    // ── NF-1 之**行為**探針：把中斷打在「三項都跑完、最後一筆紀錄還沒寫成」的窗口 ──
+    // `(c) relations` 這行印在舊碼的 `COMPLETED=1` 正前方，也就是舊碼把補救分支關掉的
+    // 那個區間。舊碼在此中斷 ＝ 該次演練**零紀錄**；新碼無論訊號落在 `record` 之前或
+    // 之後，都必然**恰好多一筆**（前者為中斷紀錄，後者為已寫成的成功紀錄）。
+    const lateTarget = nextVerifyTarget();
+    const lateBefore = readRecords().length;
+    const late = await runVerifyThenTerm(lateTarget, /\(c\) relations/);
+    expect(late.signalled).toBe(true);
+    expect(late.code).toBe(143);
+    const lateRecords = readRecords();
+    expect(lateRecords).toHaveLength(lateBefore + 1); // ← NF-1 之判準：不得零紀錄
+    const lateRecord = lateRecords[lateRecords.length - 1] as VerificationRecord;
+    expect(lateRecord.stage).toBe("none");
+    expect(databaseExists(lateTarget.db)).toBe(false);
   }, 600_000);
 
   it("T13R SF-2 反向 ＋ AR-2: 完整證據仍用原碼；中斷紀錄之結束碼與階段取實際值（結構）", () => {

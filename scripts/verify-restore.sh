@@ -128,7 +128,6 @@ CREATED_DB=""
 BACKUP_ID="unknown"
 EVIDENCE="full"
 RECORD_WRITTEN=0
-COMPLETED=0
 # 中斷時之階段歸屬（T13R AR-2）：硬編 `guard` 會讓「還原到一半被 Ctrl-C」與
 # 「前置守門就拒了」在紀錄上長得一樣。逐段推進，中斷紀錄取當下值。
 CURRENT_STAGE="guard"
@@ -231,11 +230,23 @@ cleanup() {
   if [ -n "$TMP_WORK" ] && [ -d "$TMP_WORK" ]; then rm -rf "$TMP_WORK" 2>/dev/null || true; fi
   # 半途中斷（Ctrl-C／排程器 timeout）同樣是一次「沒跑完」的演練，必須留下紀錄，
   # 否則稽核時看不出這個月試過但被打斷（AC-24(a) 之同一理由）。
-  if [ "$COMPLETED" -eq 0 ] && [ "$RECORD_WRITTEN" -eq 0 ]; then
-    # 沒跑完卻回 0 是不該發生的組合；真出現時記 1，不讓一筆 `exitCode: 0` 的
+  #
+  # **T13R2 NF-1**：這個補救條件原本是
+  # `[ "$COMPLETED" -eq 0 ] && [ "$RECORD_WRITTEN" -eq 0 ]`，而 `COMPLETED=1` 設在
+  # 最後那次 `write_record` **之前**——於是「三項都跑完了、但紀錄沒寫成」
+  # （`COMPLETED=1` ∧ `RECORD_WRITTEN=0`）這個組合會把補救分支**自己關掉**，該次
+  # 演練零紀錄，正是上面兩行註解要防的事。判準只該有一個：**這次執行到底有沒有
+  # 留下紀錄**。`COMPLETED` 因而失去讀者，一併移除（write-only 的旗標比沒有旗標
+  # 更容易讓人以為它還在守著什麼）。正常路徑 `RECORD_WRITTEN=1`，不會多寫一筆。
+  if [ "$RECORD_WRITTEN" -eq 0 ]; then
+    # 沒留下紀錄卻回 0 是不該發生的組合；真出現時記 1，不讓一筆 `exitCode: 0` 的
     # 中斷紀錄被當成成功（AC-24(a) 之「非零結束碼」不得被繞過）。
     if [ "$rc" -eq 0 ]; then rc=1; fi
     write_record "$CURRENT_STAGE" "verification-interrupted" "$rc"
+    # 紀錄與行程結束碼不得各說各話（T13R AR-2 之同一條紀律）：一次沒能留下紀錄的
+    # 演練不算成功演練，故行程也回 `$rc`。在 EXIT trap 裡 `exit` 只改最終狀態碼，
+    # 不會再次觸發本 trap。
+    exit "$rc"
   fi
 }
 trap cleanup EXIT
@@ -473,7 +484,6 @@ log "(c) $(printf '%s' "$RELATION_OUT" | sed -n '1p')"
 # 9. 全通過（AC-24(c)：成功亦留紀錄）
 # ---------------------------------------------------------------------------
 
-COMPLETED=1
 CURRENT_STAGE="none"
 
 # **T13R SF-2**：成功摘要依證據等級二選一。`evidence` 一旦不是 `full`，就有某一項
