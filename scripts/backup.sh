@@ -52,6 +52,15 @@
 # 少了外部工具的原文診斷**：這是刻意的取捨（沿 PHASE-010-T9「兜底不記例外原文，正解
 # 是具名日誌」之裁定）。排障方式歸 Runbook——以相同 env 手動跑該工具一次即可看到原文。
 #
+# **已知未關之同族缺口（T12R-2 AR-R2，據實記載而非宣稱已全關）**：外部工具的 stderr 已
+# 全數靜音（`pg_dump`／`psql`／`tar`／`mkdir`／`mktemp`），但**由 bash 自己發出的重導向
+# 失敗訊息關不掉**——`cmd > "$WORK_DIR/db.dump" 2>/dev/null` 之中，`>` 先於 `2>` 被建立，
+# 若目的地唯讀／磁碟滿，bash 會以**當時尚未被改寫的 stderr** 印出
+# `bash: line N: <絕對路徑>: Permission denied`。要關掉它得先做一次可寫性探測再開重導向；
+# 本輪**不實作**——該分支需要一個唯讀目的地才能自證修法不誤傷，而本專案之 dev（Windows）
+# 無法穩定造出該條件，「改了但證不了」比「留著並寫清楚」更糟。實務上此缺口的觸發面已被
+# 上面的 `mkdir` 守門大幅縮小（目的地不可寫時多半在 `mkdir` 就先失敗）。
+#
 # ---------------------------------------------------------------------------
 # ⚠ 射程限制（**不得被誤讀**，Spec §17.1 ／ D12 逐字）
 # ---------------------------------------------------------------------------
@@ -95,7 +104,10 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="PHASE-011-T12/1"
+# T12R 之六項修法（涵蓋自檢 fail-closed／群組 pipeline／磁碟根守門／失敗路徑零路徑／
+# 先驗證後刪除／訊號清理）改變了本腳本的**行為**，故版號同步進位——manifest 之
+# `tools.script` 是日後鑑識「這份備份是哪一版產生的」唯一線索（T12R-2 AR-R1）。
+SCRIPT_VERSION="PHASE-011-T12/2"
 SCOPE_DB="postgresql-database"
 SCOPE_ATT="attachment-storage"
 SCOPE_RPT="report-storage"
@@ -257,10 +269,13 @@ fi
 BACKUP_ID=$(date -u +%Y%m%dT%H%M%SZ)
 CREATED_AT="${BACKUP_ID:0:4}-${BACKUP_ID:4:2}-${BACKUP_ID:6:2}T${BACKUP_ID:9:2}:${BACKUP_ID:11:2}:${BACKUP_ID:13:2}Z"
 WORK_DIR="$BACKUP_DEST_ROOT/$BACKUP_ID"
-TMP_WORK=$(mktemp -d) || die "cannot create temporary working directory"
+TMP_WORK=$(mktemp -d 2>/dev/null) || die "cannot create temporary working directory"
 
 if [ -e "$WORK_DIR" ]; then die "backup id collision: $BACKUP_ID"; fi
-mkdir -p "$WORK_DIR" || die "cannot create the backup directory (check BACKUP_DEST_ROOT)"
+# `2>/dev/null`（T12R-2 SF-4-R）：`mkdir` 失敗時逐字印出目的地絕對路徑
+# （`mkdir: cannot create directory 'C:/…': …`）。**掛載點權限／路徑打錯是備份最常見的
+# 失敗**，也就是這條路徑最常被排程器記進日誌——前一輪關了三個外部工具卻漏掉這個。
+mkdir -p "$WORK_DIR" 2>/dev/null || die "cannot create the backup directory (check BACKUP_DEST_ROOT)"
 log "start id=$BACKUP_ID container=$PG_CONTAINER schema=$DB_SCHEMA"
 
 # ---------------------------------------------------------------------------

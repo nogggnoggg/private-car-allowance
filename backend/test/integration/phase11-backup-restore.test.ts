@@ -781,6 +781,26 @@ describeWithDb("PHASE-011-T12 — 備份腳本（AC-19／AC-22）", () => {
     expect(output).not.toContain(TMP_ROOT);
     expect(output).not.toContain(TMP_ROOT.split(path.sep).join("/"));
     expect(output).not.toMatch(/^tar:/m);
+
+    // ── T12R-2 SF-4-R 子情境：**目的地不可建立** ──────────────────────────────
+    // 前一輪關了三個外部工具卻漏掉 `mkdir`。掛載點權限／路徑打錯是備份最常見的失敗，
+    // 也就是最常被排程器記進日誌的那一條：`mkdir: cannot create directory '<絕對路徑>'`。
+    // 以「BACKUP_DEST_ROOT 指向某個**檔案**之子路徑」造出必然失敗且與權限無關的條件
+    // （跨平台可重現，不需要唯讀掛載點）。
+    const blockingFile = path.join(TMP_ROOT, "not-a-directory");
+    fs.writeFileSync(blockingFile, "occupied");
+    const unusableDest = path.join(blockingFile, "sub");
+
+    const denied = runBackup({ BACKUP_DEST_ROOT: unusableDest });
+    const deniedOutput = `${denied.stdout}${denied.stderr}`;
+
+    expect(denied.status).not.toBe(0);
+    expect(deniedOutput).toContain("BACKUP_DEST_ROOT"); // 以變數名回報
+    expect(deniedOutput).not.toContain(blockingFile);
+    expect(deniedOutput).not.toContain(blockingFile.split(path.sep).join("/"));
+    expect(deniedOutput).not.toContain(TMP_ROOT);
+    expect(deniedOutput).not.toContain(TMP_ROOT.split(path.sep).join("/"));
+    expect(deniedOutput).not.toMatch(/^mkdir:/m);
   }, 240_000);
 
   it("T12R SF-2／AR-1／AR-2: 三處結構紀律（群組 pipeline／先驗證後刪除／訊號清理）", () => {
