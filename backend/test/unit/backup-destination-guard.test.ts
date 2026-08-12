@@ -120,11 +120,17 @@ describe("PHASE-011-T12 — AC-21: 目的地路徑樹守門", () => {
       { envName: REPORT_ROOT_ENV, relation: "ancestor-of-protected" },
     ]);
 
-    // 尾分隔符之有無不得改變判決（`C:\` 與 `C:` 是同一個地方）
+    // 尾分隔符之有無不得改變判決（`C:\` 與 `C:` 是同一個地方；Windows 磁碟根去尾
+    // 後仍是合法路徑寫法）。POSIX 磁碟根只有 `/` 一種寫法，去尾即空字串——空字串
+    // 不是「同一地點的另一種寫法」，而是不同語意（`path.resolve("")` 解回 cwd），
+    // 該變體在 POSIX 上不存在，故只於去尾後非空字串時才跑此斷言
+    // （PHASE-011-FR3；根因見 CI run 31606319401 之 Linux 首跑失敗）。
     const withoutTrailing = diskRoot.endsWith(path.sep) ? diskRoot.slice(0, -1) : diskRoot;
-    expect(
-      evaluateDestination({ destination: withoutTrailing, protectedRoots: PROTECTED }).violations
-    ).toEqual(verdict.violations);
+    if (withoutTrailing !== "") {
+      expect(
+        evaluateDestination({ destination: withoutTrailing, protectedRoots: PROTECTED }).violations
+      ).toEqual(verdict.violations);
+    }
   });
 
   it("(a) 名字前綴相同但不是後裔者不得誤擋（`att` vs `att-backup`）", () => {
