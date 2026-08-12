@@ -74,7 +74,9 @@
  *       之最高密度案例**（天真 `String(value)` 會產生兩個 `"[object Object]"`），
  *       亦為 MG-1 修訂後 AC-06(b-0) 之唯一真實觸發者（→ 恰 4 列）。
  *   · `parameters/routes.ts` :211／:285／:383  `PARAMETER_VERSION_CREATED`（全純量）。
- *   · `audit/audit.ts` :45（`writeAudit` 之唯一 `auditLog.create`）之五個帳號類
+ *   · `audit/audit.ts` :73（`writeAudit` 之唯一 `auditLog.create`；PHASE-011-DOCSYNC
+ *       行號勘誤：檔頭於 PHASE-011-T18 增長後現況 :73，原註解之 :45 已過時）之
+ *       五個帳號類
  *       呼叫端（`admin/routes.ts` :225／:272／:308／:368／:426；各自之 `detail:`
  *       酬載在 :231／:278／:314／:374／:432）：
  *       `USER_CREATED` `{role, employeeNumber?}`／

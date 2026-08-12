@@ -46,8 +46,8 @@
  */
 
 import { type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -113,15 +113,6 @@ const NO_CONS_NEW_PASSWORD = "E2eFuelNoConsChanged1!";
 
 const createdApplicationIds: string[] = [];
 const createdAttachmentIds: string[] = [];
-
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
 
 /**
  * T13R 修復：dev DB 為跨多次 E2E 執行共用之持久化資料庫，且油價版本無 DELETE
@@ -191,7 +182,9 @@ async function getEffectiveEtcUnitPrice(page: Page, dateStr: string): Promise<nu
     throw new Error(`E2E 前置假設破壞：查無涵蓋 ${dateStr} 之 ETC 版本`);
   }
   candidates.sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1));
-  return Number(candidates[0].unitPrice);
+  const top = candidates[0];
+  if (!top) throw new Error(`E2E 前置假設破壞：查無涵蓋 ${dateStr} 之 ETC 版本`);
+  return Number(top.unitPrice);
 }
 
 /** 以 API 建立一個合成使用者，回傳 { id, loginName, displayName }。 */
@@ -200,7 +193,7 @@ async function createSyntheticUser(
   namePrefix: string,
   tempPassword: string
 ): Promise<{ id: string; loginName: string; displayName: string }> {
-  const suffix = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+  const suffix = generateRunSuffix();
   const loginName = `e2e-${namePrefix}-${suffix}`;
   const displayName = `T13${namePrefix}使用者${suffix}`;
   const res = await page.request.post(`${API_BASE}/admin/users`, {
@@ -375,7 +368,7 @@ test.describe("油資模型修正 — PHASE-005a Gate E2E（Spec §11.4）", () 
     await expect(row).toHaveCount(1, { timeout: 10000 });
     await expect(row.locator(".status-badge")).toContainText("目前生效");
     await expect(row).toContainText(PARAM_EFFECTIVE_FROM);
-    await expect(row).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE]);
+    await expect(row).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE] ?? "");
   });
 
   // ---- 情境3：staff01 登入 → 個人頁看到油種／油耗／生效日，且無編輯入口 ----
@@ -386,7 +379,7 @@ test.describe("油資模型修正 — PHASE-005a Gate E2E（Spec §11.4）", () 
 
     const section = page.locator(".my-fuel-consumption-section");
     await expect(section).toBeVisible();
-    await expect(section).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE]);
+    await expect(section).toContainText(FUEL_TYPE_LABEL[STAFF_FUEL_TYPE] ?? "");
     await expect(section).toContainText(STAFF_KM_PER_LITER);
     await expect(section).toContainText(PARAM_EFFECTIVE_FROM);
 

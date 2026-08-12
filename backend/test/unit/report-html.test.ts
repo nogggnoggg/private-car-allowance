@@ -97,6 +97,16 @@ import { escapeHtml, renderReportHtml } from "../../src/reports/report-html.js";
 import { formatTaipeiDateTime, getFuelTypeLabel } from "../../src/reports/report-labels.js";
 
 // ---------------------------------------------------------------------------
+// PHASE-011-T17／AC-29(c)（D16-2）：本檔內重複出現之 XSS payload 字面單一來
+// 源（`escapeHtml` 直接單元測試／AC-16(b) 15 格／AC-20(d) 9 格，共用前兩型
+// payload 之逐字相同字面）。收斂**僅止於 payload 輸入字面本身**；AC-20(d) 之
+// `escapedValueSpan` 期望值維持硬編碼（PHASE-009-T11R 修復之防自我抵銷設
+// 計，見該區塊註解），不受本次收斂影響。
+// ---------------------------------------------------------------------------
+const XSS_PAYLOAD_SCRIPT = "<script>alert(1)</script>";
+const XSS_PAYLOAD_IMG_ONERROR = '"><img src=x onerror=alert(1)>';
+
+// ---------------------------------------------------------------------------
 // Fixture 建構器（合成資料，零 DB）
 // ---------------------------------------------------------------------------
 
@@ -279,13 +289,13 @@ describe("escapeHtml — 唯一跳脫函式", () => {
   });
 
   it("<script>alert(1)</script> → 逐字元跳脫，零原始標籤", () => {
-    const result = escapeHtml("<script>alert(1)</script>");
+    const result = escapeHtml(XSS_PAYLOAD_SCRIPT);
     expect(result).toBe("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(result).not.toContain("<script");
   });
 
   it('"><img src=x onerror=alert(1)> → 逐字元跳脫，零屬性逃逸', () => {
-    const result = escapeHtml('"><img src=x onerror=alert(1)>');
+    const result = escapeHtml(XSS_PAYLOAD_IMG_ONERROR);
     expect(result).toBe("&quot;&gt;&lt;img src=x onerror=alert(1)&gt;");
   });
 
@@ -672,11 +682,11 @@ describe("AC-16(a) — 列印版為自足文件", () => {
 // ---------------------------------------------------------------------------
 
 describe("AC-16(b) — 3 payload × 5 插值點逐格跳脫", () => {
-  const PAYLOADS = ["<script>alert(1)</script>", '"><img src=x onerror=alert(1)>', "&amp;"];
+  const PAYLOADS = [XSS_PAYLOAD_SCRIPT, XSS_PAYLOAD_IMG_ONERROR, "&amp;"];
 
   function expectEscapedAndSafe(html: string, payload: string): void {
-    expect(html).not.toContain("<script>alert(1)</script>");
-    expect(html).not.toContain('"><img src=x onerror=alert(1)>');
+    expect(html).not.toContain(XSS_PAYLOAD_SCRIPT);
+    expect(html).not.toContain(XSS_PAYLOAD_IMG_ONERROR);
     expect(html).toContain(escapeHtml(payload));
   }
 
@@ -1224,11 +1234,11 @@ describe("AC-20(d) — 作廢原因經 escapeHtml 跳脫（3 XSS payload 逐一�
   // -------------------------------------------------------------------------
   const VOID_PAYLOADS: { payload: string; escapedValueSpan: string }[] = [
     {
-      payload: "<script>alert(1)</script>",
+      payload: XSS_PAYLOAD_SCRIPT,
       escapedValueSpan: '<span class="field-value">&lt;script&gt;alert(1)&lt;/script&gt;</span>',
     },
     {
-      payload: '"><img src=x onerror=alert(1)>',
+      payload: XSS_PAYLOAD_IMG_ONERROR,
       escapedValueSpan:
         '<span class="field-value">&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</span>',
     },

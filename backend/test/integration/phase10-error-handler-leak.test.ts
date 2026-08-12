@@ -12,6 +12,17 @@
  *     之該筆錯誤紀錄零路徑分隔字面命中。
  *   · AC-21(d) wire 零變更：`500` 回應 body 逐位元組不變。
  *
+ * PHASE-011-T16（`docs/specs/PHASE-011.md` §16 D15=(a)／AC-28）—**同檔就地擴
+ * 充**，關閉本檔原「已知不可及⑦／⑫」記載之 pino 錯誤物件序列化型洩漏面：
+ *   · AC-28(a) 掃描器擴充：`{ err }` 物件簡寫／`err` 位置引數兩式，見下方
+ *     `buildPinoSerializePatterns`（併入 L1）。
+ *   · AC-28(b) `logger.ts` serializer 定案釘死（見對應 `describe`）。
+ *   · AC-28(c) 兩處今日即存在站點（`index.ts` :33／`audit/audit.ts` :98——
+ *     PHASE-011-DOCSYNC 行號勘誤：後者原 :56，檔頭於 PHASE-011-T18 增長後
+ *     現況 :98）之修復（原始碼側，非本檔）；本檔以白名單零變動佐證修復生效。
+ *   · AC-28(d) 原「已知不可及⑫」it 已改寫為正向格（見該 it）。
+ *   · AC-28(e) ajv `detail.message` 面評估（見對應 `describe`）。
+ *
  * 零 DB 依賴（沿 `error-handler.test.ts` 之 `noopDbProbe` 慣例），全套件恆跑。
  *
  * ---------------------------------------------------------------------------
@@ -48,13 +59,12 @@
  *      因解構後送出屬變數間接型）。**參數位解構**（`function f({ message })`）
  *      仍**不可及**——無從判定該參數是否為錯誤物件。
  *   ⑦ `log.error({ err })`（pino 之 err 序列化器自動展開 message）
- *                                                   → **不可及，且本次刻意不
- *      納**：此型不含任何 `.message` 字面，屬「序列化器行為」而非取值語法，需
- *      改以「log 呼叫是否直接挾帶錯誤物件」為另一組判準（含 `{ err }`／
- *      `{ error }` 簡寫、`log.error(err)` 位置引數兩式），且需先確認
- *      `logger.ts` 之 serializer 設定才能界定真實洩漏面。依複審 **FW-A** 屬
- *      **PHASE-011 射程**，本檔以「記載型反向對照」之 it 明示掃不到（見該 it），
- *      使未來修好時該 it 會顯性翻紅、不會被靜默略過。
+ *                                                   → **PHASE-011-T16 起可
+ *      及**：此型不含任何 `.message` 字面，屬「序列化器行為」而非取值語法，故
+ *      非上述 L1／L2 之 `errorRead` 判準所能涵蓋，改以獨立之
+ *      `buildPinoSerializePatterns`（鍵名逐字 `err` 之物件形／err 識別字之
+ *      位置引數形，含非首位——`console.error("msg", err)`）判準，併入 L1。
+ *      原「已知不可及⑫」之記載型反向 it 已依 AC-28(d) 改寫為正向格。
  * 另一項刻意接受之**偽陽性**（方向安全）：`\)` 分支為名稱盲判，任何
  * `foo(...).message` 皆會命中，即使 `foo()` 回傳的不是錯誤物件。誤報方向為
  * 「多抓」，由維護者具名加入白名單即可；漏報才是不可接受的方向。
@@ -70,7 +80,9 @@ import * as path from "node:path";
 import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
+import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildLoggerOptions } from "../../src/logger.js";
 import { buildServer } from "../../src/server.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -299,6 +311,55 @@ function buildErrorExpr(catchNames: readonly string[]): string {
   return `(?:${buildErrorIdent(catchNames)}|\\))`;
 }
 
+/** `log|logger|console` 之呼叫首碼（呼叫本身之開括號一併吃入）——PHASE-011-T16
+ * 之三式比對式共用。與既有 L1 之 message-access 比對式使用相同首碼字面，刻意
+ * 各自持有一份（沿本檔頭「刻意複製而非 import」之既有慣例），不去動既有比對式。 */
+const LOG_CALL_PREFIX =
+  String.raw`\b(?:[A-Za-z_$][\w$]*\s*\.\s*)*(?:log|logger|console)\s*\.\s*` +
+  String.raw`(?:trace|debug|info|warn|error|fatal)\s*\(`;
+
+/**
+ * PHASE-011-T16（AC-28(a)）：pino 錯誤物件序列化型兩式之比對式。
+ *
+ * 與 `errorRead`（`.message` 取值型）完全不同之洩漏機制：pino 對 merging
+ * 物件中**鍵名逐字為 `err`**之屬性、以及**位置引數本身是錯誤物件**兩種情形，
+ * 會自動展開 `message` 與 `stack`（`node -e` 實測釘死：鍵名 `error` 不觸發，
+ * 只有 `err` 觸發——見 Handoff 洩漏物證與 `logger.ts` 之對應 `describe`）。
+ *
+ *   A（物件形，簡寫或具值皆可）：`log.*({ err })`／`log.*({ err: someVar })`
+ *       ——鍵名比對用字面 `err`（`\berr\b`），不用 `buildErrorIdent`：後者含
+ *       `errName`／`errClass` 等既有安全欄位之字樣（`err(?:or)?` 等），但那些
+ *       欄位與 "err" 之間**無詞界**，`\berr\b` 本就不會誤判它們；用字面 `err`
+ *       是因為唯有此鍵名才會觸發 pino 之預設序列化，鍵名 `wireError`／`error`
+ *       等縱使語意上是錯誤物件也不會觸發（此為 pino 之契約特性，非本專案認定）。
+ *       `(?<=[{,])` 鎖定「err 必須是屬性起點」（緊接 `{`／`,` 之後，容許中間
+ *       空白）——若無此鎖定，`{ error: err }` 之**值** `err`（鍵名其實是安全
+ *       的 `error`）會被誤判成鍵名 `err` 而誤報（T16 開發期自我審查測出，見
+ *       Handoff 之「反向對照①」）。
+ *   B1（位置引數，首位）：`log.*(err, "…")`／`log.*(err)`——AC 原文之逐字形，
+ *       緊接呼叫開括號之後，以此天然排除巢狀呼叫誤判。
+ *   B2（位置引數，非首位）：`console.error("msg", err)`——`audit.ts` :98
+ *       （PHASE-011-DOCSYNC 行號勘誤：原 :56，現況實查）之今日實際形。刻意
+ *       排除 `()`／`{}` 於 err 之前的可跳過內容——否則
+ *       `errorLabel(err)`／`{ errLabel: errorLabel(err) }`（`upload-service.ts`
+ *       :319/:332，皆為安全站點）之巢狀呼叫右括號會被誤認成本呼叫自身之右括
+ *       號而誤報（T16 開發期以全 `backend/src` 實跑踩過此坑並修正，見 Handoff）。
+ * B1／B2 皆用 `buildErrorIdent`（非 `buildErrorExpr`）：**不**含 `\)` 分支，
+ * 因為若允許任意運算式以 `)` 結尾即視為命中，`errorLabel(err)`／`String(err)`
+ * 這類巢狀呼叫的右括號又會被誤判成外層呼叫的右括號。
+ */
+function buildPinoSerializePatterns(catchNames: readonly string[]): RegExp[] {
+  const errorIdent = buildErrorIdent(catchNames);
+  return [
+    new RegExp(LOG_CALL_PREFIX + String.raw`\s*\{[^{}]*?(?<=[{,])\s*\berr\b\s*(?:,|:|\})`, "g"),
+    new RegExp(LOG_CALL_PREFIX + String.raw`\s*` + errorIdent + String.raw`\s*(?:,|\))`, "g"),
+    new RegExp(
+      LOG_CALL_PREFIX + String.raw`[^;(){}]*?,\s*` + errorIdent + String.raw`\s*(?:,|\))`,
+      "g"
+    ),
+  ];
+}
+
 type ScanLayer = "L1" | "L2";
 
 /**
@@ -322,6 +383,8 @@ function buildLayerPatterns(cleaned: string, layer: ScanLayer): RegExp[] {
       ),
       // 回應 `details` 物件字面內含錯誤訊息取值。
       new RegExp(String.raw`\bdetails\s*:\s*\{[^;]*?` + errorRead, "g"),
+      // PHASE-011-T16（AC-28(a)）：pino 錯誤物件序列化型兩式（見上方函式註解）。
+      ...buildPinoSerializePatterns(catchNames),
     ];
   }
   return [
@@ -391,7 +454,10 @@ const DIRECT_SINK_WHITELIST = ["seed/seed-admin.ts"];
  *   · `attachment/upload-service.ts`：縮圖降級之 `sanitizeForLog(err.message)`
  *     後經變數送入 `log.warn`（變數間接型——L1 之盲點，由本層承接）。
  *   · `index.ts`：啟動期環境變數驗證失敗，`process.stderr.write` 印出欄位名／
- *     原因後 `exit 1`（非請求路徑，且 AC-09 已保證不印值）。
+ *     原因後 `exit 1`（非請求路徑，且 AC-09 已保證不印值）。**本條目之理由僅
+ *     涵蓋此 env 驗證之 stderr——不涵蓋同檔 :33 之 `server.log.error(err)`**
+ *     （該站點屬 PHASE-011-T16 之 pino 序列化型，已修復，見 L1 之
+ *     `buildPinoSerializePatterns`；`docs/specs/PHASE-011.md` §13 #1 之建議）。
  *   · `seed/seed-admin.ts`：同 L1。
  *
  * T9R 之 regex 擴充（斷言／optional／bracket／窄化變數／catch 他名／解構）對
@@ -530,16 +596,119 @@ describe("AC-21(b): 站點白名單掃描 — 錯誤訊息之輸出面", () => {
     expect(scanContent("const { message } = dto;", "L2")).toEqual([]);
   });
 
-  it("已知不可及⑫（記載型反向對照）：log.error({ err }) 之 pino 序列化型掃不到 — FW-A 移交 PHASE-011", () => {
-    const pinoStyle = [
+  // 原「已知不可及⑫」（記載型反向對照）——PHASE-011-T16（AC-28(d)）同批改寫為
+  // 正向格：`buildPinoSerializePatterns` 併入 L1 後，物件簡寫與位置引數兩式皆
+  // 必被偵測。此為**設計如此之預期翻紅**，非迴歸（commit message 逐字說明）。
+  it("⑫ 改寫：log.error({ err }) 之 pino 序列化型物件簡寫必被 L1 偵測（AC-28(a)(d)）", () => {
+    const fixture = 'request.log.error({ err }, "Unhandled exception");';
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+  });
+
+  it("⑫ 改寫：log.error(err, …) 之 pino 序列化型位置引數（首位）必被 L1 偵測（AC-28(a)(d)）", () => {
+    const fixture = 'request.log.error(err, "positional form");';
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+  });
+
+  it("⑫ 改寫：console.error(msg, err) 之位置引數（非首位）必被 L1 偵測 — audit.ts :98 之今日實際形（AC-28(a)(c))", () => {
+    const fixture = 'console.error("[audit] Failed to write AuditLog:", err);';
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+  });
+
+  it("⑫ 改寫：L2 刻意未疊加此判準（by design——pino 序列化型非 .message 取值型，L1 之直接送入判準已涵蓋）", () => {
+    const fixture = [
       'request.log.error({ err }, "Unhandled exception");',
       'request.log.error(err, "positional form");',
     ].join("\n");
-    // 此型不含任何 `.message` 字面，兩層皆掃不到——**現況記載**，非期望行為。
-    // PHASE-011 依 FW-A 補上「log 呼叫直接挾帶錯誤物件」之判準後，本 it 會顯性
-    // 翻紅，屆時須改為正向斷言並移除本註解。
-    expect(scanContent(pinoStyle, "L1")).toEqual([]);
-    expect(scanContent(pinoStyle, "L2")).toEqual([]);
+    expect(scanContent(fixture, "L2")).toEqual([]);
+  });
+
+  it("pino 序列化型鑑別力：物件形具值（{ err: wireError }）／多屬性夾帶皆必被偵測", () => {
+    expect(scanContent('log.error({ err: wireError }, "x");', "L1")).toEqual([1]);
+    expect(scanContent('log.error({ msg: "x", err }, "y");', "L1")).toEqual([1]);
+    expect(scanContent('log.error({ err, extra: 1 }, "y");', "L1")).toEqual([1]);
+  });
+
+  it("pino 序列化型鑑別力：catch 他名繫結之位置引數亦必被偵測（沿既有他名繫結慣例）", () => {
+    const fixture = [
+      "try {",
+      "  doWork();",
+      "} catch (reason) {",
+      '  log.error(reason, "boom");',
+      "}",
+    ].join("\n");
+    expect(scanContent(fixture, "L1")).toEqual([4]);
+  });
+
+  it("pino 序列化型反向對照①（鍵名 error 不觸發 pino 之預設序列化，不誤報）", () => {
+    // node -e 實測釘死：merging 物件鍵名為 "error"（非 "err"）時，pino 不展開
+    // message/stack（`err serializer` 只鍵在字面 "err"）——故不納入本判準。
+    expect(scanContent('log.error({ error: err }, "x");', "L1")).toEqual([]);
+  });
+
+  it("pino 序列化型反向對照②（errName／errClass 等既有安全欄位不得誤報）", () => {
+    const fixture = [
+      'fastify.log.error({ probe: "db", errName: err instanceof Error ? err.name : "UnknownError" });',
+      'request.log.error({ errName: error.name, errClass: "UNEXPECTED_EXCEPTION" }, "Unhandled exception");',
+      'request.log.info({ errName: error.name, errCode: wireError.code }, "Wire-level 4xx error");',
+    ].join("\n");
+    expect(scanContent(fixture, "L1")).toEqual([]);
+  });
+
+  it("pino 序列化型反向對照③（巢狀呼叫之右括號不得誤判為外層呼叫之右括號 — upload-service.ts 之今日安全站點形）", () => {
+    // `attachment/upload-service.ts` :319/:332 之今日實際形：err 皆經
+    // errorLabel() 轉為安全字串後才送入 log.*，非直接挾帶錯誤物件。
+    const fixture = [
+      "request.log.warn(`Compensation delete failed for key (log-safe): ${errorLabel(deleteErr)}`);",
+      'request.log.error({ errLabel: errorLabel(err) }, "x");',
+    ].join("\n");
+    expect(scanContent(fixture, "L1")).toEqual([]);
+  });
+
+  it("pino 序列化型反向對照④（非 log/console 呼叫之裸露 err 引數不得誤報）", () => {
+    expect(scanContent('doSomething(err, "x");', "L1")).toEqual([]);
+  });
+
+  it("pino 序列化型反向對照⑤（三元運算式內之 err／巢狀 String(err) 不得誤報為裸露位置引數 — seed-admin.ts 之今日實際形之簡化重現）", () => {
+    // 刻意去除原檔之 `err.message`（該取值本身另由既有 L1／L2 之 .message
+    // 判準偵測，seed-admin.ts 因此已在 DIRECT_SINK_WHITELIST／
+    // MESSAGE_READ_WHITELIST——見下一 it 之區隔對照），本 it 只獨立驗證「pino
+    // 序列化型」三式（A/B1/B2）不對「err instanceof Error」與「String(err)」
+    // 這兩種形狀誤報。
+    const fixture =
+      'console.error("[seed:admin] Unexpected error:", err instanceof Error, String(err));';
+    expect(scanContent(fixture, "L1")).toEqual([]);
+  });
+
+  it("區隔對照：seed-admin.ts 之今日實際完整寫法仍經既有 .message 判準命中 L1（非本 T16 新判準所致，行為不變）", () => {
+    const fixture =
+      'console.error( "[seed:admin] Unexpected error:", err instanceof Error ? err.message : String(err));';
+    // 命中源自既有（PHASE-010）之 err.message 取值判準，非本 T16 新增之三式
+    // ——佐證：把 `err.message` 換成 `err.name`（非取值字樣）後應轉為零命中。
+    expect(scanContent(fixture, "L1")).toEqual([1]);
+    const withoutMessageAccess = fixture.replace("err.message", "err.name");
+    expect(scanContent(withoutMessageAccess, "L1")).toEqual([]);
+  });
+
+  it("真實檔案零命中自證：index.ts／audit.ts 修復後之現況內容對 pino 序列化型判準乾淨（站點修復生效佐證）", () => {
+    const indexContent = fs.readFileSync(path.join(SRC_ROOT, "index.ts"), "utf8");
+    const auditContent = fs.readFileSync(path.join(SRC_ROOT, "audit/audit.ts"), "utf8");
+    expect(scanContent(indexContent, "L1")).toEqual([]);
+    expect(scanContent(auditContent, "L1")).toEqual([]);
+  });
+
+  it("mutant 自證＋還原：index.ts／audit.ts 之修復前寫法（原文重現）必被 L1 偵測，且非寫回磁碟", () => {
+    // 兩處站點之修復前逐字寫法（PHASE-011-T16 修復前原文，非現行磁碟內容）。
+    const INDEX_TS_BEFORE_FIX = "server.log.error(err);";
+    const AUDIT_TS_BEFORE_FIX = 'console.error("[audit] Failed to write AuditLog:", err);';
+
+    expect(scanContent(INDEX_TS_BEFORE_FIX, "L1")).toEqual([1]);
+    expect(scanContent(AUDIT_TS_BEFORE_FIX, "L1")).toEqual([1]);
+
+    // 修復後之現況磁碟內容確實不含這兩行原文（未寫回磁碟，讀取真實檔案佐證）。
+    const indexContent = fs.readFileSync(path.join(SRC_ROOT, "index.ts"), "utf8");
+    const auditContent = fs.readFileSync(path.join(SRC_ROOT, "audit/audit.ts"), "utf8");
+    expect(indexContent).not.toContain(INDEX_TS_BEFORE_FIX);
+    expect(auditContent).not.toContain(AUDIT_TS_BEFORE_FIX);
   });
 
   it("已知不可及（記載型）：參數位解構 function f({ message }) 掃不到 — 無從判定是否為錯誤物件", () => {
@@ -599,5 +768,147 @@ describe("AC-21(b): 站點白名單掃描 — 錯誤訊息之輸出面", () => {
 
     // 還原 byte-identical：全程未寫檔，重讀比對以杜絕誤寫
     expect(fs.readFileSync(ERROR_HANDLER_PATH).equals(beforeBytes)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-28(b)：logger.ts 之 serializer 設定定案（釘死）
+// ---------------------------------------------------------------------------
+
+describe("AC-28(b): logger.ts 之 err serializer 設定定案", () => {
+  it("定案：覆寫 err serializer，回傳值只保留分類用之 type，message／stack 皆為固定占位字串（非原文）", () => {
+    const options = buildLoggerOptions("info") as unknown as {
+      serializers?: { err?: (err: unknown) => Record<string, unknown> };
+    };
+    expect(options.serializers).toBeDefined();
+    const serialized = options.serializers?.err?.(new Error("probe /abs/path/should-not-leak"));
+    expect(serialized).toEqual({
+      type: "Error",
+      message: "[REDACTED]",
+      stack: "[REDACTED]",
+    });
+  });
+
+  it("非 Error 之擲出值（如字串）：type 退回 UnknownError，不拋例外", () => {
+    const options = buildLoggerOptions("info") as unknown as {
+      serializers?: { err?: (err: unknown) => Record<string, unknown> };
+    };
+    const serialized = options.serializers?.err?.("plain string thrown");
+    expect(serialized?.type).toBe("UnknownError");
+  });
+
+  it("運行期整合釘死：以真實 pino 實例分別餵入物件簡寫與位置引數兩式，輸出零 message／stack 原文、零路徑分隔字面", () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _enc, done) {
+        lines.push(chunk.toString());
+        done();
+      },
+    });
+    const logger = pino(buildLoggerOptions("info"), stream);
+    const SENTINEL = "t16-serializer-probe";
+    const err = new Error(`${SENTINEL} C:\\Users\\t16\\secret\\path.ts`);
+
+    logger.error({ err }, "object shorthand form");
+    logger.error(err, "positional form");
+
+    expect(lines.length).toBe(2);
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as {
+        err?: { type?: string; message?: string; stack?: string };
+      };
+      expect(parsed.err?.type).toBe("Error");
+      expect(parsed.err?.message).toBe("[REDACTED]");
+      expect(parsed.err?.stack).toBe("[REDACTED]");
+    }
+    const combined = lines.join("\n");
+    expect(combined).not.toContain(SENTINEL);
+    expect(combined).not.toMatch(/[/\\]/);
+  });
+
+  it("反向對照：pino 之預設序列化行為釘死——鍵名 error（非 err）不觸發展開（本專案選用鍵名 err 之判準依此而定）", () => {
+    // 未套用本專案 serializers 覆寫、純 pino 預設之對照組，證明 buildPinoSerializePatterns
+    // （AC-28(a)）只鎖定鍵名 "err" 是有事實根據的選擇，而非隨意窄化。
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk: Buffer, _enc, done) {
+        lines.push(chunk.toString());
+        done();
+      },
+    });
+    const rawLogger = pino({}, stream);
+    const err = new Error("probe");
+    rawLogger.error({ error: err }, "error-key form");
+    const parsed = JSON.parse(lines[0]) as { error?: Record<string, unknown> };
+    expect(parsed.error).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-28(e)：ajv `detail.message` 面之評估
+// ---------------------------------------------------------------------------
+//
+// 評估結論（記入 Handoff 全文；此處為記載型 it 之落地）：ajv 產生之
+// `detail.message`（經 `error-handler.ts` 之 `extractFieldErrors` 轉為
+// `fields[].reason`）為**基於 schema 關鍵字之固定形式文字**（如
+// `must have required property 'x'`／`must be string`），**不衍生自例外物件
+// 之 stack 或呼叫端之實際輸入值**——ajv 預設不把違反驗證的實際值嵌入
+// `message`（僅少數 keyword 如 `pattern` 會把 schema 自身之 pattern 原文放進
+// 訊息，那是 schema 作者自訂的內容，非執行期例外細節）。故本面**不納入**
+// AC-28(a) 之 pino 序列化型判準，亦不需比照 AC-21(a) 改記分類標籤——性質不同
+// （AC-21(a) 收斂的是**例外物件**之不可預測訊息；ajv 之 `detail.message` 是
+// **驗證器產生之確定性文字**，本身就是設計給終端使用者看的欄位級提示）。
+// 下列 it 以真實 schema-validation 路徑實測佐證此結論，而非僅憑推論。
+describe("AC-28(e): ajv detail.message 面之評估（結論：不納入 pino 序列化型判準）", () => {
+  let ajvApp: FastifyInstance;
+
+  beforeAll(async () => {
+    ajvApp = await buildServer({ dbProbeOverride: async () => {} });
+    ajvApp.post("/test/ajv-probe", {
+      schema: {
+        body: {
+          type: "object",
+          required: ["name"],
+          properties: { name: { type: "string", minLength: 3, pattern: "^[a-z]+$" } },
+        },
+      },
+      handler: async () => ({ ok: true }),
+    });
+    await ajvApp.ready();
+  });
+
+  afterAll(async () => {
+    if (ajvApp) await ajvApp.close();
+  });
+
+  it("required 缺漏之 detail.message 為固定形式文字，零路徑分隔字面、零 stack 欄位", async () => {
+    const response = await ajvApp.inject({ method: "POST", url: "/test/ajv-probe", payload: {} });
+    expect(response.statusCode).toBe(400);
+    const body = response.json<{ error: { fields?: Array<{ field: string; reason: string }> } }>();
+    expect(body.error.fields).toBeInstanceOf(Array);
+    expect(body.error.fields?.length).toBeGreaterThan(0);
+    for (const f of body.error.fields ?? []) {
+      expect(f.reason).not.toMatch(/[/\\]/);
+      expect(f.reason).not.toContain("stack");
+    }
+  });
+
+  it("型別／pattern 不符之 detail.message 亦不含呼叫端實際輸入值（僅含 schema 自身之關鍵字資訊）", async () => {
+    const response = await ajvApp.inject({
+      method: "POST",
+      url: "/test/ajv-probe",
+      payload: { name: "AB" }, // 違反 minLength 亦違反 pattern（大寫），輸入值本身不應出現於 reason
+    });
+    expect(response.statusCode).toBe(400);
+    const body = response.json<{ error: { fields?: Array<{ field: string; reason: string }> } }>();
+    const reasons = (body.error.fields ?? []).map((f) => f.reason).join(" | ");
+    expect(reasons).not.toContain("AB"); // 呼叫端實際輸入值不得出現於訊息
+    expect(reasons).not.toMatch(/[/\\]/);
+  });
+
+  it("記載型結論：ajv detail.message 面不納入 AC-28(a) 之 pino 序列化型判準（性質不同，理由見上方檔頭）", () => {
+    // 本 it 純記載評估結論，無新斷言——避免結論僅存在於註解而未落地為可被
+    // grep／CI 追蹤之測試名稱（沿本檔既有「記載型」it 之慣例）。
+    expect(true).toBe(true);
   });
 });

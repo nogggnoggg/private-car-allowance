@@ -72,7 +72,7 @@
  *     流程，將預算集中在本 Task 的實際變更面。
  */
 import fs from "node:fs";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -87,6 +87,7 @@ import { VOID_REASON_MAX_LENGTH, validateVoidReason } from "../../src/applicatio
 import { hashPassword } from "../../src/auth/password.js";
 import { AppError } from "../../src/platform/errors.js";
 import { buildServer } from "../../src/server.js";
+import { fingerprintRow } from "../support/fingerprint.js";
 
 const DB_URL = process.env.DATABASE_URL;
 const describeWithDb = DB_URL ? describe : describe.skip;
@@ -457,33 +458,12 @@ describeWithDb("PHASE-009-T3 — voidApplication 作廢 service", () => {
     await app.close();
   });
 
-  // ── SF-2（T3R）：全欄指紋法，沿 phase7-depreciation-draft.test.ts:896-901
-  // 之 `fingerprintOf` 既有形狀——逐鍵轉字串後依鍵排序，避免 Decimal／Date
-  // 物件之 toEqual 結構比對細節干擾，同時（相較舊版逐欄手選斷言）不會漏掉
-  // 任何「新增之允許外欄位」。`excludeKeys` 供父列排除四個作廢欄＋
-  // `updatedAt`（唯一預期變動集合）；子列（三型子表／TripSegment）呼叫時
-  // 一律不傳 `excludeKeys`（整列比對，零例外——void 不得觸碰任何子表欄位）。
-  function fingerprintRow(
-    row: Record<string, unknown>,
-    excludeKeys: string[] = []
-  ): Array<[string, string | null]> {
-    return Object.entries(row)
-      .filter(([key]) => !excludeKeys.includes(key))
-      .map(([key, value]): [string, string | null] => {
-        if (value === null || value === undefined) return [key, null];
-        // AR-5 修復：Date 一律 toISOString() 保留毫秒（M13——String(Date) 會
-        // 截斷至秒，同秒內毫秒位移之竄改因而不可鑑別）；Decimal（decimal.js
-        // 實例，非一般物件）維持原本 String() 數值序列化行為不變；其餘物件
-        // （含陣列，如巢狀 segments）改用 JSON.stringify 取代 String() 的
-        // `[object Object]` 惰性，避免內容差異被掩蓋。
-        if (value instanceof Date) return [key, value.toISOString()];
-        if (typeof value === "object" && !(value instanceof Prisma.Decimal)) {
-          return [key, JSON.stringify(value)];
-        }
-        return [key, String(value)];
-      })
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  }
+  // ── SF-2（T3R）：全欄指紋法。PHASE-011-T17／AC-29(c)（D16-2）已將此函式收斂
+  // 至 `test/support/fingerprint.ts`（與本檔、`phase9-revision.test.ts` 曾各自
+  // 之逐字複本合併為單一來源，行為與簽章逐字不變）。`excludeKeys` 供父列排除
+  // 四個作廢欄＋`updatedAt`（唯一預期變動集合）；子列（三型子表／
+  // TripSegment）呼叫時一律不傳 `excludeKeys`（整列比對，零例外——void 不得
+  // 觸碰任何子表欄位）。
 
   /** AC-04 允許變動集合（父列 `Application`）——僅此五鍵，其餘逐鍵指紋比對。 */
   const APPLICATION_VOID_ALLOWED_CHANGES = [

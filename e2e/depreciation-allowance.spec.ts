@@ -58,8 +58,8 @@
  */
 
 import { type Page, expect, test } from "@playwright/test";
+import { generateRunSuffix, loginAsAdmin } from "./helpers";
 
-const E2E_ADMIN = { loginName: "e2eadmin", password: "E2eAdmin@456!" };
 const BASE = "http://localhost:5173";
 const API_BASE = "http://localhost:3000";
 
@@ -127,20 +127,11 @@ const DEPRECIATION_PROOF_FILENAME = "depreciation-proof.jpg";
 // Helpers（沿 maintenance-allowance.spec.ts / fuel-model.spec.ts 既有模式）
 // ---------------------------------------------------------------------------
 
-async function loginAsAdmin(page: Page): Promise<void> {
-  await page.goto(`${BASE}/login`);
-  await page.waitForURL(`${BASE}/login`);
-  await page.fill("#loginName", E2E_ADMIN.loginName);
-  await page.fill("#password", E2E_ADMIN.password);
-  await page.click('button:has-text("登入")');
-  await page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 });
-}
-
 async function createSyntheticUser(
   page: Page,
   tempPassword: string
 ): Promise<{ id: string; loginName: string }> {
-  const suffix = `${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+  const suffix = generateRunSuffix();
   const loginName = `e2e-depr-${suffix}`;
   const displayName = `R12折舊使用者${suffix}`;
   const res = await page.request.post(`${API_BASE}/admin/users`, {
@@ -492,11 +483,11 @@ test.describe("年度折舊補貼（新模型）— PHASE-007-R12 Gate E2E", () 
     expect(snapshot["年度補貼金額（四捨五入後，實際核發）"]).toBe(preview.年度補貼金額);
 
     baselineFive = {
-      annualDepreciation: preview.每年折舊費用,
-      officialKm: preview.年度公務里程,
-      annualTotalKm: preview.年度總里程,
-      ratioPercent: preview.公務比例,
-      amount: preview.年度補貼金額,
+      annualDepreciation: preview.每年折舊費用 ?? "",
+      officialKm: preview.年度公務里程 ?? "",
+      annualTotalKm: preview.年度總里程 ?? "",
+      ratioPercent: preview.公務比例 ?? "",
+      amount: preview.年度補貼金額 ?? "",
     };
 
     // 折舊證明區塊：零附件之唯讀空狀態，無任何上傳／刪除入口（AC-54(b)／AC-42）。

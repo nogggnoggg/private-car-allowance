@@ -30,6 +30,12 @@ const server = await buildServer({
 try {
   await server.listen({ port: cfg.PORT, host: "0.0.0.0" });
 } catch (err) {
-  server.log.error(err);
+  // PHASE-011-T16（AC-28(c)①）：不把 err 物件（位置引數）直接交給 log.error——
+  // pino 預設 err serializer 會展開 message 與 stack（stack 逐字含絕對路徑）。
+  // 只記分類標籤（err.name），沿 health.ts 探針失敗日誌之既有寫法同形。
+  server.log.error(
+    { errName: err instanceof Error ? err.name : "UnknownError" },
+    "Failed to start listening"
+  );
   process.exit(1);
 }

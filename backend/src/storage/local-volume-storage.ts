@@ -1,5 +1,6 @@
 /**
- * LocalVolumeStorage — PHASE-003-T2; prefix whitelist parameterised PHASE-008-T8a
+ * LocalVolumeStorage — PHASE-003-T2; prefix whitelist parameterised PHASE-008-T8a;
+ * read-only `list()` added PHASE-011-T6
  *
  * Implements the Storage interface using the local filesystem.
  * Root path is provided via env ATTACHMENT_STORAGE_ROOT (attachment instance)
@@ -21,11 +22,17 @@
  *   - Root not existing: auto-created on first put (mkdirSync recursive).
  *   - get non-existent key: throws Error (documented behaviour, see Storage interface).
  *   - delete non-existent key: resolves without error (idempotent).
+ *   - `list()` (PHASE-011-T6, §16 D5=(c)): recursively walks `root`, returns
+ *     every file whose relative path matches this instance's own `keyRegex`
+ *     (same whitelist `put`/`get`/`delete` already enforce — non-conforming
+ *     entries under root are silently skipped, never surfaced). Pure read:
+ *     `readdirSync`/`statSync` only, no writes. Missing root → `[]`, not an
+ *     error (mirrors a fresh/empty bucket).
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Storage } from "./storage.js";
+import type { Storage, StorageListEntry } from "./storage.js";
 
 /** Default prefix whitelist — unchanged from the original hardcoded `att` behaviour. */
 const DEFAULT_PREFIXES = ["att"];
@@ -184,5 +191,26 @@ export class LocalVolumeStorage implements Storage {
   async exists(key: string): Promise<boolean> {
     const filePath = this.resolvePath(key);
     return fs.existsSync(filePath);
+  }
+
+  async list(): Promise<StorageListEntry[]> {
+    if (!fs.existsSync(this.root)) return [];
+
+    const out: StorageListEntry[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.isFile()) continue; // skip symlinks/sockets/etc — not a storage object
+        const relKey = path.relative(this.root, full).split(path.sep).join("/");
+        if (!this.keyRegex.test(relKey)) continue; // same whitelist as put/get/delete
+        out.push({ key: relKey, lastModified: fs.statSync(full).mtime });
+      }
+    };
+    walk(this.root);
+    return out;
   }
 }

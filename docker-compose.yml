@@ -25,6 +25,17 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       STORAGE_PATH: ${STORAGE_PATH:-/data/storage}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Session & login lockout (PHASE-002, Spec §8). Added by PHASE-011-T8R
+      # (即審 SF-1): these four were listed in `.env.example` but NOT forwarded
+      # here, so setting e.g. LOGIN_MAX_FAILURES=3 in `.env` and running
+      # `docker compose up` silently had no effect (the container never saw the
+      # variable — there is no `env_file`, no `ENV` in the Dockerfile, and the
+      # entrypoint does not source `.env`). Forwarding them makes the template's
+      # implied adjustability real. Defaults mirror `config/env.ts` exactly.
+      SESSION_ABSOLUTE_TTL_HOURS: ${SESSION_ABSOLUTE_TTL_HOURS:-8}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-sid}
+      LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
       # Attachment storage root (Spec §8, NFR-US-07, D4 prefix isolation).
       # Maps to a sub-path under the storage named volume so the same volume
       # root can later host the PDF prefix (PHASE-008) without mount collision.
@@ -33,6 +44,12 @@ services:
       ATTACHMENT_MAX_BYTES: ${ATTACHMENT_MAX_BYTES:-10485760}
       ATTACHMENT_TEMP_TTL_HOURS: ${ATTACHMENT_TEMP_TTL_HOURS:-24}
       ATTACHMENT_THUMBNAIL_MAX_PX: ${ATTACHMENT_THUMBNAIL_MAX_PX:-512}
+      # Attachment cleanup batch limit (PHASE-011-T4, Spec §8.2, AC-06(b); must be
+      # > 0). Consumed only by the one-shot CLI `attachment/cleanup-cli.ts`; the
+      # backend service itself neither reads nor schedules cleanup (§16 D3=(c)).
+      # Present here so an operator running the CLI via `docker compose run
+      # backend ...` inherits the same value as the rest of the stack.
+      ATTACHMENT_CLEANUP_BATCH_LIMIT: ${ATTACHMENT_CLEANUP_BATCH_LIMIT:-500}
       # Report PDF storage root (PHASE-008-T7b, Spec §16 D6 prefix isolation).
       # Sub-path of the same storage volume as ATTACHMENT_STORAGE_ROOT; directory
       # created and chowned to appuser at container startup by docker-entrypoint.sh.
@@ -67,6 +84,12 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/ >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
 volumes:

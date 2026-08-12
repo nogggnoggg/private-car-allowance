@@ -2,7 +2,7 @@
 
 - Governance-Version: 2026-08-01.1
 - 狀態：DRAFT
-- 更新日期：**2026-08-10**（最後同步至 **PHASE-010（稽核檢視與回歸）**已落地現實；DOC-SYNC `PHASE-010-DOCSYNC`——**新增 §2.9 稽核檢視（唯讀）**、§3 稽核紀錄列補檢視面六點。前次：2026-08-09 `PHASE-009-DOC-SYNC-B`；再前次：2026-08-07 `PHASE-008-DOC-SYNC`（C 批），該次未更新本行故 2026-08-05 之日期一度失準）
+- 更新日期：**2026-08-12**（最後同步至 **PHASE-011（部署硬化與備份）**已落地現實；DOC-SYNC `PHASE-011-DOCSYNC`——**新增 §2.10 備份→還原驗證與暫存附件清理流**。前次：2026-08-10 `PHASE-010-DOCSYNC`——新增 §2.9 稽核檢視（唯讀）、§3 稽核紀錄列補檢視面六點；再前次：2026-08-09 `PHASE-009-DOC-SYNC-B`）
 - 上游：`userstory.md`、`docs/PRD.md`、`docs/ARCHITECTURE.md`
 - 說明：概念層資料模型與資料流草案。實體命名為概念名稱，非最終 DB schema；不含欄位型別、索引、API I/O 格式（於 Phase Spec 定案）。
 
@@ -551,11 +551,60 @@ Promise.all([
 - **wire 與畫面之邊界（MG-3 裁定，人類 2026-08-10）**：`targetLabel` 之完整快照字串與 `applicationId`／`revisionOf` 兩欄**於 wire 與 DB 完整保留**（追查用），**僅畫面不呈現**。兩者不得互相侵蝕——不得因「畫面不顯示」而縮減 wire 值，亦不得在畫面回填 cuid。**行為後果**：修正版之「修正自」關係於畫面不可辨識（明示接受，見 `docs/specs/PHASE-010.md` §17.1 #12）。
 - **不新增錯誤碼**：沿用既有結構化錯誤協定之聯集（有 contract 斷言守門）；**稽核內容恆不入日誌**（作廢原因、備註、目的等自由文字）。
 - **不可變性**：`AuditLog` 為 append-only——`backend/src` 全域對其 `update`／`delete`／`upsert` 零呼叫（結構性掃描守門）。本頁為**唯讀**路徑，不提供匯出／下載，亦不提供一般使用者可見之稽核視圖。
-- **保留期限**：`AuditLog` 現**無保留期限與封存**（無限成長）；清理／封存語意與「已清理期間在本頁如何呈現」歸 PHASE-011，本 Phase 不預設。
+- **保留期限**：`AuditLog` 現**無保留期限與封存**（無限成長）；清理／封存語意屬產品行為決策，`docs/specs/PHASE-011.md` §16 D18 項目一（人類 leonchih 2026-08-11）明示不納，去向見 `docs/KNOWN_ISSUES.md`「非 Phase 歸屬之開放工作項」。
 
----
+### 2.10 備份→還原驗證與暫存附件清理流（PHASE-011 落地）
 
-## 3. 敏感資料處理彙整
+```
+【備份，人工或排程觸發 scripts/backup.sh】
+  ├─ 目的地守門（backup-policy.ts，純函式）── 不合格 → 拒絕、非零結束碼、零產物
+  ▼
+①DB 全庫 dump（docker exec pg_dump -Fc）
+②att/ 前綴 storage 物件 → attachments.tar（含 VoidedReportFile 之 rpt/ 物件同計於 rpt/ 前綴）
+③rpt/ 前綴 storage 物件 → reports.tar
+  ▼
+manifest.json（時間戳／範圍／位元組數／各部件雜湊／工具版本）
+  ▼
+涵蓋完整性自檢（四來源鍵集皆在產物內）── 缺漏 → 非零結束碼
+  ▼
+保留期清理（backup-policy.ts 純函式判定，恰 N 天保留、N≥14）
+  ▼
+摘要輸出（零敏感內容；AC-12 掃描器涵蓋腳本輸出）
+
+【還原驗證，每月排程觸發 scripts/verify-restore.sh】
+  ├─【前置守門】還原目標三元組合法性 ＋ 目標庫不得已存在 ── 不合格 → 拒絕
+  ▼
+取最近一份備份 → 還原至【隔離目標】（本腳本自建之獨立資料庫，非正式庫）
+  ▼
+①DB 可開啟 ＋ _prisma_migrations 尾筆相符（比對對象＝來源正式庫之現況，非備份當時——
+  manifest 未記錄備份當時之尾筆，見 docs/KNOWN_ISSUES.md 之射程限制登記）
+②附件抽樣 ≥3（含 thumb、含修正版副本）＋ 部件雜湊對 manifest 全等（restore-check.ts）
+③關聯完整性（information_schema 動態列舉全部外鍵 ＋ AC-23(c) 七項固定清單，
+  唯一非 DB 自動保證者＝ Attachment.refType/refId 之 LINKED 列容器存在性，弱引用無 FK 守護）
+  ▼
+全通過 → 成功紀錄／任一失敗 → 失敗紀錄（階段＋摘要）＋ 非零結束碼
+  ▼
+$RESTORE_VERIFY_LOG 追加一行 JSON（成功亦留一行）
+  ▼
+【隔離目標一律刪除】正式面全程唯讀，零殘留
+
+【暫存附件清理，人工或排程觸發 cleanup-cli.ts】
+  ├─【判準，cleanup-service.ts 純函式，對 DB 零寫入】
+  │   候選＝ status=TEMP ＋ 建立超過 TTL 時數 ＋ 四項引用來源皆不成立
+  │   （LINKED／TripSegment／MaintenanceApplication／DepreciationApplication 容器不存在）
+  │   候選五欄封閉（不含 storageKey）；dry-run 與實跑共用同一判定路徑（AC-04(c)）
+  ▼
+【執行，cleanup-cli.ts，唯一持有 DB 寫入與 storage 刪除能力之處】
+  批次上限（env 可設，預設 500）→ 逐筆刪除（storage 先刪、DB 後刪、失敗不回滾整批）
+  ▼
+結構化日誌 ＋ 執行摘要（deletedCount／failedCount／hasMore；不寫 AuditLog——系統排程無 actorId）
+```
+
+- **判準與執行分離**：三條流皆遵循同一分工原則——純函式判準（`backup-policy.ts`／`restore-check.ts`／`cleanup-service.ts`）有單元測試與 mutant 守門，腳本／CLI 只執行其結論，不得另行判斷（結構斷言守門）。
+- **設定值傳遞**：`backup.sh`／`verify-restore.sh` 呼叫對應純函式模組時一律經**標準輸入**（`KEY=VALUE` 逐行）交付，不走命令列參數（避免進主機行程表）、執行器不自讀環境（避免在 `backend/src` 新增未登記之 env 讀取站點，見 §4.14）。
+- **候選五欄封閉**（清理）：`cleanup-service.ts` 之候選物件描述**不含 `storageKey`**——dry-run 模式下結構性無法觸及實際刪除所需之控制代碼，唯讀為結構性保證而非約定。
+- **不可逆操作之保險順序**：備份（T12）交付須早於清理排程正式啟用（`docs/specs/PHASE-011.md` §15.1 硬性排程約束 #1）——清理為不可逆刪除，備份是其唯一保險。
+
 
 | 資料 | 處理原則 | 相關 US |
 |---|---|---|
