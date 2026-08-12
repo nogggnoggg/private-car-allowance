@@ -1,5 +1,10 @@
 # PROJECT_STATE
 
+> **DEPLOY-ZB（Zeabur 部署工作項）開工記錄（2026-08-12，人類授權「現在就準備，好了告訴我」；區域 Korea／付費方案／網域部署當天定）**
+> - 前置查證（大總管）：Zeabur 私網主機名＝`<服務名>.zeabur.internal`（官方 docs；改名不改主機名）→ nginx :16 寫死 `backend:3000` 必失效；backend 容器啟動自動 migrate deploy＋PORT 可設——零改動；唯一程式變更＝nginx upstream 參數化。
+> - **T1：BLOCKED（高品質阻擋）**（usage ~99k/39）：①Packet 預警之 CMD vs 官方 entrypoint 陷阱經 POC 實測**不存在**（Dockerfile 只設 CMD 未設 ENTRYPOINT，基底 envsubst 模板機制自然生效；隔離 POC 證預設值下渲染產物與現況逐位元組等價）②真衝突＝`backend/test/unit/report-storage.test.ts` :236/:310（PHASE-008-T14R AC-26 正向對照格）逐字釘死 `proxy_pass http://backend:3000/`，與參數化目標矛盾且在 Forbidden 區——兩硬約束互斥，正確 BLOCKED 附復現輸出（1 failed/46 passed 後還原，git clean 覈實）。Goal B 走查亦正確押後（不寫未落地行為）。
+> - **大總管裁定（治理 11.2 記錄型——非弱化故不觸人類 Gate）**：正向對照格改釘**模板檔新字面** `proxy_pass http://${BACKEND_UPSTREAM}/`（路徑改指 template）——仍逐字斷言＋仍讀 nginx 實際服務來源檔＋blocks.length 防恆真守衛原樣保留；斷言強度不降（優於 implementer 建議之泛化 `proxy_pass\s+http://` 弱化案，該案不採）。T1R 暖續限縮授權：Files Allowed 增列 `report-storage.test.ts` 僅 :236 路徑常數與 :310 斷言兩處。
+
 State: ACTIVE
 
 > **PHASE-011（Docker／部署硬化與備份）開工記錄（2026-08-11，使用者授權「按照你的建議推薦」）**
