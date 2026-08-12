@@ -60,7 +60,7 @@
  * 明文不得因未達標而放寬目標或自動優化，人類裁定）。
  */
 
-import { performance, monitorEventLoopDelay } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -138,7 +138,13 @@ class Session {
     const timer = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
     let res;
     try {
-      res = await fetch(`${API}${path}`, { method, headers, body: payload, redirect: "manual", signal: ac.signal });
+      res = await fetch(`${API}${path}`, {
+        method,
+        headers,
+        body: payload,
+        redirect: "manual",
+        signal: ac.signal,
+      });
     } finally {
       clearTimeout(timer);
     }
@@ -160,7 +166,8 @@ function isOk(status) {
 
 async function login(session, loginName, password) {
   const { status, data } = await session.call("POST", "/auth/login", { loginName, password });
-  if (status !== 200) throw new Error(`登入失敗（${loginName}）：HTTP ${status} ${JSON.stringify(data)}`);
+  if (status !== 200)
+    throw new Error(`登入失敗（${loginName}）：HTTP ${status} ${JSON.stringify(data)}`);
   return data.user;
 }
 
@@ -170,15 +177,15 @@ async function login(session, loginName, password) {
 function median(nums) {
   const a = [...nums].sort((x, y) => x - y);
   const n = a.length;
-  if (n === 0) return NaN;
+  if (n === 0) return Number.NaN;
   const mid = Math.floor(n / 2);
   return n % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 function maxOf(nums) {
-  return nums.length ? Math.max(...nums) : NaN;
+  return nums.length ? Math.max(...nums) : Number.NaN;
 }
 function p95(nums) {
-  if (!nums.length) return NaN;
+  if (!nums.length) return Number.NaN;
   const a = [...nums].sort((x, y) => x - y);
   return a[Math.min(a.length - 1, Math.ceil(0.95 * a.length) - 1)];
 }
@@ -232,13 +239,15 @@ function genPassword(tag) {
 // Phase 0：spike（§11.6 #2）——客戶端不成為瓶頸之確認 ＋ 三次重跑之離散度
 // ---------------------------------------------------------------------------
 async function runSpike(probeSession) {
-  console.log(`\n=== Phase 0／spike（§11.6 #2）：客戶端瓶頸確認 ＋ 三次重跑離散度 ===`);
+  console.log("\n=== Phase 0／spike（§11.6 #2）：客戶端瓶頸確認 ＋ 三次重跑離散度 ===");
   for (let i = 0; i < 5; i++) await probeSession.call("GET", "/health"); // 序列暖機
   // 額外一次「丟棄」之併發暖機批次（不計入三次重跑）：連線池／keep-alive／JIT
   // 於首次併發突發時有一次性開銷，會在三次重跑中把第一輪灌高，製造與客戶端
   // 瓶頸無關的假離散度（2026-08-11 首跑實測：21ms/14ms/14ms，見下方絕對值判
   // 準說明）——此批次結果不計入判定。
-  await Promise.all(Array.from({ length: SPIKE_CONCURRENCY }, () => probeSession.call("GET", "/health")));
+  await Promise.all(
+    Array.from({ length: SPIKE_CONCURRENCY }, () => probeSession.call("GET", "/health"))
+  );
 
   const rounds = [];
   for (let r = 1; r <= 3; r++) {
@@ -295,20 +304,29 @@ async function runSpike(probeSession) {
 // ---------------------------------------------------------------------------
 async function ensureGlobalParams(admin) {
   const fp = await admin.call("GET", `/parameters/fuel-price?fuelType=${FUEL_TYPE}`);
-  const fpCovered = (fp.data?.versions ?? []).some((v) => String(v.effectiveFrom).slice(0, 10) <= PARAM_EFFECTIVE_FROM);
+  const fpCovered = (fp.data?.versions ?? []).some(
+    (v) => String(v.effectiveFrom).slice(0, 10) <= PARAM_EFFECTIVE_FROM
+  );
   if (!fpCovered) {
     const r = await admin.call("POST", "/parameters/fuel-price", {
       fuelType: FUEL_TYPE,
       pricePerLiter: "30.0000",
       effectiveFrom: PARAM_EFFECTIVE_FROM,
     });
-    if (r.status !== 201) throw new Error(`建立油價參數失敗：HTTP ${r.status} ${JSON.stringify(r.data)}`);
+    if (r.status !== 201)
+      throw new Error(`建立油價參數失敗：HTTP ${r.status} ${JSON.stringify(r.data)}`);
   }
   const etc = await admin.call("GET", "/parameters/etc");
-  const etcCovered = (etc.data?.versions ?? []).some((v) => String(v.effectiveFrom).slice(0, 10) <= PARAM_EFFECTIVE_FROM);
+  const etcCovered = (etc.data?.versions ?? []).some(
+    (v) => String(v.effectiveFrom).slice(0, 10) <= PARAM_EFFECTIVE_FROM
+  );
   if (!etcCovered) {
-    const r = await admin.call("POST", "/parameters/etc", { unitPrice: 1.5, effectiveFrom: PARAM_EFFECTIVE_FROM });
-    if (r.status !== 201) throw new Error(`建立 ETC 參數失敗：HTTP ${r.status} ${JSON.stringify(r.data)}`);
+    const r = await admin.call("POST", "/parameters/etc", {
+      unitPrice: 1.5,
+      effectiveFrom: PARAM_EFFECTIVE_FROM,
+    });
+    if (r.status !== 201)
+      throw new Error(`建立 ETC 參數失敗：HTTP ${r.status} ${JSON.stringify(r.data)}`);
   }
 }
 
@@ -322,7 +340,10 @@ async function createSeedUser(admin, tag, displayName) {
   const created = await withSeedRetry(() =>
     admin.call("POST", "/admin/users", { loginName, displayName, temporaryPassword: initialPw })
   );
-  if (created.status !== 201) throw new Error(`建立使用者失敗（${loginName}）：HTTP ${created.status} ${JSON.stringify(created.data)}`);
+  if (created.status !== 201)
+    throw new Error(
+      `建立使用者失敗（${loginName}）：HTTP ${created.status} ${JSON.stringify(created.data)}`
+    );
   const userId = created.data.user.id;
 
   const session = new Session(loginName);
@@ -330,7 +351,8 @@ async function createSeedUser(admin, tag, displayName) {
   const chg = await withSeedRetry(() =>
     session.call("POST", "/me/password", { currentPassword: initialPw, newPassword: finalPw })
   );
-  if (chg.status !== 200) throw new Error(`改密失敗（${loginName}）：HTTP ${chg.status} ${JSON.stringify(chg.data)}`);
+  if (chg.status !== 200)
+    throw new Error(`改密失敗（${loginName}）：HTTP ${chg.status} ${JSON.stringify(chg.data)}`);
 
   // fuel-consumption 為管理端點（adminPreHandlers）——必須以 admin session 呼叫，
   // 不可用使用者自己的 session（一般使用者呼叫會 403）。
@@ -342,7 +364,10 @@ async function createSeedUser(admin, tag, displayName) {
       basisNote: "PHASE-011-T11 synthetic seed",
     })
   );
-  if (fc.status !== 201) throw new Error(`建立油耗版本失敗（${loginName}）：HTTP ${fc.status} ${JSON.stringify(fc.data)}`);
+  if (fc.status !== 201)
+    throw new Error(
+      `建立油耗版本失敗（${loginName}）：HTTP ${fc.status} ${JSON.stringify(fc.data)}`
+    );
 
   return { session, loginName, userId };
 }
@@ -351,10 +376,14 @@ async function createSeedUser(admin, tag, displayName) {
  * 建立一筆差旅申請（全合成、單一行程段）。
  * options: { dateOffsetDays, withAttachment, complete, withReport }
  */
-async function createTravelApp(session, { dateOffsetDays, withAttachment = false, complete = false, withReport = false }) {
+async function createTravelApp(
+  session,
+  { dateOffsetDays, withAttachment = false, complete = false, withReport = false }
+) {
   const tripDate = isoDateDaysAgo(dateOffsetDays);
   const created = await withSeedRetry(() => session.call("POST", "/applications/travel", {}));
-  if (created.status !== 201) throw new Error(`建立差旅草稿失敗：HTTP ${created.status} ${JSON.stringify(created.data)}`);
+  if (created.status !== 201)
+    throw new Error(`建立差旅草稿失敗：HTTP ${created.status} ${JSON.stringify(created.data)}`);
   const appId = created.data.application.id;
 
   let attachmentIds = [];
@@ -362,7 +391,8 @@ async function createTravelApp(session, { dateOffsetDays, withAttachment = false
     const fd = new FormData();
     fd.append("file", new Blob([TINY_PNG], { type: "image/png" }), "seed.png");
     const up = await withSeedRetry(() => session.call("POST", "/attachments", fd));
-    if (up.status !== 201) throw new Error(`上傳附件失敗：HTTP ${up.status} ${JSON.stringify(up.data)}`);
+    if (up.status !== 201)
+      throw new Error(`上傳附件失敗：HTTP ${up.status} ${JSON.stringify(up.data)}`);
     attachmentIds = [up.data.attachment.id];
   }
 
@@ -370,20 +400,33 @@ async function createTravelApp(session, { dateOffsetDays, withAttachment = false
     session.call("PUT", `/applications/travel/${appId}`, {
       tripDate,
       purpose: "PHASE-011-T11 效能量測合成資料",
-      segments: [{ origin: "SiteA", destination: "SiteB", totalKm: "50.00", highwayKm: "10.00", attachmentIds }],
+      segments: [
+        {
+          origin: "SiteA",
+          destination: "SiteB",
+          totalKm: "50.00",
+          highwayKm: "10.00",
+          attachmentIds,
+        },
+      ],
     })
   );
-  if (fill.status !== 200) throw new Error(`填寫差旅草稿失敗：HTTP ${fill.status} ${JSON.stringify(fill.data)}`);
+  if (fill.status !== 200)
+    throw new Error(`填寫差旅草稿失敗：HTTP ${fill.status} ${JSON.stringify(fill.data)}`);
 
   if (!complete) return { appId, attachmentIds, completed: false, reported: false };
 
-  const comp = await withSeedRetry(() => session.call("POST", `/applications/${appId}/complete`, {}));
-  if (comp.status !== 200) throw new Error(`完成申請失敗：HTTP ${comp.status} ${JSON.stringify(comp.data)}`);
+  const comp = await withSeedRetry(() =>
+    session.call("POST", `/applications/${appId}/complete`, {})
+  );
+  if (comp.status !== 200)
+    throw new Error(`完成申請失敗：HTTP ${comp.status} ${JSON.stringify(comp.data)}`);
 
   if (!withReport) return { appId, attachmentIds, completed: true, reported: false };
 
   const rep = await withSeedRetry(() => session.call("POST", `/applications/${appId}/report`, {}));
-  if (![200, 201].includes(rep.status)) throw new Error(`產生報表失敗：HTTP ${rep.status} ${JSON.stringify(rep.data)}`);
+  if (![200, 201].includes(rep.status))
+    throw new Error(`產生報表失敗：HTTP ${rep.status} ${JSON.stringify(rep.data)}`);
 
   return { appId, attachmentIds, completed: true, reported: true };
 }
@@ -405,7 +448,10 @@ async function createMaintenanceDraft(session, dateOffsetDays) {
 
 async function createDepreciationDraft(session, year) {
   const { status, data } = await withSeedRetry(() =>
-    session.call("POST", "/applications/depreciation", { applicationYear: year, annualTotalKm: "12000.00" })
+    session.call("POST", "/applications/depreciation", {
+      applicationYear: year,
+      annualTotalKm: "12000.00",
+    })
   );
   if (status !== 201) throw new Error(`建立折舊草稿失敗：HTTP ${status} ${JSON.stringify(data)}`);
 }
@@ -447,8 +493,10 @@ async function seedBulkUser(admin, index) {
 
 async function seedBulk(admin) {
   const t0 = performance.now();
-  const users = await mapLimit(Array.from({ length: N_USERS }, (_, i) => i + 1), SEED_CONCURRENCY, (i) =>
-    seedBulkUser(admin, i)
+  const users = await mapLimit(
+    Array.from({ length: N_USERS }, (_, i) => i + 1),
+    SEED_CONCURRENCY,
+    (i) => seedBulkUser(admin, i)
   );
   return { users, elapsedMs: performance.now() - t0 };
 }
@@ -470,17 +518,31 @@ async function seedPerfActor(admin) {
   }
   const pdfTargets = [];
   for (let i = 0; i < MUTATION_SAMPLE_N; i++) {
-    const r = await createTravelApp(s, { dateOffsetDays: randInt(1, 45), withAttachment: true, complete: true });
+    const r = await createTravelApp(s, {
+      dateOffsetDays: randInt(1, 45),
+      withAttachment: true,
+      complete: true,
+    });
     pdfTargets.push(r.appId);
   }
   const voidTargets = [];
   for (let i = 0; i < MUTATION_SAMPLE_N; i++) {
-    const r = await createTravelApp(s, { dateOffsetDays: randInt(1, 45), withAttachment: true, complete: true, withReport: true });
+    const r = await createTravelApp(s, {
+      dateOffsetDays: randInt(1, 45),
+      withAttachment: true,
+      complete: true,
+      withReport: true,
+    });
     voidTargets.push(r.appId);
   }
   const revisionTargets = [];
   for (let i = 0; i < MUTATION_SAMPLE_N; i++) {
-    const r = await createTravelApp(s, { dateOffsetDays: randInt(1, 45), withAttachment: true, complete: true, withReport: true });
+    const r = await createTravelApp(s, {
+      dateOffsetDays: randInt(1, 45),
+      withAttachment: true,
+      complete: true,
+      withReport: true,
+    });
     revisionTargets.push(r.appId);
   }
 
@@ -502,7 +564,13 @@ async function seedPerfActor(admin) {
 function summarize(samples, isSuccess = isOk) {
   const fails = samples.filter((s) => !isSuccess(s.status));
   const ms = samples.map((s) => s.ms);
-  return { n: samples.length, medianMs: median(ms), maxMs: maxOf(ms), failCount: fails.length, fails };
+  return {
+    n: samples.length,
+    medianMs: median(ms),
+    maxMs: maxOf(ms),
+    failCount: fails.length,
+    fails,
+  };
 }
 async function sampleN(n, fn, isSuccess = isOk) {
   const samples = [];
@@ -527,7 +595,9 @@ async function measurePerformance(admin, actor, bulkUsers) {
   results.list = await sampleN(SAMPLE_N, () => actor.session.call("GET", "/applications"));
 
   const detailId = actor.pdfTargets[0] ?? actor.completeTargets[0];
-  results.detail = await sampleN(SAMPLE_N, () => actor.session.call("GET", `/applications/travel/${detailId}`));
+  results.detail = await sampleN(SAMPLE_N, () =>
+    actor.session.call("GET", `/applications/travel/${detailId}`)
+  );
 
   results.adminList = await sampleN(SAMPLE_N, () => admin.call("GET", "/admin/users"));
 
@@ -540,7 +610,15 @@ async function measurePerformance(admin, actor, bulkUsers) {
   const savePayload = {
     tripDate: isoDateDaysAgo(5),
     purpose: "PHASE-011-T11 效能量測（重複儲存樣本）",
-    segments: [{ origin: "SiteA", destination: "SiteB", totalKm: "50.00", highwayKm: "10.00", attachmentIds: [] }],
+    segments: [
+      {
+        origin: "SiteA",
+        destination: "SiteB",
+        totalKm: "50.00",
+        highwayKm: "10.00",
+        attachmentIds: [],
+      },
+    ],
   };
   results.formSaveDraft = await sampleN(SAMPLE_N, () =>
     actor.session.call("PUT", `/applications/travel/${actor.draftSaveId}`, savePayload)
@@ -553,7 +631,9 @@ async function measurePerformance(admin, actor, bulkUsers) {
     actor.session.call("POST", `/applications/${id}/report`, {})
   );
   results.voidApp = await sampleEach(actor.voidTargets, (id) =>
-    actor.session.call("POST", `/applications/${id}/void`, { reason: "PHASE-011-T11 效能量測合成作廢原因" })
+    actor.session.call("POST", `/applications/${id}/void`, {
+      reason: "PHASE-011-T11 效能量測合成作廢原因",
+    })
   );
   results.revision = await sampleEach(actor.revisionTargets, (id) =>
     actor.session.call("POST", `/applications/${id}/revision`, undefined)
@@ -585,10 +665,16 @@ async function measurePerformance(admin, actor, bulkUsers) {
 // Phase 3：AC-18 — 20 併發混合負載（列表＋詳情＋草稿儲存）
 // ---------------------------------------------------------------------------
 async function runConcurrency(bulkUsers) {
-  console.log(`\n=== Phase 3／AC-18：${LOAD_CONCURRENCY} 併發混合負載（≥${LOAD_DURATION_SEC}s 且 ≥200 次請求）===`);
-  const workers = bulkUsers.slice(0, LOAD_CONCURRENCY).filter((u) => u.sampleDetailId && u.sampleDraftId);
+  console.log(
+    `\n=== Phase 3／AC-18：${LOAD_CONCURRENCY} 併發混合負載（≥${LOAD_DURATION_SEC}s 且 ≥200 次請求）===`
+  );
+  const workers = bulkUsers
+    .slice(0, LOAD_CONCURRENCY)
+    .filter((u) => u.sampleDetailId && u.sampleDraftId);
   if (workers.length < LOAD_CONCURRENCY) {
-    console.warn(`  警告：可用（且同時具詳情樣本與草稿樣本）之使用者數（${workers.length}）小於目標併發數（${LOAD_CONCURRENCY}）`);
+    console.warn(
+      `  警告：可用（且同時具詳情樣本與草稿樣本）之使用者數（${workers.length}）小於目標併發數（${LOAD_CONCURRENCY}）`
+    );
   }
 
   const deadline = performance.now() + LOAD_DURATION_SEC * 1000;
@@ -608,7 +694,15 @@ async function runConcurrency(bulkUsers) {
     const savePayload = {
       tripDate: isoDateDaysAgo(3),
       purpose: "PHASE-011-T11 併發混合負載（草稿儲存樣本）",
-      segments: [{ origin: "SiteA", destination: "SiteB", totalKm: "40.00", highwayKm: "5.00", attachmentIds: [] }],
+      segments: [
+        {
+          origin: "SiteA",
+          destination: "SiteB",
+          totalKm: "40.00",
+          highwayKm: "5.00",
+          attachmentIds: [],
+        },
+      ],
     };
     while (performance.now() < deadline) {
       let t0 = performance.now();
@@ -634,7 +728,8 @@ async function runConcurrency(bulkUsers) {
   let total4xxUnexpected = 0;
   for (const [status, count] of statusCounts) {
     if (status >= 500) total5xx += count;
-    else if (status >= 400 && status < 500 && !EXPECTED_4XX.has(status)) total4xxUnexpected += count;
+    else if (status >= 400 && status < 500 && !EXPECTED_4XX.has(status))
+      total4xxUnexpected += count;
   }
 
   return {
@@ -678,7 +773,7 @@ const LABELS = {
 };
 
 function printReport({ spike, seedInfo, measure, load }) {
-  console.log(`\n=== AC-17 七類場景 × N≥5 中位數／最大值表（最大值對照目標） ===`);
+  console.log("\n=== AC-17 七類場景 × N≥5 中位數／最大值表（最大值對照目標） ===");
   let allTargetsMet = true;
   for (const key of Object.keys(LABELS)) {
     const r = measure[key];
@@ -690,12 +785,15 @@ function printReport({ spike, seedInfo, measure, load }) {
         `失敗次數=${r.failCount}  → ${pass ? "PASS" : "FAIL"}`
     );
     if (r.failCount > 0) {
-      for (const f of r.fails) console.log(`    失敗樣本：status=${f.status} ms=${f.ms.toFixed(0)}`);
+      for (const f of r.fails)
+        console.log(`    失敗樣本：status=${f.status} ms=${f.ms.toFixed(0)}`);
     }
   }
 
-  console.log(`\n=== AC-18 20 併發混合負載 ===`);
-  console.log(`  實際併發數=${load.workerCount}  持續時間=${load.elapsedSec.toFixed(1)}s  總請求數=${load.totalRequests}`);
+  console.log("\n=== AC-18 20 併發混合負載 ===");
+  console.log(
+    `  實際併發數=${load.workerCount}  持續時間=${load.elapsedSec.toFixed(1)}s  總請求數=${load.totalRequests}`
+  );
   console.log(`  狀態碼分佈：${JSON.stringify(load.statusCounts)}`);
   console.log(`  5xx 數=${load.total5xx}（判準：必須為 0）`);
   console.log(`  非預期 4xx 數=${load.total4xxUnexpected}（預期業務碼集合：400/401/403/404/409）`);
@@ -704,22 +802,30 @@ function printReport({ spike, seedInfo, measure, load }) {
       `草稿儲存=${fmt(load.p95.save)}（對照 AC-17(c) 2000ms）`
   );
   if (load.attributions.length) {
-    console.log(`  5xx 逐筆歸因：`);
-    for (const a of load.attributions) console.log(`    ${a.kind}  ${a.path}  status=${a.status}  ms=${a.ms.toFixed(0)}`);
+    console.log("  5xx 逐筆歸因：");
+    for (const a of load.attributions)
+      console.log(`    ${a.kind}  ${a.path}  status=${a.status}  ms=${a.ms.toFixed(0)}`);
   }
 
   const del = measure.userDeleteBlockCheck;
-  console.log(`\n=== D17 判定輸入之額外項：使用者刪除路徑（阻擋查詢，非 AC-17 列名場景） ===`);
+  console.log("\n=== D17 判定輸入之額外項：使用者刪除路徑（阻擋查詢，非 AC-17 列名場景） ===");
   console.log(
-    `  DELETE /admin/users/:id（對擁有完整歷史之使用者，恆期望 409）\n` +
-      `  N=${del.n}  中位數=${fmt(del.medianMs)}  最大值=${fmt(del.maxMs)}  失敗次數（非 409）=${del.failCount}`
+    `  DELETE /admin/users/:id（對擁有完整歷史之使用者，恆期望 409）\n  N=${del.n}  中位數=${fmt(del.medianMs)}  最大值=${fmt(del.maxMs)}  失敗次數（非 409）=${del.failCount}`
   );
 
-  console.log(`\n=== AC-17(h) 量測條件 ===`);
-  console.log(`  環境：本機 docker compose stack（COMPOSE_PROJECT_NAME=oilexpense），量測對象 ${BASE_URL}（nginx :8080 全鏈）`);
-  console.log(`  資料規模：播種 ${seedInfo.userCount} 位合成使用者，各 30 筆申請（15 差旅／8 保養／7 折舊），耗時 ${(seedInfo.seedElapsedMs / 1000).toFixed(1)}s；`);
-  console.log(`    另建量測固定操作者 perfmeasure，含 4 類 × ${MUTATION_SAMPLE_N} 筆專屬新鮮樣本，耗時 ${(seedInfo.actorElapsedMs / 1000).toFixed(1)}s`);
-  console.log(`  量測方式：暖機後取樣（非冷啟），單一 Node 行程序列取樣（讀取類）／逐筆消耗式取樣（寫入類），取樣數見上表`);
+  console.log("\n=== AC-17(h) 量測條件 ===");
+  console.log(
+    `  環境：本機 docker compose stack（COMPOSE_PROJECT_NAME=oilexpense），量測對象 ${BASE_URL}（nginx :8080 全鏈）`
+  );
+  console.log(
+    `  資料規模：播種 ${seedInfo.userCount} 位合成使用者，各 30 筆申請（15 差旅／8 保養／7 折舊），耗時 ${(seedInfo.seedElapsedMs / 1000).toFixed(1)}s；`
+  );
+  console.log(
+    `    另建量測固定操作者 perfmeasure，含 4 類 × ${MUTATION_SAMPLE_N} 筆專屬新鮮樣本，耗時 ${(seedInfo.actorElapsedMs / 1000).toFixed(1)}s`
+  );
+  console.log(
+    "  量測方式：暖機後取樣（非冷啟），單一 Node 行程序列取樣（讀取類）／逐筆消耗式取樣（寫入類），取樣數見上表"
+  );
   console.log(`  時點：${new Date().toISOString()}`);
 
   return allTargetsMet && load.total5xx === 0;
@@ -729,7 +835,7 @@ function printReport({ spike, seedInfo, measure, load }) {
 // main
 // ---------------------------------------------------------------------------
 async function main() {
-  console.log(`PHASE-011-T11 效能量測 harness`);
+  console.log("PHASE-011-T11 效能量測 harness");
   console.log(`BASE_URL=${BASE_URL}  RUN_ID=${RUN_ID}  開始時間=${new Date().toISOString()}`);
   console.log(
     `參數：N_USERS=${N_USERS} SEED_CONCURRENCY=${SEED_CONCURRENCY} SAMPLE_N=${SAMPLE_N} ` +
@@ -739,30 +845,38 @@ async function main() {
   const probe = new Session("probe");
   const health = await probe.call("GET", "/health");
   if (health.status !== 200) {
-    console.error(`前置條件不足：GET /api/health 非 200（${health.status}）——stack 未就緒，本次量測拒絕出數`);
+    console.error(
+      `前置條件不足：GET /api/health 非 200（${health.status}）——stack 未就緒，本次量測拒絕出數`
+    );
     process.exit(2);
   }
 
   const spike = await runSpike(probe);
   if (!spike.pass) {
-    console.warn(`\n⚠ spike 未通過：依 Spec §16 D10 應改用 (b) 直打後端路徑；但本 compose stack 未將後端埠對外映射到 host`);
-    console.warn(`  （docker-compose.yml 之 backend 服務僅內部埠 3000/tcp，無 host port mapping），(b) 路徑需另行網路安排——本次據實標註，續以 (a) 執行`);
+    console.warn(
+      "\n⚠ spike 未通過：依 Spec §16 D10 應改用 (b) 直打後端路徑；但本 compose stack 未將後端埠對外映射到 host"
+    );
+    console.warn(
+      "  （docker-compose.yml 之 backend 服務僅內部埠 3000/tcp，無 host port mapping），(b) 路徑需另行網路安排——本次據實標註，續以 (a) 執行"
+    );
   }
 
   const admin = new Session("admin");
   await login(admin, ADMIN_LOGIN, ADMIN_PASSWORD);
   await ensureGlobalParams(admin);
 
-  console.log(`\n=== Phase 1／播種：資料規模建置 ===`);
+  console.log("\n=== Phase 1／播種：資料規模建置 ===");
   const { users: bulkUsers, elapsedMs: seedElapsedMs } = await seedBulk(admin);
-  console.log(`  已建立 ${bulkUsers.length} 位合成使用者，耗時 ${(seedElapsedMs / 1000).toFixed(1)}s`);
+  console.log(
+    `  已建立 ${bulkUsers.length} 位合成使用者，耗時 ${(seedElapsedMs / 1000).toFixed(1)}s`
+  );
 
   const actor = await seedPerfActor(admin);
   console.log(`  已建立量測固定操作者 perfmeasure，耗時 ${(actor.elapsedMs / 1000).toFixed(1)}s`);
 
-  console.log(`\n=== Phase 2／AC-17 七類場景量測 ===`);
+  console.log("\n=== Phase 2／AC-17 七類場景量測 ===");
   const measure = await measurePerformance(admin, actor, bulkUsers);
-  console.log(`  完成（各類樣本數與結果見報告）`);
+  console.log("  完成（各類樣本數與結果見報告）");
 
   const load = await runConcurrency(bulkUsers);
 
