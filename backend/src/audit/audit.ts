@@ -52,7 +52,14 @@ export async function writeAudit(params: WriteAuditParams): Promise<void> {
       },
     });
   } catch (err) {
-    // Audit write failure must not propagate (Spec §7 / fire-and-forget safety)
-    console.error("[audit] Failed to write AuditLog:", err);
+    // Audit write failure must not propagate (Spec §7 / fire-and-forget safety).
+    // PHASE-011-T16（AC-28(c)②）：不把 err 物件直接交給 console.error——Node 對
+    // Error 引數會印出完整 stack（逐字含絕對路徑，可能挾帶連線資訊，見
+    // KNOWN_ISSUES.md D-9／§13 #1）。只記分類標籤（err.name），不記 message／
+    // stack，亦不記 detail/summary（AC-30(d) 同批處理）。
+    console.error(
+      "[audit] Failed to write AuditLog:",
+      err instanceof Error ? err.name : "UnknownError"
+    );
   }
 }
