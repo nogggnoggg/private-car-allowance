@@ -422,6 +422,17 @@ rm -rf "$WD"                                                                    
 
 ## Gate 結果（大總管回填）
 
-- 裁定日期：
-- 各段結果：
+- **執行方式**：人類 leonchih 2026-08-12 裁定沿用代跑模式（`GATE-011-CONFIRM` 列；清理 Gate 先例）——純技術驗證型全數由大總管代跑並記錄於本節，產品判斷型項目以報告呈現。
+- 裁定日期：2026-08-12（大總管代跑完成；使用者批准狀態見下）
+- **執行順序調整（記錄在案）**：§2-2 之 destroy 會刪除兩 volume（終局性），故實際順序為 §1 → §5-2 → §6 → §4 → §2 → §3——先跑依賴既有資料的段落（§6 之預期值以既有 1499 檔資料集為基準），destroy 留後。
+- **偏差一筆（記錄在案）**：原管理員憑證檔（倉庫外）未跨 session 留存，故 §2 以 `down -v` 重置後由腳本自舉建立**合成**管理員（`[seed:admin] Admin user created`）——§2-1 因此跑在自舉後資料上而非既有資料，三指紋語意不受影響；新合成憑證檔存於 scratchpad（倉庫外），Phase 邊界重置時一併失效。
+- 各段結果（完整輸出見 session 記錄）：
+  1. **§1 三服務起動與健康兩態 ✅**：`up -d --build` 重建後 **db／backend／frontend 三者皆 `healthy`**（FR2 healthcheck 首次執行期實證，frontend 起動 14 秒即轉 healthy）；`GET /api/health` 正常態 `200`＋`db:"up"`；`stop db` 後 `503`＋`db:"down"`（零連線資訊、零路徑、零堆疊）；`start db` 後恢復 `200`。
+  2. **§2 持久化三指紋 ✅**：2-1 preserve＝三指紋逐一全等、結束碼 0（FP2 附件 `sha256=c414cd0e…` 與 Spec 存證值一致）；2-2 destroy＝刪 volume 後三指紋轉 `UNAVAILABLE(HTTP 401)`、「反向對照成立」、結束碼 1（預期）；2-3 空 volume 自舉＝`[seed:admin] Admin user created` → 三指紋全等、結束碼 0。
+  3. **§3 單面重建獨立性 ✅**：rebuild-backend＝僅 backend 容器/映像 id 變，db（`a5546e4f…`）與 frontend 完整 id 逐字不變；rebuild-frontend＝僅 frontend 變，db 與 backend（`b29848b5…`）不變；兩次三指紋皆全等。前後 `ps -q` 原文已核。
+  4. **§4 TLS/Cookie**：本機 http，`Secure` 不出現屬預期——**改於 staging 目視**（走查本文預留之處置；Cookie 四屬性另有 T7 之 8 格測試釘死＋終審 M3 mutant 反證）。此為本 Gate 唯一留待部署時人工目視項。
+  5. **§5 效能 ✅**：5-1 十列（T11 已審定，最大值 4~172 ms vs 目標 2000~10000 ms）目視完成；5-2 資料規模當場核對 `66|1653|229|629` **逐字命中**；5-3 併發判準依 2026-08-12 勘誤裁定判讀；5-4 重跑未執行（有不可逆播種代價，依本文「只目視數據即可完成本段」）。
+  6. **§6 備份還原 ✅（本 Gate 核心）**：6-0 副本 1499=1499；6-1 備份 `EXIT=0`、`coverage 1499/1499 missing=0`；6-2 manifest 六欄齊＋`allowEmpty:false`；6-3 兩守門必拒（`EXIT=1`）且零寫入（僅 `att`）；6-4 還原三確認全過（`fk=15`＋`fixed=1`、`fixed-list=7/7`、`evidence=full`）、`target=dropped`、`EXIT=0`；6-5 無 `restore_verify_scratch` 殘留＋紀錄檔 JSON 六欄；6-6 改一位元組 → `stage=a db-dump-hash-mismatch`、`EXIT=1`、連還原庫都未建立、紀錄追加不覆蓋；6-7 正式面前後計數 `629|229|12|66|1653`／`1499` **逐項全等**（唯讀實證）；6-8 走查目錄已刪。
+  - 額外收穫：6-4 首跑曾因 MSYS 路徑形（`/c/…`）誤報 `backup-not-found`（改 `C:/` 形即過）——**該次失敗也被寫入紀錄檔且未覆蓋成功列**，意外實證 AC-24(b) 追加語意；路徑形提醒已由本檔 §6-0 之 `$WD` 範例（`C:/` 形）涵蓋。
+- 終態：三服務 `healthy`、全鏈 `/api/health` 200；`t1-pg` 全程零觸碰。
 - 使用者批准：
