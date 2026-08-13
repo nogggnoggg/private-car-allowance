@@ -79,6 +79,11 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    environment:
+      # nginx reverse-proxy upstream for /api/* (see frontend/nginx.conf.template);
+      # explicit here even though the image bakes the same default (ENV in
+      # frontend/Dockerfile), so an operator's .env override is honored.
+      BACKEND_UPSTREAM: ${BACKEND_UPSTREAM:-backend:3000}
     ports:
       - "8080:80"
     depends_on:

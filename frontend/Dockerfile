@@ -28,8 +28,24 @@ FROM nginx:stable AS runtime
 # Copy built assets
 COPY --from=builder /app/frontend/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx configuration as a template: the nginx:stable base image's
+# entrypoint (/docker-entrypoint.d/20-envsubst-on-templates.sh, run before
+# `exec "$@"`) runs envsubst on every /etc/nginx/templates/*.template file
+# and writes the result to /etc/nginx/conf.d/ under the same base name.
+# BACKEND_UPSTREAM defaults to the docker-compose service name; override at
+# deploy time (e.g. Zeabur's <service>.zeabur.internal:3000).
+ENV BACKEND_UPSTREAM=backend:3000
+# NGINX_ENVSUBST_FILTER restricts the entrypoint's envsubst substitution to
+# only variables whose NAME matches this regex (see the base image's
+# 20-envsubst-on-templates.sh: without a filter it substitutes ANY env var
+# present in the container, by name, wherever that name appears in the
+# template — including as an accidental match of an nginx built-in variable
+# like $host/$uri/$scheme if someone happens to set an env var of that exact
+# lowercase name). Restricting to exactly BACKEND_UPSTREAM turns "no other
+# env var happens to collide with an nginx variable name" from a naming
+# coincidence into a structural guarantee.
+ENV NGINX_ENVSUBST_FILTER=^BACKEND_UPSTREAM$
+COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
 
 EXPOSE 80
 
