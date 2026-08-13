@@ -173,6 +173,17 @@
 - ✅ 通過＝「Zeabur 三服務（PostgreSQL／backend／frontend）皆可正確建置、啟動、彼此連通，`/api/health` 全鏈 200，TLS／Cookie 屬性目視正確，登入／附件／PDF 三個關鍵操作皆可用」。
 - ❌ 本文不核銷：備份排程之實際可行性（§6 已標注為部署當天現查現定）、異地備份保存方案、正式營運後的效能表現（PHASE-011 整合 Gate 之效能量測基準線僅適用本機 compose 環境，Zeabur 平台之實際效能未經量測）。
 
+## Gate 結果（大總管回填，2026-08-13 執行）
+
+- **執行方式（偏差記錄）**：本文原假設「Zeabur 後台無可腳本化操作」——**失準**。實際以已認證之 Zeabur CLI（`~/.config/zeabur/cli.yaml`，使用者既有登入）＋ `zeabur` plugin skills 執行了絕大部分步驟；使用者親手部分僅：GitHub sudo-mode 手機核准、SEED 兩變數之後台輸入、最終驗收目視。Volume 掛載與埠設定由大總管經使用者瀏覽器代操作（人類授權）。
+- **最終狀態**：`https://oil-spend.zeabur.app` 三服務 running、`/api/health` 全鏈 `200 {"status":"ok","checks":{"db":"up"}}`；管理員 `LeonC` 自舉成功（mustChangePassword 生效）；**使用者驗收通過（2026-08-13）**：TLS 鎖頭／登入改密／附件／PDF 皆過——PHASE-011 整合 Gate 留待之 TLS/Cookie 目視項至此核銷。
+- **迭代記錄（三輪，供日後重部署參考）**：
+  1. **backend build 127**：Zeabur 將服務 env（含 NODE_ENV=production）注入 build 環境→npm ci 略過 devDeps→DEPLOY-ZB-T3（`npm ci --include=dev`，PR #22）根治。
+  2. **frontend 首建失敗**：服務建立當下 `ZBPACK_DOCKERFILE_PATH` 尚未設定，Zeabur 自動偵測誤用 buildpack——變數設定後 redeploy 即解。**教訓：先設變數再首次 deploy**（或建立後立即 redeploy）。
+  3. **埠約定**：Zeabur 私網路由走**註冊埠**（`web`＝`${WEB_PORT}`＝8080），非應用自選埠——backend 沿用 `PORT=${WEB_PORT}`、frontend 補開 80 埠並重綁網域後全通。§4 之 `BACKEND_UPSTREAM` 實際值＝`backend.zeabur.internal:8080`（**非本文預寫之 :3000**——以 `service network` 實查為準，本文 :3000 之預設僅適用本機 compose）。
+- **§6 備份排程：未於本次執行**——列**開放工作項**（Zeabur 排程 Job 能力仍未實查；正式資料進場前須完成，含異地保存方案）。
+- 其餘既有記錄（AR-13 映像精簡、SEED 變數用畢即刪）見 PROJECT_STATE。
+
 ## 本文與 Task Packet 之差異記錄（誠實揭露，供大總管核對）
 
 - Task Packet 原文引「RUNBOOK §(e)」處理備份排程，實查應為 §(b)（見 §6 開頭勘誤）——已據實更正並記錄差異，非自行改變 Spec 產品含義。
