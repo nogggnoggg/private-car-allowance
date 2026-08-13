@@ -13,7 +13,13 @@ COPY tsconfig.base.json ./
 COPY frontend/package.json ./frontend/
 
 # Install all workspace dependencies (npm workspaces)
-RUN npm ci --ignore-scripts
+# --include=dev (DEPLOY-ZB-T3): platforms such as Zeabur inject the service's
+# runtime env vars (including our own NODE_ENV=production) into the Docker
+# BUILD environment too. Under NODE_ENV=production, `npm ci` silently skips
+# devDependencies — including vite/typescript, both needed for this build —
+# which would break `npm run build` below. The build stage must not be
+# sensitive to an externally-injected NODE_ENV.
+RUN npm ci --ignore-scripts --include=dev
 
 # Copy frontend source
 COPY frontend/ ./frontend/

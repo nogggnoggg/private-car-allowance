@@ -19,7 +19,13 @@ COPY backend/prisma/ ./backend/prisma/
 # they stay in backend/node_modules. Root node_modules gets shared/hoisted deps only.
 # `playwright` (backend runtime dependency, Spec §16 D4) IS hoisted to root
 # node_modules (verified: no version conflict with root's @playwright/test devDependency).
-RUN npm ci
+# --include=dev (DEPLOY-ZB-T3): platforms such as Zeabur inject the service's
+# runtime env vars (including our own NODE_ENV=production) into the Docker
+# BUILD environment too. Under NODE_ENV=production, `npm ci` silently skips
+# devDependencies — including root's @playwright/test — which shifts the
+# hoisting layout and breaks `npx playwright install` below (binary not found).
+# The build stage must not be sensitive to an externally-injected NODE_ENV.
+RUN npm ci --include=dev
 
 # Download Playwright's pinned Chromium Headless Shell binary (PHASE-008-T7b; Spec
 # §16 D4; --only-shell scope narrowed by PHASE-008-T7bR SF-2 — renderPdf only ever
